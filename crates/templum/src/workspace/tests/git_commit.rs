@@ -34,11 +34,14 @@ fn commit_needs_something_staged_and_a_summary_then_commits(cx: &mut TestAppCont
     std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
     let (handle, ws) = open(cx);
     open_git(handle, &ws, cx, repo.path());
+    // The button always shows; it commits only when committing is possible.
     let disabled = |cx: &mut TestAppContext| {
-        cx.update_window(handle, |_, window, _| {
-            window.try_find("git-commit").is_none()
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("git-commit").is_some());
         })
-        .unwrap()
+        .unwrap();
+        ws.read_with(cx, |ws, cx| !ws.space.git().unwrap().can_commit(cx))
     };
     assert!(disabled(cx), "nothing staged");
     click_row_button(
@@ -53,7 +56,6 @@ fn commit_needs_something_staged_and_a_summary_then_commits(cx: &mut TestAppCont
         summary.update(cx, |s, cx| s.focus(window, cx));
         window.input("Add a", cx);
         window.render_frame(cx);
-        assert!(window.try_find("git-commit").is_some());
         window.click("git-commit", cx);
     })
     .unwrap();
@@ -95,9 +97,14 @@ fn ctrl_enter_commits_with_the_description_and_amend_fills_the_fields(cx: &mut T
         git_run(repo.path(), &["log", "-1", "--format=%B"]).trim_end(),
         "Add b\n\nWhy b."
     );
-    // Amend: the fields show the last message; off again: they clear.
-    cx.update_window(handle, |_, window, cx| window.click("git-amend", cx))
-        .unwrap();
+    // Amend, from Commit's ▾: the fields show the last message; off again: they clear.
+    cx.update_window(handle, |_, window, cx| {
+        window.click("git-commit-menu", cx);
+        window.render_frame(cx);
+        // Commit, Commit & Push, a separator, Amend the last commit.
+        window.within("popup-menu").click(3usize, cx);
+    })
+    .unwrap();
     settle(handle, cx);
     ws.read_with(cx, |ws, cx| {
         assert!(ws.space.git().unwrap().amend);
@@ -174,7 +181,10 @@ fn without_an_author_commit_is_disabled_and_set_asks_for_one(cx: &mut TestAppCon
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.set_value("x", window, cx));
         window.render_frame(cx);
-        assert!(window.try_find("git-commit").is_none(), "no author");
+        assert!(
+            !ws.read(cx).space.git().unwrap().can_commit(cx),
+            "no author"
+        );
         window.click("git-set-author", cx);
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx));

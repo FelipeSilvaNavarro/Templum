@@ -154,19 +154,16 @@ fn list_column(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -
     })
     .flex_1()
     .min_h(px(0.0));
-    let top = div()
-        .flex()
-        .items_center()
-        .gap(px(6.0 * z))
-        .p(px(6.0 * z))
-        .border_b_1()
-        .border_color(ui.hairline)
-        // A file's history (`git log --follow`) takes no search: the chip below says what it is.
-        .when(git.file.is_none(), |el| {
-            el.child(field(&git.search, z).flex_1())
-        })
-        .when(git.file.is_some(), |el| el.child(div().flex_1()))
-        .child(fold_button(ui, z, cx));
+    // A file's history (`git log --follow`) takes no search: the chip below says what it is.
+    let top = git.file.is_none().then(|| {
+        div()
+            .flex()
+            .items_center()
+            .p(px(8.0 * z))
+            .border_b_1()
+            .border_color(ui.hairline)
+            .child(field(&git.search, z).flex_1())
+    });
     let chip = git.file.as_ref().map(|path| {
         div()
             .flex()
@@ -240,7 +237,7 @@ fn list_column(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -
         list.into_any_element()
     };
     column(ui, z)
-        .child(top)
+        .children(top)
         .children(chip)
         .when(git.file.is_none(), |el| el.child(modes))
         .child(body)
@@ -316,8 +313,7 @@ fn commit_column(
                 .truncate()
                 .text_color(ui.title)
                 .child(format!("Commit {}", c.short)),
-        )
-        .child(fold_button(ui, z, cx));
+        );
     let details = div()
         .flex()
         .flex_col()
@@ -374,14 +370,6 @@ fn column(ui: Ui, z: f32) -> gpui_kit::Div {
         .flex_col()
         .border_r_1()
         .border_color(ui.hairline)
-}
-
-/// Folds the left column: the panel takes the whole width.
-fn fold_button(ui: Ui, z: f32, cx: &mut Context<Workspace>) -> impl IntoElement + use<> {
-    icon_button("git-fold-lists", IconName::PanelLeftClose, ui, z)
-        .tooltip(|window, cx| Tooltip::new("Fold the lists").build(window, cx))
-        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(cx)))
-        .test_support()
 }
 
 /// A row's graph: its lines (top to middle, middle to bottom) and its commit's dot, each lane

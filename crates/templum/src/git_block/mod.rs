@@ -41,7 +41,7 @@ pub(crate) const SIZE: Size = Size { w: 760.0, h: 540.0 };
 pub(crate) const FILTER_PAST: usize = 15;
 /// The lists' column width and the rows' height, world units.
 pub(crate) const LISTS_W: f32 = 300.0;
-pub(crate) const ROW_H: f32 = 24.0;
+pub(crate) const ROW_H: f32 = 28.0;
 /// The text's size at zoom 1, world units.
 pub(crate) const FONT: f32 = 12.0;
 
@@ -313,7 +313,7 @@ pub(crate) struct Git {
 
 impl Git {
     pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut Context<Workspace>) -> Git {
-        let summary = cx.new(|cx| InputState::new(window, cx).placeholder("Summary"));
+        let summary = cx.new(|cx| InputState::new(window, cx).placeholder("Commit message"));
         let description = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .rows(3)

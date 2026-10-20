@@ -1,4 +1,4 @@
-//! The Git block's commit form: Summary, Description, Amend and Commit.
+//! The Git block's commit form: the message, and Commit (its ▾: Commit & Push, Amend).
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::Textarea;
@@ -6,10 +6,7 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
-use gpui_kit::{
-    AnyElement, ClickEvent, Context, Div, ElementId, SharedString, Stateful, TestSupportExt, div,
-    px,
-};
+use gpui_kit::{AnyElement, ClickEvent, Context, SharedString, TestSupportExt, div, px};
 
 use super::widgets::{field, icon_button};
 use super::words;
@@ -17,13 +14,13 @@ use super::{FONT, Git};
 use crate::editor::button;
 use crate::grid::hsla;
 use crate::menu::Target;
-use crate::theme::Ui;
 use crate::workspace::Workspace;
 
-/// The commit form's Description, three rows high, at zoom 1.
-const DESCRIPTION_H: f32 = 78.0;
+/// The commit form's Description, about three rows high, at zoom 1.
+const DESCRIPTION_H: f32 = 64.0;
 
-/// Summary, Description, Amend, Commit; or why committing isn't possible.
+/// The summary, the description once there is a summary, and the Commit button (its ▾: Commit &
+/// Push, Amend); or why committing isn't possible.
 pub(super) fn commit_form(
     ws: &Workspace,
     git: &Git,
@@ -34,11 +31,56 @@ pub(super) fn commit_form(
     let can = git.can_commit(cx);
     let len = git.summary_len(cx);
     let amend = git.amend;
+    let described = len > 0 || amend || !git.description.read(cx).value().is_empty();
+    // Lit with the theme's accent once there is something to commit.
+    let (bg, color) = if can {
+        (ui.accent, ui.surface)
+    } else {
+        (ui.card, ui.title_dim)
+    };
+    let hover = hsla(ws.theme.palette.foreground, 0.10);
+    let commit = div()
+        .id("git-commit")
+        .flex_1()
+        .min_w(px(0.0))
+        .h_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0 * z))
+        .child(Icon::new(IconName::Check).size(px(14.0 * z)))
+        .child(div().truncate().child(git.commit_label()))
+        .tooltip(|window, cx| Tooltip::new(words::tip("Commit")).build(window, cx))
+        .when(can, |el| {
+            el.cursor_pointer().hover(move |st| st.bg(hover)).on_click(
+                cx.listener(move |ws, _: &ClickEvent, window, cx| ws.git_commit(false, window, cx)),
+            )
+        })
+        .test_support();
+    let menu = div()
+        .id("git-commit-menu")
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .w(px(32.0 * z))
+        .h_full()
+        .border_l_1()
+        .border_color(color.opacity(0.3))
+        .cursor_pointer()
+        .hover(move |st| st.bg(hover))
+        .child(Icon::new(IconName::ChevronDown).size(px(14.0 * z)))
+        .tooltip(|window, cx| Tooltip::new("Commit & Push, Amend").build(window, cx))
+        .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
+            ws.open_menu(Target::GitCommitMenu, e.position(), window, cx)
+        }))
+        .test_support();
     div()
         .flex()
+        .flex_shrink_0()
         .flex_col()
-        .gap(px(6.0 * z))
-        .p(px(8.0 * z))
+        .gap(px(8.0 * z))
+        .p(px(10.0 * z))
         .border_t_1()
         .border_color(ui.hairline)
         .text_size(px(FONT * z))
@@ -65,46 +107,65 @@ pub(super) fn commit_form(
                 })
                 .children(generate_button(ws, git, z, cx)),
         )
-        .child(
-            // Three rows, at the zoom: gpui-kit sizes it from the theme's fixed font otherwise.
-            Textarea::new(&git.description)
-                .text_size(px(FONT * z))
-                .h(px(DESCRIPTION_H * z))
-                .w_full(),
-        )
+        .when(described, |el| {
+            el.child(
+                // About three rows, at the zoom: gpui-kit sizes it from the theme's fixed font
+                // otherwise.
+                Textarea::new(&git.description)
+                    .text_size(px(FONT * z))
+                    .h(px(DESCRIPTION_H * z))
+                    .w_full(),
+            )
+        })
+        .when(amend, |el| {
+            let yellow = hsla(ws.theme.palette.ansi[3], 1.0);
+            el.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0 * z))
+                    .px(px(8.0 * z))
+                    .py(px(4.0 * z))
+                    .rounded(px(6.0 * z))
+                    .bg(yellow.opacity(0.12))
+                    .text_size(px(11.0 * z))
+                    .text_color(ui.title)
+                    .child(
+                        Icon::new(IconName::Pencil)
+                            .size(px(12.0 * z))
+                            .text_color(yellow),
+                    )
+                    .child(div().flex_1().child("Amending the last commit"))
+                    .child(
+                        div()
+                            .id("git-amend-off")
+                            .cursor_pointer()
+                            .text_color(ui.title_dim)
+                            .hover(|st| st.text_color(yellow))
+                            .child(Icon::new(IconName::Close).size(px(12.0 * z)))
+                            .tooltip(|window, cx| {
+                                Tooltip::new("Commit a new one instead").build(window, cx)
+                            })
+                            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                                ws.set_amend(false, window, cx)
+                            }))
+                            .test_support(),
+                    ),
+            )
+        })
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.0 * z))
-                .child(
-                    check("git-amend", "Amend the last commit", amend, ui, z)
-                        .tooltip(|window, cx| Tooltip::new(words::tip("Amend")).build(window, cx))
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.set_amend(!amend, window, cx)
-                        }))
-                        .test_support(),
-                )
-                .child(div().flex_1())
-                .when(can, |el| {
-                    el.child(
-                        button("git-commit", git.commit_label(), ui, z)
-                            .tooltip(|window, cx| {
-                                Tooltip::new(words::tip("Commit")).build(window, cx)
-                            })
-                            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                                ws.git_commit(false, window, cx)
-                            }))
-                            .test_support(),
-                    )
-                    .child(
-                        icon_button("git-commit-menu", IconName::ChevronDown, ui, z)
-                            .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
-                                ws.open_menu(Target::GitCommitMenu, e.position(), window, cx)
-                            }))
-                            .test_support(),
-                    )
-                }),
+                .h(px(34.0 * z))
+                .rounded(px(8.0 * z))
+                .overflow_hidden()
+                .bg(bg)
+                .text_color(color)
+                .text_size(px(12.5 * z))
+                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .child(commit)
+                .child(menu),
         )
         .when(git.author.is_none() && git.repo().is_some(), |el| {
             el.child(
@@ -189,35 +250,4 @@ fn generate_button(
             .child(menu)
             .into_any_element(),
     )
-}
-
-/// A checkbox and its label at the zoom (gpui-kit's has a fixed size).
-fn check(id: impl Into<ElementId>, label: &'static str, on: bool, ui: Ui, z: f32) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .gap(px(6.0 * z))
-        .text_size(px(FONT * z))
-        .text_color(ui.title)
-        .cursor_pointer()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(14.0 * z))
-                .rounded(px(3.0 * z))
-                .border_1()
-                .border_color(if on { ui.accent } else { ui.hairline })
-                .when(on, |el| el.bg(ui.accent))
-                .when(on, |el| {
-                    el.child(
-                        Icon::new(IconName::Check)
-                            .size(px(11.0 * z))
-                            .text_color(ui.canvas),
-                    )
-                }),
-        )
-        .child(label)
 }

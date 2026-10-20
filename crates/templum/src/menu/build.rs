@@ -646,16 +646,29 @@ impl Items {
                     },
                 ))
             }),
-            Items::GitCommitMenu { label } => menu
-                .item(item(ws, label.clone(), None, move |ws, window, cx| {
-                    ws.git_commit(false, window, cx)
-                }))
-                .item(item(
-                    ws,
-                    format!("{label} & Push"),
-                    Some(IconName::Upload),
-                    move |ws, window, cx| ws.git_commit(true, window, cx),
-                )),
+            Items::GitCommitMenu { label, can, amend } => menu
+                .item(
+                    item(ws, label.clone(), None, move |ws, window, cx| {
+                        ws.git_commit(false, window, cx)
+                    })
+                    .disabled(!can),
+                )
+                .item(
+                    item(
+                        ws,
+                        format!("{label} & Push"),
+                        Some(IconName::Upload),
+                        move |ws, window, cx| ws.git_commit(true, window, cx),
+                    )
+                    .disabled(!can),
+                )
+                .separator()
+                .item(
+                    item(ws, "Amend the last commit", None, move |ws, window, cx| {
+                        ws.set_amend(!amend, window, cx)
+                    })
+                    .checked(amend),
+                ),
             Items::GitGenerateMenu { models, model } => {
                 let listed = !models.is_empty();
                 let menu = models.into_iter().fold(menu, |menu, m| {

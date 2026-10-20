@@ -292,9 +292,14 @@ impl Workspace {
             },
             Target::Ink(index) => Items::Ink { index },
             Target::Wire(wire) => Items::Wire { wire },
-            Target::GitCommitMenu => Items::GitCommitMenu {
-                label: self.space.git()?.commit_label(),
-            },
+            Target::GitCommitMenu => {
+                let git = self.space.git()?;
+                Items::GitCommitMenu {
+                    label: git.commit_label(),
+                    can: git.can_commit(cx),
+                    amend: git.amend,
+                }
+            }
             Target::GitGenerateMenu => {
                 self.space.git()?.repo()?;
                 let agent = self.commit_agent.as_ref()?;
@@ -565,6 +570,10 @@ enum Items {
     GitCommitMenu {
         /// "Commit", or "Commit all changes (5 files)".
         label: String,
+        /// Commit is possible (`Git::can_commit`).
+        can: bool,
+        /// Amend is on.
+        amend: bool,
     },
     GitGenerateMenu {
         /// The agent's models, the recommended one first, and the one in use.

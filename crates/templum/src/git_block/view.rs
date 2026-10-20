@@ -7,8 +7,8 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, ElementId, KeyDownEvent, ScrollWheelEvent, SharedString,
-    TestSupportExt, div, px,
+    AnyElement, ClickEvent, Context, Div, ElementId, Hsla, KeyDownEvent, ScrollWheelEvent,
+    SharedString, TestSupportExt, div, px,
 };
 use templum_git::Operation;
 
@@ -16,10 +16,12 @@ use super::branches::branches;
 use super::changes::changes;
 use super::history::history;
 use super::stashes::stashes;
-use super::widgets::{bar, centered, icon_button};
+use super::widgets::{centered, icon_button};
 use super::{FONT, Found, Git, Sync, Tab, words};
 use crate::editor::button;
+use crate::grid::hsla;
 use crate::menu::Target;
+use crate::theme::Ui;
 use crate::workspace::Workspace;
 
 /// How to get `git` on this OS.
@@ -33,8 +35,9 @@ pub(crate) fn install_hint() -> &'static str {
     }
 }
 
-/// The popup over the canvas's bottom-left corner, `w` × `h` pixels: the folder (a click lists
-/// the others), close, and the body.
+/// The popup over the canvas's bottom-left corner, `w` × `h` pixels: the header (the folder, a
+/// click lists the others; the branch and where it stands with the server; Sync and the other
+/// actions; close), and the body.
 pub(crate) fn popup(
     ws: &Workspace,
     git: &Git,
@@ -43,43 +46,65 @@ pub(crate) fn popup(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
+    let fg = hsla(ws.theme.palette.foreground, 1.0);
     let folder = git.repo().map_or(&git.folder, |r| &r.root);
     let (name, path) = (git.name(), SharedString::from(folder.display().to_string()));
-    let header = bar(ui, 1.0)
+    let repo = matches!(git.found, Found::Repo(_)) && !git.gone;
+    let tile = div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .size(px(34.0))
+        .rounded(px(9.0))
+        .bg(ui.accent.opacity(0.14))
+        .child(
+            Icon::new(IconName::FolderGit2)
+                .size(px(17.0))
+                .text_color(ui.accent),
+        );
+    let title = div()
+        .id("git-folder")
+        .flex()
+        .items_center()
+        .gap(px(4.0))
+        .min_w(px(0.0))
+        .text_size(px(14.0))
+        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+        .text_color(fg)
+        .cursor_pointer()
+        .hover(move |st| st.text_color(ui.accent))
+        .child(div().truncate().child(name))
+        .child(
+            Icon::new(IconName::ChevronDown)
+                .size(px(13.0))
+                .text_color(ui.title_dim),
+        )
+        .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
+        .on_click(cx.listener(|ws, e: &ClickEvent, window, cx| {
+            ws.open_menu(Target::GitFolders, e.position(), window, cx)
+        }))
+        .test_support();
+    let header = div()
         .id("git-popup-header")
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .gap(px(10.0))
+        .px(px(12.0))
+        .py(px(10.0))
+        .child(tile)
         .child(
             div()
-                .id("git-folder")
                 .flex()
-                .items_center()
-                .gap(px(6.0))
-                .px(px(8.0))
-                .py(px(2.0))
+                .flex_col()
+                .gap(px(2.0))
                 .min_w(px(0.0))
-                .rounded(px(6.0))
-                .text_size(px(13.0))
-                .font_weight(gpui_kit::FontWeight::MEDIUM)
-                .text_color(ui.title)
-                .cursor_pointer()
-                .hover(move |st| st.bg(ui.hover))
-                .child(
-                    Icon::new(IconName::Folder)
-                        .size(px(13.0))
-                        .text_color(ui.title_dim),
-                )
-                .child(div().truncate().child(name))
-                .child(
-                    Icon::new(IconName::ChevronDown)
-                        .size(px(12.0))
-                        .text_color(ui.title_dim),
-                )
-                .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
-                .on_click(cx.listener(|ws, e: &ClickEvent, window, cx| {
-                    ws.open_menu(Target::GitFolders, e.position(), window, cx)
-                }))
-                .test_support(),
+                .child(title)
+                .when(repo, |el| el.child(branch_line(ws, git, cx))),
         )
         .child(div().flex_1())
+        .when(repo, |el| el.children(actions(ws, git, cx)))
         .child(
             icon_button("git-close", IconName::Close, ui, 1.0)
                 .tooltip(|window, cx| Tooltip::new("Close (Esc)").build(window, cx))
@@ -94,10 +119,10 @@ pub(crate) fn popup(
         .flex_col()
         .overflow_hidden()
         .bg(ui.surface)
-        .text_color(crate::grid::hsla(ws.theme.palette.foreground, 1.0))
+        .text_color(fg)
         .border_1()
         .border_color(ui.hairline)
-        .rounded(px(10.0))
+        .rounded(px(12.0))
         .shadow(vec![gpui_kit::BoxShadow {
             color: ui.shadow,
             offset: gpui_kit::point(px(0.0), px(12.0)),
@@ -111,6 +136,190 @@ pub(crate) fn popup(
         .child(div().flex_1().min_h(px(0.0)).child(body(ws, git, 1.0, cx)))
         .test_support()
         .into_any_element()
+}
+
+/// Under the folder's name: the branch (a click opens the switcher), where it stands with the
+/// server, and the terminals working in the repository.
+fn branch_line(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> impl IntoElement {
+    let ui = ws.ui;
+    let s = &git.status;
+    let branch: String = match (&s.branch, &s.oid) {
+        (Some(b), _) => b.clone(),
+        (None, Some(oid)) => format!("detached at {}", &oid[..oid.len().min(7)]),
+        (None, None) => "no commits".to_string(),
+    };
+    let (state, tip) = words::server_state(s);
+    // The terminals working in the repository, as their last snapshot saw them: cheap.
+    let terminals = git.repo().map_or(0, |repo| {
+        ws.space
+            .terminals()
+            .filter(|(_, pane)| pane.works_in(&repo.root))
+            .count()
+    });
+    let dot = || div().text_color(ui.title_dim).child("·");
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .min_w(px(0.0))
+        .text_size(px(FONT))
+        .text_color(ui.title_dim)
+        .child(
+            div()
+                .id("branch")
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .min_w(px(0.0))
+                .text_color(ui.title)
+                .cursor_pointer()
+                .hover(move |st| st.text_color(ui.accent))
+                .child(Icon::new(IconName::GitBranch).size(px(12.0)))
+                .child(div().truncate().child(branch))
+                .tooltip(|window, cx| Tooltip::new("Switch branch").build(window, cx))
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.open_branch_switcher(window, cx)
+                }))
+                .test_support(),
+        )
+        .when(!state.is_empty(), |el| {
+            let tip = SharedString::from(tip);
+            el.child(dot()).child(
+                div()
+                    .id("git-state")
+                    .flex_shrink_0()
+                    .child(state)
+                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
+            )
+        })
+        .when(terminals > 0, |el| {
+            el.child(dot()).child(
+                div()
+                    .id("git-terminals")
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(3.0))
+                    .cursor_pointer()
+                    .hover(move |st| st.text_color(ui.accent))
+                    .child(Icon::new(IconName::SquareTerminal).size(px(12.0)))
+                    .child(terminals.to_string())
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Terminals in this repository").build(window, cx)
+                    })
+                    .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
+                        ws.open_menu(Target::GitTerminals, e.position(), window, cx)
+                    }))
+                    .test_support(),
+            )
+        })
+}
+
+/// The header's actions: Compare with main, Sync (or Publish branch), ⋯ and ↻.
+fn actions(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> Vec<AnyElement> {
+    let ui = ws.ui;
+    let s = &git.status;
+    // Compare with main: while there is a default branch and this branch isn't it.
+    let compare_with = git
+        .default_branch
+        .as_deref()
+        .map(words::local_name)
+        .filter(|b| s.branch.as_deref().is_some_and(|c| c != *b))
+        .map(str::to_string);
+    let on_branch = s.branch.clone().filter(|_| s.oid.is_some());
+    let publish = s.upstream.is_none() || s.gone;
+    let running = git.sync.is_some();
+    // The running command's button spins, and a click on it cancels it (Fetch and Pull from ⋯
+    // spin here too). Tinted while there is something to send or get.
+    let sync_button = (on_branch.is_some() || running).then(|| {
+        let (label, word, icon) = match (running, publish) {
+            (true, _) => ("Cancel", "Sync", None),
+            (false, true) => ("Publish branch", "Push", Some(IconName::CloudUpload)),
+            (false, false) => ("Sync", "Sync", Some(IconName::ArrowDownUp)),
+        };
+        let pending = publish || s.ahead > 0 || s.behind > 0;
+        let (bg, color) = if pending || running {
+            (ui.accent.opacity(0.16), ui.accent)
+        } else {
+            (ui.card, ui.title)
+        };
+        let el = div()
+            .id("git-sync")
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(6.0))
+            .h(px(28.0))
+            .px(px(12.0))
+            .rounded(px(8.0))
+            .bg(bg)
+            .text_size(px(FONT))
+            .font_weight(gpui_kit::FontWeight::MEDIUM)
+            .text_color(color)
+            .cursor_pointer()
+            .hover(move |st| {
+                st.bg(if pending {
+                    ui.accent.opacity(0.24)
+                } else {
+                    ui.hover
+                })
+            })
+            .children(icon.map(|i| Icon::new(i).size(px(14.0))))
+            .when(running, |el| {
+                el.child(Spinner::new().with_size(UiSize::Size(px(12.0))))
+            })
+            .child(label)
+            .tooltip(move |window, cx| Tooltip::new(words::tip(word)).build(window, cx));
+        if running {
+            el.on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.cancel_git(cx)))
+                .test_support()
+                .into_any_element()
+        } else if git.acting > 0 {
+            el.opacity(0.5).test_support().into_any_element()
+        } else {
+            let branch = on_branch.clone().unwrap_or_default();
+            el.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                if publish {
+                    ws.publish(branch.clone(), window, cx)
+                } else {
+                    ws.sync_git(window, cx)
+                }
+            }))
+            .test_support()
+            .into_any_element()
+        }
+    });
+    let compare = compare_with.map(|base| {
+        let current = s.branch.clone().unwrap_or_default();
+        let tip = SharedString::from(format!("Compare with {base}"));
+        icon_button("git-compare-main", IconName::GitCompareArrows, ui, 1.0)
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                ws.compare_branch(current.clone(), window, cx)
+            }))
+            .test_support()
+            .into_any_element()
+    });
+    compare
+        .into_iter()
+        .chain(sync_button)
+        .chain([
+            icon_button("refresh", IconName::RefreshCw, ui, 1.0)
+                .tooltip(|window, cx| Tooltip::new("Refresh").build(window, cx))
+                .on_click(
+                    cx.listener(move |ws, _: &ClickEvent, window, cx| ws.refresh_git(window, cx)),
+                )
+                .test_support()
+                .into_any_element(),
+            icon_button("git-more", IconName::Ellipsis, ui, 1.0)
+                .tooltip(|window, cx| Tooltip::new("More").build(window, cx))
+                .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
+                    ws.open_menu(Target::GitMore, e.position(), window, cx)
+                }))
+                .test_support()
+                .into_any_element(),
+        ])
+        .collect()
 }
 
 /// The body below the header, at the zoom `z`.
@@ -210,169 +419,15 @@ pub(crate) fn body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace
         .into_any_element()
 }
 
-/// The repository's view: the top bar, the tabs, the shown tab.
+/// The repository's view: the banner, the tabs, the shown tab.
 fn repo_body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
     let s = &git.status;
-    let branch: String = match (&s.branch, &s.oid) {
-        (Some(b), _) => b.clone(),
-        (None, Some(oid)) => format!("detached at {}", &oid[..oid.len().min(7)]),
-        (None, None) => "no commits".to_string(),
-    };
-    let (state, tip) = words::server_state(s);
-    // Compare with main: while there is a default branch and this branch isn't it.
-    let compare_with = git
-        .default_branch
-        .as_deref()
-        .map(words::local_name)
-        .filter(|b| s.branch.as_deref().is_some_and(|c| c != *b))
-        .map(str::to_string);
-    let on_branch = s.branch.clone().filter(|_| s.oid.is_some());
-    let publish = s.upstream.is_none() || s.gone;
-    let running = git.sync.is_some();
-    // The running command's button spins, and a click on it cancels it (Fetch and Pull from ⋯
-    // spin here too).
-    let sync_button = (on_branch.is_some() || running).then(|| {
-        let (label, word) = match (running, publish) {
-            (true, _) => ("Cancel", "Sync"),
-            (false, true) => ("Publish branch", "Push"),
-            (false, false) => ("Sync", "Sync"),
-        };
-        let el = button("git-sync", label, ui, z)
-            .when(running, |el| {
-                el.child(Spinner::new().with_size(UiSize::Size(px(12.0 * z))))
-            })
-            .tooltip(move |window, cx| Tooltip::new(words::tip(word)).build(window, cx));
-        if running {
-            el.on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.cancel_git(cx)))
-                .test_support()
-                .into_any_element()
-        } else if git.acting > 0 {
-            el.opacity(0.5).test_support().into_any_element()
-        } else {
-            let branch = on_branch.clone().unwrap_or_default();
-            el.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                if publish {
-                    ws.publish(branch.clone(), window, cx)
-                } else {
-                    ws.sync_git(window, cx)
-                }
-            }))
-            .test_support()
-            .into_any_element()
-        }
-    });
-    // The terminals working in the repository, as their last snapshot saw them: cheap.
-    let terminals = git.repo().map_or(0, |repo| {
-        ws.space
-            .terminals()
-            .filter(|(_, pane)| pane.works_in(&repo.root))
-            .count()
-    });
-    let top = div()
-        .id("git-top")
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .gap(px(8.0 * z))
-        .h(px(32.0 * z))
-        .px(px(8.0 * z))
-        .border_b_1()
-        .border_color(ui.hairline)
-        .child(
-            div()
-                .id("branch")
-                .flex()
-                .items_center()
-                .gap(px(4.0 * z))
-                .px(px(8.0 * z))
-                .py(px(2.0 * z))
-                .rounded_full()
-                .bg(ui.card)
-                .text_size(px(FONT * z))
-                .text_color(ui.title)
-                .cursor_pointer()
-                .hover(move |st| st.bg(ui.hover))
-                .child(
-                    Icon::new(IconName::GitBranch)
-                        .size(px(12.0 * z))
-                        .text_color(ui.title_dim),
-                )
-                .child(div().truncate().child(branch))
-                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.open_branch_switcher(window, cx)
-                }))
-                .test_support(),
-        )
-        .when(terminals > 0, |el| {
-            el.child(
-                div()
-                    .id("git-terminals")
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0 * z))
-                    .px(px(8.0 * z))
-                    .py(px(2.0 * z))
-                    .rounded_full()
-                    .bg(ui.card)
-                    .text_size(px(FONT * z))
-                    .text_color(ui.title)
-                    .cursor_pointer()
-                    .hover(move |st| st.bg(ui.hover))
-                    .child(
-                        Icon::new(IconName::SquareTerminal)
-                            .size(px(12.0 * z))
-                            .text_color(ui.title_dim),
-                    )
-                    .child(terminals.to_string())
-                    .tooltip(|window, cx| {
-                        Tooltip::new("Terminals in this repository").build(window, cx)
-                    })
-                    .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
-                        ws.open_menu(Target::GitTerminals, e.position(), window, cx)
-                    }))
-                    .test_support(),
-            )
-        })
-        .child(div().flex_1())
-        .when(!state.is_empty(), |el| {
-            let tip = SharedString::from(tip.clone());
-            el.child(
-                div()
-                    .id("git-state")
-                    .text_size(px(FONT * z))
-                    .text_color(ui.title_dim)
-                    .child(state.clone())
-                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
-            )
-        })
-        .when_some(compare_with, |el, base| {
-            let current = s.branch.clone().unwrap_or_default();
-            el.child(
-                button("git-compare-main", format!("Compare with {base}"), ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.compare_branch(current.clone(), window, cx)
-                    }))
-                    .test_support(),
-            )
-        })
-        .children(sync_button)
-        .child(
-            icon_button("git-more", IconName::Ellipsis, ui, z)
-                .tooltip(|window, cx| Tooltip::new("More").build(window, cx))
-                .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
-                    ws.open_menu(Target::GitMore, e.position(), window, cx)
-                }))
-                .test_support(),
-        )
-        .child(
-            icon_button("refresh", IconName::RefreshCw, ui, z)
-                .on_click(
-                    cx.listener(move |ws, _: &ClickEvent, window, cx| ws.refresh_git(window, cx)),
-                )
-                .test_support(),
-        )
-        .test_support();
+    let fg = hsla(ws.theme.palette.foreground, 1.0);
+    let (yellow, red) = (
+        hsla(ws.theme.palette.ansi[3], 1.0),
+        hsla(ws.theme.palette.ansi[1], 1.0),
+    );
     let detached = s.branch.is_none() && s.oid.is_some();
     let banner = if let Some(op) = git.operation {
         let conflicts = s.conflicts().len();
@@ -383,7 +438,7 @@ fn repo_body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> 
             _ => "",
         };
         Some(
-            bar(ui, z)
+            note(ui, yellow, IconName::TriangleAlert, z)
                 .id("git-banner")
                 .child(
                     div()
@@ -416,7 +471,7 @@ fn repo_body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> 
     } else if detached {
         let back = git.default_branch.clone();
         Some(
-            bar(ui, z)
+            note(ui, yellow, IconName::TriangleAlert, z)
                 .id("git-banner")
                 .child(div().flex_1().min_w(px(0.0)).child(
                     "You're looking at an old version. Commits made here won't belong to any branch.",
@@ -444,28 +499,55 @@ fn repo_body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> 
     } else {
         None
     };
+    let changed = s.entries.len();
     let tabs = div()
         .id("git-tabs")
         .flex()
-        .items_center()
+        .items_end()
         .flex_shrink_0()
-        .h(px(28.0 * z))
+        .gap(px(16.0 * z))
+        .h(px(34.0 * z))
+        .px(px(14.0 * z))
         .border_b_1()
         .border_color(ui.hairline)
         .children(Tab::ALL.map(|tab| {
             let active = git.tab == tab;
+            let icon = match tab {
+                Tab::Changes => IconName::FileDiff,
+                Tab::History => IconName::Clock,
+                Tab::Branches => IconName::GitBranch,
+                Tab::Stashes => IconName::Archive,
+            };
             div()
                 .id(ElementId::Name(format!("git-tab-{}", tab.name()).into()))
                 .flex()
                 .items_center()
+                .gap(px(6.0 * z))
                 .h_full()
-                .px(px(12.0 * z))
+                .border_b_2()
+                .border_color(if active {
+                    ui.accent
+                } else {
+                    gpui_kit::transparent_black()
+                })
                 .text_size(px(FONT * z))
-                .text_color(if active { ui.title } else { ui.title_dim })
-                .when(active, |el| el.bg(ui.card))
+                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                .text_color(if active { fg } else { ui.title_dim })
                 .cursor_pointer()
-                .hover(move |st| st.bg(ui.hover))
+                .hover(move |st| st.text_color(fg))
+                .child(Icon::new(icon).size(px(13.0 * z)))
                 .child(tab.title())
+                .when(tab == Tab::Changes && changed > 0, |el| {
+                    el.child(
+                        div()
+                            .px(px(6.0 * z))
+                            .rounded_full()
+                            .bg(ui.accent.opacity(0.16))
+                            .text_size(px(10.0 * z))
+                            .text_color(ui.accent)
+                            .child(changed.to_string()),
+                    )
+                })
                 .when(tab == Tab::Stashes, |el| {
                     el.tooltip(|window, cx| Tooltip::new(words::tip("Stash")).build(window, cx))
                 })
@@ -484,10 +566,30 @@ fn repo_body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> 
         .size_full()
         .flex()
         .flex_col()
-        .child(top)
-        .children(banner)
-        .when_some(git.error.clone(), |el, e| el.child(bar(ui, z).child(e)))
         .child(tabs)
+        .children(banner)
+        .when_some(git.error.clone(), |el, e| {
+            el.child(note(ui, red, IconName::CircleAlert, z).child(e))
+        })
         .child(area)
         .into_any_element()
+}
+
+/// A strip under the tabs, in `color`: what holds for the whole repository (a merge under way, a
+/// detached HEAD, a failed read).
+fn note(ui: Ui, color: Hsla, icon: IconName, z: f32) -> Div {
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(8.0 * z))
+        .mx(px(10.0 * z))
+        .mt(px(8.0 * z))
+        .px(px(10.0 * z))
+        .py(px(6.0 * z))
+        .rounded(px(8.0 * z))
+        .bg(color.opacity(0.12))
+        .text_size(px(FONT * z))
+        .text_color(ui.title)
+        .child(Icon::new(icon).size(px(14.0 * z)).text_color(color))
 }
