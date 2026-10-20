@@ -88,9 +88,10 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
     the local branches, then the remote ones, each row drawn as in the Branches tab (the name, bold with a check
     for the current one, and ↑↓ against its upstream; under it the last commit's subject and age; the check is the
     accent's in the tab and the row's text color in the dialog, whose selected row is filled with the accent, its
-    text the theme's background or text color, whichever reads better on it; the first 50 matches, then one row
-    "N more: keep typing to narrow them"; the branch the text names, a remote's without its `origin/`, is the
-    first of its group, and the Remote group goes first when only its first row is that);
+    text the theme's background or text color, whichever reads better on it, white or black when neither reaches
+    4.5:1; the first 50 matches, then one row "N more: keep typing to narrow them"; the branch the text names, a
+    remote's without its `origin/`, is the first of its group, and the Remote group goes first when only its first
+    row is that);
     Enter or a click switches (with [the switch flow](#switching-branches)). A name no branch has gets a row
     **Create branch "name"**, which makes the branch at HEAD and switches to it (git's own message when it refuses
     the name); a name that a remote branch has, without its `origin/`, gets none (switching to that one makes the

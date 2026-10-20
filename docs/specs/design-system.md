@@ -149,7 +149,7 @@ The gpui-kit theme, which the picker and the title bar use, gets its colors from
 - `foreground` and `popover_foreground` are the theme foreground;
 - `border`, `title_bar_border` and `window_border` are `hairline`;
 - `muted_foreground` is `title_dim`;
-- `accent` and `ring` are `accent`;
+- `accent` and `ring` are `accent`; `accent_foreground`, the text on it (a selected row, a button under the pointer), is `Theme::on_accent`: the theme's background or foreground, whichever reads better on the accent, white or black when neither reaches 4.5:1; in a dark theme, of those four the ones that reach 4.5:1 on the accent, the one that reads best on the ghost buttons' hover (the accent at 50% over the background, as the kit draws it);
 - `selection` is `selection`.
 
 Templum never calls `Theme::sync_system_appearance`, so gpui-kit never overwrites these colors.
