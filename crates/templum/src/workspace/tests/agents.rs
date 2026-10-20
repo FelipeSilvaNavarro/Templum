@@ -643,6 +643,83 @@ fn an_agent_that_runs_in_wsl_counts_as_installed(cx: &mut TestAppContext) {
     });
 }
 
+#[gpui_kit::test]
+fn the_agent_dialog_sets_its_shell_and_the_switch_keeps_it(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    // Opening Settings read this computer's shells: the made-up ones come after.
+    agent_shells(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.config.shell.program = None;
+        ws.default_shell = "zsh".into();
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-agents", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    // The dialog slides in for 0.25 s first: presses meanwhile are lost.
+    let edit = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.click("edit-agent-claude", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    };
+    // Picks the option at `index` of the dialog's Shell list; the note about WSL is there or not.
+    let pick = |cx: &mut TestAppContext, index: usize, note: bool| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("dialog").click("menu-agent-shell", cx);
+            window.render_frame(cx);
+            window.within("popup-menu").click(index, cx);
+            window.render_frame(cx);
+            let shown = window
+                .within("dialog")
+                .try_find("agent-shell-wsl")
+                .is_some();
+            assert_eq!(shown, note, "the note under the list, only for WSL");
+        })
+        .unwrap();
+    };
+    let ok = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.within("dialog").click("ok", cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    edit(cx);
+    pick(cx, 2, true); // Default (zsh), Quiet, WSL
+    pick(cx, 1, false);
+    ok(cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.config.agents["claude"].shell.as_deref(), Some("Quiet"));
+    });
+    // The row's switch saves the whole entry: the shell stays.
+    cx.update_window(handle, |_, window, cx| {
+        window.click("show-agent-claude", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let claude = &ws.config.agents["claude"];
+        assert_eq!(claude.show, Some(false));
+        assert_eq!(claude.shell.as_deref(), Some("Quiet"));
+    });
+    edit(cx);
+    pick(cx, 0, false);
+    ok(cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.config.agents["claude"].shell, None, "Default: no key");
+    });
+}
+
 #[cfg(unix)]
 #[gpui_kit::test]
 fn an_account_opens_with_its_folder_in_its_shell(cx: &mut TestAppContext) {

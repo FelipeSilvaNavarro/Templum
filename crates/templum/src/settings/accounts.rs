@@ -158,6 +158,11 @@ fn account_row(ws: &Workspace, entity: &Entity<Workspace>, entry: &AgentEntry) -
         Some(Err(why)) => format!("{agent} · no command: {why}"),
         None => agent,
     };
+    let description = super::agents::with_shell(
+        description,
+        entry.shell.as_deref(),
+        ws.agent_shell(entry).is_some(),
+    );
     let show = {
         let (e, entry) = (entity.clone(), entry.clone());
         Switch::new(ElementId::Name(format!("show-account-{id}").into()))
