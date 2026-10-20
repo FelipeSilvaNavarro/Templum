@@ -44,10 +44,23 @@ const KEYS_SETTLE: Duration = Duration::from_millis(300);
 /// The last lines of a screen Templum answers with (`send_keys`, a task not taken).
 pub(super) const TAIL_LINES: usize = 20;
 /// What a task's first line asks, after who hands it over: Claude Code takes a long paste alone
-/// for data it was shown, and does what typed text with it asks.
-pub(super) const TASK_LEAD: &str = "Your task is in the pasted text: do it.";
+/// for data it was shown, and does what typed text with it asks. It asks for the answer through
+/// `reply` (docs/specs/agent-protocol.md, 1).
+pub(super) const TASK_LEAD: &str =
+    "Your task is in the pasted text: do it, then answer it with reply.";
 /// What a change's first line asks, after who changes which task.
-pub(super) const CHANGE_LEAD: &str = "The change is in the pasted text: do it.";
+pub(super) const CHANGE_LEAD: &str =
+    "The change is in the pasted text: do it, then answer the task with reply.";
+
+/// What ends a task's pasted text (a change's too): how task `id` is answered, with `reply`, or
+/// from a shell where the agent has no Templum tools.
+pub(super) fn answer_how(id: u64) -> String {
+    format!(
+        "\n\n(When task t{id} is done, call Templum's reply tool once, with your whole answer as \
+         its text: that ends the task and hands your answer over. Without Templum's tools, run \
+         `templum reply -` in your shell, the answer on its standard input.)"
+    )
+}
 /// What the first line of a task's end says follows it: its answer, or why it failed.
 pub(super) const DONE_LEAD: &str = "Its answer is in the pasted text.";
 pub(super) const FAILED_LEAD: &str = "What happened is in the pasted text.";
@@ -754,10 +767,16 @@ impl Workspace {
             self.next_task
         });
         let line = match mine {
-            Some(_) => format!("[from {by}, a change to task t{id}] {CHANGE_LEAD}\n{task}"),
+            Some(_) => format!(
+                "[from {by}, a change to task t{id}] {CHANGE_LEAD}\n{task}{}",
+                answer_how(id)
+            ),
             None => {
                 let from = scheduled.map_or(String::new(), |s| format!(", scheduled s{s}"));
-                format!("[from {by}, task t{id}{from}] {TASK_LEAD}\n{task}")
+                format!(
+                    "[from {by}, task t{id}{from}] {TASK_LEAD}\n{task}{}",
+                    answer_how(id)
+                )
             }
         };
         self.send_task(&worker, &line, true, cx);

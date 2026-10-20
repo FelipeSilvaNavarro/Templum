@@ -208,9 +208,11 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
         &ws,
         cx,
         theirs,
-        &format!("({uid}), task t1] Your task is in the pasted text: do it. fix the tests"),
+        &format!(
+            "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply. fix the tests"
+        ),
     );
-    screen_with(&ws, cx, theirs, "then push[from");
+    screen_with(&ws, cx, theirs, "standard input.)[from");
 }
 
 /// Claude Code takes a long paste alone for data it was shown, not for what it is asked: the
@@ -226,13 +228,50 @@ fn a_task_goes_as_its_first_line_then_its_text(cx: &mut TestAppContext) {
     screen_with(&ws, cx, theirs, "2004honon");
     let task = json!({ "block": them, "task": "line 1\nline 2\nline 3\nline 4" });
     call(handle, &ws, cx, &terminal, "delegate", task);
-    // The terminal echoes ESC as "^[": two pastes, the first line alone.
-    screen_with(
-        &ws,
-        cx,
-        theirs,
-        &format!("({uid}), task t1] Your task is in the pasted text: do it.^[[201~^[[200~"),
+    // The terminal echoes ESC as "^[": two pastes, the first line alone. The task is longer than
+    // the screen: its start is read in the history.
+    let needle = format!(
+        "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply.^[[201~^[[200~"
     );
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let shown = ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().screen());
+        if shown.replace('\n', "").contains(&needle) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "not on the screen: {shown:?}");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// The spec's words (docs/specs/agent-protocol.md, 1), word for word.
+#[test]
+fn how_to_answer_is_the_specs_text_for_its_task() {
+    assert_eq!(
+        crate::workspace::delegate::answer_how(7),
+        "\n\n(When task t7 is done, call Templum's reply tool once, with your whole answer as its \
+         text: that ends the task and hands your answer over. Without Templum's tools, run \
+         `templum reply -` in your shell, the answer on its standard input.)"
+    );
+}
+
+/// A task, and a change to it, ask for the answer through `reply` and end with how.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_task_and_its_change_say_how_to_answer(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let task = json!({ "block": them, "task": "find the bug" });
+    call(handle, &ws, cx, &terminal, "delegate", task.clone());
+    let shown = screen_with(&ws, cx, theirs, "do it, then answer it with reply.");
+    assert!(shown.contains("find the bug"), "{shown}");
+    screen_with(&ws, cx, theirs, "call Templum's reply tool once");
+    screen_with(&ws, cx, theirs, "run `templum reply -` in your shell");
+    // A second delegate from the same agent is a change to task t1.
+    call(handle, &ws, cx, &terminal, "delegate", task);
+    screen_with(&ws, cx, theirs, "do it, then answer the task with reply.");
+    screen_with(&ws, cx, theirs, "When task t1 is done");
 }
 
 #[gpui_kit::test]
@@ -1226,7 +1265,9 @@ fn a_change_from_the_asker_goes_into_its_task(cx: &mut TestAppContext) {
         &ws,
         cx,
         theirs,
-        &format!("({uid}), a change to task t1] The change is in the pasted text: do it."),
+        &format!(
+            "({uid}), a change to task t1] The change is in the pasted text: do it, then answer the task with reply."
+        ),
     );
     ws.read_with(cx, |ws, _| {
         let handed = ws.space.terminal(theirs).unwrap().handed.as_ref().unwrap();

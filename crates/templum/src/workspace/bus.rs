@@ -702,7 +702,9 @@ impl Workspace {
              finish them. For work of several steps, open your own checklist with create_block and \
              check its items as you go. A task you \
              hand over without wait comes back typed into your terminal as [task …]: it isn't the \
-             person writing.",
+             person writing. A task handed to you begins [from …, task t7]: when it is done, answer \
+             it once with reply, your whole answer as its text. When you need the person, ask with \
+             ask_user, not on your screen.",
             space.name,
             list(connected),
             list(others),

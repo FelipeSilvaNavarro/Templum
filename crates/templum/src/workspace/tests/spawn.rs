@@ -331,6 +331,12 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
                 "its session is its task's"
             );
         });
+        // The prompt ends with how to answer it.
+        ws.read_with(cx, |ws, _| {
+            let prompt = ws.space.terminal(new).unwrap().prompt.as_ref().unwrap();
+            let how = crate::workspace::delegate::answer_how(conn);
+            assert!(prompt.text.ends_with(&how), "{agent}: {}", prompt.text);
+        });
         in_front(&ws, cx, new, true);
         found(&ws, cx, new);
         let (theirs, uid) = me(&ws, cx, new);
@@ -363,7 +369,9 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
             &ws,
             cx,
             new,
-            &format!(", task t{conn}] Your task is in the pasted text: do it."),
+            &format!(
+                ", task t{conn}] Your task is in the pasted text: do it, then answer it with reply."
+            ),
         );
         screen_with(&ws, cx, new, "say hi");
         enter(cx);

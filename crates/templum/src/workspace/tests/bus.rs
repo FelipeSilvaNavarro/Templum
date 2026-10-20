@@ -273,9 +273,19 @@ fn initialize_lists_the_tools_and_says_who_the_agent_is(cx: &mut TestAppContext)
         "{instructions}"
     );
     assert!(
-        instructions.ends_with(
+        instructions.contains(
             "A task you hand over without wait comes back typed into your terminal as [task …]: it isn't the \
              person writing."
+        ),
+        "{instructions}"
+    );
+    // A task is answered with `reply`, and the person is asked with `ask_user`
+    // (docs/specs/agent-protocol.md, 1).
+    assert!(
+        instructions.ends_with(
+            " A task handed to you begins [from …, task t7]: when it is done, answer it once with \
+             reply, your whole answer as its text. When you need the person, ask with ask_user, not \
+             on your screen."
         ),
         "{instructions}"
     );

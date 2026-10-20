@@ -662,8 +662,8 @@ pub fn list() -> Value {
         {
             "name": "delegate",
             "description": "Hands a task to an agent connected to you: Templum types it into its terminal, after \
-                            a line saying it is from you and its id (t7), and sends it. Its answer is its last \
-                            message when it finishes its turn, or what it sends you with reply. With wait, waits \
+                            a line saying it is from you and its id (t7), and sends it. Its answer is what it \
+                            sends with reply (Templum asks it to), else its last message when its turn ends. With wait, waits \
                             for that answer (it may take minutes); without, says its id at once, and its end comes \
                             back typed into your terminal as [task t7 …] with its time, what it spent and its \
                             transcript, as does a dialog it waits on. To the agent on your task, it is a change to \

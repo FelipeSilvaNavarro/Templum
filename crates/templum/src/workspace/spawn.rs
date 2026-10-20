@@ -10,7 +10,7 @@ use templum_mcp::{Reply, tools};
 use templum_terminal::Agent;
 
 use super::bus::{Outcome, target};
-use super::delegate::TASK_LEAD;
+use super::delegate::{TASK_LEAD, answer_how};
 use super::ops::Place;
 use super::{AGENT_COLS, AGENT_ROWS, Handed, Prompt, Space, Workspace};
 use crate::agents::AgentEntry;
@@ -322,7 +322,10 @@ impl Workspace {
                 .role
                 .as_ref()
                 .map_or(String::new(), |r| format!(", as {r}"));
-            let text = format!("[from {by}, task t{id}{role}] {TASK_LEAD}\n{copy}{prompt}");
+            let text = format!(
+                "[from {by}, task t{id}{role}] {TASK_LEAD}\n{copy}{prompt}{}",
+                answer_how(id)
+            );
             let handed = Handed {
                 id,
                 // Its session starts with its task: all it spends is the task's.
