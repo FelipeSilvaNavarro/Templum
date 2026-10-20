@@ -3,26 +3,30 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::Button;
-use gpui_kit::component::dialog::DialogButtonProps;
+use gpui_kit::component::dialog::Confirm;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
+use gpui_kit::component::text::TextView;
+use gpui_kit::component::{Icon, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, ElementId, Entity, FontWeight, SharedString,
-    Subscription, TestSupportExt, Window, div, px,
+    AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, FontWeight, Hsla, SharedString,
+    TestSupportExt, Window, div, px,
 };
 use templum_usage::accounts::{Found, Kind};
 
 use super::row::{Row, menu_button};
-use crate::agents::{AccountDraft, AgentEntry, own_state, tilde};
+use crate::agents::{self, AccountDraft, AgentEntry, own_state, tilde};
+use crate::kanban::{danger, pill, segment, strip};
 use crate::theme::Ui;
 use crate::workspace::{Workspace, show_notification};
+
+/// The dialog's width, and the space at its sides: the card dialog's language.
+const DIALOG_W: f32 = 480.0;
+const SIDE: f32 = 20.0;
 
 /// The Accounts heading, its rows and "Add an account", under the agents.
 pub(super) fn accounts(
@@ -37,6 +41,11 @@ pub(super) fn accounts(
         .filter(|a| a.account.is_some())
         .map(|a| account_row(ws, entity, a))
         .collect();
+    // The commands folder off the person's PATH: said once, for the first account with a command.
+    let with_command = ws
+        .commands
+        .iter()
+        .find_map(|(id, state)| state.is_ok().then_some(id));
     div()
         .flex()
         .flex_col()
@@ -52,8 +61,9 @@ pub(super) fn accounts(
             div()
                 .text_size(px(12.0))
                 .text_color(ui.title_dim)
-                .child("Another login of an agent, with its own folder: choose what it shares with the others."),
+                .child("Another login of an agent, opened by its own command."),
         )
+        .children(with_command.and_then(|id| path_note(ui, id)))
         .when(!rows.is_empty(), |el| el.child(super::card(ui, rows)))
         .child(
             div()
@@ -80,6 +90,55 @@ pub(super) fn accounts(
         .into_any_element()
 }
 
+/// What to do when the commands folder isn't on the PATH the person's shell gets, so `id` works
+/// only in Templum's terminals (docs/specs/accounts.md, Its command); None when it is.
+fn path_note(ui: Ui, id: &str) -> Option<AnyElement> {
+    let dir = agents::commands_dir()?;
+    // The shell's PATH is still being read: what it lacks may only be unread.
+    if templum_terminal::shell_path_pending()
+        || templum_terminal::on_path(&dir, &templum_terminal::shell_path_dirs())
+    {
+        return None;
+    }
+    let note = |text: String| {
+        div()
+            .text_size(px(11.0))
+            .text_color(ui.title_dim)
+            .child(text)
+    };
+    Some(if cfg!(windows) {
+        note(format!(
+            "%USERPROFILE%\\.local\\bin isn't on your Path, so {id} works only in Templum's \
+             terminals. Add it in Edit environment variables for your account."
+        ))
+        .into_any_element()
+    } else {
+        div()
+            .id("account-path-note")
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(note(format!(
+                "~/.local/bin isn't on your PATH, so {id} works only in Templum's terminals. To \
+                 use it in the others, add this line to your shell's startup file (~/.bashrc, \
+                 ~/.zshrc):"
+            )))
+            .child(
+                div().text_size(px(11.0)).child(
+                    TextView::markdown(
+                        "account-path-line",
+                        "```\nexport PATH=\"$HOME/.local/bin:$PATH\"\n```",
+                    )
+                    .style(crate::markdown::style(1.0))
+                    .selectable(true),
+                ),
+            )
+            .child(note("In fish: fish_add_path ~/.local/bin".to_string()))
+            .test_support()
+            .into_any_element()
+    })
+}
+
 /// The agent an account is of, by its title ("Claude Code").
 fn agent_title(agents: &[AgentEntry], kind: &Kind) -> String {
     agents
@@ -93,11 +152,12 @@ fn account_row(ws: &Workspace, entity: &Entity<Workspace>, entry: &AgentEntry) -
     let ui = ws.ui;
     let id = entry.id.clone();
     let account = entry.account.as_ref().expect("an account");
-    let description = format!(
-        "Account of {} · {}",
-        agent_title(&ws.agents, account.kind),
-        tilde(&account.folder)
-    );
+    let agent = agent_title(&ws.agents, account.kind);
+    let description = match ws.commands.get(&id) {
+        Some(Ok(_)) => format!("{agent} · type {id} in any terminal"),
+        Some(Err(why)) => format!("{agent} · no command: {why}"),
+        None => agent,
+    };
     let show = {
         let (e, entry) = (entity.clone(), entry.clone());
         Switch::new(ElementId::Name(format!("show-account-{id}").into()))
@@ -190,98 +250,138 @@ pub(crate) fn agent_choices(agents: &[AgentEntry]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// How an account's items are shared (docs/specs/accounts.md, The dialog).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Setup {
+    /// Every item it can share is its agent's own.
+    Same,
+    /// Nothing shared.
+    Fresh,
+    /// Item by item.
+    Custom,
+}
+
+/// What Same shares: each item of `kind` with its agent's own folder, but the files where the OS
+/// won't link them (Windows without Developer Mode).
+fn same_share(kind: &Kind) -> BTreeMap<String, String> {
+    let files = templum_usage::accounts::files_share();
+    kind.items
+        .iter()
+        .filter(|item| files || item.paths[0].ends_with('/'))
+        .map(|item| (item.key.to_string(), kind.agent.to_string()))
+        .collect()
+}
+
+/// The setup `share` is: nothing is Fresh, what Same makes is Same, anything else Custom.
+fn setup_of(kind: &Kind, share: &BTreeMap<String, String>) -> Setup {
+    if share.is_empty() {
+        Setup::Fresh
+    } else if *share == same_share(kind) {
+        Setup::Same
+    } else {
+        Setup::Custom
+    }
+}
+
+/// The agent a new account starts as: Claude Code when it is installed, else the first agent that
+/// is, else Claude Code.
+fn default_agent(agents: &[AgentEntry]) -> Option<&'static Kind> {
+    let installed = |id: &str| {
+        agents
+            .iter()
+            .find(|a| a.id == id)
+            .is_some_and(|a| templum_terminal::installed(a.program()))
+    };
+    let first = agent_choices(agents).into_iter().next()?.0;
+    let id = if installed("claude") || !installed(&first) {
+        "claude"
+    } else {
+        first.as_str()
+    };
+    templum_usage::accounts::kind(id)
+}
+
 /// The dialog's state: what it was opened with, and the choices made in it.
 pub(crate) struct Form {
     /// The account edited; None: a new one.
-    id: Option<String>,
+    entry: Option<AgentEntry>,
     agents: Vec<AgentEntry>,
     data: Option<PathBuf>,
+    /// The ids `[agents]` holds, with what Settings hasn't applied yet, and those in effect.
+    taken: Vec<String>,
     ui: Ui,
+    /// The theme's red, for a rule the name breaks.
+    red: Hsla,
     kind: Option<&'static Kind>,
+    /// A new account's name.
     name: Entity<InputState>,
-    folder: Entity<InputState>,
-    /// The folder it had, for one edited.
-    was: Option<PathBuf>,
+    setup: Setup,
+    /// The items shared, by key: the agent's id or another account of it.
     share: BTreeMap<String, String>,
     /// Items holding a link the person made, and where it points.
     theirs: BTreeMap<&'static str, PathBuf>,
-    /// The name a chosen agent gives, put in its field at the next render.
-    named: Option<String>,
-    ws: gpui_kit::WeakEntity<Workspace>,
-    red: gpui_kit::Hsla,
-    _folder_change: Subscription,
+    /// An edited account's command: its file, or why it has none.
+    command: Option<Result<PathBuf, String>>,
 }
 
 impl Form {
     fn new(
         ws: &Workspace,
-        owner: gpui_kit::WeakEntity<Workspace>,
         entry: Option<&AgentEntry>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let draft = entry.map(AccountDraft::of);
-        let name_text = draft.as_ref().map(|d| d.name.clone()).unwrap_or_default();
-        let name = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("What the menu shows")
-                .default_value(name_text)
-        });
-        let folder_text = draft
-            .as_ref()
-            .and_then(|d| d.folder.clone())
-            .unwrap_or_default();
-        let folder = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Empty: Templum's folder for it")
-                .default_value(folder_text)
-        });
-        let _folder_change = cx.subscribe(&folder, |form: &mut Form, _, event: &InputEvent, cx| {
-            if let InputEvent::Change = event {
-                form.read_folder(cx);
-            }
-        });
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder("claudinho"));
         let account = entry.and_then(|e| e.account.as_ref());
+        let kind = match account {
+            Some(account) => Some(account.kind),
+            None => default_agent(&ws.agents),
+        };
         let mut form = Form {
-            id: entry.map(|e| e.id.clone()),
+            entry: entry.cloned(),
             agents: ws.agents.clone(),
             data: ws.data_dir.clone(),
+            taken: ws.taken_ids(),
             ui: ws.ui,
-            kind: account.map(|a| a.kind),
-            name,
-            folder,
-            was: account.map(|a| a.folder.clone()),
-            share: draft.map(|d| d.share).unwrap_or_default(),
-            theirs: BTreeMap::new(),
-            named: None,
-            ws: owner,
             red: crate::grid::hsla(ws.theme.palette.ansi[1], 1.0),
-            _folder_change,
+            kind,
+            name,
+            setup: Setup::Same,
+            share: BTreeMap::new(),
+            theirs: BTreeMap::new(),
+            command: entry.and_then(|e| ws.commands.get(&e.id).cloned()),
         };
-        form.read_links(cx);
+        match account {
+            Some(account) => {
+                form.share = account.share.clone();
+                form.read_links();
+                form.setup = kind.map_or(Setup::Fresh, |k| setup_of(k, &form.share));
+            }
+            None => form.reset_setup(Setup::Same),
+        }
         form
     }
 
-    /// Its id: the account's, or the one a new account of its agent gets.
-    fn id(&self) -> Option<String> {
-        if let Some(id) = &self.id {
-            return Some(id.clone());
+    /// The first rule the name typed breaks (docs/specs/accounts.md, Its name); None while it is
+    /// empty or free.
+    fn problem(&self, cx: &App) -> Option<String> {
+        let name = self.name.read(cx).value();
+        if name.is_empty() {
+            return None;
         }
-        let kind = self.kind?;
-        // ponytail: until the dialog asks for a name, a new account is its agent's id and the first
-        // free number.
-        (2..)
-            .map(|n| format!("{}{n}", kind.agent))
-            .find(|id| !self.agents.iter().any(|a| a.id.eq_ignore_ascii_case(id)))
+        let commands = agents::commands_dir();
+        agents::name_problem(
+            &name,
+            |x| self.taken.iter().any(|t| t.eq_ignore_ascii_case(x)),
+            self.data.as_deref(),
+            commands.as_deref(),
+            agents::locate,
+        )
     }
 
-    /// The folder its agent would run on: the one typed, else Templum's.
-    fn folder_path(&self, cx: &App) -> Option<PathBuf> {
-        let typed = self.folder.read(cx).value().trim().to_string();
-        if !typed.is_empty() {
-            return Some(crate::launcher::expand(&typed));
-        }
-        Some(self.data.as_ref()?.join("accounts").join(self.id()?))
+    /// Create works: a new account's name is typed and free.
+    fn can_create(&self, cx: &App) -> bool {
+        self.kind.is_some() && !self.name.read(cx).value().is_empty() && self.problem(cx).is_none()
     }
 
     /// Who an item may be shared with: its agent's own folder, then its other accounts, by id,
@@ -290,10 +390,10 @@ impl Form {
         let Some(kind) = self.kind else {
             return Vec::new();
         };
-        let me = self.id();
+        let me = self.entry.as_ref().map(|e| &e.id);
         let accounts = self.agents.iter().filter_map(|a| {
             let account = a.account.as_ref()?;
-            (account.kind.agent == kind.agent && Some(&a.id) != me.as_ref())
+            (account.kind.agent == kind.agent && Some(&a.id) != me)
                 .then(|| (a.id.clone(), Some(account.kind.state_dir(&account.folder))))
         });
         std::iter::once((kind.agent.to_string(), own_state(kind, &self.agents)))
@@ -301,20 +401,23 @@ impl Form {
             .collect()
     }
 
-    /// The choices a folder already holds: a link to the same item of one of its agent's
-    /// folders becomes that choice, one elsewhere is the person's. Only links add choices: a
-    /// folder without one (an empty one, or `/` while its path is typed) changes none.
-    fn read_links(&mut self, cx: &App) {
-        let (Some(kind), Some(folder)) = (self.kind, self.folder_path(cx)) else {
+    /// The choices an edited account's folder already holds: a link to the same item of one of
+    /// its agent's folders becomes that choice, one elsewhere is the person's. Only links add
+    /// choices: a folder without one changes none.
+    fn read_links(&mut self) {
+        let (Some(kind), Some(account)) = (
+            self.kind,
+            self.entry.as_ref().and_then(|e| e.account.as_ref()),
+        ) else {
             return;
         };
         self.theirs.clear();
-        if !folder.is_dir() {
+        if !account.folder.is_dir() {
             return;
         }
         let sources = self.sources();
         let paths: Vec<PathBuf> = sources.iter().filter_map(|(_, p)| p.clone()).collect();
-        for (key, found) in templum_usage::accounts::read(kind, &folder, &paths) {
+        for (key, found) in templum_usage::accounts::read(kind, &account.folder, &paths) {
             match found {
                 Found::Theirs(target) => {
                     self.theirs.insert(key, target);
@@ -330,13 +433,17 @@ impl Form {
         }
     }
 
-    /// The folder field changed: a folder set up by hand keeps its sharing.
-    fn read_folder(&mut self, cx: &mut Context<Self>) {
-        self.read_links(cx);
-        cx.notify();
+    /// The setup chosen: Same and Fresh set the choices, Custom starts from the last ones.
+    fn reset_setup(&mut self, setup: Setup) {
+        match (setup, self.kind) {
+            (Setup::Same, Some(kind)) => self.share = same_share(kind),
+            (Setup::Fresh, _) => self.share.clear(),
+            _ => {}
+        }
+        self.setup = setup;
     }
 
-    /// The agent of a new account: its name is that agent's title and the id's number.
+    /// The agent of a new account.
     fn choose(&mut self, agent: &str, cx: &mut Context<Self>) {
         let Some(kind) = templum_usage::accounts::kind(agent) else {
             return;
@@ -345,46 +452,43 @@ impl Form {
             return;
         }
         self.kind = Some(kind);
-        self.share.clear();
-        let id = self.id().unwrap_or_default();
-        let n = id.strip_prefix(kind.agent).unwrap_or_default();
-        self.named = Some(format!("{} {n}", agent_title(&self.agents, kind)));
-        self.read_links(cx);
+        self.reset_setup(Setup::Same);
         cx.notify();
     }
 
-    /// What Save writes.
-    fn draft(&self, cx: &App) -> Option<AccountDraft> {
+    /// What Create or Save writes, and its id: None while a new account's name is missing or breaks
+    /// a rule.
+    fn to_save(&self, cx: &App) -> Option<(String, AccountDraft)> {
         let kind = self.kind?;
-        let folder = self.folder.read(cx).value().trim().to_string();
-        let show = self
-            .id
-            .as_ref()
-            .and_then(|id| self.agents.iter().find(|a| a.id == *id))
-            .is_none_or(|a| a.show);
-        Some(AccountDraft {
-            of: kind.agent.to_string(),
-            name: self.name.read(cx).value().to_string(),
-            show,
-            folder: (!folder.is_empty()).then_some(folder),
-            share: self.share.clone(),
-        })
+        match &self.entry {
+            Some(entry) => Some((
+                entry.id.clone(),
+                AccountDraft {
+                    share: self.share.clone(),
+                    ..AccountDraft::of(entry)
+                },
+            )),
+            None => self.can_create(cx).then(|| {
+                let draft = AccountDraft {
+                    of: kind.agent.to_string(),
+                    show: true,
+                    share: self.share.clone(),
+                    ..AccountDraft::default()
+                };
+                (self.name.read(cx).value().to_string(), draft)
+            }),
+        }
     }
 }
 
 impl Render for Form {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(name) = self.named.take() {
-            self.name
-                .update(cx, |input, cx| input.set_value(name, window, cx));
-        }
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = self.ui;
-        let label = |text: String| {
+        let label = |text: &str| {
             div()
-                .mt(px(4.0))
                 .text_size(px(12.0))
-                .text_color(ui.title_dim)
-                .child(text)
+                .text_color(ui.title)
+                .child(text.to_string())
         };
         let note = |text: String| {
             div()
@@ -393,98 +497,224 @@ impl Render for Form {
                 .child(text)
         };
         let form = cx.entity();
-        let mut column = div()
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .child(label("Agent".into()));
-        column = match (self.id.is_some(), self.kind) {
-            (true, Some(kind)) => column.child(
-                div()
-                    .text_size(px(13.0))
-                    .child(agent_title(&self.agents, kind)),
-            ),
-            _ => {
+        let mut column = div().flex().flex_col().gap(px(18.0));
+        let Some(kind) = self.kind else {
+            return column;
+        };
+        let agent = agent_title(&self.agents, kind);
+        match &self.entry {
+            None => {
                 let f = form.clone();
                 let options = agent_choices(&self.agents)
                     .into_iter()
                     .map(|(id, title)| (id.into(), title.into()))
                     .collect();
-                let current: SharedString = self.kind.map_or("Choose an agent", |k| k.agent).into();
-                column.child(menu_button(
-                    "account-agent",
-                    options,
-                    current,
-                    false,
-                    move |id, cx| f.update(cx, |f, cx| f.choose(&id, cx)),
-                ))
+                column = column
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(label("Agent"))
+                            .child(menu_button(
+                                "account-agent",
+                                options,
+                                SharedString::from(kind.agent),
+                                false,
+                                move |id, cx| f.update(cx, |f, cx| f.choose(&id, cx)),
+                            )),
+                    )
+                    .child(self.name_field(&agent, cx));
             }
+            Some(entry) => {
+                let command = match &self.command {
+                    Some(Ok(path)) => {
+                        format!("Type {} in any terminal ({})", entry.id, tilde(path))
+                    }
+                    Some(Err(why)) => format!("No command: {why}"),
+                    None => "No command".to_string(),
+                };
+                let folder = entry
+                    .account
+                    .as_ref()
+                    .map(|a| tilde(&a.folder))
+                    .unwrap_or_default();
+                column = column
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(label("Command"))
+                            .child(
+                                div()
+                                    .id("account-command")
+                                    .text_size(px(13.0))
+                                    .child(command)
+                                    .test_support(),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(label("Folder"))
+                            .child(div().text_size(px(13.0)).child(folder)),
+                    );
+            }
+        }
+        if !kind.items.is_empty() {
+            column = column.child(self.setup_section(kind, &agent, cx));
+        }
+        // The notes, each when it applies.
+        let mut notes = div().flex().flex_col().gap(px(6.0));
+        let command_id = match &self.entry {
+            Some(entry) => matches!(self.command, Some(Ok(_))).then(|| entry.id.clone()),
+            None => Some(
+                Some(self.name.read(cx).value().to_string())
+                    .filter(|n| !n.is_empty() && self.problem(cx).is_none())
+                    .unwrap_or_else(|| "claudinho".to_string()),
+            ),
         };
-        let Some(kind) = self.kind else {
-            return column;
+        if let Some(path) = command_id.and_then(|id| path_note(ui, &id)) {
+            notes = notes.child(path);
+        }
+        let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+        for text in override_notes(kind, &agent, set) {
+            notes = notes.child(note(text));
+        }
+        if let Some(text) = kind.note {
+            notes = notes.child(note(text.to_string()));
+        }
+        notes = notes.child(note(
+            "Its login is never shared: log in to it with Log in.".to_string(),
+        ));
+        column.child(notes)
+    }
+}
+
+impl Form {
+    /// The name's label, field and the line under it: nothing while empty, the first rule it breaks
+    /// in the theme's red, else what to type.
+    fn name_field(&self, agent: &str, cx: &mut Context<Self>) -> Div {
+        let ui = self.ui;
+        let typed = self.name.read(cx).value().to_string();
+        let red = self.red;
+        let under = if typed.is_empty() {
+            None
+        } else if let Some(problem) = self.problem(cx) {
+            Some(div().text_color(red).child(problem))
+        } else {
+            Some(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .text_color(ui.title_dim)
+                    .child("Type ")
+                    .child(div().text_color(ui.accent).child(typed))
+                    .child(format!(" in any terminal to open {agent} on this account.")),
+            )
         };
-        let id = self.id().unwrap_or_default();
-        let agent = agent_title(&self.agents, kind);
-        column = column
-            .child(label("Name".into()))
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(div().text_size(px(12.0)).text_color(ui.title).child("Name"))
             .child(
                 div()
                     .id("account-name")
-                    .child(Input::new(&self.name))
+                    // Enter creates it (below): it mustn't also confirm (close) the dialog.
+                    .on_action(|_: &Confirm, _, cx| cx.stop_propagation())
+                    .child(Styled::h(
+                        Input::new(&self.name).text_size(px(15.0)).px(px(12.0)),
+                        px(38.0),
+                    ))
                     .test_support(),
             )
-            .child(note(format!(
-                "Its id: {id} (what agents and the canvas file call it)"
-            )))
-            .child(label("Folder".into()));
-        let typed = !self.folder.read(cx).value().trim().is_empty();
-        if !typed && let Some(data) = &self.data {
-            column = column.child(note(format!(
-                "Templum's folder for it ({})",
-                tilde(&data.join("accounts").join(&id))
-            )));
-        }
-        let pick = {
+            .children(under.map(|under| {
+                div()
+                    .id("account-name-note")
+                    .text_size(px(12.0))
+                    .child(under)
+                    .test_support()
+            }))
+    }
+
+    /// The Setup label, its three segments, the line under them and, for Custom, the items.
+    fn setup_section(&self, kind: &'static Kind, agent: &str, cx: &mut Context<Self>) -> Div {
+        let ui = self.ui;
+        let form = cx.entity();
+        let files_share = templum_usage::accounts::files_share();
+        let segments = [
+            (
+                Setup::Same,
+                "account-setup-same",
+                format!("Same as {agent}"),
+            ),
+            (Setup::Fresh, "account-setup-fresh", "Fresh".to_string()),
+            (Setup::Custom, "account-setup-custom", "Custom".to_string()),
+        ]
+        .into_iter()
+        .map(|(setup, id, text)| {
             let f = form.clone();
-            Button::new("account-choose-folder")
-                .label("Choose…")
-                .small()
-                .outline()
-                .on_click(move |_, window, cx| {
-                    let f = f.clone();
-                    let open: Rc<crate::launcher::Open> = Rc::new(move |folder, window, cx| {
-                        let text = tilde(folder);
-                        f.update(cx, |f, cx| {
-                            f.folder
-                                .update(cx, |input, cx| input.set_value(text, window, cx));
-                        });
-                        None
-                    });
-                    crate::launcher::pick_folder(open, window, cx);
+            segment(ui, id, self.setup == setup)
+                .child(text)
+                .on_click(move |_: &ClickEvent, _, cx| {
+                    f.update(cx, |f, cx| {
+                        f.reset_setup(setup);
+                        cx.notify();
+                    })
                 })
+                .test_support()
+        });
+        let explains = match self.setup {
+            Setup::Same => {
+                let own = tilde(&own_state(kind, &self.agents).unwrap_or_default());
+                let mut text = format!(
+                    "Everything but the login is your {agent}'s ({own}): settings, skills, plugins, sessions…"
+                );
+                if !files_share && kind.items.iter().any(|i| !i.paths[0].ends_with('/')) {
+                    text.push_str(
+                        " Files stay its own: Windows shares them only with Developer Mode.",
+                    );
+                }
+                text
+            }
+            Setup::Fresh => format!("It starts empty: nothing shared with your {agent}."),
+            Setup::Custom => "Choose item by item.".to_string(),
         };
-        column = column.child(
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(ui.title)
+                    .child("Setup"),
+            )
+            .child(strip(ui).children(segments))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(ui.title_dim)
+                    .child(explains),
+            )
+            .when(self.setup == Setup::Custom, |el| {
+                el.child(self.items_panel(kind, agent, &form))
+            })
+    }
+
+    /// Custom's faint panel: Share everything with, and a row per item, Own or shared.
+    fn items_panel(&self, kind: &'static Kind, agent: &str, form: &Entity<Form>) -> Div {
+        let ui = self.ui;
+        let note = |text: String| {
             div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(
-                    div()
-                        .id("account-folder")
-                        .flex_1()
-                        .child(Input::new(&self.folder))
-                        .test_support(),
-                )
-                .child(pick),
-        );
-        if let (Some(was), Some(now)) = (&self.was, self.folder_path(cx))
-            && *was != now
-        {
-            column = column.child(note(format!(
-                "Its old folder stays ({}). Log in again: a login is its folder's.",
-                tilde(was)
-            )));
-        }
+                .text_size(px(11.0))
+                .text_color(ui.title_dim)
+                .child(text)
+        };
         let sources = self.sources();
         let source_label = |id: &str| {
             if id == kind.agent {
@@ -500,10 +730,14 @@ impl Render for Form {
             .iter()
             .map(|(id, _)| (id.clone().into(), source_label(id).into()))
             .collect();
-        if !kind.items.is_empty() {
+        let all = {
             let f = form.clone();
-            column = column
-                .child(label("Share everything with".into()))
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .child(div().text_size(px(13.0)).child("Share everything with"))
                 .child(menu_button(
                     "account-share-all",
                     everyone.clone(),
@@ -518,14 +752,14 @@ impl Render for Form {
                             cx.notify();
                         })
                     },
-                ));
-        }
+                ))
+        };
         let files_share = templum_usage::accounts::files_share();
         let mut items = div()
             .id("account-items")
             .flex()
             .flex_col()
-            .gap(px(4.0))
+            .gap(px(6.0))
             .max_h(px(260.0))
             .overflow_y_scroll();
         for item in kind.items {
@@ -578,6 +812,8 @@ impl Render for Form {
                         div()
                             .flex()
                             .flex_col()
+                            .flex_1()
+                            .min_w(px(0.0))
                             .child(div().text_size(px(13.0)).child(item.label))
                             .child(note(if waiting {
                                 format!("{paths} · Shared once {agent} writes one")
@@ -585,41 +821,18 @@ impl Render for Form {
                                 paths
                             })),
                     )
-                    .child(choice),
+                    .child(div().flex_shrink_0().child(choice)),
             );
         }
-        column = column.child(items);
-        let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
-        for line in override_notes(kind, &agent, set) {
-            column = column.child(note(line));
-        }
-        if let Some(text) = kind.note {
-            column = column.child(note(text.to_string()));
-        }
-        let column = column.child(note(
-            "Its login is never shared: log in to it with Log in.".to_string(),
-        ));
-        let Some(id) = self.id.clone() else {
-            return column;
-        };
-        let (ws, red) = (self.ws.clone(), self.red);
-        column.child(
-            div()
-                .id("delete-account")
-                .mt(px(8.0))
-                .px(px(10.0))
-                .py(px(4.0))
-                .rounded(px(6.0))
-                .text_size(px(12.0))
-                .text_color(red)
-                .cursor_pointer()
-                .hover(move |s| s.bg(ui.hover))
-                .child("Delete this account")
-                .on_click(move |_: &ClickEvent, window, cx| {
-                    ask_delete(&ws, &id, window, cx);
-                })
-                .test_support(),
-        )
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .p(px(12.0))
+            .rounded(px(8.0))
+            .bg(ui.card)
+            .child(all)
+            .child(items)
     }
 }
 
@@ -677,45 +890,186 @@ fn ask_delete(ws: &gpui_kit::WeakEntity<Workspace>, id: &str, window: &mut Windo
     );
 }
 
-/// Editing an account (`entry`), or adding one (None), in a dialog; Save writes its entry and
-/// applies its choices to its folder.
+/// Create or Save: saves the account, then closes the dialog; a new one also closes Settings and
+/// opens its Log in. A problem `save_account` finds is a notification, the dialog left open.
+fn save(form: &Entity<Form>, ws: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
+    let Some((id, draft)) = form.read(cx).to_save(cx) else {
+        return;
+    };
+    let new = form.read(cx).entry.is_none();
+    match ws.update(cx, |ws, cx| ws.save_account(&id, &draft, window, cx)) {
+        Err(problem) => show_notification(window, cx, Notification::warning(problem)),
+        Ok(id) => {
+            window.close_dialog(cx);
+            if new {
+                ws.update(cx, |ws, cx| {
+                    // In effect now: Log in opens what is in effect.
+                    ws.apply_and_save(window, cx);
+                    ws.close_settings(window, cx);
+                    ws.log_in(&id, window, cx);
+                });
+            }
+        }
+    }
+}
+
+/// Editing an account (`entry`), or adding one (None), in a dialog in the card dialog's language;
+/// Create or Save writes its entry and applies its choices to its folder.
 pub(crate) fn account_dialog(
     ws: &Workspace,
     entry: Option<AgentEntry>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let owner = cx.weak_entity();
-    let form = cx.new(|cx| Form::new(ws, owner, entry.as_ref(), window, cx));
+    let form = cx.new(|cx| Form::new(ws, entry.as_ref(), window, cx));
     let entity = cx.entity();
-    let title = match &entry {
-        Some(entry) => format!("Edit {}", entry.title),
-        None => "Add an account".to_string(),
-    };
-    window.open_alert_dialog(cx, move |alert, _, _| {
+    let red = crate::grid::hsla(ws.theme.palette.ansi[1], 1.0);
+    // The name's keys redraw the line under it and Create's label; Enter creates.
+    let name = form.read(cx).name.clone();
+    {
         let (form, entity) = (form.clone(), entity.clone());
-        alert
-            .confirm()
-            .title(title.clone())
-            .w(px(520.0))
-            .button_props(DialogButtonProps::default().ok_text("Save"))
-            .child(form.clone())
-            .on_ok(move |_, window, cx| {
-                let (id, draft) = form.read_with(cx, |f, cx| (f.id(), f.draft(cx)));
-                let (Some(id), Some(draft)) = (id, draft) else {
-                    show_notification(window, cx, Notification::warning("Choose its agent first"));
-                    return false;
-                };
-                let saved = entity.update(cx, |ws, cx| ws.save_account(&id, &draft, window, cx));
-                match saved {
-                    Ok(_) => true,
-                    Err(problem) => {
-                        show_notification(window, cx, Notification::warning(problem));
-                        false
-                    }
+        App::subscribe(cx, &name, move |_, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                form.update(cx, |_, cx| cx.notify());
+                entity.update(cx, |_, cx| cx.notify());
+            }
+        })
+        .detach();
+    }
+    {
+        let (form, entity) = (form.clone(), entity.clone());
+        window
+            .subscribe(&name, cx, move |_, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    save(&form, &entity, window, cx);
                 }
             })
+            .detach();
+    }
+    let focus = name.clone();
+    let new = entry.is_none();
+    let edited = entry.map(|e| (e.id.clone(), e.account.map(|a| a.kind)));
+    let agent_name = form
+        .read(cx)
+        .kind
+        .map(|kind| agent_title(&form.read(cx).agents, kind));
+    window.open_alert_dialog(cx, move |alert, _, cx| {
+        let f = form.read(cx);
+        let ui = f.ui;
+        let header = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .px(px(SIDE))
+            .pt(px(16.0))
+            .pb(px(14.0))
+            .border_b_1()
+            .border_color(ui.hairline)
+            .map(|el| match &edited {
+                None => el
+                    .flex_col()
+                    .items_start()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Add an account"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(ui.title_dim)
+                            .child("Another login of an agent, opened by its own command."),
+                    ),
+                Some((id, _)) => el
+                    .child(
+                        div()
+                            .id("account-id")
+                            .px(px(8.0))
+                            .py(px(3.0))
+                            .rounded(px(6.0))
+                            .bg(ui.accent.opacity(0.16))
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ui.accent)
+                            .child(id.clone())
+                            .test_support(),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(ui.title)
+                            .child(format!(
+                                "Account of {}",
+                                agent_name.clone().unwrap_or_default()
+                            )),
+                    ),
+            });
+        let save_button = {
+            let (form, entity) = (form.clone(), entity.clone());
+            let can = !new || f.can_create(cx);
+            let text = if new {
+                match f.name.read(cx).value() {
+                    name if can => format!("Create {name}"),
+                    _ => "Create".to_string(),
+                }
+            } else {
+                "Save".to_string()
+            };
+            let (bg, color) = if can {
+                (ui.accent, ui.surface)
+            } else {
+                (ui.hover, ui.title_dim)
+            };
+            pill("account-save", text, None, bg, color)
+                .when(!can, |el| el.cursor_default())
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    save(&form, &entity, window, cx);
+                })
+                .test_support()
+        };
+        let delete = edited.as_ref().map(|(id, _)| {
+            let (ws, id) = (entity.downgrade(), id.clone());
+            danger("delete-account", "Delete account", red)
+                .on_click(move |_: &ClickEvent, window, cx| ask_delete(&ws, &id, window, cx))
+                .test_support()
+        });
+        let footer = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px(px(SIDE))
+            .py(px(12.0))
+            .border_t_1()
+            .border_color(ui.hairline)
+            .child(div().children(delete))
+            .child(save_button);
+        alert
+            .title(header)
+            .width(px(DIALOG_W))
+            .close_button(true)
+            // A block's own color, not the canvas's: the fields and the faint fills read on it.
+            .bg(ui.surface)
+            .pt(px(0.0))
+            .pb(px(0.0))
+            .pl(px(0.0))
+            .pr(px(0.0))
+            .footer(footer)
+            .child(
+                div()
+                    .px(px(SIDE))
+                    .pt(px(18.0))
+                    .pb(px(18.0))
+                    .child(form.clone()),
+            )
     });
+    // After opening: the name takes the focus.
+    if new {
+        focus.update(cx, |input, cx| input.focus(window, cx));
+    }
 }
 
 #[cfg(test)]
@@ -738,5 +1092,20 @@ mod tests {
             override_notes(claude, "Claude Code", |_| true).len(),
             claude.overrides.len()
         );
+    }
+
+    #[test]
+    fn a_setup_is_read_from_the_shares() {
+        let claude = templum_usage::accounts::kind("claude").unwrap();
+        assert_eq!(setup_of(claude, &BTreeMap::new()), Setup::Fresh);
+        assert_eq!(setup_of(claude, &same_share(claude)), Setup::Same);
+        let mut one = BTreeMap::new();
+        one.insert("skills".to_string(), "claude".to_string());
+        assert_eq!(setup_of(claude, &one), Setup::Custom);
+        one.insert("skills".to_string(), "claude3".to_string());
+        assert_eq!(setup_of(claude, &one), Setup::Custom);
+        // An agent with no items has nothing to share.
+        let crush = templum_usage::accounts::kind("crush").unwrap();
+        assert!(same_share(crush).is_empty());
     }
 }

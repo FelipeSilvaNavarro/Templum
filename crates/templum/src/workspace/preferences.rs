@@ -85,10 +85,8 @@ impl Workspace {
         let pending = self.pending.as_ref().unwrap_or(&self.config);
         let id = id.to_string();
         if !pending.agents.contains_key(&id) {
-            let taken = |x: &str| {
-                pending.agents.keys().any(|k| k.eq_ignore_ascii_case(x))
-                    || self.agents.iter().any(|a| a.id.eq_ignore_ascii_case(x))
-            };
+            let ids = self.taken_ids();
+            let taken = |x: &str| ids.iter().any(|t| t.eq_ignore_ascii_case(x));
             let commands = agents::commands_dir();
             let data = self.data_dir.as_deref();
             if let Some(problem) =
@@ -131,6 +129,18 @@ impl Workspace {
         self.commands.insert(id.clone(), state);
         tell_commands(failure, window, cx);
         Ok(id)
+    }
+
+    /// The ids an account's name must differ from, in any case: those `[agents]` holds, with what
+    /// Settings hasn't applied yet, and the agents in effect.
+    pub(crate) fn taken_ids(&self) -> Vec<String> {
+        let pending = self.pending.as_ref().unwrap_or(&self.config);
+        pending
+            .agents
+            .keys()
+            .cloned()
+            .chain(self.agents.iter().map(|a| a.id.clone()))
+            .collect()
     }
 
     /// Makes the command of each account in effect, or says why it has none: `commands`. Run where

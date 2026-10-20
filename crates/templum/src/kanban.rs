@@ -908,9 +908,9 @@ fn property(ui: Ui, icon: IconName, label: &'static str) -> Div {
 
 /// A button of the dialog's footer and comment field: `label` in `color` on `bg`, with an icon
 /// before it, if any.
-fn pill(
+pub(crate) fn pill(
     id: impl Into<ElementId>,
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: Option<IconName>,
     bg: Hsla,
     color: Hsla,
@@ -933,6 +933,59 @@ fn pill(
         .when_some(icon, |el, icon| {
             el.child(Icon::new(icon).size(px(14.0)).text_color(color))
         })
+        .child(label.into())
+}
+
+/// One segment of a strip in a dialog (the card's Priority): lit in the theme's accent while `on`.
+/// The caller adds what it shows.
+pub(crate) fn segment(ui: Ui, id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(24.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .rounded(px(6.0))
+        .text_size(px(12.0))
+        .cursor_pointer()
+        .map(|el| {
+            if on {
+                el.bg(ui.accent.opacity(0.16))
+                    .text_color(ui.accent)
+                    .font_weight(FontWeight::MEDIUM)
+            } else {
+                el.text_color(ui.title).hover(move |s| s.bg(ui.hover))
+            }
+        })
+}
+
+/// The rounded strip that holds a dialog's segments.
+pub(crate) fn strip(ui: Ui) -> Div {
+    div()
+        .flex()
+        .gap(px(2.0))
+        .p(px(2.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(ui.hairline)
+}
+
+/// A dialog's red ghost button with the trash icon (Delete card, Delete account).
+pub(crate) fn danger(id: impl Into<ElementId>, label: &'static str, red: Hsla) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(30.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .rounded(px(8.0))
+        .text_size(px(12.5))
+        .text_color(red)
+        .cursor_pointer()
+        .hover(move |s| s.bg(red.opacity(0.12)))
+        .child(Icon::new(IconName::Trash).size(px(14.0)).text_color(red))
         .child(label)
 }
 
@@ -1141,35 +1194,20 @@ pub(crate) fn open_card(
         let chips = std::iter::once(None)
             .chain(Priority::ALL.map(Some))
             .map(|p| {
-                let on = shown.priority == p;
                 let word = p.map_or("None", Priority::title);
-                div()
-                    .id(ElementId::Name(
+                segment(
+                    ui,
+                    ElementId::Name(
                         format!("priority-{}", p.map_or("none", Priority::name)).into(),
-                    ))
-                    .h(px(24.0))
-                    .px(px(10.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .rounded(px(6.0))
-                    .text_size(px(12.0))
-                    .cursor_pointer()
-                    .map(|el| {
-                        if on {
-                            el.bg(ui.accent.opacity(0.16))
-                                .text_color(ui.accent)
-                                .font_weight(FontWeight::MEDIUM)
-                        } else {
-                            el.text_color(ui.title).hover(move |s| s.bg(ui.hover))
-                        }
-                    })
-                    .when_some(p, |el, p| el.child(priority_icon(ws_now, p, 12.0)))
-                    .child(word)
-                    .on_click(edit(Rc::new(move |b| {
-                        b.edit_card(board, card, |c| c.priority = p)
-                    })))
-                    .test_support()
+                    ),
+                    shown.priority == p,
+                )
+                .when_some(p, |el, p| el.child(priority_icon(ws_now, p, 12.0)))
+                .child(word)
+                .on_click(edit(Rc::new(move |b| {
+                    b.edit_card(board, card, |c| c.priority = p)
+                })))
+                .test_support()
             });
         let now = notes::now();
         let author = |by: &str| {
@@ -1231,21 +1269,7 @@ pub(crate) fn open_card(
         };
         let delete = {
             let ws = ws.clone();
-            let red = hsla(palette.ansi[1], 1.0);
-            div()
-                .id("delete-card")
-                .h(px(30.0))
-                .px(px(10.0))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .rounded(px(8.0))
-                .text_size(px(12.5))
-                .text_color(red)
-                .cursor_pointer()
-                .hover(move |s| s.bg(red.opacity(0.12)))
-                .child(Icon::new(IconName::Trash).size(px(14.0)).text_color(red))
-                .child("Delete card")
+            danger("delete-card", "Delete card", hsla(palette.ansi[1], 1.0))
                 .on_click(move |_: &ClickEvent, window, cx| {
                     ws.update(cx, |ws, cx| {
                         ws.edit_boards(|b| b.remove_card(board, card));
@@ -1467,16 +1491,8 @@ pub(crate) fn open_card(
                                     .children(unassign),
                             )
                             .child(
-                                property(ui, IconName::SignalHigh, "Priority").child(
-                                    div()
-                                        .flex()
-                                        .gap(px(2.0))
-                                        .p(px(2.0))
-                                        .rounded(px(8.0))
-                                        .border_1()
-                                        .border_color(ui.hairline)
-                                        .children(chips),
-                                ),
+                                property(ui, IconName::SignalHigh, "Priority")
+                                    .child(strip(ui).children(chips)),
                             )
                             .child(
                                 property(ui, IconName::Tag, "Labels")
