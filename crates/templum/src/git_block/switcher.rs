@@ -26,9 +26,9 @@ const MAX_ROWS: usize = 50;
 pub(crate) enum Opened {
     /// The header's branch name: the matches come first, so Enter switches.
     Header,
-    /// New branch… and the old-version banner's Create a branch here: the creation comes first, so
-    /// Enter creates the name typed, whatever branch holds it (a switch from a detached HEAD would
-    /// leave its commits behind).
+    /// New branch… and the old-version banner's Create a branch here: the creation comes first, for
+    /// any name typed, so Enter never switches (from a detached HEAD that would leave its commits
+    /// behind).
     Create,
     /// A commit's New branch here…: no branch to switch to from there, only the creation, at that
     /// commit (a hash).
@@ -45,9 +45,11 @@ pub(crate) enum Pick {
 }
 
 /// The dialog's rows for the text typed, in groups: the local branches whose name holds it, the
-/// remote ones, and the creation of a branch named as typed unless a branch already has that name
-/// (a remote's, `origin/` aside, switches to a tracking branch). The creation comes last, so that
-/// Enter right after typing takes the first match, or first with `create_first`.
+/// remote ones, and the creation of a branch named as typed. From the header (`create_first`
+/// false) the creation is left out when a branch already has that name (a remote's, `origin/`
+/// aside, switches to a tracking branch) and comes last, so that Enter right after typing takes
+/// the first match. From a create entry it is always there, first: git makes `login` next to
+/// `origin/login`, or refuses a local name taken in its own words, and HEAD stays.
 pub(crate) fn groups(
     branches: &[Branch],
     query: &str,
@@ -55,17 +57,40 @@ pub(crate) fn groups(
 ) -> Vec<(&'static str, Vec<Pick>)> {
     let query = query.trim();
     let needle = query.to_lowercase();
+    // The branch the text names, a remote's without its `origin/`.
+    let named = |b: &Branch| {
+        let name = if b.remote {
+            words::local_name(&b.name)
+        } else {
+            &b.name
+        };
+        !needle.is_empty() && name.to_lowercase() == needle
+    };
     let listed = |remote: bool| -> Vec<&Branch> {
-        branches
+        let mut list: Vec<&Branch> = branches
             .iter()
             .filter(|b| b.remote == remote && b.name.to_lowercase().contains(&needle))
-            .collect()
+            .collect();
+        // Git sorts by name, which puts `feature/login` before `login`: the one named goes first.
+        list.sort_by_key(|b| !named(b));
+        list
     };
-    let (mut local, mut remote) = (listed(false), listed(true));
-    let hidden = (local.len() + remote.len()).saturating_sub(MAX_ROWS);
-    local.truncate(MAX_ROWS);
-    remote.truncate(MAX_ROWS - local.len());
-    let mut groups: Vec<(&'static str, Vec<Pick>)> = [("Local", local), ("Remote", remote)]
+    let mut sets = vec![("Local", listed(false)), ("Remote", listed(true))];
+    let first_is_named = |list: &[&Branch]| list.first().is_some_and(|b| named(b));
+    if !first_is_named(&sets[0].1) && first_is_named(&sets[1].1) {
+        sets.reverse();
+    }
+    let hidden = sets
+        .iter()
+        .map(|(_, list)| list.len())
+        .sum::<usize>()
+        .saturating_sub(MAX_ROWS);
+    let mut room = MAX_ROWS;
+    for (_, list) in &mut sets {
+        list.truncate(room);
+        room -= list.len();
+    }
+    let mut groups: Vec<(&'static str, Vec<Pick>)> = sets
         .into_iter()
         .filter(|(_, list)| !list.is_empty())
         .map(|(label, list)| {
@@ -79,7 +104,7 @@ pub(crate) fn groups(
     let taken = branches
         .iter()
         .any(|b| b.name == query || (b.remote && words::local_name(&b.name) == query));
-    if !query.is_empty() && !taken {
+    if !query.is_empty() && (create_first || !taken) {
         let create = ("", vec![Pick::Create(query.to_string())]);
         if create_first {
             groups.insert(0, create);
@@ -307,6 +332,50 @@ mod tests {
     }
 
     #[test]
+    fn the_branch_the_text_names_comes_first_even_when_git_sorts_it_later() {
+        // Git sorts by name: feature/login before login, and the locals before the remotes.
+        let branches = [
+            branch("feature/login", false, false),
+            branch("login", false, false),
+            branch("origin/feature/login", true, false),
+            branch("origin/login", true, false),
+        ];
+        let names = |all: Vec<(&str, Vec<Pick>)>| -> Vec<String> {
+            all.into_iter()
+                .flat_map(|(_, picks)| picks)
+                .filter_map(|p| match p {
+                    Pick::Switch(b) => Some(b.name),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            names(groups(&branches, "login", false)),
+            [
+                "login",
+                "feature/login",
+                "origin/login",
+                "origin/feature/login"
+            ]
+        );
+        // No local one is named: the remote group, whose first row is, goes first.
+        assert_eq!(
+            names(groups(&branches[2..], "login", false))[0],
+            "origin/login"
+        );
+        assert_eq!(
+            names(groups(
+                &[branches[0].clone(), branches[3].clone()],
+                "login",
+                false
+            )),
+            ["origin/login", "feature/login"]
+        );
+        // Nothing typed names nothing: git's order stays.
+        assert_eq!(names(groups(&branches, "", false))[0], "feature/login",);
+    }
+
+    #[test]
     fn with_no_branches_the_text_is_still_a_creation() {
         assert_eq!(groups(&[], "", false), Vec::new());
         assert_eq!(
@@ -335,30 +404,38 @@ mod tests {
             "Local",
             "the matches first"
         );
-        // Nothing typed, nothing to create; an existing name is never offered again.
+        // Nothing typed, nothing to create.
         assert_eq!(groups(&branches, "", true).len(), 1);
-        assert!(
-            groups(&branches, "main", true)
-                .iter()
-                .flat_map(|(_, p)| p)
-                .all(|p| !matches!(p, Pick::Create(_)))
-        );
     }
 
     #[test]
-    fn a_remote_branch_of_that_name_is_not_offered_as_a_creation() {
+    fn from_a_create_entry_a_name_a_branch_already_has_is_still_the_first_row() {
+        // Local, remote, and a local name that only `origin/login` holds: Enter must never switch.
+        let branches = [
+            branch("main", false, true),
+            branch("origin/main", true, false),
+            branch("origin/login", true, false),
+        ];
+        for name in ["main", "origin/login", "login"] {
+            assert_eq!(
+                groups(&branches, name, true)[0],
+                ("", vec![Pick::Create(name.to_string())]),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_the_header_a_remote_branch_of_that_name_is_not_offered_as_a_creation() {
         // Switching to origin/main makes the tracking branch main: no second way to make it.
         let branches = [
             branch("dev", false, true),
             branch("origin/login", true, false),
         ];
-        for create_first in [false, true] {
-            let all = groups(&branches, "login", create_first);
-            assert_eq!(
-                all,
-                vec![("Remote", vec![switch("origin/login", true, false)])]
-            );
-        }
+        assert_eq!(
+            groups(&branches, "login", false),
+            vec![("Remote", vec![switch("origin/login", true, false)])]
+        );
         // Another remote's name that only holds the text is still a new name.
         assert_eq!(
             groups(&branches, "logi", false).last(),

@@ -87,14 +87,17 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
   - **the current branch.** A click opens the **branch dialog**, which switches and creates: a search field over
     the local branches, then the remote ones, each row drawn as in the Branches tab (the name, bold with an accent
     check for the current one, and ↑↓ against its upstream; under it the last commit's subject and age; the first 50
-    matches, then one row "N more: keep typing to narrow them"); Enter or a click switches (with
-    [the switch flow](#switching-branches)). A name no branch has gets a row **Create branch "name"**, which makes
-    the branch at HEAD and switches to it (git's own message when it refuses the name); a name that a remote branch
-    has, without its `origin/`, gets none (switching to that one makes the tracking branch). Opened from the branch
-    name, the row comes last, so Enter right after typing still takes the first match. **+ New branch…** (Branches
-    tab) and **Create a branch here** (the old-version banner) open the same dialog with the row **first**, so Enter
-    right after typing makes the name typed even when another branch holds it (`login` while `feature/login`
-    exists: from a detached HEAD a switch would leave its commits behind). **New branch here…** (a commit's menu)
+    matches, then one row "N more: keep typing to narrow them"; the branch the text names, a remote's without its
+    `origin/`, is the first of its group, and the Remote group goes first when only its first row is that);
+    Enter or a click switches (with [the switch flow](#switching-branches)). A name no branch has gets a row
+    **Create branch "name"**, which makes the branch at HEAD and switches to it (git's own message when it refuses
+    the name); a name that a remote branch has, without its `origin/`, gets none (switching to that one makes the
+    tracking branch). Opened from the branch name, the row comes last, so Enter right after typing still takes the
+    first match. **+ New branch…** (Branches tab) and **Create a branch here** (the old-version banner) open the same
+    dialog with the row **first**, for any name typed, so Enter right after typing never switches: it makes the name
+    typed even when another branch holds it (`login` while `feature/login` or `origin/login` exists), and git
+    refuses a local name that is taken in its own words, HEAD staying where it is (from a detached HEAD a switch
+    would leave its commits behind). **New branch here…** (a commit's menu)
     opens it too; from a commit it lists no branches (there is nothing to switch to from there) and creates at that
     commit.
   - **where it stands with the server:** "↑2 ↓1", "up to date", or "not published", with a tooltip in words

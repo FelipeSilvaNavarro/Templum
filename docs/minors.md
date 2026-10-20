@@ -72,12 +72,6 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `Pick::Fold` item row ("Remote · N") that flips an `Rc<Cell<bool>>` kept by `open`, without closing the dialog, and
   that folds only while nothing is typed (a query that matches only remote branches must not hide them).
 
-- [ ] **Opened from a create entry, an exact remote match can sit below a partial local one.**
-  `switcher.rs`, `groups`: typing `login` when `origin/login` exists offers no creation (the remote row makes the
-  tracking branch), but the rows are still the locals first, so a local `feature/login` is the first row and Enter
-  switches to it, from a detached HEAD too. Fix: sort a branch whose name (or remote name without `origin/`) equals
-  the text before the others of its group, and the Remote group first when its first row is that match.
-
 - [ ] **A comparison's "⋯ 40 unchanged lines" does nothing when clicked.** `fold_row`
   (`crates/templum/src/git_block/diff_view/paint.rs:460`) is inert on a read-only panel: Compare's diff is read once
   with git's 3 lines of context. Fix: read that file of the range again with `-U` and its length (as `show_whole`

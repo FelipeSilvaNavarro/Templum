@@ -333,6 +333,37 @@ fn a_create_entry_makes_the_name_typed_even_when_another_branch_holds_it(cx: &mu
     assert_eq!(git_run(repo.path(), &["branch"]).lines().count(), 3);
 }
 
+/// "main" exists: from a detached HEAD the dialog must not switch to it (the commits would be left
+/// behind); the creation is the first row, and git refuses it in its own words.
+#[gpui_kit::test]
+fn a_create_entry_never_switches_away_from_a_detached_head(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = two_branches();
+    git_run(repo.path(), &["checkout", "-q", "--detach", "feat"]);
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| window.click("git-branch-here", cx))
+        .unwrap();
+    settle(handle, cx);
+    cx.simulate_input(handle, "main");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, |g| {
+        assert_eq!(g.status.branch, None, "still detached");
+    });
+    assert_eq!(
+        git_run(repo.path(), &["rev-parse", "HEAD"]),
+        git_run(repo.path(), &["rev-parse", "feat"]),
+        "HEAD stayed on its commit"
+    );
+    assert_eq!(notification_count(handle, cx), 1, "git's own refusal");
+}
+
 #[gpui_kit::test]
 fn branches_that_cannot_be_read_say_so_and_the_dialog_stays_closed(cx: &mut TestAppContext) {
     no_motion(cx);
