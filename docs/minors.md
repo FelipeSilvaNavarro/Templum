@@ -536,6 +536,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   clicking "gallery-theme-Paper", in one run of `cargo test -p templum` (card 69's, under load); alone, three times, and in
   the next full run, it passed. Fix: find what the click raced with (a frame not rendered before the read) and wait for
   it, as the neighbouring tests do.
+- [ ] **In Apple Dark, the X of a dialog or a notification reads 2.6:1 under the pointer.** gpui-kit fills a ghost
+  button's hover, in dark mode, with the accent at 50% over the background and draws its icon in `accent_foreground`
+  (`Theme::on_accent`, `crates/templum/src/theme.rs`), the one color a selected row uses too. Apple Dark's blue is
+  too bright for the light text its hover needs (white is 8:1 on the hover, but 3.65:1 on the full accent) and too
+  dark for the dark text the full accent needs (black is 5.8:1 on it, the pick, and 2.6:1 on the hover). Every other
+  built-in theme has 3.8:1 or more. Fix: a darker accent in `themes/apple-dark.toml` (white then reads on both), or
+  ghost buttons of our own that don't share `accent_foreground` with the selected rows.
 
 ## Settings panel
 
