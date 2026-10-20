@@ -198,6 +198,51 @@ fn a_file_that_appeared_after_the_status_was_read_is_not_committed_under_the_one
     );
 }
 
+/// A commit that stops for a message while the person does `leave` (between the click and the end
+/// of the job): the warning shows, and nothing takes them back.
+fn a_commit_that_stops_while(
+    cx: &mut TestAppContext,
+    leave: impl FnOnce(&mut Workspace, &mut Window, &mut gpui_kit::Context<Workspace>),
+) -> (AnyWindowHandle, Entity<Workspace>) {
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    assert_eq!(empty_summary(&ws, cx), (true, "Update a.txt".to_string()));
+    // The read hasn't seen this one yet: the job finds two files and stops for a message.
+    std::fs::write(repo.path().join("new.txt"), "n\n").unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("git-commit", cx);
+        ws.update(cx, |ws, cx| leave(ws, window, cx));
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(notification_count(handle, cx), 1, "it says why");
+    (handle, ws)
+}
+
+#[gpui_kit::test]
+fn a_commit_that_stops_for_a_message_does_not_reopen_a_popup_closed_meanwhile(
+    cx: &mut TestAppContext,
+) {
+    let (_, ws) = a_commit_that_stops_while(cx, |ws, window, cx| ws.close_git(window, cx));
+    assert!(!ws.read_with(cx, |ws, _| ws.git_open), "still closed");
+}
+
+#[gpui_kit::test]
+fn a_commit_that_stops_for_a_message_does_not_take_back_to_a_workspace_left_meanwhile(
+    cx: &mut TestAppContext,
+) {
+    let first = std::cell::RefCell::new(None);
+    let (_, ws) = a_commit_that_stops_while(cx, |ws, window, cx| {
+        *first.borrow_mut() = Some(ws.space.id.clone());
+        ws.new_space(window, cx);
+    });
+    let now = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    assert_ne!(Some(now), first.into_inner(), "still in the new workspace");
+}
+
 #[gpui_kit::test]
 fn an_amend_still_needs_its_message(cx: &mut TestAppContext) {
     let repo = committed_repo();

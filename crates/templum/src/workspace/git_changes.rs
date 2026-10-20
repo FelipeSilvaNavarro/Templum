@@ -72,7 +72,9 @@ impl Workspace {
                     Ok(None) => {
                         let why = "The files to commit changed since you last looked: write a message for them.";
                         show_notification(window, cx, Notification::warning(why));
-                        if ws.show_git(&at, window, cx) {
+                        // Only where the person still is: `show_git` would take them back to a
+                        // workspace or a popup they left while the commit ran.
+                        if ws.space.id == at.space && ws.git_open && ws.git_at(&at).is_some() {
                             ws.focus_summary(window, cx);
                         }
                     }
