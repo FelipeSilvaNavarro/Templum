@@ -6,7 +6,9 @@ use std::time::Instant;
 use serde_json::json;
 use templum_canvas::Wire;
 
-use super::bus::{after, answered, call, call_later, event, has_server, me, screen_with};
+use super::bus::{
+    after, answered, call, call_later, event, has_server, history_with, me, screen_with,
+};
 #[cfg(unix)]
 use super::bus::{bus_note, result_of, screen_until};
 use super::*;
@@ -231,18 +233,14 @@ fn a_task_goes_as_its_first_line_then_its_text(cx: &mut TestAppContext) {
     call(handle, &ws, cx, &terminal, "delegate", task);
     // The terminal echoes ESC as "^[": two pastes, the first line alone. The task is longer than
     // the screen: its start is read in the history.
-    let needle = format!(
-        "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply.^[[201~^[[200~"
+    history_with(
+        &ws,
+        cx,
+        theirs,
+        &format!(
+            "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply.^[[201~^[[200~"
+        ),
     );
-    let deadline = Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let shown = ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().screen());
-        if shown.replace('\n', "").contains(&needle) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "not on the screen: {shown:?}");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
 }
 
 /// The spec's words (docs/specs/agent-protocol.md, 1), word for word.

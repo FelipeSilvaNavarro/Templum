@@ -285,6 +285,26 @@ pub(super) fn screen_until(
     }
 }
 
+/// `screen_with`, also in the history: a task is longer than the screen, whose start has scrolled
+/// off by the time it is looked at. A wrapped line is one line, as the terminal gives it.
+#[track_caller]
+pub(super) fn history_with(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    needle: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let shown = ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().screen());
+        if shown.replace('\n', "").contains(needle) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "not on the screen: {shown:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[gpui_kit::test]
 fn whoami_names_the_callers_block_and_workspace(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
