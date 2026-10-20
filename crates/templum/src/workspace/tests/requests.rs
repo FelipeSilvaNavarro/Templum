@@ -40,6 +40,14 @@ fn pick(
     .unwrap();
 }
 
+/// The person presses Send on the question `key`, drawn (`shown`) before.
+fn send(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext, key: u64) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.send_question(key, window, cx))
+    })
+    .unwrap();
+}
+
 /// The balloons drawn, and long enough ago for presses to count (`TOO_SOON`).
 fn shown(handle: AnyWindowHandle, cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
@@ -204,6 +212,8 @@ fn ask_user_waits_for_the_persons_answer(cx: &mut TestAppContext) {
     );
     let key = last_wait(&ws, cx);
     pick(handle, &ws, cx, key, 0, 0);
+    assert!(answers.try_recv().is_err(), "a pick is not an answer");
+    send(handle, &ws, cx, key);
     assert_eq!(answered(&answers), (false, "Yes".to_string()));
     ws.read_with(cx, |ws, _| assert!(ws.waits.is_empty()));
     assert_eq!(dot_text(&ws, cx, first), None);
@@ -255,6 +265,7 @@ fn an_answer_and_its_timeout_answer_once(cx: &mut TestAppContext) {
     let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
     let key = last_wait(&ws, cx);
     pick(handle, &ws, cx, key, 0, 0);
+    send(handle, &ws, cx, key);
     after(cx, 2000);
     assert_eq!(answered(&answers), (false, "Yes".to_string()));
     assert!(answers.try_recv().is_err(), "answered once");
@@ -316,6 +327,7 @@ fn a_cancelled_question_stays_and_its_answer_is_typed_back(cx: &mut TestAppConte
     assert!(drawn(handle, cx, n, "stopped"), "the dialog says so");
     assert_eq!(first.try_recv(), Err(TryRecvError::Empty));
     click_part(handle, cx, n, "q0-option-0");
+    click_part(handle, cx, n, "send");
     assert_eq!(
         notices(&ws, cx),
         [(
@@ -950,8 +962,16 @@ fn the_balloons_buttons_answer_a_question_then_a_request(cx: &mut TestAppContext
         window.render_frame(cx);
         assert!(window.try_find(part(n, "count")).is_some(), "1 of 2");
         window.click(part(n, "q0-option-1"), cx);
+        window.render_frame(cx);
     })
     .unwrap();
+    assert_eq!(
+        question.try_recv(),
+        Err(TryRecvError::Empty),
+        "Send answers"
+    );
+    cx.update_window(handle, |_, window, cx| window.click(part(n, "send"), cx))
+        .unwrap();
     assert_eq!(answered(&question), (false, "Not yet".to_string()));
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
@@ -1050,6 +1070,9 @@ fn a_double_click_answers_one_request(cx: &mut TestAppContext) {
         let yes = at(window, "q0-option-0");
         click(window, cx, yes, 1);
         window.render_frame(cx);
+        let send = at(window, "send");
+        click(window, cx, send, 1);
+        window.render_frame(cx);
         let allow = at(window, "allow");
         click(window, cx, allow, 2);
     })
@@ -1119,6 +1142,10 @@ fn a_press_on_a_withdrawn_requests_button_answers_no_other(cx: &mut TestAppConte
     })
     .unwrap();
     assert_eq!(next.try_recv(), Err(TryRecvError::Empty), "it waits");
+    ws.read_with(cx, |ws, _| match &ws.waits[0].what {
+        Waiting::Question { form, .. } => assert!(!form.picked(0, 0), "nothing picked"),
+        _ => panic!("a question"),
+    });
 }
 
 /// Ctrl+L and Enter typed in the balloon's field while the asking terminal is focused: the field
@@ -1228,13 +1255,15 @@ fn todays_call_draws_todays_dialog(cx: &mut TestAppContext) {
     let n = mine.0 as usize;
     let asked = json!({ "question": "Ship it?", "options": ["Yes", "Not yet"] });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
-    for part in ["q0-option-0", "q0-option-1", "dismiss"] {
+    for part in ["q0-option-0", "q0-option-1", "dismiss", "send"] {
         assert!(drawn(handle, cx, n, part), "{part}");
     }
-    for part in ["q0-other", "note", "send"] {
+    for part in ["q0-other", "note"] {
         assert!(!drawn(handle, cx, n, part), "{part}");
     }
     click_part(handle, cx, n, "q0-option-1");
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "Send answers");
+    click_part(handle, cx, n, "send");
     assert_eq!(answered(&answers), (false, "Not yet".to_string()));
     let answers = call_later(
         handle,
@@ -1260,8 +1289,10 @@ fn todays_call_draws_todays_dialog(cx: &mut TestAppContext) {
     assert_eq!(answered(&answers), (false, "Friday".to_string()));
 }
 
+/// A click on an option, even of the only single-select question, only picks it: Send answers
+/// (an accidental click mustn't).
 #[gpui_kit::test]
-fn one_single_select_question_answers_on_a_click(cx: &mut TestAppContext) {
+fn a_click_on_an_option_only_picks_it_and_send_answers(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (_, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
@@ -1270,7 +1301,16 @@ fn one_single_select_question_answers_on_a_click(cx: &mut TestAppContext) {
     let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
     let key = last_wait(&ws, cx);
     type_into(handle, &ws, cx, key, None, "after lunch");
+    click_part(handle, cx, n, "send");
+    assert_eq!(
+        answers.try_recv(),
+        Err(TryRecvError::Empty),
+        "nothing to send"
+    );
+    click_part(handle, cx, n, "q0-option-0");
     click_part(handle, cx, n, "q0-option-1");
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "picked only");
+    click_part(handle, cx, n, "send");
     let (failed, text) = answered(&answers);
     assert!(!failed, "{text}");
     assert_eq!(
@@ -1562,8 +1602,27 @@ fn the_keys_answer_a_question(cx: &mut TestAppContext) {
     let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
     focus_dialog(handle, &ws, cx, mine);
+    // Enter picks No and puts the highlight on Send; the next Enter sends.
     press(handle, cx, &["down", "down", "enter"]);
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "picked only");
+    assert_eq!(highlight(&ws, cx), Some(templum_mcp::ask::Row::Send));
+    press(handle, cx, &["enter"]);
     assert_eq!(answered(&answers), (false, "No".to_string()));
+}
+
+/// Space picks without sending; Enter on the option already picked sends.
+#[gpui_kit::test]
+fn space_picks_and_enter_on_the_picked_option_sends(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    focus_dialog(handle, &ws, cx, mine);
+    press(handle, cx, &["down", "space"]);
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "picked only");
+    press(handle, cx, &["enter"]);
+    assert_eq!(answered(&answers), (false, "Yes".to_string()));
 }
 
 /// No row is highlighted as the dialog opens: Space and Enter meant for the terminal answer
@@ -1694,7 +1753,7 @@ fn esc_gives_the_keyboard_back(cx: &mut TestAppContext) {
         window.render_frame(cx);
     })
     .unwrap();
-    press(handle, cx, &["down", "enter"]);
+    press(handle, cx, &["down", "enter", "enter"]);
     assert_eq!(answered(&answers), (false, "Yes".to_string()));
 }
 
@@ -1723,7 +1782,7 @@ fn keys_and_clicks_too_soon_do_nothing(cx: &mut TestAppContext) {
         highlight(&ws, cx),
         Some(templum_mcp::ask::Row::Option(0, 0))
     );
-    press(handle, cx, &["enter"]);
+    press(handle, cx, &["enter", "enter"]);
     assert_eq!(answered(&answers), (false, "Yes".to_string()));
 }
 
@@ -1993,8 +2052,16 @@ fn a_plan_a_question_and_a_request_wait_in_turn(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert!(window.try_find(part(n, "plan-approve")).is_none());
         window.click(part(n, "q0-option-1"), cx);
+        window.render_frame(cx);
     })
     .unwrap();
+    assert_eq!(
+        question.try_recv(),
+        Err(TryRecvError::Empty),
+        "Send answers"
+    );
+    cx.update_window(handle, |_, window, cx| window.click(part(n, "send"), cx))
+        .unwrap();
     assert_eq!(answered(&question), (false, "Not yet".to_string()));
     shown(handle, cx);
     cx.update_window(handle, |_, window, cx| {

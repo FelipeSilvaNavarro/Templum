@@ -1532,6 +1532,7 @@ fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
         Some(2)
     );
     press_balloon(handle, cx, mine, "q0-option-0");
+    press_balloon(handle, cx, mine, "send");
     assert_eq!(answer_soon(cx, &question), (false, "Yes".into()));
     let line = ws.read_with(cx, |ws, cx| {
         ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)

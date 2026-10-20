@@ -103,8 +103,8 @@ impl Workspace {
         }
     }
 
-    /// A click on option `i` of question `q` of the question `key`: picked, or checked; one
-    /// single-select question answers with it at once.
+    /// A click on option `i` of question `q` of the question `key`: picked, or checked, and
+    /// nothing more: Send answers. A plan's Approve and Reject answer with their click.
     pub(crate) fn pick_option(
         &mut self,
         key: u64,
@@ -243,8 +243,9 @@ impl Workspace {
         true
     }
 
-    /// Enter on the question `key`: a single-select option highlighted is picked; then it is
-    /// sent once each question has an answer, else the highlight moves to the next without one.
+    /// Enter on the question `key`: a single-select option highlighted is picked. Once each
+    /// question has an answer Enter sends, except the Enter that just picked the last one, which
+    /// moves the highlight to Send; before, the highlight moves to the next question without one.
     fn question_enter(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
             return;
@@ -260,18 +261,25 @@ impl Workspace {
         if typing.is_some() {
             form.highlight = typing;
         }
+        // An option picked now is only picked: the Enter that sends comes after it, on Send or
+        // anywhere once the dialog is ready. A plan's Approve and Reject answer at once.
+        let mut picking = false;
         if let Some(Row::Option(q, i)) = form.highlight
             && !ask.questions[q].multi
         {
+            picking = !form.picked(q, i) && !ask.quick();
             form.pick(ask, q, i);
         }
-        if form.answers(ask, &others).is_some() {
-            self.send_question(key, window, cx);
-        } else {
+        if form.answers(ask, &others).is_none() {
             form.next_unanswered(ask, &others);
-            self.focus_highlight(key, window, cx);
-            cx.notify();
+        } else if picking {
+            form.highlight = Some(Row::Send);
+        } else {
+            self.send_question(key, window, cx);
+            return;
         }
+        self.focus_highlight(key, window, cx);
+        cx.notify();
     }
 
     /// The row of the question's field that has the keyboard, if one does.

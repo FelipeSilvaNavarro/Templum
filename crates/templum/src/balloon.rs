@@ -5,7 +5,7 @@
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, MouseButton, MouseDownEvent,
+    AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, Hsla, MouseButton, MouseDownEvent,
     ScrollWheelEvent, SharedString, Stateful, TestSupportExt, Window, div, point, px, relative,
 };
 use templum_canvas::{BlockId, chrome};
@@ -172,7 +172,8 @@ pub(crate) fn part(n: usize, what: &str) -> ElementId {
 
 /// A question's dialog: each question with its header, text, options and Other field, a hairline
 /// between them, the note, Dismiss and Send. Today's shape (`ask.json` false) draws today's: a
-/// button per option, or the field and Send. Only the rows `Form::rows` lists are drawn.
+/// button per option and Send, or the field and Send. A click on an option only picks it; Send,
+/// lit once every question has an answer, answers. Only the rows `Form::rows` lists are drawn.
 fn question(
     ws: &Workspace,
     wait: &Wait,
@@ -189,14 +190,18 @@ fn question(
     let ready = ws
         .texts(wait, cx)
         .is_some_and(|(texts, _)| form.answers(ask, &texts).is_some());
-    let send = small(part(n, "send"), "Send", ui, z)
-        .when(!ready, |el| el.opacity(0.4))
-        .when(form.highlight == Some(Row::Send), |el| el.bg(ui.hover))
-        .on_hover(hover(key, Row::Send, cx))
-        .on_click(cx.listener(once(move |ws, window, cx| {
-            ws.send_question(key, window, cx)
-        })))
-        .test_support();
+    let send = send_button(
+        part(n, "send"),
+        ready,
+        form.highlight == Some(Row::Send),
+        ui,
+        z,
+    )
+    .on_hover(hover(key, Row::Send, cx))
+    .on_click(cx.listener(once(move |ws, window, cx| {
+        ws.send_question(key, window, cx)
+    })))
+    .test_support();
     let rows = Form::rows(ask);
     // Its key in its buttons' ids: a press on a request withdrawn before its release is no click
     // on the next one's button drawn in its place.
@@ -246,14 +251,17 @@ fn question(
         let mut choices = div().flex().flex_col().gap(px(6.0 * z));
         for (i, choice) in question.options.iter().enumerate() {
             let id = part(n, &format!("q{q}-option-{i}"));
+            let (picked, lit) = (form.picked(q, i), form.highlight == Some(Row::Option(q, i)));
             let row = if ask.json {
-                option(id, question.multi, form.picked(q, i), choice, ui, z)
+                option(id, question.multi, picked, lit, choice, ui, z)
             } else {
-                button(id, choice.label.clone(), ui, z).w_full()
-            }
-            .when(form.highlight == Some(Row::Option(q, i)), |el| {
-                el.bg(ui.hover)
-            });
+                let (fill, over) = tint(picked, lit, ui);
+                framed(id, choice.label.clone(), ui, z)
+                    .w_full()
+                    .hover(move |s| s.bg(over))
+                    .when_some(fill, |el, fill| el.bg(fill))
+                    .when(picked, |el| el.border_color(ui.accent))
+            };
             choices = choices.child(
                 row.on_click(cx.listener(once(move |ws, window, cx| {
                     ws.pick_option(key, q, i, window, cx)
@@ -330,7 +338,7 @@ fn question(
         .items_center()
         .justify_between()
         .child(dismiss)
-        .when(ask.json, |el| el.children(send.take()));
+        .children(send.take());
     body.child(foot).into_any_element()
 }
 
@@ -489,10 +497,12 @@ fn option(
     id: ElementId,
     multi: bool,
     picked: bool,
+    lit: bool,
     choice: &Choice,
     ui: Ui,
     z: f32,
 ) -> Stateful<Div> {
+    let (fill, over) = tint(picked, lit, ui);
     div()
         .id(id)
         .flex()
@@ -503,7 +513,8 @@ fn option(
         .py(px(3.0 * z))
         .rounded(px(6.0 * z))
         .cursor_pointer()
-        .hover(move |s| s.bg(ui.hover))
+        .hover(move |s| s.bg(over))
+        .when_some(fill, |el, fill| el.bg(fill))
         // On the label's first line.
         .child(div().pt(px(3.0 * z)).child(mark(multi, picked, ui, z)))
         .child(
@@ -521,6 +532,41 @@ fn option(
                     )
                 }),
         )
+}
+
+/// A row's fill, and its fill under the pointer: a picked one is tinted with the accent (more
+/// under the pointer or the keys' highlight), one only highlighted takes the hover color.
+fn tint(picked: bool, lit: bool, ui: Ui) -> (Option<Hsla>, Hsla) {
+    if picked {
+        let over = ui.accent.opacity(0.22);
+        (Some(if lit { over } else { ui.accent.opacity(0.14) }), over)
+    } else {
+        (lit.then_some(ui.hover), ui.hover)
+    }
+}
+
+/// Send: solid accent once every question has an answer, faint and inert before; `lit` while the
+/// keys' highlight is on it.
+fn send_button(id: ElementId, ready: bool, lit: bool, ui: Ui, z: f32) -> Stateful<Div> {
+    div()
+        .id(id)
+        .px(px(14.0 * z))
+        .py(px(4.0 * z))
+        .rounded(px(6.0 * z))
+        .bg(ui.accent)
+        .text_color(ui.surface)
+        .text_size(px(SMALL * z))
+        .child("Send")
+        .map(|el| {
+            if ready {
+                el.cursor_pointer()
+                    .when(lit, |el| el.bg(ui.accent.opacity(0.85)))
+                    .hover(move |s| s.bg(ui.accent.opacity(0.85)))
+                    .active(move |s| s.bg(ui.accent.opacity(0.7)))
+            } else {
+                el.opacity(0.4)
+            }
+        })
 }
 
 /// A radio (a circle) or a checkbox (a rounded square), filled with the accent when picked.
@@ -572,6 +618,11 @@ fn allow(
 
 /// One of the dialog's answers: its `label` in a frame, wrapped on as many lines as it needs.
 fn button(id: ElementId, label: impl Into<SharedString>, ui: Ui, z: f32) -> Stateful<Div> {
+    framed(id, label, ui, z).hover(move |s| s.bg(ui.hover))
+}
+
+/// `button` without its hover, for a caller that sets its own.
+fn framed(id: ElementId, label: impl Into<SharedString>, ui: Ui, z: f32) -> Stateful<Div> {
     div()
         .id(id)
         .px(px(10.0 * z))
@@ -580,7 +631,6 @@ fn button(id: ElementId, label: impl Into<SharedString>, ui: Ui, z: f32) -> Stat
         .border_1()
         .border_color(ui.hairline)
         .cursor_pointer()
-        .hover(move |s| s.bg(ui.hover))
         .child(label.into())
 }
 

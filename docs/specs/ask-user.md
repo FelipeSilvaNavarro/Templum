@@ -1,7 +1,7 @@
 # Questions from agents: `ask_user` v2
 
 - **Date:** 2026-10-17
-- **Status:** Implemented (kanban card 34, "Correções ask_user"); plan:
+- **Status:** Implemented (kanban card 34, "Correções ask_user"; card 70 made a click only pick, Send answers); plan:
   [2026-10-17-ask-user-v2.md](../plans/2026-10-17-ask-user-v2.md)
 - **Builds on:** [connections.md](connections.md#requests-from-agents) (the balloon, the tools, the notices typed
   back), [settings.md](settings.md), [shell-integration.md](shell-integration.md#news-and-notifications) (alerts and
@@ -182,12 +182,15 @@ The balloon of [connections.md](connections.md#requests-from-agents) (centered o
   terminal's font at 12 world units, never wrapped, in a frame on the canvas color, at most 18 lines tall, scrolling
   both ways.
 - **Note:** one field after the questions, "Note (optional)".
-- **The foot:** Dismiss on the left; Send on the right, enabled once every question has an answer (an option picked,
-  or Other's text), dim before.
-- **One single-select question:** a click on an option answers at once, with the note typed so far, as today's
-  buttons do.
-- **Today's shape** draws today's dialog: its options as buttons, a click answering; or, with none, the field and
-  Send. No Other row, no note; Dismiss at the foot as for any question.
+- **The foot:** Dismiss on the left; Send on the right, solid accent once every question has an answer (an option
+  picked, or Other's text), dim and inert before.
+- **A click only picks.** An option, the only one of a single question too, is picked or checked and nothing more:
+  the person sends with Send, so a click by mistake answers nothing. A picked row is tinted with the accent (its
+  radio or checkbox filled as well); picking another of a single-select question moves the tint. (A plan's Approve
+  and Reject, [agent-tools.md](agent-tools.md), are the decision itself and answer with their click.)
+- **Today's shape** draws today's dialog: its options as buttons, a click picking one (accent border and tint), and
+  Send at the foot; or, with none, the field and Send. No Other row, no note; Dismiss at the foot as for any
+  question.
 - **A cancelled question** says "The agent stopped waiting: your answer will be typed into its terminal." under the
   first line, in `title_dim`.
 - Every size is a world size × the zoom, the fields and the preview's font included, so the dialog scales like a
@@ -204,10 +207,11 @@ The balloon of [connections.md](connections.md#requests-from-agents) (centered o
   highlighted, Space and Enter do nothing: a key meant for the terminal while the pointer drifts over the block
   can't answer.
 - **Space** picks the highlighted option (single-select) or checks and unchecks it (multiSelect).
-- **Enter** on a single-select question's option picks it first. Then, anywhere (an option, an Other field, the note,
-  Send): once every question has an answer it sends; before, it moves the highlight to the next question without one
-  (wrapping to the first). So one single-select question answers on Enter, as on a click, and a question without
-  options sends what was typed, as today; a multiSelect's options are checked with Space, never Enter.
+- **Enter** on a single-select question's option that isn't picked picks it, and sends nothing: the highlight goes to
+  the next question without an answer (wrapping to the first) or, when that was the last, to Send. Anywhere else
+  (an option already picked, an Other field, the note, Send) it sends once every question has an answer, and moves
+  the highlight to the next question without one before. So a question without options sends what was typed on
+  Enter, as today; a multiSelect's options are checked with Space, never Enter.
 - On an Other row or the note, the field has the keyboard (GPUI's focus) and types; Tab and Shift+Tab, and ↑ and ↓
   where the field lets them through, move on.
 - **Esc** gives the keyboard back to the terminal; the dialog stays.
@@ -290,7 +294,8 @@ No new dependency.
   carry seven days.
 - **App (`workspace/tests/requests.rs`, `config.rs`, `settings/tests.rs`):** today's call still draws today's dialog
   and answers its label and its typed text; a `questions` call answers its JSON through clicks, checkboxes, Other and the note; Send stays off
-  until every question has an answer; one single-select question answers on a click; Dismiss refuses; no deadline by
+  until every question has an answer; a click on an option, even of the only single-select question, picks and
+  Send answers; Dismiss refuses; no deadline by
   default, the setting's or the call's, the shorter; a cancelled question stays, says so, and its answer is typed as a
   notice; the connection's end still withdraws it; the dialog's keys (moves, Space, Enter, Tab into a field, Esc and
   the keyboard staying the terminal's after it) and none reaching the terminal; Enter with no row highlighted; presses within 0.5 s ignored; the preview of the hovered option; sizes × zoom; the
