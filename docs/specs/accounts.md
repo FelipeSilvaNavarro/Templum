@@ -480,7 +480,9 @@ account (`agent:claude2`) is taken only by a block whose agent is that account. 
   - the variable names an account's folder (compared as `Account::folder` is written, components normalized): the
     block becomes that account's (`Pane::account`), as if the menu had opened it: its title, its usage chip, cards
     for it, `list_blocks`, its resume after a restart with the variable in its shell, and Delete waits for it;
-  - it names another folder or is unset: the block is no account's (the agent's own, or a folder of the person's);
+  - it names another folder or is unset: the block is no account's (the agent's own, or a folder of the person's),
+    unless the block is the account of another agent (`codex` run in a `claude2` block is on Codex's own folder, and
+    the block keeps `claude2`: its shell still has the variable);
   - the environment can't be read (it comes back empty: another user's process, an elevated one on Windows): the
     block keeps what it had.
 

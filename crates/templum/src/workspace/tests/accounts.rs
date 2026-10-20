@@ -203,3 +203,29 @@ fn a_typed_account_makes_its_block_the_accounts(cx: &mut TestAppContext) {
     super::agents::see(&ws, cx, id, seen(Some(None)));
     assert_eq!(account(&ws, cx), None);
 }
+
+/// Another agent run in an account's block (`codex` in a `claude2` block) is that agent on its
+/// own folder: the block stays the account's, and Delete still waits for its shell.
+#[gpui_kit::test]
+fn another_agent_in_an_accounts_block_leaves_it_the_accounts(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let (handle, ws) = dirs.open(cx);
+    super::agents::with_agents(&ws, cx, super::agents::CLAUDE2);
+    let folder = tempfile::tempdir().unwrap();
+    let id = super::agents::launch(handle, &ws, cx, "claude2", folder.path());
+    let seen = |agent: &str, var: Option<PathBuf>| templum_terminal::Inspection {
+        agent: Some(agent.into()),
+        folder_var: Some(var),
+        ..Default::default()
+    };
+    let account = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().account.clone())
+    };
+    // Codex has accounts too, and its variable is unset here: still the block's account.
+    super::agents::see(&ws, cx, id, seen("codex", None));
+    assert_eq!(account(&ws, cx).as_deref(), Some("claude2"));
+    ws.read_with(cx, |ws, _| assert!(ws.account_in_use("claude2").is_some()));
+    // The account's own agent run on the person's folder is no account's.
+    super::agents::see(&ws, cx, id, seen("claude", None));
+    assert_eq!(account(&ws, cx), None);
+}

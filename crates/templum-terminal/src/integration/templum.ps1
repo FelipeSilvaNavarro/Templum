@@ -182,14 +182,30 @@ if ($null -eq $Global:__TemplumPrompt) {
         $program, $var, $folder = $fields[1], $fields[2], $fields[3]
         # PowerShell makes an array of an unquoted a,b: a program gets it as one word, a,b.
         $given = @(foreach ($a in $given) { if ($a -is [array]) { $a -join ',' } else { $a } })
-        $old = (Get-Item "Env:$var" -ErrorAction Ignore).Value
-        Set-Item "Env:$var" $folder
+        # An account deleted since this terminal started has no folder: its command on the PATH,
+        # which went with it. Templum makes the folder of every account at each start.
+        $gone = -not (Test-Path -LiteralPath $folder -PathType Container)
+        if ($gone) {
+            $program = Get-Command $id -CommandType Application, ExternalScript -ErrorAction Ignore |
+                Select-Object -First 1
+            if (-not $program) {
+                $Host.UI.WriteErrorLine("${id}: The term '$id' is not recognized as a name of a " +
+                    'cmdlet, function, script file, or executable program.')
+                $Global:__TemplumAgentExit = 1
+                return
+            }
+        } else {
+            $old = (Get-Item "Env:$var" -ErrorAction Ignore).Value
+            Set-Item "Env:$var" $folder
+        }
         try {
             if ($MyInvocation.ExpectingInput) { $input | & $program @given }
             else { & $program @given }
         } finally {
-            if ($null -eq $old) { Remove-Item "Env:$var" -ErrorAction Ignore }
-            else { Set-Item "Env:$var" $old }
+            if (-not $gone) {
+                if ($null -eq $old) { Remove-Item "Env:$var" -ErrorAction Ignore }
+                else { Set-Item "Env:$var" $old }
+            }
         }
         $Global:__TemplumAgentExit = $LASTEXITCODE
     }

@@ -893,11 +893,9 @@ fn editing_an_older_account_keeps_its_name_and_folder(cx: &mut TestAppContext) {
     let text = std::fs::read_to_string(config.path().join(crate::config::FILE)).unwrap();
     let account = &crate::config::parse(&text).unwrap().agents["claude2"];
     assert_eq!(account.name.as_deref(), Some("Claude Code 2"), "{text}");
-    assert_eq!(
-        account.folder.as_deref(),
-        Some(chosen.path().to_str().unwrap()),
-        "{text}"
-    );
+    // The same folder, whether the home is written `~` or not.
+    let folder = crate::launcher::expand(account.folder.as_deref().unwrap());
+    assert_eq!(folder, chosen.path(), "{text}");
     assert!(account.share.as_ref().is_some_and(|s| !s.is_empty()));
     // Its own files in a folder the person chose are never moved.
     assert!(chosen.path().join("skills").join("mine").is_dir());

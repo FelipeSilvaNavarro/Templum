@@ -1546,6 +1546,30 @@ db2baa3.
   the whole command, quoted for each shell, in the command and in `TEMPLUM_ACCOUNTS`.
 - [ ] **Enter in the Edit dialog closes it without saving.** Only Create answers Enter (in the name field): in Edit
   the dialog's own Enter closes it as Esc does. Fix: answer `Confirm` there with Save.
+- [ ] **`SHELL_WORDS` misses builtins whose function would break a shell.** `crates/templum-usage/src/accounts/command.rs:9`:
+  a function named `compopt` replaces the builtin bash-completion calls at each Tab; fish's `path`, `math`, `random`,
+  `abbr`, `argparse`, `commandline`, `set_color` and zsh's `zparseopts`, `zformat`, `vared`, `float`, `nocorrect` do
+  the same, or fail to define and print an error at each shell start. Fix: add them to the list.
+- [ ] **A Windows device name is a valid account name.** `aux`, `con`, `nul`, `prn`, `com1`–`com9`, `lpt1`–`lpt9` pass
+  every rule (`name_problem`, `crates/templum/src/agents.rs:476`), but Windows can't make `accounts\aux` or `aux.cmd`.
+  Fix: refuse them with their own words, on every OS.
+- [ ] **A function is defined for an account whose row says "No command".** `accounts_env`
+  (`crates/templum/src/agents.rs:629`) leaves out ids that break rules 1, 2 and 4 only: an account written by hand as
+  `cc` has the row "No command: cc is already a command: /usr/bin/cc", yet in every Templum terminal `cc` runs its
+  agent. Fix: build `TEMPLUM_ACCOUNTS` from the accounts whose `Workspace::commands` entry is `Ok`.
+- [ ] **A program written with `~` is never found.** An agent whose command starts with `~/bin/claude` makes a
+  command that runs `'~/bin/claude'`, quoted, and a function that runs `"~/bin/claude"`: the shell doesn't expand it
+  (`word`, `crates/templum-usage/src/accounts/command.rs:150`). Fix: expand the home folder when writing both.
+- [ ] **Edit ▸ Save writes the folder as `~/…`.** `AccountDraft::of` (`crates/templum/src/agents.rs:817`) gives the chosen
+  folder through `tilde()`, so `/home/me/x` is saved as `~/x` (the same folder; the spec says "as config.toml has
+  it"). Fix: keep the string config.toml had in the draft.
+- [ ] **Delete is refused when the command can't be removed.** `delete_account`
+  (`crates/templum/src/workspace/preferences.rs:206`) removes the command before the folder: a `~/.local/bin` made
+  read-only since Create refuses the deletion, and a folder deletion that then fails leaves the account without a
+  command until the next start. Fix: remove the command last and warn instead of refusing.
+- [ ] **The dialog re-checks the name three or four times per frame.** `Form::problem`
+  (`crates/templum/src/settings/accounts.rs`) looks for the name as a program (on Windows the registry's Path too)
+  from the note, Create and its label, also while the dialog slides in. Fix: compute it once per change of the name.
 - [ ] **Not checked by hand: a real click-through and typing `claudinho` in a Templum terminal.** Card 65's run could
   not type or click into windows, so the dialog was looked at in screenshots of a dev build (light and dark, with a
   temporary home) and the command was run from plain bash and fish against a fake `claude`; the typed path in a

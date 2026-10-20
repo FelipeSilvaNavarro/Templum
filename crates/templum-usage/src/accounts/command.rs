@@ -193,7 +193,8 @@ pub fn files(c: &Command, windows: bool) -> Vec<(String, String)> {
 
 /// Whether `path` is the command Templum wrote for `id` with `data` as its data folder.
 pub fn is_own(path: &Path, id: &str, data: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else {
+    // Not through a link: one in the commands folder (a dotfiles repository's) is the person's.
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
         return false;
     };
     if !meta.is_file() || meta.len() > MARKER_LIMIT {
@@ -238,7 +239,16 @@ pub fn write(dir: &Path, c: &Command) -> io::Result<bool> {
             continue;
         }
         let new = dir.join(format!("{name}.templum-new"));
-        std::fs::write(&new, text)?;
+        // A leftover in that name, or a link, is replaced: never written through.
+        let _ = std::fs::remove_file(&new);
+        let mut file = std::fs::OpenOptions::new();
+        file.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            file.mode(0o755);
+        }
+        io::Write::write_all(&mut file.open(&new)?, text.as_bytes())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -432,5 +442,44 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    /// A link in the commands folder (a dotfiles repository's) is the person's, even to a command of
+    /// Templum's: never rewritten, never removed.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_is_never_a_command_of_ours() {
+        let (dir, elsewhere, d) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            Path::new("/d"),
+        );
+        let c = claudinho(Path::new("/d/accounts/claudinho"), d);
+        write(elsewhere.path(), &c).unwrap();
+        let copy = elsewhere.path().join("claudinho");
+        let link = dir.path().join("claudinho");
+        std::os::unix::fs::symlink(&copy, &link).unwrap();
+        assert!(!is_own(&link, "claudinho", d));
+        assert_eq!(
+            write(dir.path(), &c).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        remove(dir.path(), "claudinho", d).unwrap();
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(copy.exists());
+    }
+
+    /// A leftover `.templum-new` that is a link is replaced, not written through.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_the_temporary_name_is_not_followed() {
+        let (dir, d) = (tempfile::tempdir().unwrap(), Path::new("/d"));
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "mine").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join("claudinho.templum-new")).unwrap();
+        let c = claudinho(Path::new("/d/accounts/claudinho"), d);
+        assert!(write(dir.path(), &c).unwrap());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "mine");
+        assert!(is_own(&dir.path().join("claudinho"), "claudinho", d));
     }
 }

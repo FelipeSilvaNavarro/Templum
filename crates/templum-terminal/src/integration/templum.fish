@@ -148,6 +148,12 @@ if status is-interactive; and not set -q __templum_installed
             return 127
         end
         string match -qr '^[A-Za-z_][A-Za-z0-9_]*$' -- $found[3]; or return 1
+        # An account deleted since this terminal started has no folder: its command on the PATH,
+        # which went with it. Templum makes the folder of every account at each start.
+        if not test -d "$found[4]"
+            command $id $argv
+            return
+        end
         # Not in a block: `set -l` there would end with it.
         set -lx $found[3] $found[4]
         eval (string escape -- $found[2]) '$argv'

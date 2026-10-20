@@ -884,11 +884,20 @@ impl Space {
         for (id, mut seen) in found {
             if let Some(pane) = self.terminal_mut(id) {
                 // An agent found on a folder is that folder's account, typed by hand or not; an
-                // environment that couldn't be read keeps what the block had.
+                // environment that couldn't be read keeps what the block had. Another agent run in
+                // an account's block (codex in a claude2 block) is on its own folder: the block
+                // keeps its account, whose shell still has the variable.
                 if let (Some(agent), Some(var)) = (seen.agent.as_deref(), &seen.folder_var) {
-                    pane.account = var
+                    let found = var
                         .as_deref()
                         .and_then(|folder| agents::account_of(agent, folder, homes));
+                    let current = pane
+                        .account
+                        .as_deref()
+                        .and_then(|a| homes.iter().find(|h| h.id == a));
+                    if found.is_some() || current.is_none_or(|home| home.agent == agent) {
+                        pane.account = found;
+                    }
                 }
                 let home = pane
                     .account
