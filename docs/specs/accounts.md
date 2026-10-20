@@ -207,7 +207,8 @@ share = { settings = "claude3", instructions = "claude3", rules = "claude3", ski
 ```
 
 - `of` is one of Templum's agents that [has accounts](#which-agents). An entry with `of` takes only `of`, `name`,
-  `show`, `folder` and `share`; `command`, `resume`, `generate` and `models` are its agent's in effect (with the
+  `show`, `folder`, `share` and `shell` (the shell it opens in, its own and never its agent's;
+  [shells.md](shells.md#a-shell-for-each-agent)); `command`, `resume`, `generate` and `models` are its agent's in effect (with the
   person's changes) and refused here ("agents.claude2.command: an account runs its agent's command").
 - `share` maps an item's key ([the table](#which-agents)) to who it is shared with: the agent's id (its own folder)
   or another account of the same agent. A missing item is the account's own. An unknown key, a target that is

@@ -178,6 +178,7 @@ an agent ([accounts.md](accounts.md#settings--agents--accounts)), which aren't r
 claude = { command = "claude --model opus" }   # only what differs from Templum's
 codex = { show = false }
 my-agent = { name = "My agent", command = "my-agent --tui", resume = "my-agent --continue" }
+claude-wsl = { name = "Claude Code (WSL)", command = "claude", shell = "WSL" }   # opens in a shell of its own
 ```
 
 - `[agents.claude]` tables written by hand work too.

@@ -35,6 +35,8 @@ pub(crate) struct AgentEntry {
     pub generate: Option<String>,
     /// Its models for commit messages, the recommended one first.
     pub models: Vec<String>,
+    /// The label of the shell it opens in; None: the default shell.
+    pub shell: Option<String>,
     /// An account of `builtin` (docs/specs/accounts.md): its folder and what it shares.
     pub account: Option<Account>,
 }
@@ -328,6 +330,7 @@ pub(crate) fn effective(
             show: set_.show.unwrap_or(true),
             generate: text(&set_.generate).or(generate).map(str::to_string),
             models: set_.models.clone().unwrap_or(models),
+            shell: text(&set_.shell).map(str::to_string),
             account: None,
         }
     });
@@ -345,6 +348,8 @@ pub(crate) fn effective(
                 .map_or_else(|| format!("{} ({id})", agent.title), str::to_string),
             changed: false,
             show: set.show.unwrap_or(true),
+            // An account's own shell, never its agent's.
+            shell: text(&set.shell).map(str::to_string),
             account: Some(Account {
                 kind,
                 folder: folder.components().collect(),
@@ -371,6 +376,7 @@ pub(crate) fn effective(
                 show: set.show.unwrap_or(true),
                 generate: text(&set.generate).map(str::to_string),
                 models: set.models.clone().unwrap_or_default(),
+                shell: text(&set.shell).map(str::to_string),
                 account: None,
             })
         });
@@ -726,6 +732,8 @@ pub(crate) struct Draft {
     /// Its models, one per line, the recommended one first; empty: none (one of Templum's: its
     /// own).
     pub models: String,
+    /// The label of the shell it opens in; None: the default shell.
+    pub shell: Option<String>,
 }
 
 impl Draft {
@@ -737,6 +745,7 @@ impl Draft {
             show: entry.show,
             generate: entry.generate.clone().unwrap_or_default(),
             models: entry.models.join("\n"),
+            shell: entry.shell.clone(),
         }
     }
 
@@ -757,6 +766,12 @@ impl Draft {
     pub fn to_config(&self, builtin: Option<Agent>, codex: &[String]) -> Option<AgentConfig> {
         let (name, command, resume) = (self.name.trim(), self.command.trim(), self.resume.trim());
         let generate = self.generate.trim();
+        let shell = self
+            .shell
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let models: Vec<String> = self
             .models
             .lines()
@@ -776,6 +791,7 @@ impl Draft {
                     generate: (!generate.is_empty() && Some(generate) != default_generate)
                         .then(|| generate.to_string()),
                     models: (!models.is_empty() && models != default_models).then_some(models),
+                    shell,
                     ..AgentConfig::default()
                 }
             }
@@ -786,6 +802,7 @@ impl Draft {
                 show: (!self.show).then_some(false),
                 generate: (!generate.is_empty()).then(|| generate.to_string()),
                 models: (!models.is_empty()).then_some(models),
+                shell,
                 ..AgentConfig::default()
             },
         };
@@ -813,6 +830,8 @@ pub(crate) struct AccountDraft {
     pub folder: Option<String>,
     /// Its items shared, by key: the agent's id or another account of it.
     pub share: BTreeMap<String, String>,
+    /// The label of the shell it opens in; None: the default shell.
+    pub shell: Option<String>,
 }
 
 impl AccountDraft {
@@ -828,6 +847,7 @@ impl AccountDraft {
             show: entry.show,
             folder: account.filter(|a| a.chosen).map(|a| tilde(&a.folder)),
             share: account.map(|a| a.share.clone()).unwrap_or_default(),
+            shell: entry.shell.clone(),
         }
     }
 
@@ -845,6 +865,7 @@ impl AccountDraft {
                 .filter(|f| !f.is_empty())
                 .map(str::to_string),
             share: (!self.share.is_empty()).then(|| self.share.clone()),
+            shell: self.shell.clone(),
             ..AgentConfig::default()
         }
     }
@@ -873,6 +894,7 @@ pub(crate) fn to_value(config: &AgentConfig) -> toml_edit::InlineTable {
         ("resume", &config.resume),
         ("generate", &config.generate),
         ("folder", &config.folder),
+        ("shell", &config.shell),
     ] {
         if let Some(value) = value {
             table.insert(key, value.as_str().into());
@@ -997,6 +1019,45 @@ mod tests {
 
     fn agents(text: &str) -> Vec<AgentEntry> {
         effective(&parse(text).unwrap().agents, &[], Some(Path::new("/data")))
+    }
+
+    #[test]
+    fn a_shell_is_each_entrys_own_and_drafts_keep_it() {
+        let list = agents(
+            "[agents.claude]\nshell = \"fish\"\n\
+             [agents.mine]\nname = \"Mine\"\ncommand = \"mine\"\nshell = \"WSL\"\n\
+             [agents.claude2]\nof = \"claude\"\n\
+             [agents.claude3]\nof = \"claude\"\nshell = \"zsh\"\n",
+        );
+        let claude = by(&list, "claude");
+        assert_eq!(claude.shell.as_deref(), Some("fish"));
+        assert!(claude.changed);
+        assert_eq!(by(&list, "mine").shell.as_deref(), Some("WSL"));
+        assert_eq!(by(&list, "codex").shell, None);
+        assert_eq!(
+            by(&list, "claude2").shell,
+            None,
+            "an account's own, not its agent's"
+        );
+        assert_eq!(by(&list, "claude3").shell.as_deref(), Some("zsh"));
+        // The switch and the dialog save the whole entry: the shell goes with it.
+        let set = Draft::of(claude).to_config(claude.builtin, &[]).unwrap();
+        assert_eq!(set.shell.as_deref(), Some("fish"));
+        assert!(to_value(&set).to_string().contains("shell = \"fish\""));
+        let default = Draft {
+            shell: None,
+            ..Draft::of(claude)
+        };
+        assert_eq!(
+            default.to_config(claude.builtin, &[]),
+            None,
+            "Default is Templum's: no entry"
+        );
+        let mine = by(&list, "mine");
+        let set = Draft::of(mine).to_config(None, &[]).unwrap();
+        assert_eq!(set.shell.as_deref(), Some("WSL"));
+        let account = AccountDraft::of(by(&list, "claude3")).to_config();
+        assert_eq!(account.shell.as_deref(), Some("zsh"));
     }
 
     #[test]
@@ -1169,6 +1230,7 @@ mod tests {
             share: [("skills", "claude"), ("output-styles", "claude")]
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .into(),
+            shell: Some("zsh".into()),
         };
         let config = draft.to_config();
         let text = format!("[agents]\nclaude2 = {}\n", to_value(&config));
@@ -1202,6 +1264,7 @@ mod tests {
             show: true,
             folder: None,
             share: [("skills".to_string(), "claude3".to_string())].into(),
+            shell: None,
         };
         let problem = draft.problem("claude4", &agents, None).unwrap();
         assert!(problem.contains("shares it back"), "{problem}");

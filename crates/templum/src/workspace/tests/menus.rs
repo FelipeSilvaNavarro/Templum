@@ -305,6 +305,7 @@ fn the_canvas_menu_opens_an_agent_in_a_recent_folder(cx: &mut TestAppContext) {
             show: true,
             generate: None,
             models: Vec::new(),
+            shell: None,
             account: None,
         }];
     });

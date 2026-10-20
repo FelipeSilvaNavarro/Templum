@@ -196,6 +196,7 @@ pub(crate) fn agent_dialog(
                 show: draft.show,
                 generate: generate.read(cx).value().to_string(),
                 models: models.read(cx).value().to_string(),
+                shell: draft.shell.clone(),
             };
             let saved = entity.update(cx, |ws, cx| ws.save_agent(id.as_deref(), &draft, cx));
             match saved {
