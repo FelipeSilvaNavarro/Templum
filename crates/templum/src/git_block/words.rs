@@ -134,8 +134,9 @@ pub(crate) fn synced(got: u32, sent: u32) -> String {
 }
 
 /// The message a commit of the one file `entry` gets when none is typed: "Add a.rs", "Delete
-/// a.rs", "Rename a.rs to b.rs", else "Update a.rs", by the change in the index (`staged`) or in
-/// the working tree. None when the entry has no such change.
+/// a.rs", "Rename a.rs to b.rs" ("Move a.rs to dir/" when only its folder changed), else
+/// "Update a.rs", by the change in the index (`staged`) or in the working tree. None when the entry
+/// has no such change.
 pub(crate) fn generic_summary(entry: &Entry, staged: bool) -> Option<String> {
     let change = if staged { entry.staged } else { entry.unstaged }?;
     let name = entry.name();
@@ -143,10 +144,12 @@ pub(crate) fn generic_summary(entry: &Entry, staged: bool) -> Option<String> {
         (Change::Added | Change::Untracked, _) => format!("Add {name}"),
         (Change::Deleted, _) => format!("Delete {name}"),
         (Change::Renamed, Some(from)) => {
-            format!(
-                "Rename {} to {name}",
-                from.rsplit('/').next().unwrap_or(from)
-            )
+            let old = from.rsplit('/').next().unwrap_or(from);
+            match (old == name, entry.folder()) {
+                (false, _) => format!("Rename {old} to {name}"),
+                (true, "") => format!("Move {name} to the root"),
+                (true, dir) => format!("Move {name} to {dir}/"),
+            }
         }
         _ => format!("Update {name}"),
     })
@@ -287,6 +290,19 @@ mod tests {
         assert_eq!(
             generic_summary(&renamed, true).as_deref(),
             Some("Rename old.rs to new.rs")
+        );
+        // Only the folder changed: the name would read "Rename lib.rs to lib.rs".
+        let mut moved = entry("core/lib.rs", Some(Change::Renamed), None);
+        moved.from = Some("src/lib.rs".into());
+        assert_eq!(
+            generic_summary(&moved, true).as_deref(),
+            Some("Move lib.rs to core/")
+        );
+        let mut to_root = entry("lib.rs", Some(Change::Renamed), None);
+        to_root.from = Some("src/lib.rs".into());
+        assert_eq!(
+            generic_summary(&to_root, true).as_deref(),
+            Some("Move lib.rs to the root")
         );
         // The index's change when the commit takes the index, the tree's when it takes all.
         assert_eq!(generic_summary(&entry("a", m, None), false), None);
