@@ -1172,7 +1172,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum connect <block>` | `connect` | 3 |
 | `templum spawn [<agent>] [--fork] [--role <role>] [--folder <f>] [--worktree <name>] [--prompt <text>] [--model <m>] [--effort <e>]` | `spawn_agent` | 3, 6, card 35 |
 | `templum delegate <block> <task> [--wait]` | `delegate` (from batch 8 it prints the task's id; a script's terminal gets no notice: `templum wait` waits for its end) | 3, 8 |
-| `templum reply [<block>] <text>\|-` (`-` reads stdin; without a block it answers the caller's task) | `reply` | 3, card 69 |
+| `templum reply <block> <text>\|-`, or `templum reply -` (`-` reads stdin; with no block it answers the caller's task) | `reply` | 3, card 69 |
 | `templum wait <block> [--for <event>] [--match <pattern>] [--lines <n>] [--timeout <s>]` | `wait_for_idle`, `wait_for` | 3, 5, card 35 |
 | `templum ask <question> [--option <o>]…` | `ask_user` | 3 |
 | `templum plan <file> [--title <t>]` (`-` reads stdin; a rejection exits 1) | `propose_plan` | card 35 |

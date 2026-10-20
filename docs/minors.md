@@ -1410,6 +1410,27 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   and a still screen tells nothing. Its master hears its call's timeout, or nothing if it didn't wait, until the
   subagent replies, its agent leaves or its block closes. Fix: ignore a handed task past its timeout in `hands_out`,
   and tell the master once, as quiet does.
+- [ ] **A second `reply` naming the former asker's block is typed to it.** Left by the review of card 69
+  (`Workspace::reply_to`, `crates/templum/src/workspace/delegate.rs`): after a task ended, `reply` with the block of
+  the agent that handed it matches no task, so it is a message and is typed into that agent as `[reply from …]`; only
+  the form without a block says "You are on no task". A master sees one message after the end. Fix: remember the last
+  asker of the pane's task for a few seconds and refuse a `reply` to it.
+- [ ] **`templum reply <text>` with no block isn't accepted.** (`call_of`, `crates/templum-mcp/src/cli.rs`) The usage
+  line reads `reply [<block>] <text>|- [--json]`, but a block-less reply is only `reply -`; `templum reply all done`
+  takes `all` for a block. A person sees a refusal from Templum ("all isn't a block"). Fix: say `reply [<block>]
+  <text>|-` as `reply (-|<block> <text>|<block> -)`, or take a block-less text when the first word is no block id.
+- [ ] **`delegate` with `wait` doesn't tell that the agent has no Templum tools.** (`hand_task`,
+  `crates/templum/src/workspace/delegate.rs`) The sentence is added to the immediate answer only; a master that waits
+  hears the task's end. Fix: put it first in the end's text when the agent had no tools at hand-over.
+- [ ] **`has_tools` ignores the connections switch.** (`Workspace::has_tools`, `crates/templum/src/workspace/bus.rs`)
+  An `initialize` while connections are off isn't counted, and entries from before stay when they are turned off: after
+  turning them on again an agent whose server started meanwhile reads "no Templum tools" until it restarts, and one
+  that had tools keeps them while its MCP `reply` is refused. Fix: always record `initialize`, and make `has_tools`
+  false while connections are off.
+- [ ] **A server that goes away after its task went quiet leaves the task open.** (`look_at_agents`,
+  `crates/templum/src/workspace/activity.rs`) The still-screen check runs once, when the state goes from Working to
+  Idle; the task then waits for the screen to move and go still again. A master sees nothing until its timeout. Fix:
+  in `closed`, end the task of a terminal that lost its last connection and whose state is Idle, as a still screen does.
 
 ## Placing new blocks
 

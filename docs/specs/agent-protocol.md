@@ -307,7 +307,9 @@ No test needs a real agent: CI (Linux, macOS, Windows) has none.
   tools, no hooks **and a task**; one with tools and no task whose screen goes still still answers the calls that wait
   on its turn (`wait_for_idle` from another agent) with the still-screen text, or they would hang until their timeout.
 - **Quiet answers other agents' waits at every still screen**, and the asker's call or notice once per task (a change
-  starts it over).
+  starts it over). An agent that waits for a task of its own is left alone, with or without Templum's tools.
+- **"Handed out" means since its own task was handed to it** (4): a task it handed out before, which nobody ended, is
+  not what this one waits for, or a forgotten sub-task would keep every later task of that agent open.
 - **`reply` to a block that is not the caller's asker** still sets the replier's last answer, as before; it ends no
   task.
 - **`reply` to the caller's own block** is refused with "This block is yours: leave block out to answer the task you
