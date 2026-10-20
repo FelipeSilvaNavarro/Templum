@@ -364,6 +364,48 @@ fn a_create_entry_never_switches_away_from_a_detached_head(cx: &mut TestAppConte
     assert_eq!(notification_count(handle, cx), 1, "git's own refusal");
 }
 
+/// Enter acts on the text typed, not on the rows the last frame drew for the text before it. Here
+/// the frame drew every branch (nothing typed) and "fea" is typed and confirmed with no frame
+/// between: the helpers (`input`, `press`, `simulate_input`) and the end of every window update
+/// redraw first, which hides it, so the keys go straight to the window and the kit's confirm action
+/// to the focused field. Row 0 of the stale frame is a branch to switch to; the text names none, so
+/// Enter makes "fea".
+#[gpui_kit::test]
+fn enter_acts_on_the_text_typed_since_the_last_frame(cx: &mut TestAppContext) {
+    use gpui_kit::Keystroke;
+    use gpui_kit::base::actions::Confirm;
+    no_motion(cx);
+    let repo = two_branches();
+    git_run(repo.path(), &["checkout", "-q", "--detach", "feat"]);
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| window.click("git-branch-here", cx))
+        .unwrap();
+    settle(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.has_active_dialog(cx));
+        window.render_frame(cx);
+        for c in "fea".chars() {
+            let mut key = Keystroke::parse(&c.to_string()).unwrap();
+            key.key_char = Some(c.to_string());
+            window.dispatch_keystroke(key, cx);
+        }
+        let field = window
+            .focused(cx)
+            .expect("the dialog's field has the keyboard");
+        field.dispatch_action(&Confirm { secondary: false }, window, cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, |g| {
+        assert_eq!(
+            g.status.branch.as_deref(),
+            Some("fea"),
+            "made, not switched"
+        )
+    });
+}
+
 /// `git checkout -b origin/main` is accepted, and then `origin/main` is ambiguous: rebase, merge
 /// and Compare against it would use the stale local branch. The creation (the first row, as for
 /// any name) is refused, and HEAD stays.
