@@ -208,7 +208,7 @@ shells run the tests' quiet program, so no test depends on the machine's shells:
   name without a program;
 - a terminal's saved item carries its shell's label; a canvas file whose `shell` is `sh` (**Command Prompt** on
   Windows) restores the block running it (the one test that reads the machine's own list, so it picks a shell that
-  reads no profile, and is skipped where the list lacks it); a saved item whose label isn't found restores it running
+  has no slow startup files, and is skipped where the list lacks it); a saved item whose label isn't found restores it running
   the default, its shell forgotten, at once even while the list is early; closing it and Ctrl+Z bring it back with
   it;
 - a menu opened after the login shell's PATH arrived reads an early list again;

@@ -844,7 +844,7 @@ fn a_saved_shell_comes_back_and_one_not_found_opens_the_default(cx: &mut TestApp
 }
 
 /// At start, a canvas file's terminal runs its shell: the startup restore reads the list first.
-/// It runs the machine's own list, so the shell is one that reads no profile (`sh`, never a login
+/// It runs the machine's own list, so the shell is one with no slow startup files (`sh`, never a login
 /// bash or Git Bash); a machine whose list lacks it skips the check.
 #[gpui_kit::test]
 fn a_canvas_files_terminal_starts_its_shell(cx: &mut TestAppContext) {
