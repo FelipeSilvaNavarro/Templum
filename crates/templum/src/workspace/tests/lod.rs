@@ -579,7 +579,7 @@ fn far_rendered_markdown_is_left_out_and_kanban_drawn_in_full(cx: &mut TestAppCo
         "the tab row stays"
     );
     assert!(
-        shown(handle, cx, ("board-list", kanban)),
+        shown(handle, cx, ("kanban-empty", kanban)),
         "the kanban block is drawn in full"
     );
 }

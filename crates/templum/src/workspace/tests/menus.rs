@@ -188,7 +188,7 @@ fn the_innermost_menu_opens_and_acts_on_what_was_clicked(cx: &mut TestAppContext
         let card_el = gpui_kit::ElementId::Name(format!("card-{}-{card}", block.0).into());
         window.right_click(card_el, cx);
         window.render_frame(cx);
-        // Open, Send to ▸, —, Delete card: the card's menu, not its block's (Board list, —,
+        // Open, Send to ▸, —, Delete card: the card's menu, not its block's (All boards…, —,
         // Close). It asks first.
         window.within("popup-menu").click(3usize, cx);
     })

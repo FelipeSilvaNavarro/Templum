@@ -33,11 +33,6 @@ pub(crate) enum Target {
     },
     /// The AI agents alone (the toolbar): the chosen one opens at this world point.
     Agents(Point),
-    /// A row of a kanban block's board list.
-    Board {
-        block: BlockId,
-        board: u64,
-    },
     Column {
         board: u64,
         column: u64,
@@ -228,7 +223,9 @@ impl Workspace {
                     },
                     Body::Kanban(k) => Items::Kanban {
                         block,
-                        listing: k.shown(self).is_none() && k.board.is_some(),
+                        board: k
+                            .shown(self)
+                            .map(|b| (b.id, b.name.clone(), b.card_count())),
                     },
                     Body::Note(n) => Items::Note {
                         block,
@@ -272,15 +269,6 @@ impl Workspace {
                     },
                 }
             }
-            Target::Board { block, board } => Items::Board {
-                block,
-                board,
-                name: self
-                    .boards
-                    .board(board)
-                    .map_or_else(String::new, |b| b.name.clone()),
-                cards: self.boards.board(board).map_or(0, |b| b.card_count()),
-            },
             Target::Column { board, column } => {
                 let found = self
                     .boards
@@ -539,8 +527,8 @@ enum Items {
     },
     Kanban {
         block: BlockId,
-        /// The board list shows over a board the block has.
-        listing: bool,
+        /// The board it shows: its id, its name and how many cards it has.
+        board: Option<(u64, String, usize)>,
     },
     Note {
         block: BlockId,
@@ -621,12 +609,6 @@ enum Items {
         hunk_text: String,
         /// The selection, else the hunk.
         send: SendTo,
-    },
-    Board {
-        block: BlockId,
-        board: u64,
-        name: String,
-        cards: usize,
     },
     Column {
         board: u64,

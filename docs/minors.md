@@ -723,10 +723,6 @@ Left by the fourth review of batch 3; line numbers are those of `development` at
 
 Left by batch 4 (content); line numbers are those of `development` at 9e33f19.
 
-- [ ] **`list_cards` lists a board left on a kanban showing its board list.** `wired_boards`
-  (`crates/templum/src/workspace/content.rs:27`) counts `Kanban::board` also while the block picks (Decision 3 of
-  the plan): an agent reads and changes a board the person no longer sees in that block. Fix: count `shown()` only, if
-  that surprises anyone.
 - [ ] **The first Ctrl+Z after an agent's change can take back the person's typing in a card.** `edit_typed`
   (`crates/templum/src/kanban.rs:567`) keeps the boards for undo only at the dialog's first change; when an agent
   changes the boards while the dialog is open, the person's typing after that lands in no step, and the kanban's

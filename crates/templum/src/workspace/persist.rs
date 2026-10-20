@@ -273,15 +273,8 @@ impl Workspace {
                 self.restore_terminal(id, t, in_its_folder, cx);
                 Some(id)
             }
-            session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN).map(|rect| {
-                self.add_block(
-                    rect,
-                    Body::Kanban(Kanban {
-                        board: k.board,
-                        picking: false,
-                    }),
-                )
-            }),
+            session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN)
+                .map(|rect| self.add_block(rect, Body::Kanban(Kanban { board: k.board }))),
             session::Item::Note(n) => {
                 let rect = clamped_rect(n.rect.into(), note::MIN)?;
                 let mut ids = n.notes.clone();

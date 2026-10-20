@@ -20,8 +20,8 @@ use crate::prompt;
 
 use super::history::{Change, Then};
 use super::{
-    AGENT_COLS, AGENT_ROWS, BOARD_UNDO, Body, DEFAULT_COLS, DEFAULT_ROWS, Ghost, Pane, Workspace,
-    remember, show_notification,
+    AGENT_COLS, AGENT_ROWS, BOARD_UNDO, Body, DEFAULT_COLS, DEFAULT_ROWS, Ghost, Pane, Space,
+    Workspace, remember, show_notification,
 };
 
 impl Workspace {
@@ -287,13 +287,13 @@ impl Workspace {
         }
     }
 
-    /// A kanban block at the viewport's center, showing the board list.
+    /// A kanban block at the viewport's center, showing no board.
     pub(crate) fn new_kanban(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let at = self.room_in_view(kanban::SIZE, window, cx).origin();
         self.add_kanban_at(at, window, cx);
     }
 
-    /// A kanban block showing the board list, its top-left corner at `at` (world units).
+    /// A kanban block showing no board, its top-left corner at `at` (world units).
     pub(crate) fn add_kanban_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
         self.space.pristine = false;
         let rect = Rect::new(at.x, at.y, kanban::SIZE.w, kanban::SIZE.h);
@@ -504,20 +504,19 @@ impl Workspace {
     /// The kanban block `block` shows `board`.
     pub(crate) fn show_board(&mut self, block: BlockId, board: u64, cx: &mut Context<Self>) {
         if let Some(k) = self.space.kanban_mut(block) {
-            *k = Kanban {
-                board: Some(board),
-                picking: false,
-            };
+            *k = Kanban { board: Some(board) };
             cx.notify();
         }
     }
 
-    /// The kanban block `block` shows the board list.
-    pub(crate) fn pick_board(&mut self, block: BlockId, cx: &mut Context<Self>) {
-        if let Some(k) = self.space.kanban_mut(block) {
-            k.picking = !k.picking;
-            cx.notify();
-        }
+    /// The first workspace with a kanban block showing board `id`, the active one first.
+    pub(crate) fn board_open_at(&self, id: u64) -> Option<&Space> {
+        self.spaces().find(|space| {
+            space
+                .blocks
+                .values()
+                .any(|body| body.kanban().is_some_and(|k| k.board == Some(id)))
+        })
     }
 
     /// A new board, shown in `block`.
@@ -526,7 +525,7 @@ impl Workspace {
         self.show_board(block, board, cx);
     }
 
-    /// Deletes a board and its cards; the blocks that showed it show the board list.
+    /// Deletes a board and its cards; the blocks that showed it show none.
     pub(crate) fn delete_board(&mut self, board: u64, cx: &mut Context<Self>) {
         self.edit_boards(|b| b.remove_board(board));
         cx.notify();

@@ -26,7 +26,7 @@ would have opened together with the block's. The canvas and the blocks had no me
 |---|---|
 | The empty canvas | **AI agent ▸** (the agents), **Add ▸** Terminal, Kanban board, Note, Checklist, Editor, **Notes…** (the Notes dialog), **Checklists…** (the Checklists dialog). The block's top-left corner goes where you clicked. |
 | A terminal block (header or body) | Copy (disabled without a selection), Paste, *the grid's items*, Close terminal |
-| A kanban block (header, or its empty space) | Board list (or Back to the board, while the list shows), *the grid's items*, Close |
+| A kanban block (header, or its empty space) | All boards… (the Boards dialog), Rename board… and Delete board… (asks first; for the board it shows), *the grid's items*, Close |
 | A note block | All notes… (the Notes dialog), Copy all (the note on screen), Send to ▸ (the workspace's terminals), Color ▸ (None and the six label colors, for the note on screen), *the grid's items*, Close |
 | A checklist block | All checklists… (the Checklists dialog), *the grid's items*, Close |
 | An editor block | Change folder…, Hide (or Show) the file tree, Turn soft wrap on (or off), Send to ▸, *the grid's items*, Close |
@@ -46,7 +46,6 @@ would have opened together with the block's. The canvas and the blocks had no me
 | A branch in the Git popup | Compare with *main* (the default branch; not on itself), Merge into *current*…, Rename…, Delete… (an unmerged one asks again with its count), Publish (a local branch with no upstream, or one deleted on the server), Copy name |
 | A stash in the Git popup | Apply, Pop, Drop…, Show |
 | The toolbar's AI agent button | The agents; the chosen one opens in the middle of the canvas |
-| A board in a block's board list | Open, Rename…, Delete… |
 | A column's title | Rename…, Add a card, Delete |
 | A card | Open, Send to ▸, Delete card (asks first) |
 | A workspace tile in the sidebar, or its card on the workspaces screen | Open (disabled for the one shown), Edit…, Stop (disabled while it is the only workspace, or stopped), Delete… (disabled for the last workspace) |

@@ -1,5 +1,5 @@
-//! A kanban block's body: the board list, or a board's columns and cards with drag and drop;
-//! and the dialog of an open card. Everything is drawn at the block's zoom `z`, like a
+//! A kanban block's body: a board's columns and cards with drag and drop, or a word that it shows
+//! none; the Boards dialog, and the dialog of an open card. Everything is drawn at the block's zoom `z`, like a
 //! terminal's text. See docs/specs/kanban.md.
 
 use std::cell::{Cell, RefCell};
@@ -23,7 +23,9 @@ use templum_canvas::{BlockId, EDGE_ZONE, Point, Rect, Size, edge_scroll};
 use crate::board::{Assignee, Board, Boards, Card, Column, Comment, Label, Priority};
 use crate::checklists;
 use crate::grid::hsla;
+use crate::list_dialog;
 use crate::menu::Target;
+use crate::note;
 use crate::notes;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
@@ -33,19 +35,16 @@ pub(crate) const SIZE: Size = Size { w: 900.0, h: 540.0 };
 pub(crate) const MIN: Size = Size { w: 420.0, h: 280.0 };
 const COLUMN_W: f32 = 260.0;
 
-/// A kanban block: the board it shows, if any, and whether it shows the board list instead.
+/// A kanban block: the board it shows, if any.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Kanban {
     pub board: Option<u64>,
-    pub picking: bool,
 }
 
 impl Kanban {
-    /// The board on screen: none while picking, or when it was deleted.
+    /// The board on screen: none when it was deleted.
     pub fn shown<'a>(&self, ws: &'a Workspace) -> Option<&'a Board> {
-        self.board
-            .filter(|_| !self.picking)
-            .and_then(|id| ws.boards.board(id))
+        self.board.and_then(|id| ws.boards.board(id))
     }
 
     /// The block's title.
@@ -221,7 +220,7 @@ fn name(prefix: &str, n: usize, id: u64) -> ElementId {
     ElementId::Name(format!("{prefix}-{n}-{id}").into())
 }
 
-/// The body below the header: the board, or the board list.
+/// The body below the header: the board, or a word that there is none.
 pub(crate) fn body(
     ws: &Workspace,
     block: BlockId,
@@ -232,7 +231,7 @@ pub(crate) fn body(
 ) -> AnyElement {
     let view = match kanban.shown(ws) {
         Some(board) => board_view(ws, block, board, z, window, cx),
-        None => list_view(ws, block, z, cx),
+        None => empty(ws, block, z, cx),
     };
     // The wheel scrolls what is in the block, and stops there; with Ctrl it zooms the canvas.
     div()
@@ -246,106 +245,92 @@ pub(crate) fn body(
         .into_any_element()
 }
 
-fn list_view(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
-    let ui = ws.ui;
+/// A block with no board: a new one, or one from the dialog.
+fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
     let n = block.0 as usize;
-    let rows: Vec<AnyElement> = ws
-        .boards
-        .boards
-        .iter()
-        .map(|board| {
-            let id = board.id;
-            let cards = board.card_count();
-            let row = div()
-                .id(name("board-row", n, id))
-                .flex()
-                .items_center()
-                .justify_between()
-                .px(px(12.0 * z))
-                .py(px(10.0 * z))
-                .rounded(px(8.0 * z))
-                .border_1()
-                .border_color(ui.hairline)
-                .bg(ui.surface)
-                .cursor_pointer()
-                .hover(move |s| s.bg(ui.hover).border_color(ui.hover_border))
-                .child(
-                    div()
-                        .text_size(px(14.0 * z))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(board.name.clone()),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.0 * z))
-                        .text_color(ui.title_dim)
-                        .child(if cards == 1 {
-                            "1 card".to_string()
-                        } else {
-                            format!("{cards} cards")
-                        }),
-                )
-                .on_click(
-                    cx.listener(move |ws, _: &ClickEvent, _, cx| ws.show_board(block, id, cx)),
-                )
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-                        ws.open_menu(Target::Board { block, board: id }, e.position, window, cx);
-                        cx.stop_propagation();
-                    }),
-                )
-                .test_support();
-            row.into_any_element()
-        })
-        .collect();
-    let new = div()
-        .id(("new-board", n))
-        .flex()
-        .items_center()
-        .gap(px(6.0 * z))
-        .px(px(12.0 * z))
-        .py(px(10.0 * z))
-        .rounded(px(8.0 * z))
-        .border_1()
-        .border_color(ui.hairline)
-        .text_size(px(13.0 * z))
-        .text_color(ui.title)
-        .cursor_pointer()
-        .hover(move |s| s.bg(ui.hover))
-        .active(move |s| s.bg(ui.pressed))
-        .child(Icon::new(IconName::Plus).size(px(14.0 * z)))
-        .child("New board")
-        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.new_board(block, cx)))
-        .test_support();
     div()
-        .id(("board-list", n))
+        .id(("kanban-empty", n))
         .size_full()
-        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(8.0 * z))
         .child(
             div()
-                .flex()
-                .flex_col()
-                .gap(px(8.0 * z))
-                .p(px(12.0 * z))
-                .child(
-                    div()
-                        .text_size(px(18.0 * z))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Boards"),
-                )
-                .child(
-                    div()
-                        .mb(px(6.0 * z))
-                        .text_size(px(12.0 * z))
-                        .text_color(ui.title_dim)
-                        .child("Pick the board this block shows. Every block can show any board."),
-                )
-                .children(rows)
-                .child(new),
+                .text_size(px(13.0 * z))
+                .text_color(ws.ui.title_dim)
+                .child("No board open here"),
+        )
+        .child(
+            note::button(("board-new-here", n), IconName::Plus, "New board", ws, z)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.new_board(block, cx)))
+                .test_support(),
+        )
+        .child(
+            note::button(
+                ("board-open-here", n),
+                IconName::LayoutDashboard,
+                "Open a board…",
+                ws,
+                z,
+            )
+            .on_click(
+                cx.listener(move |_, _: &ClickEvent, window, cx| open_boards(block, window, cx)),
+            )
+            .test_support(),
         )
         .test_support()
         .into_any_element()
+}
+
+/// The Boards dialog: every board, and a field that finds them by their name and their cards'
+/// titles. A click, or New board, shows the board in the block `into`; its trash deletes it on a
+/// second click, and the blocks that showed it show none.
+pub(crate) fn open_boards(into: BlockId, window: &mut Window, cx: &mut Context<Workspace>) {
+    let kind = list_dialog::Kind {
+        title: "Boards",
+        prefix: "board",
+        find: "Find a board",
+        none: "No boards yet.",
+        no_match: "No board holds that.",
+        new: "New board",
+    };
+    list_dialog::open(
+        kind,
+        rows,
+        move |ws, id, _, cx| ws.show_board(into, id, cx),
+        |ws, id, _, cx| ws.delete_board(id, cx),
+        move |ws, _, cx| ws.new_board(into, cx),
+        window,
+        cx,
+    );
+}
+
+/// The Boards dialog's rows for `query`: each board's name, then its cards and where it is open
+/// ("12 cards · Open").
+fn rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
+    ws.boards
+        .find(query)
+        .into_iter()
+        .map(|board| {
+            let cards = match board.card_count() {
+                1 => "1 card".to_string(),
+                n => format!("{n} cards"),
+            };
+            let at = ws.board_open_at(board.id);
+            let detail: Vec<String> = [Some(cards), list_dialog::open_at(ws, at)]
+                .into_iter()
+                .flatten()
+                .collect();
+            list_dialog::Row {
+                id: board.id,
+                title: board.name.clone(),
+                detail: detail.join(" · "),
+                dot: None,
+            }
+        })
+        .collect()
 }
 
 fn board_view(

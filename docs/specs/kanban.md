@@ -31,22 +31,31 @@ same board stay in sync.
   (Ctrl+Shift+K, Cmd+Shift+K on macOS). It opens at the viewport's center, 900 × 540, and pops in like a terminal.
 - **The card around it** is a terminal's: the header with the title, ✕ and the resize grip, moving, resizing,
   focus, hover lift and the pop-in and fade-out. It can't be smaller than 420 × 280.
-- **Its title** is the board's name. The title stays the handle for moving the block; a ⇅ button at the left of
-  the header shows the board list in the block (and goes back to the board).
+- **Its title** is the board's name ("Boards" while it shows none). The title stays the handle for moving the
+  block; a button at the left of the header (gpui-kit's dashboard icon, tooltip "All boards") opens the
+  [Boards dialog](#the-boards-dialog) for the block.
 - **Everything inside scales with the zoom**, like a terminal's text.
 - **Undo:** with a kanban block focused, Ctrl+Z (Cmd+Z on macOS) undoes the last change to the boards (a card or a
   column added, moved, renamed or deleted, a label, a board added or deleted), up to 50. Typing in a card's dialog
   is undone in its fields. Delete card in a card's menu asks first. A comment added, an assignee freed, and an agent's
   change ([connections.md](connections.md#tools)) are steps of this Ctrl+Z too.
 
-### The board list
+### No board
 
-Shown by a new block, by the ⇅ button, and when its board was deleted.
+A new block, and a block whose board was deleted, say "No board open here" with **New board** (it creates "Board
+*n*" with three columns, To do, Doing and Done, and shows it) and **Open a board…** (the dialog, for the block).
 
-- One row per board: the name, and how many cards it has. Clicking a row shows that board in the block.
-- **+ New board** creates "Board *n*" with three columns, To do, Doing and Done, and shows it.
-- **Right-click a row:** Rename… and Delete…. Deleting asks first, saying how many cards go with it. Blocks showing
-  a deleted board show the list.
+### The Boards dialog
+
+The Notes and Checklists dialog ([checklist.md](checklist.md)), for boards: a field that finds a board by its name
+or a card's title, in any case; one row per board, in their order, with how many cards it has and where it is shown
+("12 cards · Open", "Open in Workspace 2"); **New board**.
+
+- A click on a row, or New board, shows that board in the block the dialog was opened for. Any number of blocks
+  can show one board.
+- **Its trash** deletes a board on a second click ("Click again to delete"); the blocks that showed it show none.
+- **The block's menu** (right-click its header) has All boards…, and for the board it shows Rename board… and
+  Delete board…, which asks first, saying how many cards go with it.
 
 ### The board
 
@@ -113,7 +122,7 @@ Every change applies as it is typed or clicked, so every block showing the board
   - `assignee` is the block id of the agent that claimed the card. A comment's `by` is an agent's block id, or
     `"you"` for the person; `at` is in Unix seconds.
 - **A canvas file** gets a second kind of item: `{ "kind": "kanban", "rect": {…}, "board": 1 }`. `board` is
-  missing for a block showing the board list. A Templum from before this spec sets such a file aside
+  missing for a block showing none. A Templum from before this spec sets such a file aside
   ([persistence.md](persistence.md#the-file)), as designed.
 - **Saving:** `boards.json` is written by the 5-second snapshot when the boards changed, and on quit, through the
   same temporary file and rename. A file Templum can't read is kept as `boards.json.bak` and the boards start empty.
@@ -123,7 +132,7 @@ Every change applies as it is typed or clicked, so every block showing the board
 | File | Change |
 |---|---|
 | `board.rs` (new) | The model (`Boards`, `Board`, `Column`, `Card`, `Label`) and every edit: add, rename, remove, move. Serde, as `session.rs` does. Pure and unit-tested. |
-| `kanban.rs` (new) | The kanban block's body (board list, columns, cards, drag and drop) and the card dialog. |
+| `kanban.rs` (new) | The kanban block's body (columns, cards, drag and drop, or no board), the Boards dialog and the card dialog. |
 | `prompt.rs` (new) | The text-field and confirmation dialogs, shared with the sidebar. |
 | `block.rs` | The card around any block; the terminal's body moves to its own function. |
 | `session.rs` | `Item::Kanban`; the layout and snapshot of kanban blocks; reading and writing `boards.json`. |
@@ -151,10 +160,11 @@ Tests are written first, as always.
 
 **Headless UI:**
 
-- the board button opens a kanban block showing the board list;
-- **+ New board** creates a board and shows it in the block;
+- the board button opens a kanban block showing no board, and its **New board** creates a board and shows it;
+- the Boards dialog finds a board by a card's title, shows it in the block, and deletes it on a second click;
+- the block's menu deletes the board it shows;
 - two blocks showing the same board both show a card added through one of them;
-- deleting a board sends its blocks back to the list;
+- deleting a board leaves its blocks with none;
 - kanban blocks and boards come back after a restart.
 
 **Manual (Hyprland):** drag cards and columns at zoom 0.5, 1 and 2; open, edit and delete a card; scroll a long

@@ -398,16 +398,45 @@ impl Items {
                     .disabled(!selection),
                 )
                 .item(item(ws, "Paste", None, |ws, _, cx| ws.paste_clipboard(cx))),
-            Items::Kanban { block, listing } => menu.item(item(
-                ws,
-                if listing {
-                    "Back to the board"
-                } else {
-                    "Board list"
-                },
-                Some(IconName::ChevronsUpDown),
-                move |ws, _, cx| ws.pick_board(block, cx),
-            )),
+            Items::Kanban { block, board } => {
+                let menu = menu.item(item(
+                    ws,
+                    "All boards…",
+                    Some(IconName::LayoutDashboard),
+                    move |_, window, cx| crate::kanban::open_boards(block, window, cx),
+                ));
+                let Some((board, name, n)) = board else {
+                    return menu;
+                };
+                let rename_name = name.clone();
+                menu.item(item(ws, "Rename board…", None, move |_, window, cx| {
+                    let ws = cx.entity();
+                    prompt::ask_text(
+                        "Rename board",
+                        "Rename",
+                        rename_name.clone(),
+                        move |text, _, cx| rename_board(&ws, board, &text, cx),
+                        window,
+                        cx,
+                    )
+                }))
+                .item(item(
+                    ws,
+                    "Delete board…",
+                    Some(IconName::Delete),
+                    move |_, window, cx| {
+                        let ws = cx.entity();
+                        prompt::confirm(
+                            format!("Delete {name}?"),
+                            cards(n),
+                            "Delete",
+                            move |_, cx| ws.update(cx, |ws, cx| ws.delete_board(board, cx)),
+                            window,
+                            cx,
+                        )
+                    },
+                ))
+            }
             Items::Agents { at, agents } => agent_items(ws, menu, agents, at),
             Items::Tree {
                 block,
@@ -1116,44 +1145,6 @@ impl Items {
                         },
                     )
                 }),
-            Items::Board {
-                block,
-                board,
-                name,
-                cards: n,
-            } => {
-                let rename_name = name.clone();
-                menu.item(item(ws, "Open", None, move |ws, _, cx| {
-                    ws.show_board(block, board, cx)
-                }))
-                .item(item(ws, "Rename…", None, move |_, window, cx| {
-                    let ws = cx.entity();
-                    prompt::ask_text(
-                        "Rename board",
-                        "Rename",
-                        rename_name.clone(),
-                        move |text, _, cx| rename_board(&ws, board, &text, cx),
-                        window,
-                        cx,
-                    )
-                }))
-                .item(item(
-                    ws,
-                    "Delete…",
-                    Some(IconName::Delete),
-                    move |_, window, cx| {
-                        let ws = cx.entity();
-                        prompt::confirm(
-                            format!("Delete {name}?"),
-                            cards(n),
-                            "Delete",
-                            move |_, cx| ws.update(cx, |ws, cx| ws.delete_board(board, cx)),
-                            window,
-                            cx,
-                        )
-                    },
-                ))
-            }
             Items::Column {
                 board,
                 column,

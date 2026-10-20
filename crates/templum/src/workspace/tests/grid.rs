@@ -579,7 +579,7 @@ fn a_blocks_menu_goes_in_flips_adds_leaves_and_comes_back(cx: &mut TestAppContex
         rect_of(&ws, cx, terminal),
         Rect::new(40.0, 400.0, 400.0, 300.0)
     );
-    // Board list, —, AI agent ▸, Add ▸, From the canvas ▸, —, Flip the split, Leave the grid,
+    // All boards…, —, AI agent ▸, Add ▸, From the canvas ▸, —, Flip the split, Leave the grid,
     // Back to the canvas…
     pick(handle, cx, kanban, 8, None);
     assert_eq!(tiles(cx), None, "the canvas again");
@@ -737,7 +737,7 @@ fn the_grids_menus_add_blocks(cx: &mut TestAppContext) {
     press(handle, TOGGLE, cx);
     let half = rect_of(&ws, cx, kanban);
     let count = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len());
-    // Board list, —, AI agent ▸, Add ▸: Terminal.
+    // All boards…, —, AI agent ▸, Add ▸: Terminal.
     let before = count(cx);
     pick(handle, cx, kanban, 3, Some(0));
     let terminal = added_since(&ws, cx, before)[0];

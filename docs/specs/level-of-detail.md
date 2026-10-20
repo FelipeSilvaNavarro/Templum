@@ -123,7 +123,7 @@ and it is unit-tested headlessly. `block::render` asks it for each block every f
   (`block.rs:454`), so it never spills onto another block.
 - The label **is** the title: the same `("title", n)` element with its handlers (press to move, double-click to
   frame, `block.rs:137-149`), and the dot keeps its id and tooltip (`("status", n)`, `block.rs:176-185`).
-- The header's small buttons at the top left (a kanban block's ⇅, a note's notebook, an editor's tree toggle,
+- The header's small buttons at the top left (a kanban block's boards, a note's notebook, an editor's tree toggle,
   `block.rs:190-290`) are hidden while the title is a label: the label sits there, and they are 5 px wide at 25%.
   The close button and the resize grip still show on hover (`block.rs:153-171`, `400-424`), and so do the resize
   strips (`block.rs:291-312`).

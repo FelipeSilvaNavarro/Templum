@@ -12,7 +12,7 @@ fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
 }
 
 #[gpui_kit::test]
-fn the_board_button_opens_a_block_with_the_board_list(cx: &mut TestAppContext) {
+fn the_board_button_opens_a_block_with_no_board_and_new_board_fills_it(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
@@ -25,8 +25,8 @@ fn the_board_button_opens_a_block_with_the_board_list(cx: &mut TestAppContext) {
     let block = top_kanban(&ws, cx);
     let n = block.0 as usize;
     cx.update_window(handle, |_, window, cx| {
-        assert!(window.try_find(("board-list", n)).is_some());
-        window.click(("new-board", n), cx);
+        assert!(window.try_find(("kanban-empty", n)).is_some());
+        window.click(("board-new-here", n), cx);
         window.render_frame(cx);
         assert!(
             window.try_find(("columns", n)).is_some(),
@@ -77,11 +77,127 @@ fn two_blocks_on_one_board_show_the_same_cards(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         for block in [a, b] {
-            let list = ("board-list", block.0 as usize);
-            assert!(window.try_find(list).is_some(), "back to the list");
+            let empty = ("kanban-empty", block.0 as usize);
+            assert!(window.try_find(empty).is_some(), "no board left there");
         }
     })
     .unwrap();
+}
+
+fn board_row(id: u64) -> gpui_kit::ElementId {
+    gpui_kit::ElementId::Name(format!("board-row-{id}").into())
+}
+
+fn board_trash(id: u64) -> gpui_kit::ElementId {
+    gpui_kit::ElementId::Name(format!("board-delete-{id}").into())
+}
+
+/// The header's All boards: the dialog finds a board by a card's title, a click shows it in the
+/// block, and its trash deletes it on a second click.
+#[gpui_kit::test]
+fn the_boards_dialog_finds_shows_and_deletes_a_board(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (block, a, b) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_kanban(window, cx);
+                let block = ws.space.canvas.top().unwrap();
+                let a = ws.boards.add_board();
+                let b = ws.boards.add_board();
+                let todo = ws.boards.board(b).unwrap().columns[0].id;
+                let card = ws.boards.add_card(b, todo).unwrap();
+                ws.boards
+                    .edit_card(b, card, |c| c.title = "Ship the release".into());
+                ws.space.appearing.clear();
+                ws.space.flight = None;
+                (block, a, b)
+            })
+        })
+        .unwrap();
+    let n = block.0 as usize;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("boards", n), cx);
+        window.render_frame(cx);
+        window.find(board_row(a));
+        window.find(board_row(b));
+    })
+    .unwrap();
+    cx.simulate_input(handle, "RELEASE");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(board_row(a)).is_none(),
+            "the search leaves it out"
+        );
+        window.click(board_row(b), cx);
+        window.render_frame(cx);
+        assert!(window.try_find(board_row(b)).is_none(), "the dialog closed");
+    })
+    .unwrap();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.kanban(block).unwrap().board),
+        Some(b),
+        "the block shows it"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("boards", n), cx);
+        window.render_frame(cx);
+        window.click(board_trash(b), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        ws.read_with(cx, |ws, _| ws.boards.board(b).is_some()),
+        "one click asks"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.click(board_trash(b), cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("kanban-empty", n)).is_some(),
+            "the block shows none"
+        );
+    })
+    .unwrap();
+    assert!(
+        ws.read_with(cx, |ws, _| ws.boards.board(b).is_none()),
+        "deleted"
+    );
+}
+
+/// A kanban block's menu: All boards…, then Rename board… and Delete board… for the board it
+/// shows.
+#[gpui_kit::test]
+fn the_blocks_menu_deletes_the_board_it_shows(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (block, board) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_kanban(window, cx);
+                let block = ws.space.canvas.top().unwrap();
+                ws.new_board(block, cx);
+                ws.space.appearing.clear();
+                ws.space.flight = None;
+                (block, ws.space.kanban(block).unwrap().board.unwrap())
+            })
+        })
+        .unwrap();
+    let n = block.0 as usize;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("title", n), cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(2usize, cx);
+        window.render_frame(cx);
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+        assert!(window.try_find(("kanban-empty", n)).is_some());
+    })
+    .unwrap();
+    assert!(ws.read_with(cx, |ws, _| ws.boards.board(board).is_none()));
 }
 
 #[gpui_kit::test]

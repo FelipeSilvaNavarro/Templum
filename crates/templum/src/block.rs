@@ -418,30 +418,17 @@ pub(crate) fn render(
         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.fullscreen(id, window, cx)))
         .test_support();
 
-    // A kanban block's board list, on the left of its header (over the title: no move).
+    // A kanban block's button to every board, on the left of its header (over the title: no move).
     let boards = match body {
-        Body::Kanban(_) if live && !labeled => Some(
-            div()
-                .id(("boards", n))
-                .absolute()
-                .top(px(4.0 * z))
-                .left(px(4.0 * z))
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(20.0 * z))
-                .rounded(px(5.0 * z))
-                .cursor_pointer()
-                .hover(move |s| s.bg(ui.hover))
-                .child(
-                    Icon::new(IconName::ChevronsUpDown)
-                        .size(px(12.0 * z))
-                        .text_color(ui.title),
-                )
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.pick_board(id, cx)))
-                .test_support(),
-        ),
+        Body::Kanban(_) if live && !labeled => Some(header_button(
+            ws,
+            ("boards", n).into(),
+            IconName::LayoutDashboard,
+            "All boards",
+            z,
+            move |_, window, cx| kanban::open_boards(id, window, cx),
+            cx,
+        )),
         _ => None,
     };
     // A note block's button to every note, on the left of its header (over the title: no move).

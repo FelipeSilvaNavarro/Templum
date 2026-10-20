@@ -171,10 +171,7 @@ impl Workspace {
                     id
                 }
                 NewBlock::Kanban { board } => {
-                    let kanban = Kanban {
-                        board: Some(board),
-                        picking: false,
-                    };
+                    let kanban = Kanban { board: Some(board) };
                     Some(ws.add_block(rect, Body::Kanban(kanban)))
                 }
                 NewBlock::Editor { folder } => {

@@ -299,6 +299,24 @@ impl Boards {
         self.boards.retain(|b| b.id != id);
     }
 
+    /// The boards whose name or a card's title holds `query`, in any case; all of them for a
+    /// blank one. In their order.
+    pub fn find(&self, query: &str) -> Vec<&Board> {
+        let query = query.trim().to_lowercase();
+        let holds = |text: &str| text.to_lowercase().contains(&query);
+        self.boards
+            .iter()
+            .filter(|b| {
+                query.is_empty()
+                    || holds(&b.name)
+                    || b.columns
+                        .iter()
+                        .flat_map(|c| &c.cards)
+                        .any(|c| holds(&c.title))
+            })
+            .collect()
+    }
+
     /// "New column" after the last one; returns its id.
     pub fn add_column(&mut self, board: u64) -> Option<u64> {
         let id = self.next();
@@ -553,6 +571,18 @@ mod tests {
             "Board 3",
             "Board 2 is taken"
         );
+    }
+
+    #[test]
+    fn find_takes_the_name_and_the_cards_titles_in_any_case() {
+        let (mut boards, abc, ..) = abc();
+        let other = boards.add_board();
+        boards.rename_board(other, "Release");
+        let ids = |found: Vec<&Board>| found.iter().map(|b| b.id).collect::<Vec<_>>();
+        assert_eq!(ids(boards.find("  ")), [abc, other], "all, in their order");
+        assert_eq!(ids(boards.find("RELEASE")), [other], "by the name");
+        assert_eq!(ids(boards.find("c")), [abc], "by a card's title");
+        assert!(boards.find("nothing").is_empty());
     }
 
     #[test]
