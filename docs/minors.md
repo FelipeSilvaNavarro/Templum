@@ -66,6 +66,13 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
 
 From batches 3 and 4 (line numbers of `development` at 5046612).
 
+- [ ] **The branch dialog's rows are bare names, not the Branches tab's two-line rows.** The dialog that switches and
+  creates (`crates/templum/src/git_block/switcher.rs`, `open`) uses gpui-kit's `Command` palette with plain
+  `CommandItem`s: a name, the current one checked, no ↑↓ against the upstream, no last commit's subject or age. A
+  `CommandItem::child` could draw them, but gpui-component re-measures every row of a palette with custom children on
+  each frame (`CommandItem::same_layout`), which a repository with hundreds of remote branches would feel. Fix: draw
+  them as `child` rows only for the first ~50 matches, or measure once.
+
 - [ ] **A comparison's "⋯ 40 unchanged lines" does nothing when clicked.** `fold_row`
   (`crates/templum/src/git_block/diff_view/paint.rs:460`) is inert on a read-only panel: Compare's diff is read once
   with git's 3 lines of context. Fix: read that file of the range again with `-U` and its length (as `show_whole`
