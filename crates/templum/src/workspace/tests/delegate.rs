@@ -6,12 +6,9 @@ use std::time::Instant;
 use serde_json::json;
 use templum_canvas::Wire;
 
-use super::bus::{
-    after, answered, call, call_later, event, has_server, history_with, me, screen_with,
-    server_gone,
-};
+use super::bus::{after, answered, call, call_later, event, has_server, me, screen_with};
 #[cfg(unix)]
-use super::bus::{bus_note, result_of, screen_until};
+use super::bus::{bus_note, history_with, result_of, screen_until, server_gone};
 use super::*;
 
 /// Two terminals side by side and wired: mine at (40, 100) and theirs at (900, 100), 700 × 300
@@ -333,6 +330,15 @@ fn the_reason_an_agent_has_no_tools_is_the_first_that_fits(cx: &mut TestAppConte
     let own = tempfile::tempdir().unwrap();
     crate::agents::OWN_FOLDERS.set(Some(own.path().to_path_buf()));
     ws.update(cx, |ws, _| ws.data_dir = Some(data.path().to_path_buf()));
+    // Not the machine's default shell: a WSL one would be the first reason.
+    let shell = |program: &str| templum_terminal::ShellOption {
+        label: program.into(),
+        program: program.into(),
+        args: Vec::new(),
+    };
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(theirs).unwrap().shell = Some(shell("sh"))
+    });
     let why = |cx: &mut TestAppContext, agent: &str| {
         ws.update(cx, |ws, _| {
             ws.space.terminal_mut(theirs).unwrap().seen.agent = Some(agent.into())
@@ -346,7 +352,7 @@ fn the_reason_an_agent_has_no_tools_is_the_first_that_fits(cx: &mut TestAppConte
         "{}",
         why(cx, "claude")
     );
-    assert_eq!(why(cx, "pi"), "Pi has MCP only from 0.99",);
+    assert_eq!(why(cx, "pi"), "Pi has MCP only from 0.99");
     assert_eq!(
         why(cx, "gemini"),
         "Templum's Gemini CLI extension isn't installed (Settings ▸ Connections ▸ Gemini CLI ▸ Install)"
@@ -359,11 +365,7 @@ fn the_reason_an_agent_has_no_tools_is_the_first_that_fits(cx: &mut TestAppConte
         "Gemini CLI starts no server in a folder it doesn't trust"
     );
     ws.update(cx, |ws, _| {
-        ws.space.terminal_mut(theirs).unwrap().shell = Some(templum_terminal::ShellOption {
-            label: "WSL".into(),
-            program: "C:/Windows/System32/wsl.exe".into(),
-            args: Vec::new(),
-        })
+        ws.space.terminal_mut(theirs).unwrap().shell = Some(shell("C:/Windows/System32/wsl.exe"))
     });
     assert_eq!(
         why(cx, "claude"),

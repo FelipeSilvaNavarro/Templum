@@ -178,6 +178,7 @@ pub(super) fn has_server(
 }
 
 /// The bridge of `terminal`'s MCP client on connection `conn` ended: its server is gone.
+#[cfg(unix)]
 pub(super) fn server_gone(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
@@ -287,6 +288,7 @@ pub(super) fn screen_until(
 
 /// `screen_with`, also in the history: a task is longer than the screen, whose start has scrolled
 /// off by the time it is looked at. A wrapped line is one line, as the terminal gives it.
+#[cfg(unix)]
 #[track_caller]
 pub(super) fn history_with(
     ws: &Entity<Workspace>,
