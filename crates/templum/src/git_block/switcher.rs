@@ -3,6 +3,7 @@
 //! over the local branches, then the remote ones; Enter switches (through the question about
 //! changes); a name no branch has offers to create it. See docs/specs/git.md, section 1, Header.
 
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui_kit::assets::IconName;
@@ -115,6 +116,25 @@ pub(crate) fn groups(
     groups
 }
 
+/// The pick for a confirmation at row `at` (section, row) of `picks`, the rows drawn for the text
+/// `built_for`. The rows are rebuilt at render, so text typed since the last frame has none yet and
+/// `at` points into the old text's (`fe` would be created for a typed `fea`): the first row of
+/// the text `typed` now is the one.
+fn confirmed(
+    picks: &[Vec<Pick>],
+    at: (usize, usize),
+    built_for: &str,
+    typed: &str,
+    branches: &[Branch],
+    create_first: bool,
+) -> Option<Pick> {
+    if typed == built_for {
+        return picks.get(at.0).and_then(|p| p.get(at.1)).cloned();
+    }
+    let rows = groups(branches, typed, create_first);
+    rows.into_iter().flat_map(|(_, picks)| picks).next()
+}
+
 /// Opens the dialog for the Git `here` names: its answer acts there, whatever shows then. From a
 /// commit (`opened`) the dialog only creates, at that commit; else it lists `branches` and creates
 /// at HEAD.
@@ -128,6 +148,7 @@ pub(crate) fn open(
     cx: &mut App,
 ) {
     let create_first = opened != Opened::Header;
+    let branches: Rc<[Branch]> = branches.into();
     let from = match opened {
         Opened::Commit(commit) => Some(commit),
         Opened::Header | Opened::Create => None,
@@ -149,7 +170,7 @@ pub(crate) fn open(
     window.open_dialog(cx, move |dialog, _, cx| {
         // The dialog is drawn on every frame: its rows follow the query.
         let query = palette.read(cx).query(cx);
-        let groups = groups(&branches, &query, create_first);
+        let rows = groups(&branches, &query, create_first);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
@@ -157,7 +178,7 @@ pub(crate) fn open(
             .filterable(false)
             .placeholder(placeholder)
             .empty(move |_, _, _| div().p(px(12.0)).text_color(dim).child(nothing));
-        for (label, picks) in &groups {
+        for (label, picks) in &rows {
             let items = picks.iter().map(|pick| match pick {
                 Pick::Switch(b) => {
                     let b = b.clone();
@@ -179,13 +200,16 @@ pub(crate) fn open(
             };
             command = command.group(group.items(items));
         }
-        let picks: Vec<Vec<Pick>> = groups.into_iter().map(|(_, picks)| picks).collect();
+        let picks: Vec<Vec<Pick>> = rows.into_iter().map(|(_, picks)| picks).collect();
         let (ws, here, from) = (ws.clone(), here.clone(), from.clone());
+        let (palette, branches) = (palette.clone(), branches.clone());
         dialog
             .title(title.clone())
             .w(px(420.0))
             .child(command.on_confirm(move |at, window, cx| {
-                let pick = picks.get(at.section).and_then(|p| p.get(at.row)).cloned();
+                let typed = palette.read(cx).query(cx);
+                let at = (at.section, at.row);
+                let pick = confirmed(&picks, at, &query, &typed, &branches, create_first);
                 let Some(pick @ (Pick::Switch(_) | Pick::Create(_))) = pick else {
                     return;
                 };
@@ -373,6 +397,50 @@ mod tests {
         );
         // Nothing typed names nothing: git's order stays.
         assert_eq!(names(groups(&branches, "", false))[0], "feature/login",);
+    }
+
+    #[test]
+    fn text_typed_since_the_last_frame_is_confirmed_by_its_own_first_row() {
+        let branches = sample();
+        let drawn = |text: &str, create_first: bool| -> Vec<Vec<Pick>> {
+            let rows = groups(&branches, text, create_first);
+            rows.into_iter().map(|(_, picks)| picks).collect()
+        };
+        // From a create entry, the frame drew "fe" (its creation first); "fea" is typed now.
+        assert_eq!(
+            confirmed(&drawn("fe", true), (0, 0), "fe", "fea", &branches, true),
+            Some(Pick::Create("fea".to_string()))
+        );
+        // From the header, the frame drew "main" (a switch); "main2" matches nothing: a creation.
+        assert_eq!(
+            confirmed(
+                &drawn("main", false),
+                (0, 0),
+                "main",
+                "main2",
+                &branches,
+                false
+            ),
+            Some(Pick::Create("main2".to_string()))
+        );
+        // Nothing typed since: the row asked for, any row.
+        assert_eq!(
+            confirmed(
+                &drawn("main", false),
+                (1, 0),
+                "main",
+                "main",
+                &branches,
+                false
+            ),
+            Some(switch("origin/main", true, false))
+        );
+        assert_eq!(confirmed(&[], (0, 0), "", "", &branches, false), None);
+        // Typed away to nothing: every branch is listed, the first one is the row.
+        assert_eq!(
+            confirmed(&drawn("main", false), (0, 0), "main", "", &branches, false),
+            Some(switch("main", false, true))
+        );
     }
 
     #[test]
