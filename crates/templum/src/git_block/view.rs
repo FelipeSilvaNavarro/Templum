@@ -138,7 +138,7 @@ pub(crate) fn popup(
         .into_any_element()
 }
 
-/// Under the folder's name: the branch (a click opens the switcher), where it stands with the
+/// Under the folder's name: the branch (a click opens the branch dialog), where it stands with the
 /// server, and the terminals working in the repository.
 fn branch_line(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> impl IntoElement {
     let ui = ws.ui;
@@ -176,7 +176,7 @@ fn branch_line(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> impl I
                 .hover(move |st| st.text_color(ui.accent))
                 .child(Icon::new(IconName::GitBranch).size(px(12.0)))
                 .child(div().truncate().child(branch))
-                .tooltip(|window, cx| Tooltip::new("Switch branch").build(window, cx))
+                .tooltip(|window, cx| Tooltip::new("Switch or create a branch").build(window, cx))
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                     ws.open_branch_dialog(None, window, cx)
                 }))
