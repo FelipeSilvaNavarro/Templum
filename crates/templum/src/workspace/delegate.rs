@@ -343,21 +343,26 @@ impl Workspace {
             )));
         }
         let worker = pane.term.id().to_string();
-        // The asker answers a dialog of the agent that went quiet on its task: it waits for the
-        // task again, and a screen that stays still after the keys tells it once more
-        // (docs/specs/agent-protocol.md, 5).
-        if let Some(pane) = self.pane_mut(&worker)
+        self.asker_wrote(&worker, asker);
+        let said = match keys.len() {
+            1 => format!("Pressed 1 key in {block}."),
+            n => format!("Pressed {n} keys in {block}."),
+        };
+        Outcome::Later(self.press_keys(worker, by.to_string(), keys, said, cx))
+    }
+
+    /// `asker` wrote into the agent in `terminal` (keys, typed text, a reply): that is how it
+    /// answers a dialog of an agent that went quiet on the task `asker` handed it, so the agent
+    /// waits for the task again, and a screen that stays still after the writing tells `asker`
+    /// once more (docs/specs/agent-protocol.md, 5). Anyone else's writing changes nothing.
+    pub(super) fn asker_wrote(&mut self, terminal: &str, asker: &str) {
+        if let Some(pane) = self.pane_mut(terminal)
             && let Some(handed) = pane.handed.as_mut().filter(|h| h.by == asker && h.quiet)
         {
             handed.quiet = false;
             pane.state = Some(AgentState::Working);
             pane.looks.heard();
         }
-        let said = match keys.len() {
-            1 => format!("Pressed 1 key in {block}."),
-            n => format!("Pressed {n} keys in {block}."),
-        };
-        Outcome::Later(self.press_keys(worker, by.to_string(), keys, said, cx))
     }
 
     /// `interrupt` from the terminal `from`: Esc once in the agent `block` while it works or waits
@@ -900,6 +905,7 @@ impl Workspace {
                 self.signature(space, me, cx)
             );
             self.send_task(&asker, &reply, false, cx);
+            self.asker_wrote(&asker, from);
         }
         if let Some(mine) = self.pane_mut(from) {
             mine.answer = Some(text.to_string());
@@ -993,14 +999,15 @@ impl Workspace {
         let mine = pane.handed.as_ref().is_some_and(|h| h.by == from);
         // Another agent waits for its turn, not its task: a turn that ended while the task stays
         // open (it waits on a task of its own, or went quiet) answers it now
-        // (docs/specs/agent-protocol.md, 4 and 5).
+        // (docs/specs/agent-protocol.md, 4 and 5). Its last answer is its turn's only where its
+        // hooks refresh it at each turn's end: an agent without them may hold one of an earlier task.
         let quiet = pane.handed.as_ref().is_some_and(|h| h.quiet);
         let rests = !mine
             && pane.state == Some(AgentState::Idle)
             && (quiet || self.waits_on_its_own(worker));
         if rests {
             return Outcome::Now(match &pane.answer {
-                Some(answer) if !quiet => Reply::ok(answer),
+                Some(answer) if !quiet && pane.speaks => Reply::ok(answer),
                 _ => self.still_screen(worker),
             });
         }

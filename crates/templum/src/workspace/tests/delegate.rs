@@ -3016,13 +3016,22 @@ fn a_sub_task_that_went_quiet_doesnt_keep_the_subagents_task_open(cx: &mut TestA
     );
 }
 
-/// A → B → C: C went quiet on a dialog and B was told. B answers it with `send_keys`, and its turn
-/// ends ("waiting for C"): the keys of the asker start C's wait over, so B's task stays open, and
-/// a C whose screen stays still after them tells B again (docs/specs/agent-protocol.md, 5).
+/// A → B → C: B (hooks) took A's task and handed C (Templum's tools, no hooks) one; C went still
+/// on a dialog and B was told.
 #[cfg(unix)]
-#[gpui_kit::test]
-fn the_masters_keys_start_a_quiet_agents_wait_over(cx: &mut TestAppContext) {
-    use crate::workspace::AgentState;
+struct Quiet {
+    handle: AnyWindowHandle,
+    ws: Entity<Workspace>,
+    mine: BlockId,
+    theirs: BlockId,
+    third: BlockId,
+    /// B's terminal, and C's id as B names it.
+    worker: String,
+    other: String,
+}
+
+#[cfg(unix)]
+fn quiet_subagent(cx: &mut TestAppContext) -> Quiet {
     let (handle, ws, mine, theirs) = two_agents(cx);
     let third = another_agent(handle, &ws, cx, theirs);
     asker(&ws, cx, mine);
@@ -3057,39 +3066,95 @@ fn the_masters_keys_start_a_quiet_agents_wait_over(cx: &mut TestAppContext) {
         after(cx, 1000);
     }
     assert_eq!(told_quiet(&ws, cx, third), Some(true));
+    Quiet {
+        handle,
+        ws,
+        mine,
+        theirs,
+        third,
+        worker,
+        other,
+    }
+}
+
+#[cfg(unix)]
+impl Quiet {
+    /// B wrote into C (its dialog answered): C waits for its task again, and B's turn ends
+    /// ("waiting for C") without ending B's own task.
+    fn master_waits_again(&self, cx: &mut TestAppContext) {
+        use crate::workspace::AgentState;
+        assert_eq!(told_quiet(&self.ws, cx, self.third), Some(false));
+        assert_eq!(
+            state_of(&self.ws, cx, self.third),
+            Some(AgentState::Working)
+        );
+        let waiting =
+            json!({ "event": "stopped", "message": "Answered C's dialog; waiting for C." });
+        event(self.handle, &self.ws, cx, &self.worker, waiting);
+        after(cx, 1000);
+        assert_eq!(task_of(&self.ws, cx, self.theirs), Some(1));
+    }
+}
+
+/// A → B → C: C went quiet on a dialog and B was told. B answers it with `send_keys`, and its turn
+/// ends ("waiting for C"): the keys of the asker start C's wait over, so B's task stays open, and
+/// a C whose screen stays still after them tells B again (docs/specs/agent-protocol.md, 5).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_masters_keys_start_a_quiet_agents_wait_over(cx: &mut TestAppContext) {
+    let q = quiet_subagent(cx);
+    let (handle, ws, theirs, third) = (q.handle, &q.ws, q.theirs, q.third);
     // B answers the dialog.
-    let keys = json!({ "block": other, "keys": ["2"] });
-    let answers = call_later(handle, &ws, cx, &worker, 8, "send_keys", keys);
+    let keys = json!({ "block": q.other, "keys": ["2"] });
+    let answers = call_later(handle, ws, cx, &q.worker, 8, "send_keys", keys);
     assert!(!heard(cx, &answers).0);
-    assert_eq!(told_quiet(&ws, cx, third), Some(false));
-    assert_eq!(state_of(&ws, cx, third), Some(AgentState::Working));
     // Its turn ends: it waits for C again, so its own task stays.
-    let waiting = json!({ "event": "stopped", "message": "Answered C's dialog; waiting for C." });
-    event(handle, &ws, cx, &worker, waiting);
-    after(cx, 1000);
-    assert_eq!(task_of(&ws, cx, theirs), Some(1));
+    q.master_waits_again(cx);
     for _ in 0..2 {
         after(cx, 1000);
     }
     assert_eq!(
-        told_quiet(&ws, cx, third),
+        told_quiet(ws, cx, third),
         Some(false),
         "not still for 5 looks yet"
     );
     // C's screen stays still after the keys: B is told again, and its next turn's end answers.
     let deadline = Instant::now() + std::time::Duration::from_secs(10);
-    while told_quiet(&ws, cx, third) != Some(true) {
+    while told_quiet(ws, cx, third) != Some(true) {
         assert!(Instant::now() < deadline, "told again");
         after(cx, 1000);
     }
-    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    event(handle, ws, cx, &q.worker, json!({ "event": "submitted" }));
     let line = json!({ "event": "stopped", "message": "Line 42." });
-    event(handle, &ws, cx, &worker, line);
+    event(handle, ws, cx, &q.worker, line);
     after(cx, 1000);
-    assert_eq!(task_of(&ws, cx, theirs), None);
-    assert_eq!(task_of(&ws, cx, third), Some(2), "C is still on its task");
-    let shown = screen_with(&ws, cx, mine, "Line 42.");
+    assert_eq!(task_of(ws, cx, theirs), None);
+    assert_eq!(task_of(ws, cx, third), Some(2), "C is still on its task");
+    let shown = screen_with(ws, cx, q.mine, "Line 42.");
     assert!(shown.contains("[task t1 from "), "{shown}");
+}
+
+/// The same with `send_to_terminal`: the master's "y" and Enter answer C's dialog as its keys do.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_masters_typed_text_starts_a_quiet_agents_wait_over(cx: &mut TestAppContext) {
+    let q = quiet_subagent(cx);
+    let typed = json!({ "block": q.other, "text": "y", "enter": true });
+    let answers = call_later(q.handle, &q.ws, cx, &q.worker, 8, "send_to_terminal", typed);
+    assert!(!heard(cx, &answers).0);
+    q.master_waits_again(cx);
+}
+
+/// The same with `reply` to C: the master's message, typed into C, answers its dialog.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_masters_reply_to_a_quiet_agent_starts_its_wait_over(cx: &mut TestAppContext) {
+    let q = quiet_subagent(cx);
+    let said = json!({ "block": q.other, "text": "Take the second one." });
+    let (failed, text) = call(q.handle, &q.ws, cx, &q.worker, "reply", said);
+    assert!(!failed && text.starts_with("Typed into"), "{text}");
+    enter(cx);
+    q.master_waits_again(cx);
 }
 
 /// Another agent's `wait_for_idle` on a subagent whose turn already ended while it waits on a task
@@ -3129,6 +3194,48 @@ fn waiting_for_a_subagent_that_waits_on_its_own_task_ended_its_turn(cx: &mut Tes
     assert!(masters.try_recv().is_err(), "its master's wait stays");
     assert!(delegated.try_recv().is_err());
     assert_eq!(task_of(&ws, cx, theirs), Some(1));
+}
+
+/// A subagent without hooks keeps the answer of its last task: another agent waiting for its turn,
+/// which ended while it waits on a task of its own, gets its still screen, not that answer
+/// (docs/specs/agent-protocol.md, 4).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn waiting_for_a_subagent_without_hooks_isnt_answered_with_an_earlier_task(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let third = another_agent(handle, &ws, cx, theirs);
+    asker(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let (helper, other) = me(&ws, cx, third);
+    has_server(handle, &ws, cx, &worker, 7);
+    // B (tools, no hooks) answers t1 with `reply`, takes t2, hands C a sub-task and goes still.
+    let task = json!({ "block": them, "task": "one", "wait": true });
+    let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    screen_with(&ws, cx, theirs, "one");
+    enter(cx);
+    let answer = json!({ "text": "Answer to t1." });
+    call(handle, &ws, cx, &worker, "reply", answer);
+    assert_eq!(answered(&delegated), (false, "Answer to t1.".into()));
+    let next = json!({ "block": them, "task": "two" });
+    call(handle, &ws, cx, &terminal, "delegate", next);
+    screen_with(&ws, cx, theirs, "two");
+    enter(cx);
+    let sub = json!({ "block": other, "task": "look" });
+    call(handle, &ws, cx, &worker, "delegate", sub);
+    ticks(&ws, cx, theirs, 0, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    assert_eq!(task_of(&ws, cx, theirs), Some(2));
+    let idle = json!({ "block": them });
+    let (failed, text) = call(handle, &ws, cx, &helper, "wait_for_idle", idle);
+    assert!(
+        !failed && text.starts_with("Its screen has been still for 5 seconds"),
+        "{text}"
+    );
 }
 
 /// The same when it went quiet (no hooks): the others get its still screen at once.

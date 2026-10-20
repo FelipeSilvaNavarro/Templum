@@ -196,7 +196,8 @@ impl Workspace {
             ControlCall::Block(Call::SendToTerminal { block, text, enter }) => {
                 return match self.find_block(&block) {
                     Some((space, id)) => {
-                        let typed = self.type_text((&space, id), &block, &text, enter, cx);
+                        let asker = templum_agent::ASKER;
+                        let typed = self.type_text(asker, (&space, id), &block, &text, enter, cx);
                         let target = Target {
                             workspace: Some(space),
                             block: Some(block),

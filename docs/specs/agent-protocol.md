@@ -168,15 +168,19 @@ a turn with nothing handed out any more) ends its task. Its screen going still m
 
 Two exceptions. A task whose agent went quiet (5) isn't waited for any more: its master was told, reads that agent's
 screen and answers its own task with its turn's end, as it would if the sub-task were over; a `delegate` of it to that
-agent again (a change), or `send_keys` from its master into it (its dialog answered), starts the wait over. And the calls of other agents that wait for the subagent's turn
+agent again (a change), or anything its master writes into it (`send_keys`, `send_to_terminal`, a `reply` to it: its
+dialog answered), starts the wait over. And the calls of other agents that wait for the subagent's turn
 (`wait_for_idle` on an agent they didn't hand the task) don't wait for its task: the turn's end, or its screen going
-still, answers them as it would any turn, with its last message or the still-screen text.
+still, answers them as it would any turn, with its last message or the still-screen text. The last message only where
+its hooks refresh it at each turn's end: an agent without hooks may hold the answer of an earlier task, so for it they
+get the still-screen text.
 
 ### 5. Quiet: a still screen and no answer
 
 An agent that has Templum's tools but no hooks, on a task, whose screen stays still for 5 looks after it worked (the
-same looks as today), went quiet without answering. Once per task (`Handed::quiet`; a change, or keys from the asker,
-starts it over, and a screen that stays still after the keys tells it again):
+same looks as today), went quiet without answering. Once per task (`Handed::quiet`; a change, or anything the asker
+writes into it (keys, typed text, a reply), starts it over, and a screen that stays still after the writing tells it
+again):
 
 - the asker's calls that wait for the task get, as an error result (it is no answer), "k9x1d hasn't answered task t7:
   its screen has been still for 5 seconds. It may be done without replying, stopped, or asking its person. The task
@@ -197,7 +201,8 @@ refused until its timeout), and ends as 3 says: its reply, its agent leaving, it
   the person, and once per wait `[task t7 from … waits for its person: Allow Bash?] Its screen is in the pasted
   text.` to its master, which can answer with `send_keys` (the wire is the person's consent).
 - **Where no hook hears them:** the screen goes still, so 5's notice (with tools) or the task's end (without) carries
-  the dialog as drawn, and the master can still `send_keys`; with tools the task stays open across that answer.
+  the dialog as drawn, and the master can still answer it with `send_keys`, `send_to_terminal` or a `reply` to it; with
+  tools the task stays open across that answer.
 - **Its questions to the person:** the server's instructions ask for `ask_user`, whose balloon Templum hears; as card
   30 wants, its master isn't told of them.
 - **`reply` itself asks nothing** (9).
@@ -316,13 +321,15 @@ No test needs a real agent: CI (Linux, macOS, Windows) has none.
   on its turn (`wait_for_idle` from another agent) with the still-screen text, or they would hang until their timeout.
 - **Quiet answers other agents' waits at every still screen**, and the asker's call or notice once per task (a change
   starts it over). An agent that waits for a task of its own is left alone, with or without Templum's tools.
-- **Keys from the asker start quiet over, typed text doesn't.** `send_keys` is how the master answers a dialog (6), so
-  its keys into an agent that went quiet clear `quiet`, set it to work again and start its looks over: the master's
-  turn ending with "answered, waiting" no longer ends its own task, and a screen still after the keys tells it once
-  more. `send_to_terminal` is another path (`type_text`, no asker, no task check, also the Templum Agent's) and stays
-  as it was.
+- **Anything the asker writes into a quiet agent starts quiet over.** The master answers a dialog (6) with `send_keys`,
+  `send_to_terminal` (also the Templum Agent's, whose asker is `ASKER`) or a `reply` to the agent that types the text in
+  (not one that a waiting call takes). Each clears `quiet`, sets the agent to work again and starts its looks over
+  (`Workspace::asker_wrote`, one helper all of them call): the master's turn ending with "answered, waiting" no longer
+  ends its own task, and a screen still after the writing tells it once more. Another agent's writing changes nothing.
 - **`wait_for_idle` from an agent that isn't the asker** answers at once when the subagent's turn already ended (idle)
-  and its task stays open for one of its own or because it went quiet, as it would have at that turn's end (4).
+  and its task stays open for one of its own or because it went quiet, as it would have at that turn's end (4). With
+  its last message only for an agent whose hooks speak: one without them holds the answer of its last task, maybe an
+  earlier one, and its still screen answers instead.
 - **"Handed out" means since its own task was handed to it** (4): a task it handed out before, which nobody ended, is
   not what this one waits for, or a forgotten sub-task would keep every later task of that agent open.
 - **`reply` to a block that is not the caller's asker** still sets the replier's last answer, as before; it ends no

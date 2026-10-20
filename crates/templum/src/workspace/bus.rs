@@ -461,7 +461,7 @@ impl Workspace {
                     Ok(id) => id,
                     Err(reply) => return Outcome::Now(reply),
                 };
-                return self.type_text((&space_id, id), &block, &text, enter, cx);
+                return self.type_text(terminal, (&space_id, id), &block, &text, enter, cx);
             }
             Call::Notify { text } => {
                 let (_, title, _) = self.about(&space.blocks[&me], cx);

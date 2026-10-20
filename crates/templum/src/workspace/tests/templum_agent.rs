@@ -1081,6 +1081,42 @@ fn a_grant_lets_the_tool_through(cx: &mut TestAppContext) {
     });
 }
 
+/// The Templum Agent's text, typed into an agent that went quiet on the task it handed it,
+/// answers its dialog as `send_keys` does: the agent waits for the task again
+/// (docs/specs/agent-protocol.md, 5).
+#[gpui_kit::test]
+fn its_typed_text_starts_a_quiet_agents_wait_over(cx: &mut TestAppContext) {
+    use crate::workspace::{AgentState, Handed};
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&first].clone());
+    let quiet = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(first)
+                .unwrap()
+                .handed
+                .as_ref()
+                .map(|h| h.quiet)
+        })
+    };
+    ws.update(cx, |ws, _| {
+        ws.templum_agent.grants.insert("send_to_terminal".into());
+        let pane = ws.space.terminal_mut(first).unwrap();
+        pane.state = Some(AgentState::Idle);
+        pane.handed = Some(Handed {
+            quiet: true,
+            ..Handed::new(::templum_agent::ASKER, std::time::Duration::from_secs(600))
+        });
+    });
+    let typed = json!({"block": uid, "text": "y"});
+    let (failed, text) = control(handle, &ws, cx, "send_to_terminal", typed);
+    assert!(!failed, "{text}");
+    assert_eq!(quiet(&ws, cx), Some(false));
+    let state = ws.read_with(cx, |ws, _| ws.space.terminal(first).unwrap().state.clone());
+    assert_eq!(state, Some(AgentState::Working));
+}
+
 #[gpui_kit::test]
 fn its_own_running_agent_closes_without_asking(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
