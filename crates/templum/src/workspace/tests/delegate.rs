@@ -2875,6 +2875,156 @@ fn a_quiet_agent_waiting_on_its_own_task_says_nothing(cx: &mut TestAppContext) {
     });
 }
 
+/// The id of the task handed to terminal block `id`'s agent.
+#[cfg(unix)]
+fn task_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Option<u64> {
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(id).unwrap().handed.as_ref().map(|h| h.id)
+    })
+}
+
+/// Whether the master of the task handed to terminal block `id`'s agent was told it went quiet.
+#[cfg(unix)]
+fn told_quiet(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Option<bool> {
+    ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(id)
+            .unwrap()
+            .handed
+            .as_ref()
+            .map(|h| h.quiet)
+    })
+}
+
+/// A → B → C: C (Templum's tools, no hooks) went quiet on the task B handed it, and B was told. It
+/// stays on it, but B no longer waits for it: B's turn's end answers B's own task, which A hears.
+/// A new `delegate` of B to C starts the wait over (docs/specs/agent-protocol.md, 4).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_sub_task_that_went_quiet_doesnt_keep_the_subagents_task_open(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let third = another_agent(handle, &ws, cx, theirs);
+    asker(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let (helper, other) = me(&ws, cx, third);
+    has_server(handle, &ws, cx, &helper, 7);
+    // A hands B t1, which takes it and hands C t2.
+    let task = json!({ "block": them, "task": "go" });
+    call(handle, &ws, cx, &terminal, "delegate", task);
+    screen_with(&ws, cx, theirs, "go");
+    enter(cx);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let task = json!({ "block": other, "task": "look" });
+    call(handle, &ws, cx, &worker, "delegate", task);
+    screen_with(&ws, cx, third, "look");
+    enter(cx);
+    // C goes still without a reply: B is told.
+    ticks(&ws, cx, third, 0, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    assert_eq!(told_quiet(&ws, cx, third), Some(true));
+    // B hands C the task again: it waits for it again, and its turn's end answers nothing.
+    let again = json!({ "block": other, "task": "again" });
+    let (failed, text) = call(handle, &ws, cx, &worker, "delegate", again);
+    assert_eq!(
+        (failed, text),
+        (false, format!("Typed into {other} as a change to task t2."))
+    );
+    assert_eq!(told_quiet(&ws, cx, third), Some(false));
+    let waiting = json!({ "event": "stopped", "message": "Waiting for the third." });
+    event(handle, &ws, cx, &worker, waiting);
+    after(cx, 1000);
+    assert_eq!(task_of(&ws, cx, theirs), Some(1));
+    // C goes still again and B is told again: now B's turn's end is its answer.
+    ticks(&ws, cx, third, 4, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    assert_eq!(told_quiet(&ws, cx, third), Some(true));
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let line = json!({ "event": "stopped", "message": "Line 42." });
+    event(handle, &ws, cx, &worker, line);
+    after(cx, 1000);
+    assert_eq!(task_of(&ws, cx, theirs), None);
+    assert_eq!(task_of(&ws, cx, third), Some(2), "C is still on its task");
+    let shown = screen_with(&ws, cx, mine, "Line 42.");
+    assert!(
+        shown.contains("[task t1 from ") && shown.contains(": done in "),
+        "{shown}"
+    );
+}
+
+/// A subagent that waits on a task of its own and whose turn ends keeps its task, but the other
+/// agents waiting for its turn (`wait_for_idle`) hear the turn ended, as they do when it goes
+/// quiet; its master's own wait stays (docs/specs/agent-protocol.md, 4).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_subagent_waiting_on_its_own_task_answers_the_others_waiting_for_its_turn(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let third = another_agent(handle, &ws, cx, theirs);
+    asker(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let (helper, other) = me(&ws, cx, third);
+    let task = json!({ "block": them, "task": "go", "wait": true });
+    let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    screen_with(&ws, cx, theirs, "go");
+    enter(cx);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let task = json!({ "block": other, "task": "look" });
+    call(handle, &ws, cx, &worker, "delegate", task);
+    // C waits for B's turn, as A does.
+    let idle = json!({ "block": them });
+    let idle = call_later(handle, &ws, cx, &helper, 8, "wait_for_idle", idle);
+    assert!(idle.try_recv().is_err());
+    let waiting = json!({ "event": "stopped", "message": "Waiting for the third." });
+    event(handle, &ws, cx, &worker, waiting);
+    after(cx, 1000);
+    assert_eq!(
+        answered(&idle),
+        (false, "Waiting for the third.".to_string())
+    );
+    assert!(delegated.try_recv().is_err(), "its master's wait stays");
+    assert_eq!(task_of(&ws, cx, theirs), Some(1));
+}
+
+/// The same when its screen goes still instead (it has no hooks).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_subagent_waiting_on_its_own_task_answers_the_others_by_its_still_screen(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let third = another_agent(handle, &ws, cx, theirs);
+    asker(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let (helper, other) = me(&ws, cx, third);
+    has_server(handle, &ws, cx, &worker, 7);
+    let task = json!({ "block": them, "task": "go", "wait": true });
+    let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    let task = json!({ "block": other, "task": "look" });
+    call(handle, &ws, cx, &worker, "delegate", task);
+    ticks(&ws, cx, theirs, 0, 4);
+    let idle = json!({ "block": them });
+    let idle = call_later(handle, &ws, cx, &helper, 8, "wait_for_idle", idle);
+    assert!(idle.try_recv().is_err());
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    let (failed, text) = answered(&idle);
+    assert!(
+        !failed && text.starts_with("Its screen has been still for 5 seconds"),
+        "{text}"
+    );
+    assert!(delegated.try_recv().is_err(), "its master's wait stays");
+    assert_eq!(task_of(&ws, cx, theirs), Some(1));
+}
+
 /// The state of terminal block `id`'s agent.
 fn state_of(
     ws: &Entity<Workspace>,

@@ -304,10 +304,6 @@ impl Workspace {
                 // next turn's end is its own.
                 if let Some(handed) = pane.handed.as_mut().filter(|h| !h.taken || h.behind) {
                     handed.behind = false;
-                } else if hands_out {
-                    // It handed a task of its own over and waits for it, as card 30 asks: this
-                    // turn's end isn't its answer. Its `reply`, or the end of a turn with nothing
-                    // handed out any more, is.
                 } else {
                     let reply = match message {
                         Some(message) => Reply::ok(message),
@@ -315,7 +311,15 @@ impl Workspace {
                             "Its turn ended without an answer: an error, or it was interrupted.",
                         ),
                     };
-                    self.end_turn(terminal, reply, cx);
+                    if hands_out {
+                        // It handed a task of its own over and waits for it, as card 30 asks:
+                        // this turn's end isn't its answer, and only the calls of agents that
+                        // didn't hand it its task hear it. Its `reply`, or the end of a turn with
+                        // nothing handed out any more, is the answer.
+                        self.answer_others(terminal, reply, cx);
+                    } else {
+                        self.end_turn(terminal, reply, cx);
+                    }
                 }
             }
             // A wait that says nothing new (Claude Code's notification about the dialog its

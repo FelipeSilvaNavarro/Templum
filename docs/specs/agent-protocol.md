@@ -166,6 +166,12 @@ terminal) and whose turn ends is waiting for that task, as card 30 asks it to: t
 Templum types that other task's end into it when it comes (Delegating 10), it works on, and its `reply` (or the end of
 a turn with nothing handed out any more) ends its task. Its screen going still meanwhile tells nothing either (5).
 
+Two exceptions. A task whose agent went quiet (5) isn't waited for any more: its master was told, reads that agent's
+screen and answers its own task with its turn's end, as it would if the sub-task were over; a `delegate` of it to that
+agent again (a change) starts the wait over. And the calls of other agents that wait for the subagent's turn
+(`wait_for_idle` on an agent they didn't hand the task) don't wait for its task: the turn's end, or its screen going
+still, answers them as it would any turn, with its last message or the still-screen text.
+
 ### 5. Quiet: a still screen and no answer
 
 An agent that has Templum's tools but no hooks, on a task, whose screen stays still for 5 looks after it worked (the

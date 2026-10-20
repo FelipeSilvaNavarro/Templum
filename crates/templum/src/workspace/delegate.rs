@@ -1005,13 +1005,14 @@ impl Workspace {
     /// Some pane, in any workspace, holds a task the agent in `terminal` handed over (`delegate`,
     /// or a spawn's prompt) since `since`, when its own task was handed to it, also past the
     /// timeout of that one: the agent waits for it. One handed before its own task isn't what
-    /// this task waits for (docs/specs/agent-protocol.md, 4).
+    /// this task waits for, nor one whose agent went quiet: the agent was told, and reads its
+    /// screen (docs/specs/agent-protocol.md, 4).
     pub(super) fn hands_out(&self, terminal: &str, since: Instant) -> bool {
         self.spaces().any(|space| {
             space.terminals().any(|(_, pane)| {
                 pane.handed
                     .as_ref()
-                    .is_some_and(|h| h.by == terminal && h.since >= since)
+                    .is_some_and(|h| h.by == terminal && h.since >= since && !h.quiet)
             })
         })
     }
@@ -1057,6 +1058,30 @@ impl Workspace {
         ))
     }
 
+    /// The turn of the agent in `terminal`, which is on a task, ended or went still while the task
+    /// stays open: the calls of agents other than the task's asker that wait for it get `reply`.
+    /// For them the turn ended; the asker's own calls wait for the task's end
+    /// (docs/specs/agent-protocol.md, 4 and 5).
+    pub(super) fn answer_others(&mut self, terminal: &str, reply: Reply, cx: &mut Context<Self>) {
+        let Some(by) = self
+            .pane(terminal)
+            .and_then(|p| p.handed.as_ref())
+            .map(|h| h.by.clone())
+        else {
+            return;
+        };
+        let others: Vec<u64> = self
+            .waits
+            .iter()
+            .filter(|w| w.from != by)
+            .filter(|w| matches!(&w.what, Waiting::Turn { of, .. } if of == terminal))
+            .map(|w| w.key)
+            .collect();
+        for key in others {
+            self.answer(key, reply.clone(), cx);
+        }
+    }
+
     /// The screen of the agent in `terminal`, which has Templum's tools and no hooks, went still
     /// while it is on a task: it may be done without replying, stopped, or asking its person. The
     /// task stays open (its `reply` still ends it) and its master is told once: a call of its
@@ -1068,19 +1093,15 @@ impl Workspace {
             return;
         };
         let (id, by, told) = (handed.id, handed.by.clone(), handed.quiet);
-        let (asked, others): (Vec<u64>, Vec<u64>) = {
-            let turn = |w: &&super::waits::Wait| matches!(&w.what, Waiting::Turn { of, .. } if of == terminal);
-            let waiting = self.waits.iter().filter(turn);
-            let (asked, others): (Vec<_>, Vec<_>) = waiting.partition(|w| w.from == by);
-            (
-                asked.iter().map(|w| w.key).collect(),
-                others.iter().map(|w| w.key).collect(),
-            )
-        };
-        for key in others {
-            let reply = self.still_screen(terminal);
-            self.answer(key, reply, cx);
-        }
+        let reply = self.still_screen(terminal);
+        self.answer_others(terminal, reply, cx);
+        // What still waits for its turn is its asker's.
+        let asked: Vec<u64> = self
+            .waits
+            .iter()
+            .filter(|w| matches!(&w.what, Waiting::Turn { of, .. } if of == terminal))
+            .map(|w| w.key)
+            .collect();
         if told {
             return;
         }

@@ -140,9 +140,12 @@ impl Workspace {
             changed = true;
         }
         for terminal in still {
-            // Waiting for a task it handed out itself: its screen tells nothing, whatever it has
+            // Waiting for a task it handed out itself: its screen tells nothing about its own
+            // task, whatever it has, but the others waiting for its turn hear it ended
             // (docs/specs/agent-protocol.md, 4).
             if self.waits_on_its_own(&terminal) {
+                let reply = self.still_screen(&terminal);
+                self.answer_others(&terminal, reply, cx);
                 continue;
             }
             // An agent on a task with Templum's tools and no hooks can answer it with `reply`: a

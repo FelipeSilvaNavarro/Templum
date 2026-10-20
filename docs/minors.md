@@ -1408,8 +1408,9 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   (`Workspace::hands_out`, `crates/templum/src/workspace/delegate.rs`): while a task the subagent handed out stays in
   its pane (also past its timeout, and a spawn's prompt included), the end of its turns ends nothing of its own task,
   and a still screen tells nothing. Its master hears its call's timeout, or nothing if it didn't wait, until the
-  subagent replies, its agent leaves or its block closes. Fix: ignore a handed task past its timeout in `hands_out`,
-  and tell the master once, as quiet does.
+  subagent replies, its agent leaves or its block closes. A sub-task whose agent went quiet (Templum's tools, no
+  hooks) doesn't count: `hands_out` skips it once its master was told. Fix for the rest: ignore a handed task past
+  its timeout in `hands_out`, and tell the master once, as quiet does.
 - [ ] **A second `reply` naming the former asker's block is typed to it.** Left by the review of card 69
   (`Workspace::reply_to`, `crates/templum/src/workspace/delegate.rs`): after a task ended, `reply` with the block of
   the agent that handed it matches no task, so it is a message and is typed into that agent as `[reply from …]`; only
