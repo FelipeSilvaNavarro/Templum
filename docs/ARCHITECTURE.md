@@ -232,7 +232,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   a move to another workspace; a missing, taken or malformed one is replaced; the canvas's `wires` name their blocks
   by it. A terminal's item also keeps the block that opened it (`opened_by`), its agent's model and effort, and the
   account its shell was opened for (`Pane::account`, saved as `account`): the shell gets that account's variable
-  back, and its agent found there is the account ([specs/accounts.md](specs/accounts.md)).
+  back, and its agent found there is the account ([specs/accounts.md](specs/accounts.md)), and the shell chosen for it
+  (`Pane::shell`, saved as its label in `shell`, [specs/shells.md](specs/shells.md#a-shell-for-each-terminal)).
   The workspace's Git is the file's optional `git` object (`SavedGit`: folder, tab, the commit message draft, the
   left column folded, Split); an older file's Git block item is read into it, and no block.
 

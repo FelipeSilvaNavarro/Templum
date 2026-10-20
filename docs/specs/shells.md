@@ -1,7 +1,7 @@
 # Shells
 
 - **Date:** 2026-10-11; [A shell for each terminal](#a-shell-for-each-terminal) 2026-10-20
-- **Status:** Implemented; *A shell for each terminal* planned (kanban card 60,
+- **Status:** Implemented, *A shell for each terminal* too (kanban card 60,
   [plan](../plans/2026-10-20-shell-per-terminal.md))
 - **Builds on:** [config.md](config.md) (`[shell]`), [settings.md](settings.md),
   [context-menus.md](context-menus.md), [persistence.md](persistence.md) and
@@ -37,7 +37,8 @@ Git for Windows' login profile doesn't change folder (its `/etc/profile`, checke
 in the terminal's folder, which agents opened in a project need.
 
 **Linux and macOS:** the shells `/etc/shells` lists that exist, once each by name, in its order, leaving out
-`nologin`, `false`, `git-shell`, `rbash`, `tmux`, `screen` and `systemd-home-fallback-shell`.
+`nologin`, `false`, `git-shell`, `rbash`, `tmux`, `screen` and `systemd-home-fallback-shell`; then the known shells it
+doesn't name, and `-l` on macOS ([Finding shells, completed](#finding-shells-completed)).
 
 ## Settings
 
