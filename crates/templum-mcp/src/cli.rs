@@ -134,11 +134,15 @@ pub fn run(
                         }
                     }
                 }
-                // `reply -`: the answer is standard input, whatever its length, unquoted.
+                // `reply -`: the answer is standard input, whatever its length, unquoted. Bytes
+                // that aren't UTF-8 (a command's output in another encoding) become U+FFFD, not
+                // a refusal.
                 if call.name == "reply" && call.arguments["text"] == "-" {
-                    let mut text = String::new();
-                    match stdin.read_to_string(&mut text) {
-                        Ok(_) => call.arguments["text"] = json!(text),
+                    let mut bytes = Vec::new();
+                    match stdin.read_to_end(&mut bytes) {
+                        Ok(_) => {
+                            call.arguments["text"] = json!(String::from_utf8_lossy(&bytes));
+                        }
                         Err(e) => {
                             let _ = writeln!(stderr, "templum: couldn't read stdin: {e}");
                             return 2;
@@ -772,9 +776,9 @@ mod tests {
     /// A wait longer than this fails the test instead of hanging it.
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-    fn run_with(args: &[&str], env: &Env, stdin: &str) -> (i32, String, String) {
+    fn run_with(args: &[&str], env: &Env, stdin: impl AsRef<[u8]>) -> (i32, String, String) {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        let (env, stdin) = (env.clone(), stdin.as_bytes().to_vec());
+        let (env, stdin) = (env.clone(), stdin.as_ref().to_vec());
         let (done, ran) = std::sync::mpsc::channel();
         // On a thread of its own: a command that never ends can't hang the test.
         std::thread::spawn(move || {
@@ -803,7 +807,7 @@ mod tests {
                 let _ = m.reply.send(rpc::result(id, hello));
             }
         });
-        let (code, out, _) = run_with(&["mcp"], &env(&bus), &rpc::request(7, "ping", Value::Null));
+        let (code, out, _) = run_with(&["mcp"], &env(&bus), rpc::request(7, "ping", Value::Null));
         assert_eq!(code, 0);
         let answer: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(answer["id"], 7);
@@ -1043,6 +1047,25 @@ mod tests {
         assert!(
             err.starts_with("usage: templum reply [<block>] <text>|- [--json]"),
             "{err}"
+        );
+    }
+
+    /// An answer that isn't UTF-8 (a command's output in another encoding) is still sent, its
+    /// bad bytes as U+FFFD.
+    #[test]
+    fn reply_takes_stdin_that_isnt_utf8() {
+        let (seen, calls) = std::sync::mpsc::channel();
+        let (_dir, bus) = test_bus(move |m| {
+            if let Incoming::Request { id, params, .. } = &m.incoming {
+                let _ = seen.send(params.clone());
+                let _ = m.reply.send(tool_result(id, &Reply::ok("ok")));
+            }
+        });
+        let (code, _, err) = run_with(&["reply", "-"], &env(&bus), b"caf\xe9 ok\n");
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(
+            calls.recv_timeout(LIMIT).unwrap(),
+            json!({ "name": "reply", "arguments": { "text": "caf\u{fffd} ok\n" } })
         );
     }
 
@@ -1419,7 +1442,7 @@ mod tests {
             terminal: None,
             ..env(&bus)
         };
-        let (code, out, _) = run_with(&["control"], &env, &rpc::request(7, "ping", Value::Null));
+        let (code, out, _) = run_with(&["control"], &env, rpc::request(7, "ping", Value::Null));
         assert_eq!(code, 0);
         let answer: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(answer["id"], 7);
