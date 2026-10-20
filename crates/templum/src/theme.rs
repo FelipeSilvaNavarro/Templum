@@ -12,6 +12,13 @@ use crate::board::Label;
 use crate::grid::hsla;
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
+const WHITE: Rgb = Rgb {
+    r: 255,
+    g: 255,
+    b: 255,
+};
+/// The contrast text needs (WCAG AA).
+const READABLE: f32 = 4.5;
 const ANSI_NAMES: [&str; 8] = [
     "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
 ];
@@ -112,6 +119,27 @@ impl Theme {
     /// on it stays readable.
     pub fn note_bg(&self, label: Label) -> Hsla {
         hsla(note_tint(&self.palette, label), 1.0)
+    }
+
+    /// The text on a fill of the accent (a selected row, a menu item under the pointer): the
+    /// theme's background or its text color, whichever reads better; white or black when neither
+    /// reads on this accent.
+    pub fn on_accent(&self) -> Hsla {
+        let accent = rgb(self.ui.accent);
+        let better = |a: Rgb, b: Rgb| {
+            if contrast(a, accent) >= contrast(b, accent) {
+                a
+            } else {
+                b
+            }
+        };
+        let themed = better(self.palette.background, self.palette.foreground);
+        let best = if contrast(themed, accent) >= READABLE {
+            themed
+        } else {
+            better(WHITE, BLACK)
+        };
+        hsla(best, 1.0)
     }
 
     pub fn new(name: &str, palette: Palette, cursor: Option<Rgb>, selection: Option<Rgb>) -> Self {
@@ -288,6 +316,12 @@ fn luminance(c: Rgb) -> f32 {
         }
     };
     0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+}
+
+/// WCAG contrast ratio, 1 to 21.
+fn contrast(a: Rgb, b: Rgb) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
 fn note_tint(palette: &Palette, label: Label) -> Rgb {
@@ -596,6 +630,7 @@ pub(crate) fn apply_to_kit(theme: &Theme, cx: &mut App) {
         kit.window_border = ui.hairline;
         kit.muted_foreground = ui.title_dim;
         kit.accent = ui.accent;
+        kit.accent_foreground = theme.on_accent();
         kit.ring = ui.accent;
         kit.selection = ui.selection;
         // The code editor's background, line-number gutter and current line come from
@@ -882,10 +917,6 @@ white = "#aaaaaa"
 
     #[test]
     fn note_tints_keep_text_readable() {
-        let contrast = |a: Rgb, b: Rgb| {
-            let (la, lb) = (luminance(a), luminance(b));
-            (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
-        };
         for builtin in BUILTIN {
             let theme = parse(builtin.name, builtin.toml).unwrap();
             for label in Label::ALL {
@@ -893,6 +924,22 @@ white = "#aaaaaa"
                 let ratio = contrast(theme.palette.foreground, tint);
                 assert!(ratio >= 4.5, "{} {}: {ratio}", builtin.name, label.name());
             }
+        }
+    }
+
+    #[test]
+    fn text_on_the_accent_stays_readable() {
+        for builtin in BUILTIN {
+            let theme = parse(builtin.name, builtin.toml).unwrap();
+            let ratio = contrast(super::rgb(theme.on_accent()), super::rgb(theme.ui.accent));
+            assert!(ratio >= READABLE, "{}: {ratio}", builtin.name);
+        }
+        // An accent the file sets, however awkward (mid grey reads neither dark nor light).
+        for accent in ["#808080", "#ff8800", "#ffffff", "#000000"] {
+            let set = format!("{MINIMAL}\n[templum]\naccent = \"{accent}\"\n");
+            let theme = parse("x", &set).unwrap();
+            let ratio = contrast(super::rgb(theme.on_accent()), super::rgb(theme.ui.accent));
+            assert!(ratio >= READABLE, "{accent}: {ratio}");
         }
     }
 
