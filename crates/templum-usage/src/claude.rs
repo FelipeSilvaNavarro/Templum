@@ -255,6 +255,12 @@ pub fn settings_file(
             .map(|event| (event.to_string(), hook.clone()))
             .collect();
         settings.insert("hooks".into(), all.into());
+        // The server comes with the hooks (`mcp_file`): `reply` runs without asking, and only
+        // `reply` (docs/specs/agent-protocol.md, 9).
+        settings.insert(
+            "permissions".into(),
+            serde_json::json!({ "allow": ["mcp__templum__reply"] }),
+        );
     }
     if settings.is_empty() {
         return None;
@@ -985,8 +991,17 @@ mod tests {
             hooks["PostToolUseFailure"][0]["hooks"][0]["command"],
             "/opt/templum hook claude"
         );
+        // `reply` asks no permission where the server comes with the hooks, and only `reply`
+        // (docs/specs/agent-protocol.md, 9).
+        assert_eq!(
+            written["permissions"],
+            serde_json::json!({ "allow": ["mcp__templum__reply"] })
+        );
         settings_arg(dir.path(), exe, false, true, true).unwrap();
         assert!(read()["statusLine"].is_object() && read()["hooks"].is_object());
+        // The status line alone has no server beside it: nothing to allow.
+        settings_arg(dir.path(), exe, false, true, false).unwrap();
+        assert!(read().get("permissions").is_none() && read().get("hooks").is_none());
         assert_eq!(settings_arg(dir.path(), exe, false, false, false), None);
     }
 

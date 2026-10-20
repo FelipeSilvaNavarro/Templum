@@ -29,6 +29,8 @@ pub fn args(data: &Path, windows: bool) -> Option<Vec<String>> {
     let (mcp, plugin) = (folder.join("mcp.json"), folder.join("plugin"));
     let words = vec![
         "--allow-all-mcp-server-instructions".to_string(),
+        // `reply` asks no permission, and only `reply` (docs/specs/agent-protocol.md, 9).
+        "--allow-tool=templum(reply)".to_string(),
         format!("--additional-mcp-config=@{}", crate::slashed(&mcp, windows)),
         format!("--plugin-dir={}", crate::slashed(&plugin, windows)),
     ];
@@ -89,6 +91,8 @@ mod tests {
             words,
             [
                 "--allow-all-mcp-server-instructions".to_string(),
+                // `reply` asks no permission, and only `reply` (docs/specs/agent-protocol.md, 9).
+                "--allow-tool=templum(reply)".to_string(),
                 format!("--additional-mcp-config=@{}", word(folder.join("mcp.json"))),
                 format!("--plugin-dir={}", word(folder.join("plugin"))),
             ]

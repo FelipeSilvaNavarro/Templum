@@ -57,6 +57,8 @@ pub fn codex_args(exe: &str, windows: bool, hooks: bool) -> Option<Vec<String>> 
         "mcp_servers.templum.args=[\"mcp\"]".to_string(),
         "mcp_servers.templum.env_vars=[\"TEMPLUM_BUS\",\"TEMPLUM_TERMINAL\"]".to_string(),
         "mcp_servers.templum.tool_timeout_sec=604800".to_string(),
+        // `reply` asks no permission, and only `reply` (docs/specs/agent-protocol.md, 9).
+        "mcp_servers.templum.tools.reply.approval_mode=\"approve\"".to_string(),
     ];
     if hooks {
         for (event, timeout) in CODEX_HOOKS {
@@ -106,10 +108,16 @@ mod tests {
             "{flags}"
         );
         assert!(!flags.contains("notify"), "the person's own notify runs");
+        // `reply` asks no permission, and only `reply` (docs/specs/agent-protocol.md, 9).
+        assert!(
+            flags.contains(" -c 'mcp_servers.templum.tools.reply.approval_mode=\"approve\"'"),
+            "{flags}"
+        );
+        assert_eq!(flags.matches("approval_mode").count(), 1);
         // Without `templum` on the terminal's PATH, the server only.
         let bare = codex_flags("/opt/templum", false, false).unwrap();
         assert!(
-            bare.ends_with("tool_timeout_sec=604800'") && !bare.contains("hooks."),
+            bare.ends_with("tools.reply.approval_mode=\"approve\"'") && !bare.contains("hooks."),
             "{bare}"
         );
         let windows = codex_flags(r"C:\Program Files\Templum\templum.exe", true, true).unwrap();
@@ -125,17 +133,21 @@ mod tests {
     #[test]
     fn codex_args_are_the_flags_unquoted() {
         let words = codex_args("/opt/Templum App/templum", false, true).unwrap();
-        assert_eq!(words.len(), 20, "{words:?}");
+        assert_eq!(words.len(), 22, "{words:?}");
         assert!(words.iter().step_by(2).all(|w| w == "-c"), "{words:?}");
         assert_eq!(
             words[1],
             "mcp_servers.templum.command=\"/opt/Templum App/templum\""
         );
         assert_eq!(
-            words[19],
+            words[9],
+            "mcp_servers.templum.tools.reply.approval_mode=\"approve\""
+        );
+        assert_eq!(
+            words[21],
             "hooks.Interrupt=[{hooks=[{type=\"command\",command=\"templum hook codex\",timeout=3}]}]"
         );
-        assert_eq!(codex_args("/opt/templum", false, false).unwrap().len(), 8);
+        assert_eq!(codex_args("/opt/templum", false, false).unwrap().len(), 10);
         assert_eq!(codex_args("/home/o'neil/templum", false, true), None);
     }
 }

@@ -69,6 +69,11 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
             .collect::<Vec<_>>()
             .join(" ");
         assert!(words.contains("--plugin-dir="), "{words}");
+        // `(` is typed in double quotes in every shell.
+        assert!(
+            words.contains(" \"--allow-tool=templum(reply)\" "),
+            "{words}"
+        );
         assert_eq!(
             ws.typed_in(None, copilot.as_ref(), "copilot --session-id 0d5e"),
             format!("copilot --session-id 0d5e {words}")
@@ -179,6 +184,11 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
             .unwrap()
             .join("\n");
         assert!(copilot.ends_with(&p("copilot/plugin")), "{copilot}");
+        // The bare word, one per line: no quotes in the variable.
+        assert!(
+            copilot.lines().any(|w| w == "--allow-tool=templum(reply)"),
+            "{copilot}"
+        );
         assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), copilot);
         let opencode = templum_usage::opencode::config(&data, cfg!(windows)).unwrap();
         assert_eq!(word(ws, "TEMPLUM_OPENCODE_CONFIG"), opencode);
