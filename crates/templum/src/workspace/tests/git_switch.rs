@@ -301,3 +301,22 @@ fn create_a_branch_here_keeps_the_commits_on_a_branch(cx: &mut TestAppContext) {
         assert_eq!(g.status.branch.as_deref(), Some("rescue"))
     });
 }
+
+#[gpui_kit::test]
+fn branches_that_cannot_be_read_say_so_and_the_dialog_stays_closed(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = two_branches();
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    std::fs::remove_dir_all(repo.path().join(".git")).unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_branch_dialog(None, window, cx));
+    })
+    .unwrap();
+    settle(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(!window.has_active_dialog(cx), "nothing to list");
+    })
+    .unwrap();
+    assert_eq!(notification_count(handle, cx), 1, "git's own message");
+}

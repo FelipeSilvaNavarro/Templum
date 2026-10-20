@@ -14,7 +14,8 @@ use crate::prompt::{self, Act, Choice};
 use super::{Extra, Workspace, notify_git_error, notify_with, show_notification};
 
 impl Workspace {
-    /// The branch dialog, for switching and creating: the branches read afresh, then the dialog.
+    /// The branch dialog, for switching and creating: the branches read afresh (git's own message
+    /// when it can't), then the dialog.
     /// `from` is a commit a new branch starts at (None: HEAD); from a commit the dialog lists no
     /// branches, so it opens at once.
     pub(crate) fn open_branch_dialog(
@@ -35,8 +36,13 @@ impl Workspace {
             self.here(),
             move || repo.branches(),
             move |ws, at, branches, window, cx| {
-                let Ok(branches) = branches else {
-                    return;
+                let branches = match branches {
+                    Ok(branches) => branches,
+                    Err(e) => {
+                        let entity = cx.entity();
+                        notify_git_error(&entity, at, &e, Vec::new(), window, cx);
+                        return;
+                    }
                 };
                 if let Some(git) = ws.git_at(&at) {
                     git.branches = branches.clone();
