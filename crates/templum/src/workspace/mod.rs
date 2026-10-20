@@ -486,12 +486,19 @@ impl Body {
     /// The keyboard is inside the block.
     pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
         match self {
-            Body::Note(note) => note.tabs.iter().any(|t| {
-                t.editor
-                    .read(cx)
-                    .focus_handle(cx)
-                    .contains_focused(window, cx)
-            }),
+            Body::Note(note) => {
+                note.tabs.iter().any(|t| {
+                    t.editor
+                        .read(cx)
+                        .focus_handle(cx)
+                        .contains_focused(window, cx)
+                }) || note.renaming.as_ref().is_some_and(|r| {
+                    r.input
+                        .read(cx)
+                        .focus_handle(cx)
+                        .contains_focused(window, cx)
+                })
+            }
             Body::Editor(e) => e.has_focus(window, cx),
             Body::Terminal(pane) => pane.find.as_ref().is_some_and(|b| b.has_focus(window, cx)),
             Body::Checklist(c) => c.has_focus(window, cx),

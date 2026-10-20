@@ -315,6 +315,15 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   toggles or an editor's file changes (`crates/templum/src/workspace/blocks.rs`), not when a pan or zoom takes the
   block off screen. Fix: release the focus of a block that leaves the viewport, for every kind.
 
+- [ ] **A note's name can't be renamed from the block's header.** A double click on the title frames the block
+  (`title` in `crates/templum/src/block.rs`, `frame_block`), so renaming is on the tab (double click) and in the
+  block's menu (Rename…, the right click's and the ⋯'s). Fix: for a note block, give the title's text its own double
+  click that calls `rename_note_tab` for the tab on screen and stops the press, so the frame stays on the bar around.
+- [ ] **`block::title` takes a `cx` nothing uses.** A note's title came from its editor's text, which needed it;
+  now it comes from `Workspace::notes` (`crates/templum/src/block.rs`), and the parameter is `_cx`. Dropping it frees the
+  same parameter in `about` (`workspace/bus.rs`), `tail` (`menu/mod.rs`) and `swap_overlay` (`workspace/render.rs`),
+  and the closures' in three tests. Fix: remove them all.
+
 ## Checklists
 
 - [ ] **A field left editing in a hidden workspace stays drawn without the keyboard.** Switching workspaces while a

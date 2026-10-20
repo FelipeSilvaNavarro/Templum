@@ -179,8 +179,8 @@ person sees.
 - **Where:** beside the caller where it covers no block nor drawing, toward the blocks wired to it, as `spawn_agent`
   places an agent ([connections.md](connections.md#spawning)); wired to the caller. The keyboard, the selection and the
   camera stay where they were; in grid mode it takes half of the caller's tile. One Ctrl+Z closes it and its wire.
-- **A note:** a new note (`notes.json`) with `text`, shown in a new note block. A blank text gives an empty note, which
-  stays while its block shows it.
+- **A note:** a new note (`notes.json`) with `text`, shown in a new note block, named by its first line with text
+  (Untitled when blank; the person renames it). A blank text gives an empty note, which stays while its block shows it.
 - **A checklist:** a new checklist (`checklists.json`) named `name` ("Checklist" when blank) with its items, shown in
   a new checklist block.
 - **A terminal:** a new terminal of the default size in `folder`, with the shell's environment every terminal gets;

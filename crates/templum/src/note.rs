@@ -6,7 +6,7 @@ use std::cell::RefCell;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
-use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::input::{Editor, EditorState, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, Entity, ScrollWheelEvent, SharedString,
@@ -17,7 +17,7 @@ use templum_canvas::{BlockId, Level, Size, chrome};
 use crate::block::BORDER;
 use crate::grid::{BAR_OPACITY, hsla};
 use crate::list_dialog;
-use crate::notes;
+use crate::notes::{self, Notes};
 use crate::silhouette::{self, Far};
 use crate::tab_strip::{LABELS_IN, TABS_H, tab_strip};
 use crate::workspace::Workspace;
@@ -45,9 +45,19 @@ const ROOMY: f32 = 170.0;
 const TIGHT: f32 = 110.0;
 
 /// A note block: the notes it shows as tabs, and the one on screen.
+#[derive(Default)]
 pub(crate) struct Note {
     pub tabs: Vec<NoteTab>,
     pub active: usize,
+    /// The tab whose name is being typed over, in place.
+    pub renaming: Option<Renaming>,
+}
+
+/// A tab's name being edited in its place: kept on Enter or when the keyboard leaves, dropped on
+/// Esc.
+pub(crate) struct Renaming {
+    pub id: u64,
+    pub input: Entity<InputState>,
 }
 
 /// A note open in a block: its id in `Workspace::notes`, and its editor, whose every change is
@@ -62,6 +72,19 @@ pub(crate) struct NoteTab {
 impl Note {
     pub fn tab(&self) -> Option<&NoteTab> {
         self.tabs.get(self.active)
+    }
+
+    /// Takes tab `index` out; the tab on screen stays the same one where it can. A rename of it
+    /// ends.
+    pub fn remove_tab(&mut self, index: usize) -> NoteTab {
+        let tab = self.tabs.remove(index);
+        if self.active > index || self.active >= self.tabs.len() {
+            self.active = self.active.saturating_sub(1);
+        }
+        if self.renaming.as_ref().is_some_and(|r| r.id == tab.id) {
+            self.renaming = None;
+        }
+        tab
     }
 
     /// The notes it shows, in tab order.
@@ -89,10 +112,10 @@ impl Note {
         }
     }
 
-    /// The note on screen's title; "Notes" without one.
-    pub fn title(&self, cx: &App) -> SharedString {
+    /// The note on screen's name; "Notes" without one.
+    pub fn title(&self, notes: &Notes) -> SharedString {
         match self.tab() {
-            Some(_) => notes::title(&self.text(cx)).into(),
+            Some(tab) => notes.name(tab.id).to_string().into(),
             None => "Notes".into(),
         }
     }
@@ -141,16 +164,24 @@ pub(crate) fn body(
         let titles = note
             .tabs
             .iter()
-            .map(|t| notes::title(&t.editor.read(cx).value()).into())
+            .map(|t| ws.notes.name(t.id).to_string().into())
             .collect();
+        let renaming = note.renaming.as_ref().and_then(|r| {
+            let at = note.tabs.iter().position(|t| t.id == r.id)?;
+            Some((at, &r.input))
+        });
         tab_strip(
             ws,
             id,
             titles,
             note.active,
+            renaming,
             z,
-            Workspace::show_note_tab,
-            Workspace::close_note_tab,
+            [
+                Workspace::show_note_tab,
+                Workspace::close_note_tab,
+                Workspace::rename_note_tab,
+            ],
             Workspace::new_note_tab,
             cx,
         )
@@ -431,12 +462,13 @@ fn note_rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
         .into_iter()
         .map(|note| {
             let at = list_dialog::open_at(ws, ws.note_open_at(note.id).map(|(space, _)| space));
+            // The first line the name doesn't already say.
             let line = note
                 .text
                 .lines()
                 .map(str::trim)
                 .filter(|l| !l.is_empty())
-                .nth(1)
+                .find(|l| notes::title(l) != note.name)
                 .map(str::to_string);
             let detail: Vec<String> = [Some(notes::ago(note.changed, now)), at, line]
                 .into_iter()
@@ -444,7 +476,7 @@ fn note_rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
                 .collect();
             list_dialog::Row {
                 id: note.id,
-                title: notes::title(&note.text),
+                title: note.name.clone(),
                 detail: detail.join(" · "),
                 dot: note
                     .color

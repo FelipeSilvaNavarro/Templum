@@ -143,7 +143,13 @@ impl Workspace {
                 NewBlock::Note { text } => {
                     let note = ws.notes.add(text, None, now);
                     let tabs = ws.note_tab(note, window, cx).into_iter().collect();
-                    Some(ws.add_block(rect, Body::Note(Note { tabs, active: 0 })))
+                    Some(ws.add_block(
+                        rect,
+                        Body::Note(Note {
+                            tabs,
+                            ..Default::default()
+                        }),
+                    ))
                 }
                 NewBlock::Checklist { name, items } => {
                     let list = ws.checklists.add(now);

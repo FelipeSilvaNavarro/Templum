@@ -1149,13 +1149,34 @@ impl Items {
                         ws.disconnect(wire, cx);
                     },
                 )),
-            Items::Note { block, color, send } => menu
+            Items::Note {
+                block,
+                color,
+                rename,
+                send,
+            } => menu
                 .item(item(
                     ws,
                     "All notes…",
                     Some(IconName::NotebookText),
                     move |_, window, cx| crate::note::open_notes(Some(block), window, cx),
                 ))
+                .when_some(rename, |menu, (note, name)| {
+                    menu.item(item(ws, "Rename…", None, move |_, window, cx| {
+                        let ws = cx.entity();
+                        prompt::ask_text(
+                            "Rename note",
+                            "Rename",
+                            name.clone(),
+                            move |text, _, cx| {
+                                ws.update(cx, |ws, cx| ws.rename_note(note, &text, cx));
+                                true
+                            },
+                            window,
+                            cx,
+                        )
+                    }))
+                })
                 .item(
                     item(ws, "Copy all", Some(IconName::Copy), move |ws, _, cx| {
                         if let Some(note) = ws.space.blocks.get(&block).and_then(|b| b.note()) {

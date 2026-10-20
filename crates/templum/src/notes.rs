@@ -13,8 +13,10 @@ use crate::session::{self, Loaded};
 
 /// The file format's version: raised only when an older Templum couldn't read the new files.
 pub(crate) const VERSION: u32 = 1;
-/// A title's longest length, in characters.
+/// A name's longest length, in characters.
 const TITLE_MAX: usize = 60;
+/// What a new note is called until the person names it.
+pub(crate) const UNTITLED: &str = "Untitled";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Notes {
@@ -29,6 +31,11 @@ pub(crate) struct Notes {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Entry {
     pub id: u64,
+    /// Its name, on its tab, its block's title and in the Notes dialog: UNTITLED for a new note,
+    /// whatever the person renamed it to. A file from before names has none: `load` reads it as
+    /// the note's first line, which is what the note was called until then.
+    #[serde(default)]
+    pub name: String,
     #[serde(default)]
     pub text: String,
     /// Its card's tint, a post-it's color; none: the blocks' own.
@@ -54,12 +61,13 @@ impl Default for Notes {
 }
 
 impl Notes {
-    /// A new note; returns its id.
+    /// A new note, named by its first line with text (UNTITLED without text); returns its id.
     pub fn add(&mut self, text: String, color: Option<Label>, now: u64) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
         self.notes.push(Entry {
             id,
+            name: title(&text),
             text,
             color,
             changed: now,
@@ -85,6 +93,19 @@ impl Notes {
         }
     }
 
+    /// Its name is `name` now: its first line with text, trimmed and cut as a title is; UNTITLED
+    /// when blank. Its time of change stays: the text didn't change.
+    pub fn rename(&mut self, id: u64, name: &str) {
+        if let Some(note) = self.get_mut(id) {
+            note.name = title(name);
+        }
+    }
+
+    /// Note `id`'s name; UNTITLED when it is gone.
+    pub fn name(&self, id: u64) -> &str {
+        self.get(id).map_or(UNTITLED, |n| n.name.as_str())
+    }
+
     pub fn set_color(&mut self, id: u64, color: Option<Label>) {
         if let Some(note) = self.get_mut(id) {
             note.color = color;
@@ -95,31 +116,47 @@ impl Notes {
         self.notes.retain(|n| n.id != id);
     }
 
-    /// A copy of note `id` as a new note (a pasted note block's); None when it is gone.
+    /// A copy of note `id`, named alike, as a new note (a pasted note block's); None when it is
+    /// gone.
     pub fn duplicate(&mut self, id: u64, now: u64) -> Option<u64> {
         let note = self.get(id)?.clone();
-        Some(self.add(note.text, note.color, now))
+        let copy = self.add(note.text, note.color, now);
+        if let Some(entry) = self.get_mut(copy) {
+            entry.name = note.name;
+        }
+        Some(copy)
     }
 
-    /// The notes whose text holds `query` (any case; every note when it is blank), the most
-    /// recently changed first.
+    /// The notes whose name or text holds `query` (any case; every note when it is blank), the
+    /// most recently changed first.
     pub fn find(&self, query: &str) -> Vec<&Entry> {
         let query = query.trim().to_lowercase();
         let mut found: Vec<&Entry> = self
             .notes
             .iter()
-            .filter(|n| query.is_empty() || n.text.to_lowercase().contains(&query))
+            .filter(|n| {
+                query.is_empty()
+                    || n.name.to_lowercase().contains(&query)
+                    || n.text.to_lowercase().contains(&query)
+            })
             .collect();
         found.sort_by_key(|n| std::cmp::Reverse((n.changed, n.id)));
         found
     }
 }
 
-/// A note's title: its first line with text, trimmed, cut at TITLE_MAX characters; "Untitled"
+impl Entry {
+    /// No text, and never named: closing its last tab drops it, nothing lost.
+    pub fn is_blank(&self) -> bool {
+        self.text.trim().is_empty() && self.name == UNTITLED
+    }
+}
+
+/// A name from `text`: its first line with text, trimmed, cut at TITLE_MAX characters; UNTITLED
 /// when it has none.
 pub(crate) fn title(text: &str) -> String {
     let Some(line) = text.lines().map(str::trim).find(|l| !l.is_empty()) else {
-        return "Untitled".to_string();
+        return UNTITLED.to_string();
     };
     match line.char_indices().nth(TITLE_MAX) {
         Some((cut, _)) => format!("{}…", line[..cut].trim_end()),
@@ -160,6 +197,10 @@ pub(crate) fn load(dir: &Path) -> Loaded<Notes> {
                 .iter()
                 .map(|n| n.id)
                 .fold(notes.next_id, u64::max);
+            // A file from before names: each note keeps the name it had, its first line.
+            for note in notes.notes.iter_mut().filter(|n| n.name.trim().is_empty()) {
+                note.name = title(&note.text);
+            }
             Loaded::Saved(notes)
         }
         other => other,
@@ -212,6 +253,50 @@ mod tests {
     }
 
     #[test]
+    fn a_note_is_named_by_its_text_at_first_and_renamed_by_the_person() {
+        let mut notes = Notes::default();
+        let blank = notes.add(String::new(), None, 1);
+        let written = notes.add("Plan\nmore".into(), None, 2);
+        assert_eq!(notes.name(blank), UNTITLED);
+        assert_eq!(
+            notes.name(written),
+            "Plan",
+            "an agent's note: its first line"
+        );
+        // Typing changes the text, never the name.
+        notes.set_text(blank, "milk", 3);
+        assert_eq!(notes.name(blank), UNTITLED);
+        notes.rename(blank, "  Groceries ");
+        assert_eq!(notes.name(blank), "Groceries");
+        assert_eq!(notes.get(blank).unwrap().text, "milk");
+        assert_eq!(
+            notes.get(blank).unwrap().changed,
+            3,
+            "a name isn't a text change"
+        );
+        notes.rename(blank, "   ");
+        assert_eq!(notes.name(blank), UNTITLED, "blank: back to the default");
+        notes.rename(blank, "One\nTwo");
+        assert_eq!(notes.name(blank), "One", "one line");
+        assert_eq!(notes.name(99), UNTITLED, "a deleted note");
+        let copy = notes.duplicate(blank, 4).unwrap();
+        assert_eq!(notes.name(copy), "One", "a copy is named alike");
+    }
+
+    #[test]
+    fn find_matches_the_name_too_and_a_named_blank_note_is_not_blank() {
+        let mut notes = Notes::default();
+        let id = notes.add("milk".into(), None, 1);
+        notes.rename(id, "Groceries");
+        assert_eq!(notes.find("grocer").len(), 1, "by name");
+        assert_eq!(notes.find("milk").len(), 1, "by text");
+        let empty = notes.add(String::new(), None, 2);
+        assert!(notes.get(empty).unwrap().is_blank());
+        notes.rename(empty, "Ideas");
+        assert!(!notes.get(empty).unwrap().is_blank(), "named by the person");
+    }
+
+    #[test]
     fn the_title_is_the_first_line_with_text() {
         assert_eq!(title("\n  Plan for Monday  \nmore"), "Plan for Monday");
         assert_eq!(title("# Not a heading"), "# Not a heading", "plain text");
@@ -247,5 +332,27 @@ mod tests {
         };
         assert_eq!(read.next_id, 9, "missing: the largest id");
         assert_eq!(read.notes[0].color, None, "an unknown color is none");
+    }
+
+    /// A file from before names: each note is called what it was, its first line; a name the file
+    /// has is kept even when the text says otherwise, and read back as it was written.
+    #[test]
+    fn a_file_from_before_names_keeps_every_notes_name() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            path(d.path()),
+            r#"{"version":1,"next_id":3,"notes":[
+                {"id":1,"text":"\n Plan for Monday \nmore"},
+                {"id":2,"text":""},
+                {"id":3,"name":"Mine","text":"Something else"}]}"#,
+        )
+        .unwrap();
+        let Loaded::Saved(read) = load(d.path()) else {
+            panic!("not read");
+        };
+        let names: Vec<_> = read.notes.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["Plan for Monday", UNTITLED, "Mine"]);
+        save(d.path(), &read, 1).unwrap();
+        assert_eq!(load(d.path()), Loaded::Saved(read));
     }
 }

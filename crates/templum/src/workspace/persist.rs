@@ -313,7 +313,14 @@ impl Workspace {
                     .filter_map(|id| self.note_tab(id, window, cx))
                     .collect();
                 let active = tabs.iter().position(|t| Some(t.id) == shown).unwrap_or(0);
-                Some(self.add_block(rect, Body::Note(Note { tabs, active })))
+                Some(self.add_block(
+                    rect,
+                    Body::Note(Note {
+                        tabs,
+                        active,
+                        ..Default::default()
+                    }),
+                ))
             }
             session::Item::Checklist(c) => {
                 let rect = clamped_rect(c.rect.into(), checklist::MIN)?;

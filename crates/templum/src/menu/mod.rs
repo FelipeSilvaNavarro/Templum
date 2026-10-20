@@ -269,6 +269,7 @@ impl Workspace {
                     Body::Note(n) => Items::Note {
                         block,
                         color: n.tab().map(|t| self.notes.get(t.id).and_then(|e| e.color)),
+                        rename: n.tab().map(|t| (t.id, self.notes.name(t.id).to_string())),
                         send: self.send_to_menu(n.to_send(cx)),
                     },
                     Body::Checklist(_) => Items::Checklist { block },
@@ -588,6 +589,8 @@ enum Items {
         block: BlockId,
         /// The color of the note on screen; None without one.
         color: Option<Option<crate::board::Label>>,
+        /// The note on screen's id and name; None without one.
+        rename: Option<(u64, String)>,
         send: SendTo,
     },
     Checklist {
