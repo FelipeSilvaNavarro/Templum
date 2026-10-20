@@ -98,7 +98,7 @@ impl Workspace {
         let installed = self
             .agents
             .iter()
-            .filter(|a| templum_terminal::installed(a.program()))
+            .filter(|a| self.agent_installed(a))
             .map(|a| a.id.clone())
             .collect();
         let focus = cx.focus_handle();

@@ -600,6 +600,49 @@ fn an_agent_set_to_wsl_gets_none_of_templums_words(cx: &mut TestAppContext) {
     assert!(!shown.contains("--settings"), "{shown}");
 }
 
+#[gpui_kit::test]
+fn an_agent_that_runs_in_wsl_counts_as_installed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    agent_shells(&ws, cx);
+    with_agents(
+        &ws,
+        cx,
+        "[agents.mine]\nname = \"Mine\"\ncommand = \"templum-no-such-agent\"\nshell = \"WSL\"\n\
+         [agents.theirs]\nname = \"Theirs\"\ncommand = \"templum-no-such-agent\"\n\
+         [agents.quiet]\nname = \"Quiet\"\ncommand = \"templum-no-such-agent\"\nshell = \"Quiet\"\n",
+    );
+    let listed = |ws: &Workspace, id: &str| {
+        ws.agents_for_menu()
+            .into_iter()
+            .find(|(a, _)| a.id == id)
+            .unwrap()
+            .1
+    };
+    ws.read_with(cx, |ws, _| {
+        assert!(listed(ws, "mine"));
+        assert!(!listed(ws, "theirs"));
+    });
+    ws.update(cx, |ws, _| {
+        ws.config.shell.program = Some("C:/Windows/System32/wsl.exe".into());
+    });
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            listed(ws, "theirs"),
+            "Settings ▸ Shell is WSL: every agent runs there"
+        );
+        assert!(!listed(ws, "quiet"), "except one with a shell of its own");
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_welcome(false, window, cx))
+    })
+    .unwrap();
+    // It reads the shells of this computer again, so only what Settings ▸ Shell says counts here.
+    ws.read_with(cx, |ws, _| {
+        let installed = &ws.welcome.as_ref().unwrap().installed;
+        assert!(installed.iter().any(|id| id == "theirs"), "{installed:?}");
+    });
+}
+
 #[cfg(unix)]
 #[gpui_kit::test]
 fn an_account_opens_with_its_folder_in_its_shell(cx: &mut TestAppContext) {

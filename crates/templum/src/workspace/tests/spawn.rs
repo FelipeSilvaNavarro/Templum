@@ -119,6 +119,37 @@ fn spawn_agent_opens_a_wired_agent_beside_the_caller(cx: &mut TestAppContext) {
     assert!(failed && text.contains("isn't a folder"), "{text}");
 }
 
+/// Templum never sees an agent in WSL start, so it could not type its prompt: the Templum Agent's
+/// open shares the refusal (`Workspace::spawn_problem`).
+#[gpui_kit::test]
+fn spawn_agent_refuses_an_agent_that_runs_in_wsl(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    super::agents::agent_shells(&ws, cx);
+    ws.update(cx, |ws, _| {
+        let claude = ws.agents.iter_mut().find(|a| a.id == "claude").unwrap();
+        claude.shell = Some("WSL".into());
+    });
+    let blocks = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.blocks.len())
+    };
+    let before = blocks(&ws, cx);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "spawn_agent",
+        json!({ "agent": "claude" }),
+    );
+    assert!(failed, "{text}");
+    assert_eq!(
+        text,
+        "Claude Code runs in WSL, where Templum can't see it start nor type its prompt: open it from the canvas."
+    );
+    assert_eq!(blocks(&ws, cx), before, "no block opened");
+}
+
 /// The model and the effort go right after the agent's command (`cat` here), before what Templum
 /// adds; anything it can't type safely opens nothing, a worktree included.
 #[gpui_kit::test]

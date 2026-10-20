@@ -383,6 +383,41 @@ impl Workspace {
             .filter(|s| entry.account.is_none() || !templum_terminal::is_shell(&s.program, "wsl"))
     }
 
+    /// Whether the agent `entry` runs in WSL (docs/specs/shells.md, Installed): its shell is WSL,
+    /// or it has none and Settings ▸ Shell is. The system's default never is, so this never scans
+    /// the disk (Settings asks every frame).
+    pub(crate) fn in_wsl(&self, entry: &AgentEntry) -> bool {
+        self.agent_shell(entry)
+            .map(|s| &s.program)
+            .or(self.config.shell.program.as_ref())
+            .is_some_and(|program| templum_terminal::is_shell(program, "wsl"))
+    }
+
+    /// Whether the menus, Settings and the welcome list the agent `entry` as installed: WSL is
+    /// another system, whose programs aren't on Windows' PATH, so what runs there is trusted.
+    pub(crate) fn agent_installed(&self, entry: &AgentEntry) -> bool {
+        self.in_wsl(entry) || templum_terminal::installed(entry.program())
+    }
+
+    /// Why `spawn_agent` and the Templum Agent can't open the agent `entry`: it runs in WSL,
+    /// where Templum can't see it start nor type its prompt, or it isn't installed here.
+    pub(crate) fn spawn_problem(&self, entry: &AgentEntry) -> Option<String> {
+        if self.in_wsl(entry) {
+            Some(format!(
+                "{} runs in WSL, where Templum can't see it start nor type its prompt: open it from the canvas.",
+                entry.title
+            ))
+        } else if !templum_terminal::installed(entry.program()) {
+            Some(format!(
+                "{} isn't installed on this computer ({} wasn't found).",
+                entry.title,
+                entry.program()
+            ))
+        } else {
+            None
+        }
+    }
+
     /// `agent_shell`'s shell, for an agent about to open: a label that finds none says so on
     /// stderr, as a restored terminal's does (no notification; the label stays in the file).
     fn shell_for(&self, entry: &AgentEntry) -> Option<ShellOption> {

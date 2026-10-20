@@ -84,12 +84,8 @@ impl Workspace {
         if let Err(why) = entry.launch_args_with(model, effort, spawn.args.as_deref()) {
             return Outcome::Now(Reply::err(why));
         }
-        if !templum_terminal::installed(entry.program()) {
-            return Outcome::Now(Reply::err(format!(
-                "{} isn't installed on this computer ({} wasn't found).",
-                entry.title,
-                entry.program()
-            )));
+        if let Some(problem) = self.spawn_problem(&entry) {
+            return Outcome::Now(Reply::err(problem));
         }
         let (space_id, me) = self.caller(from).expect("call found the caller");
         let space = self.space_named(&space_id).expect("the caller's workspace");

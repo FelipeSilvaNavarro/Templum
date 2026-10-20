@@ -606,12 +606,8 @@ impl Workspace {
         if let Err(why) = entry.launch_args_with(model, effort, None) {
             return refuse(why);
         }
-        if !templum_terminal::installed(entry.program()) {
-            return refuse(format!(
-                "{} isn't installed on this computer ({} wasn't found).",
-                entry.title,
-                entry.program()
-            ));
+        if let Some(problem) = self.spawn_problem(&entry) {
+            return refuse(problem);
         }
         let space = match self.space_of(&opening.workspace, false) {
             Ok(space) => space,

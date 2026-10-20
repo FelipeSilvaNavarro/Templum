@@ -179,11 +179,11 @@ impl Workspace {
     }
 
     /// The agents the menus list, and whether each one's program was found.
-    fn agents_for_menu(&self) -> Vec<(AgentEntry, bool)> {
+    pub(super) fn agents_for_menu(&self) -> Vec<(AgentEntry, bool)> {
         self.agents
             .iter()
             .filter(|a| a.show)
-            .map(|a| (a.clone(), templum_terminal::installed(a.program())))
+            .map(|a| (a.clone(), self.agent_installed(a)))
             .collect()
     }
 

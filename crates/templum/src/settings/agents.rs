@@ -23,7 +23,7 @@ use crate::workspace::{Workspace, show_notification};
 pub(super) fn agent_row(ws: &Workspace, entity: &Entity<Workspace>, agent: &AgentEntry) -> Row {
     let ui = ws.ui;
     let id = agent.id.clone();
-    let description = description(agent, templum_terminal::installed(agent.program()));
+    let description = description(agent, ws.agent_installed(agent));
     let show = {
         let (e, agent) = (entity.clone(), agent.clone());
         Switch::new(ElementId::Name(format!("show-agent-{id}").into()))
