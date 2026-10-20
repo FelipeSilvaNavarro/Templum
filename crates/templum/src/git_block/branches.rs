@@ -9,7 +9,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, ScrollHandle,
+    AnyElement, ClickEvent, Context, Div, ElementId, MouseButton, MouseDownEvent, ScrollHandle,
     TestSupportExt, div, px,
 };
 use templum_git::Branch;
@@ -19,6 +19,7 @@ use super::widgets::{centered, field, icon_button, small};
 use super::{Compare, FONT, Git, LISTS_W, ROW_H, diff_view, words};
 use crate::editor::button;
 use crate::menu::Target;
+use crate::theme::Ui;
 use crate::workspace::Workspace;
 
 /// The Branches tab.
@@ -224,11 +225,6 @@ fn branch_column(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>)
             .enumerate()
             .map(|(i, b)| {
                 let (click, menu) = (b.name.clone(), b.name.clone());
-                let sync = match (&b.upstream, b.gone, b.ahead, b.behind) {
-                    (Some(_), true, _, _) => "gone".to_string(),
-                    (Some(_), false, 0, 0) | (None, ..) => String::new(),
-                    (Some(_), false, a, z) => format!("↑{a} ↓{z}"),
-                };
                 div()
                     .id(ElementId::Name(
                         format!("git-branch-{}-{i}", if remote { "remote" } else { "local" })
@@ -239,50 +235,10 @@ fn branch_column(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>)
                     .justify_center()
                     .h(px(2.0 * ROW_H * z))
                     .px(px(10.0 * z))
-                    .text_size(px(FONT * z))
                     .text_color(ui.title)
                     .cursor_pointer()
                     .hover(move |st| st.bg(ui.hover))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0 * z))
-                            .child(div().w(px(14.0 * z)).flex_shrink_0().when(b.current, |el| {
-                                el.child(
-                                    Icon::new(IconName::Check)
-                                        .size(px(12.0 * z))
-                                        .text_color(ui.accent),
-                                )
-                            }))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .when(b.current, |el| {
-                                        el.font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                    })
-                                    .child(b.name.clone()),
-                            )
-                            .child(div().flex_shrink_0().text_color(ui.title_dim).child(sync)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(6.0 * z))
-                            .pl(px(20.0 * z))
-                            .text_size(px(11.0 * z))
-                            .text_color(ui.title_dim)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .child(b.subject.clone()),
-                            )
-                            .child(div().flex_shrink_0().child(templum_git::ago(now, b.time))),
-                    )
+                    .child(branch_lines(b, Some(ui), z, now))
                     .when(!busy, |el| {
                         el.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.switch_branch(click.clone(), remote, window, cx)
@@ -384,4 +340,65 @@ fn branch_column(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>)
                 .children(remote_rows),
         )
         .into_any_element()
+}
+
+/// A branch's two lines, in the Branches tab and in the branch dialog: the name (bold with an
+/// accent check when it is the current one) and ↑↓ against its upstream; under it, the last
+/// commit's subject and age. `ui` colors the check and the dim parts; None leaves them to the text
+/// around, as in a palette row that can be the selected one.
+pub(crate) fn branch_lines(b: &Branch, ui: Option<Ui>, z: f32, now: i64) -> Div {
+    let sync = match (&b.upstream, b.gone, b.ahead, b.behind) {
+        (Some(_), true, _, _) => "gone".to_string(),
+        (Some(_), false, 0, 0) | (None, ..) => String::new(),
+        (Some(_), false, a, z) => format!("↑{a} ↓{z}"),
+    };
+    let dim = |el: Div| match ui {
+        Some(ui) => el.text_color(ui.title_dim),
+        None => el.opacity(0.6),
+    };
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .min_w(px(0.0))
+        .text_size(px(FONT * z))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0 * z))
+                .child(div().w(px(14.0 * z)).flex_shrink_0().when(b.current, |el| {
+                    el.child(
+                        Icon::new(IconName::Check)
+                            .size(px(12.0 * z))
+                            .when_some(ui, |icon, ui| icon.text_color(ui.accent)),
+                    )
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .when(b.current, |el| {
+                            el.font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        })
+                        .child(b.name.clone()),
+                )
+                .child(dim(div().flex_shrink_0()).child(sync)),
+        )
+        .child(
+            dim(div()
+                .flex()
+                .gap(px(6.0 * z))
+                .pl(px(20.0 * z))
+                .text_size(px(11.0 * z)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .child(b.subject.clone()),
+            )
+            .child(div().flex_shrink_0().child(templum_git::ago(now, b.time))),
+        )
 }

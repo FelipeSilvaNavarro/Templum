@@ -66,12 +66,17 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
 
 From batches 3 and 4 (line numbers of `development` at 5046612).
 
-- [ ] **The branch dialog's rows are bare names, not the Branches tab's two-line rows.** The dialog that switches and
-  creates (`crates/templum/src/git_block/switcher.rs`, `open`) uses gpui-kit's `Command` palette with plain
-  `CommandItem`s: a name, the current one checked, no ↑↓ against the upstream, no last commit's subject or age. A
-  `CommandItem::child` could draw them, but gpui-component re-measures every row of a palette with custom children on
-  each frame (`CommandItem::same_layout`), which a repository with hundreds of remote branches would feel. Fix: draw
-  them as `child` rows only for the first ~50 matches, or measure once.
+- [ ] **The branch dialog's Remote group can't be folded, as the Branches tab's can.**
+  `crates/templum/src/git_block/switcher.rs`, `open`: a palette heading (`CommandGroup::label`) is a plain row with
+  no click, so Remote is always open; with hundreds of remote branches a person sees 50 rows and "N more". Fix: a
+  `Pick::Fold` item row ("Remote · N") that flips an `Rc<Cell<bool>>` kept by `open`, without closing the dialog, and
+  that folds only while nothing is typed (a query that matches only remote branches must not hide them).
+
+- [ ] **Opened from a create entry, an exact remote match can sit below a partial local one.**
+  `switcher.rs`, `groups`: typing `login` when `origin/login` exists offers no creation (the remote row makes the
+  tracking branch), but the rows are still the locals first, so a local `feature/login` is the first row and Enter
+  switches to it, from a detached HEAD too. Fix: sort a branch whose name (or remote name without `origin/`) equals
+  the text before the others of its group, and the Remote group first when its first row is that match.
 
 - [ ] **A comparison's "⋯ 40 unchanged lines" does nothing when clicked.** `fold_row`
   (`crates/templum/src/git_block/diff_view/paint.rs:460`) is inert on a read-only panel: Compare's diff is read once

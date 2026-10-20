@@ -3,15 +3,23 @@
 //! over the local branches, then the remote ones; Enter switches (through the question about
 //! changes); a name no branch has offers to create it. See docs/specs/git.md, section 1, Header.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use gpui_kit::assets::IconName;
-use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
+use gpui_kit::component::{Disableable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Entity, Hsla, Window, div, px};
 use templum_git::Branch;
 
+use super::branches::branch_lines;
 use super::words;
 use crate::workspace::{GitAt, Workspace};
+
+/// How many matches the dialog draws: gpui-component measures every row of a palette with custom
+/// rows on each frame, which hundreds of remote branches would feel. The rest are one row,
+/// "N more", and typing narrows them.
+const MAX_ROWS: usize = 50;
 
 /// What opened the dialog.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,12 +38,10 @@ pub(crate) enum Opened {
 /// What Enter or a click on a row does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Pick {
-    Switch {
-        name: String,
-        remote: bool,
-        current: bool,
-    },
+    Switch(Branch),
     Create(String),
+    /// The matches past `MAX_ROWS`, as a count: a row that does nothing.
+    More(usize),
 }
 
 /// The dialog's rows for the text typed, in groups: the local branches whose name holds it, the
@@ -49,21 +55,27 @@ pub(crate) fn groups(
 ) -> Vec<(&'static str, Vec<Pick>)> {
     let query = query.trim();
     let needle = query.to_lowercase();
-    let listed = |remote: bool| -> Vec<Pick> {
+    let listed = |remote: bool| -> Vec<&Branch> {
         branches
             .iter()
             .filter(|b| b.remote == remote && b.name.to_lowercase().contains(&needle))
-            .map(|b| Pick::Switch {
-                name: b.name.clone(),
-                remote,
-                current: b.current,
-            })
             .collect()
     };
-    let mut groups: Vec<_> = [("Local", listed(false)), ("Remote", listed(true))]
+    let (mut local, mut remote) = (listed(false), listed(true));
+    let hidden = (local.len() + remote.len()).saturating_sub(MAX_ROWS);
+    local.truncate(MAX_ROWS);
+    remote.truncate(MAX_ROWS - local.len());
+    let mut groups: Vec<(&'static str, Vec<Pick>)> = [("Local", local), ("Remote", remote)]
         .into_iter()
-        .filter(|(_, picks)| !picks.is_empty())
+        .filter(|(_, list)| !list.is_empty())
+        .map(|(label, list)| {
+            let picks = list.into_iter().map(|b| Pick::Switch(b.clone()));
+            (label, picks.collect())
+        })
         .collect();
+    if let Some((_, picks)) = groups.last_mut().filter(|_| hidden > 0) {
+        picks.push(Pick::More(hidden));
+    }
     let taken = branches
         .iter()
         .any(|b| b.name == query || (b.remote && words::local_name(&b.name) == query));
@@ -113,18 +125,27 @@ pub(crate) fn open(
         // The dialog is drawn on every frame: its rows follow the query.
         let query = palette.read(cx).query(cx);
         let groups = groups(&branches, &query, create_first);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
         let mut command = Command::new(&palette)
             .filterable(false)
             .placeholder(placeholder)
             .empty(move |_, _, _| div().p(px(12.0)).text_color(dim).child(nothing));
         for (label, picks) in &groups {
             let items = picks.iter().map(|pick| match pick {
-                Pick::Switch { name, current, .. } => {
-                    CommandItem::new().label(name.clone()).checked(*current)
+                Pick::Switch(b) => {
+                    let b = b.clone();
+                    CommandItem::new()
+                        .label(b.name.clone())
+                        .child(move |_, _| branch_lines(&b, None, 1.0, now))
                 }
                 Pick::Create(name) => CommandItem::new()
                     .label(format!("Create branch “{name}”"))
                     .icon(IconName::GitBranchPlus),
+                Pick::More(n) => CommandItem::new()
+                    .label(format!("{n} more: keep typing to narrow them"))
+                    .disabled(true),
             });
             let group = if label.is_empty() {
                 CommandGroup::new()
@@ -139,7 +160,8 @@ pub(crate) fn open(
             .title(title.clone())
             .w(px(420.0))
             .child(command.on_confirm(move |at, window, cx| {
-                let Some(pick) = picks.get(at.section).and_then(|p| p.get(at.row)).cloned() else {
+                let pick = picks.get(at.section).and_then(|p| p.get(at.row)).cloned();
+                let Some(pick @ (Pick::Switch(_) | Pick::Create(_))) = pick else {
                     return;
                 };
                 window.close_dialog(cx);
@@ -148,10 +170,9 @@ pub(crate) fn open(
                         return;
                     }
                     match pick {
-                        Pick::Switch { name, remote, .. } => {
-                            ws.switch_branch(name, remote, window, cx)
-                        }
+                        Pick::Switch(b) => ws.switch_branch(b.name, b.remote, window, cx),
                         Pick::Create(name) => ws.create_branch(name, from.clone(), window, cx),
+                        Pick::More(_) => {}
                     }
                 });
             }))
@@ -223,11 +244,7 @@ mod tests {
     }
 
     fn switch(name: &str, remote: bool, current: bool) -> Pick {
-        Pick::Switch {
-            name: name.to_string(),
-            remote,
-            current,
-        }
+        Pick::Switch(branch(name, remote, current))
     }
 
     #[test]
@@ -346,6 +363,32 @@ mod tests {
         assert_eq!(
             groups(&branches, "logi", false).last(),
             Some(&("", vec![Pick::Create("logi".to_string())]))
+        );
+    }
+
+    #[test]
+    fn past_the_cap_the_rest_is_one_row_that_counts_them() {
+        let many: Vec<Branch> = (0..MAX_ROWS + 7)
+            .map(|i| branch(&format!("topic-{i}"), i % 2 == 1, false))
+            .collect();
+        let all = groups(&many, "topic", false);
+        let rows: usize = all.iter().map(|(_, p)| p.len()).sum();
+        assert_eq!(rows, MAX_ROWS + 1 + 1, "the cap, the count, the creation");
+        let last_group = &all[all.len() - 2].1;
+        assert_eq!(last_group.last(), Some(&Pick::More(7)));
+        assert_eq!(
+            all.iter()
+                .flat_map(|(_, p)| p)
+                .filter(|p| matches!(p, Pick::Switch(_)))
+                .count(),
+            MAX_ROWS
+        );
+        // Typing narrows them: under the cap there is no counting row.
+        assert!(
+            groups(&many, "topic-1", false)
+                .iter()
+                .flat_map(|(_, p)| p)
+                .all(|p| !matches!(p, Pick::More(_)))
         );
     }
 }

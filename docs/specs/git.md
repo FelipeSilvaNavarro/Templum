@@ -85,7 +85,9 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
   folder, tab and commit message draft) and no block; items of kind `git` are never written again.
 - **Under the name,** dimmed, one line:
   - **the current branch.** A click opens the **branch dialog**, which switches and creates: a search field over
-    the local branches, then the remote ones, the current one checked; Enter or a click switches (with
+    the local branches, then the remote ones, each row drawn as in the Branches tab (the name, bold with an accent
+    check for the current one, and ↑↓ against its upstream; under it the last commit's subject and age; the first 50
+    matches, then one row "N more: keep typing to narrow them"); Enter or a click switches (with
     [the switch flow](#switching-branches)). A name no branch has gets a row **Create branch "name"**, which makes
     the branch at HEAD and switches to it (git's own message when it refuses the name); a name that a remote branch
     has, without its `origin/`, gets none (switching to that one makes the tracking branch). Opened from the branch
