@@ -154,6 +154,8 @@ fn a_typed_summary_wins_over_the_generic_one_and_a_deleted_file_is_named_so(
 fn an_amend_still_needs_its_message(cx: &mut TestAppContext) {
     let repo = committed_repo();
     std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    // Staged, so that without the guard the one staged file would give the sentence.
+    git_run(repo.path(), &["add", "a.txt"]);
     let (handle, ws) = open(cx);
     open_git(handle, &ws, cx, repo.path());
     assert_eq!(empty_summary(&ws, cx).1, "Update a.txt");
