@@ -346,7 +346,8 @@ fn branch_column(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>)
 /// accent check when it is the current one) and ↑↓ against its upstream; under it, the last
 /// commit's subject and age. `ui` colors the check and the dim parts; None leaves them to the text
 /// around, as in a palette row that can be the selected one, filled with the accent (a check in
-/// the accent would vanish there; the dim parts are 70% of the text's color, readable on it).
+/// the accent would vanish there, and a dimmed line would not read on it: the line's size and
+/// weight set it apart).
 pub(crate) fn branch_lines(b: &Branch, ui: Option<Ui>, z: f32, now: i64) -> Div {
     let sync = match (&b.upstream, b.gone, b.ahead, b.behind) {
         (Some(_), true, _, _) => "gone".to_string(),
@@ -355,7 +356,7 @@ pub(crate) fn branch_lines(b: &Branch, ui: Option<Ui>, z: f32, now: i64) -> Div 
     };
     let dim = |el: Div| match ui {
         Some(ui) => el.text_color(ui.title_dim),
-        None => el.opacity(0.7),
+        None => el,
     };
     div()
         .flex()
