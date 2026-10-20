@@ -170,8 +170,8 @@ const SHARED_WORDS: [(&str, &str); 18] = [
     ),
     // Its tasks' ends and watches come back into its chat; it has no reply of its own.
     (
-        "what it sends you with reply",
-        "what it sends you with its reply tool",
+        "what it sends with reply (Templum asks it to)",
+        "what it sends with its reply tool (Templum asks it to)",
     ),
     ("back typed into your terminal as", "back into this chat as"),
     (
