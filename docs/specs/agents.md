@@ -8,6 +8,9 @@
   [agent-parity.md](agent-parity.md)
 - **Accounts** (kanban card 37): several logins of one agent (`claudinho`, a name the person types), each on its own folder, sharing what the
   person chooses: [accounts.md](accounts.md)
+- **Shells** (kanban card 66, planned): each agent, the person's own and accounts too, opens in Settings ▸ Shell's
+  default or a shell of its own (`shell` in its `[agents]` entry, a Shell list in its dialog):
+  [shells.md](shells.md#a-shell-for-each-agent)
 
 ## Goal
 

@@ -433,6 +433,14 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The pointer stays a text cursor over a program that uses the mouse.** The body's `cursor_text`
   (`crates/templum/src/block.rs`) doesn't look at the mode, so htop's or Claude Code's buttons look like text to
   select. Fix: show the arrow when `modes().mouse`, read in the snapshot rather than under the lock while painting.
+- [ ] **Templum doesn't see an agent that runs in WSL.** `templum_terminal::inspect` reads the Windows processes under a
+  block's shell, and WSL 2's Linux processes aren't among them, so the snapshot (`Space::see`,
+  `crates/templum/src/workspace/mod.rs`) drops the agent `start_agent` named: an agent set to WSL (Settings ▸ Agents ▸
+  Shell), or opened while Settings ▸ Shell is WSL, has no status dot, closing its block doesn't warn, and a restart
+  brings back a WSL shell without it; `spawn_agent` refuses it (`Workspace::spawn_problem`) since its prompt could
+  never be typed. Fix: read the distribution's processes (`wsl.exe -e ps -o pid,args`, or
+  `\\wsl.localhost\<distribution>\proc`) and match them to the block by the shell's session, then resume it with its
+  resume command.
 
 ## Updates
 
@@ -1343,6 +1351,13 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   `spawn_agent` with `fork` from one of them says it can't, though `pi --fork <id>` and `grok --resume <id>
   --fork-session` exist, since Templum couldn't find the fork's own session to resume it after a restart. Fix: give a
   fork a `--session-id` Templum picks, once each agent takes one with its fork flag.
+- [ ] **An agent in WSL gets none of Templum's server, hooks or status line.** `Workspace::gives`
+  (`crates/templum/src/workspace/usage.rs`) gives nothing when the block's shell is `wsl.exe`: Templum's files are
+  Windows paths, the bus is Windows' loopback, and the block's variables (`TEMPLUM_BUS`, `TEMPLUM_TERMINAL`, the
+  `TEMPLUM_*_ARGS`) don't cross into WSL. A Claude Code set to WSL has no Templum tools, no plan limits and no hooks.
+  Fix: in a WSL block, list those variables in `WSLENV` (`/p` for paths), type Claude Code's and Codex's flags with
+  their files as `/mnt/c/…` paths, and run the MCP bridge as `templum.exe` through WSL's interop, which reaches
+  Windows' loopback.
 
 ## Placing new blocks
 
@@ -1595,6 +1610,12 @@ db2baa3.
   `a_found_agents_folder_variable_is_read` (`crates/templum-terminal/src/terminal.rs:1653`) starts a `#!/bin/sh`
   script, so it runs on Linux only and CI never covers the other two. Fix: run `claudinho` in each by hand, and make
   the test start a copy of `/bin/sleep` named `claude` on macOS and a copy of a Windows program on Windows.
+- [ ] **An account opened with Default while Settings ▸ Shell is WSL runs on WSL's own login.** An account's own
+  Shell leaves WSL out (`Workspace::agent_shell`, `crates/templum/src/workspace/blocks.rs`), since its folder reaches
+  its agent through a variable (`CLAUDE_CONFIG_DIR`…) that doesn't cross into WSL; but with no shell of its own it
+  follows Settings ▸ Shell, so when that is WSL the account's block runs WSL's agent on WSL's login, not the account.
+  Fix: pass the variable through `WSLENV` with `/p` (and check from Linux that the account folder's links resolve), or
+  open an account in the system's default shell when Settings ▸ Shell is WSL.
 
 ## Templum Agent
 

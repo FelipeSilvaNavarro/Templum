@@ -1,11 +1,13 @@
 # Shells
 
-- **Date:** 2026-10-11; [A shell for each terminal](#a-shell-for-each-terminal) 2026-10-20
+- **Date:** 2026-10-11; [A shell for each terminal](#a-shell-for-each-terminal) and
+  [A shell for each agent](#a-shell-for-each-agent) 2026-10-20
 - **Status:** Implemented, *A shell for each terminal* too (kanban card 60,
-  [plan](../plans/2026-10-20-shell-per-terminal.md))
+  [plan](../plans/2026-10-20-shell-per-terminal.md)); *A shell for each agent*: planned (kanban card 66,
+  [plan](../plans/2026-10-20-shell-per-agent.md))
 - **Builds on:** [config.md](config.md) (`[shell]`), [settings.md](settings.md),
-  [context-menus.md](context-menus.md), [persistence.md](persistence.md) and
-  [shell-integration.md](shell-integration.md)
+  [context-menus.md](context-menus.md), [persistence.md](persistence.md),
+  [shell-integration.md](shell-integration.md), [agents.md](agents.md) and [accounts.md](accounts.md)
 
 ## Goal
 
@@ -219,3 +221,178 @@ shells run the tests' quiet program, so no test depends on the machine's shells:
 **Manual (Linux):** the toolbar's Terminal opens the menu upward with the shells found; one picked runs in its block
 (its title); after a restart it runs again. Windows (Git Bash, PowerShell 7, WSL, cmd) and macOS (`-l`, Homebrew's
 fish) not checked by hand: no machine at hand.
+
+## A shell for each agent
+
+Kanban card 66, from the person: *"What if the user has a Claude in WSL and another Claude in PowerShell? Add an
+agent should have an option to pick the shell the agent opens in, and it must work for our default agents too: the
+shell picker could have Default, which follows the global shell chosen in Templum, but each agent could set its
+own."*
+
+### Goal
+
+Every agent opened from the canvas ran in the default shell (Settings ▸ Shell; card 60's decision 8). A person whose
+Claude Code lives in WSL and whose other agents live in PowerShell, or who wants Claude Code in fish and Codex in zsh,
+had to change the global setting before opening each one. Now every entry of Settings ▸ Agents (Templum's agents,
+the person's own, and accounts) has a **Shell**: **Default**, which follows Settings ▸ Shell as before, or one of the
+shells found on the computer, the one it then always opens in. This reverses card 60's decisions 8 ("Agents keep the
+default shell") and 9 ("No new setting").
+
+**Success criteria**
+
+1. The agent dialog (Edit and Add an agent) and the account dialog list **Default (*name*)** and every shell found;
+   Save writes the choice to that entry of `[agents]`, Default removes it.
+2. An agent with a shell opens in it wherever Templum opens agents: **AI agent ▸** (the canvas's menu, the
+   toolbar's, grid mode's), `spawn_agent`, the Templum Agent, and an account's **Log in**. One without opens in the
+   default, as now.
+3. Its block keeps that shell after a restart, an undo of its close or a paste, whatever the agent's setting is by
+   then (card 60's saved `shell`).
+4. On Windows, an agent set to WSL can be chosen even when its program isn't on Windows' PATH, and opens in WSL in the
+   folder chosen.
+5. The tests below pass in CI on the three OS, whatever shells the machine has.
+
+**Not in scope:** Templum's server, hooks, status line and usage for an agent inside WSL; seeing what runs inside WSL;
+accounts in WSL ([What works in WSL](#what-works-in-wsl)); looking for the agent's program inside its shell; Generate
+✨ (commit messages) running in the agent's shell; a `shell` argument for `spawn_agent` or `create_block`; showing
+the shell in the canvas's menu.
+
+### In config.toml
+
+```toml
+[agents]
+claude = { shell = "PowerShell 7" }                                        # one of Templum's
+claude-wsl = { name = "Claude Code (WSL)", command = "claude", shell = "WSL" }   # one of yours
+claudinho = { of = "claude", shell = "Git Bash" }                          # an account
+```
+
+- `shell` is a shell's **label**, as the lists show it (card 60's labels: **Git Bash**, **PowerShell 7**, **Windows
+  PowerShell**, **WSL**, **Nushell**, **Command Prompt** on Windows; the program's file name elsewhere: **zsh**,
+  **fish**, **nu**). Missing or empty: Default.
+- Any entry takes it. One of Templum's with only `shell` set is changed (↺ and Reset all take it back to Default);
+  saving it back at Default and its other defaults removes its entry, as now. An account's is its own: it doesn't
+  follow its agent's (an account entry copies the rest of its agent's).
+- A label, never a program, as the canvas file names a block's shell: it is looked up among the shells found
+  (`Workspace::shells`) and runs with that shell's arguments (`-l` on macOS, `--login -i` for Git Bash). The same name
+  then works on every computer a `config.toml` is copied to.
+- **A label not found here** (another computer's file, a shell uninstalled, a typo) opens the agent in the default
+  shell, with a line on stderr and no notification, as a restored terminal's (card 60's decision 5). The label stays
+  in the file: on the computer that has that shell it works again.
+
+### Settings ▸ Agents
+
+- **The agent dialog** (Edit, Add an agent) gets **Shell** under Resume command: a list button (`menu_button`, as
+  Settings ▸ Shell's) showing the choice:
+  - **Default (*name*)**, first: it follows Settings ▸ Shell; *name* is what the shells' menus call the default
+    (`Workspace::default_shell_name`);
+  - every shell found, by its label, the default's own included: choosing it pins the agent to it, and it stays when
+    Settings ▸ Shell changes;
+  - when the entry's label isn't among them: ***label* (not available)**, last and checked, so Save keeps it.
+  - Under it, while the choice runs WSL: "In WSL the agent gets none of Templum's tools, hooks or status line, and
+    isn't resumed after a restart."
+- **The account dialog** gets the same list, in the language of its other choices (under the agent and the name of a
+  new account, under Folder for an edited one). An account's list leaves WSL out
+  ([What works in WSL](#what-works-in-wsl)).
+- **A row** says its shell after the rest, when it has one: `claude · in PowerShell 7`, `Yours · claude · in WSL`,
+  `Claude Code · type claudinho in any terminal · in Git Bash`; a label not found adds `(not available)`.
+- The row's switch saves the whole entry: it keeps the shell (`Draft::of` and `AccountDraft::of` carry it).
+
+### Opening an agent in its shell
+
+- Every way Templum opens an agent goes through `Workspace::start_agent`: the canvas's and toolbar's **AI agent ▸**
+  (`launch_agent`), `spawn_agent` and the Templum Agent (`open_agent_in`). It runs the entry's shell
+  (`Workspace::agent_shell`: its label among the shells found; None for no label, a label not found, or WSL for an
+  account), and the block keeps it (`Pane::shell`), saved by its label as card 60 does.
+- What Templum types after the agent's command and puts in its block's environment is judged by that shell: the line
+  (`typed_in`), the words for agents typed later (`agent_env`, card 60), and now an agent's own variables too
+  (`agent_vars`: OpenCode's, Kilo Code's and Qwen Code's server, which were judged by the default shell). So a Codex
+  set to Windows PowerShell gets none of the words 5.1 would break, and an agent set to WSL gets none of Templum's.
+- **Log in** (Settings ▸ Agents ▸ Accounts) opens the account's shell too.
+- **Restoring** a canvas, Ctrl+Z of a close and a paste run the **block's own** saved shell (card 60), not the agent's
+  setting as it is now: the session an agent resumes was made in that shell's system (a Claude Code in WSL keeps its
+  sessions in WSL's `~/.claude`, not Windows'). A block saved before this change has none: the default, as before.
+- Ctrl+Shift+T, the toolbar's Terminal and **Add ▸ Terminal ▸** are unchanged.
+
+### Installed
+
+- **The same computer's shells** (bash, zsh, fish, Nushell, PowerShell, cmd, Git Bash) run the same programs:
+  Templum looks for an agent's program as it does now (`templum_terminal::installed`: the PATH, the login shell's
+  PATH, the package managers' folders), whatever shell the agent is set to.
+- **WSL is another system**: its programs aren't on Windows' PATH, and looking inside it means starting it (seconds)
+  at each menu. An agent that runs in WSL (its shell is WSL; or it has none and Settings ▸ Shell is WSL; the
+  system's default never is) counts as installed (`Workspace::agent_installed`): the menus list it, its row shows its
+  command, not the install line. When it isn't installed in WSL either, its block shows WSL's "command not found".
+- The canvas's menu, the toolbar's, grid mode's, Settings ▸ Agents' rows and the welcome's agents page all ask
+  `agent_installed`. The Templum Agent's `list_agents` keeps saying what this computer has.
+- Generate ✨ runs an agent's command on the computer, never in its shell: an agent only WSL has writes no commit
+  message, as now.
+
+### What works in WSL
+
+An agent set to WSL runs in `wsl.exe`: the default distribution, in its default shell.
+
+| Works | Doesn't, and why |
+|---|---|
+| It opens in the folder chosen: `wsl.exe` starts in the Windows folder it is given as `/mnt/c/…` (a `\\wsl.localhost\…` folder as its Linux path; neither checked by hand) | **Templum's server, hooks, status line and usage**: `Workspace::gives` gives nothing under WSL. Templum's files are Windows paths, the bus is Windows' loopback, and none of the block's variables (`TEMPLUM_BUS`, `TEMPLUM_TERMINAL`…) cross into WSL ([minors](../minors.md#connections)) |
+| Its command, with the model, effort and role words `spawn_agent`'s caller or a role gives (plain words, read the same by every shell) | **Templum doesn't see the agent**: WSL 2's processes aren't Windows'. No status dot, closing doesn't warn, the block forgets its agent at the next snapshot, so a restart brings back a WSL shell without the agent ([minors](../minors.md#programs-in-a-terminal)) |
+| The block keeps WSL across restarts, undo and paste | **`spawn_agent` and the Templum Agent refuse it**: its prompt could never be typed, since Templum never sees it start. "Claude Code (WSL) runs in WSL, where Templum can't see it start nor type its prompt: open it from the canvas." |
+| | **Accounts**: an account's folder reaches its agent through a variable, which doesn't cross into WSL; the agent would run on WSL's own login. An account's list leaves WSL out, and an account whose `shell` names WSL opens the default ([minors](../minors.md#agent-accounts)) |
+
+**The card's case.** Claude Code set to PowerShell 7 (or Git Bash) keeps all of Templum: its server, hooks, status
+line, resume by session, accounts. The WSL one is an agent of the person's own: **Add an agent**, Name "Claude Code
+(WSL)", Command `claude`, Shell **WSL**.
+
+### Decisions
+
+Taken by the planner (card 66 left them open):
+
+1. **The setting is each `[agents]` entry's `shell`, a label**, as the canvas file names a block's shell: one name for
+   a shell everywhere, looked up among the shells found, never a command Templum runs.
+2. **The list is Default, then every shell found**, the default's own included (pinning it is a real choice), as
+   Settings ▸ Shell lists them.
+3. **A label not found opens the default and stays in the file**, shown as "(not available)": a `config.toml` shared
+   between computers keeps working on each. No notification, as card 60's restore.
+4. **An account has its own shell**, Default when unset, not its agent's: it is its own row, and an account that
+   followed a WSL agent would lose its folder.
+5. **Installed is trusted in WSL** and looked up as now elsewhere. Rejected: asking the shell (`wsl.exe -e sh -lc
+   'command -v claude'`), which starts WSL's VM at each menu and still guesses which distribution.
+6. **WSL gets none of Templum's connections, and `spawn_agent` refuses an agent there**, rather than passing variables
+   through `WSLENV` and translating every path, which no one could check without a Windows machine. Each limit is a
+   minor with its fix.
+7. **An account never runs in WSL** through its own setting (its list leaves WSL out; a hand-written one opens the
+   default). An account opened with Default while Settings ▸ Shell is WSL still runs there, as before this change
+   (a minor).
+8. **A restored block runs its own saved shell**, not the agent's setting as it is then: the session it resumes lives
+   in that shell's system.
+9. **One place opens agents** (`start_agent`): the menus, `spawn_agent`, the Templum Agent and a fork all follow the
+   setting with no new argument; Log in follows the account's.
+10. **No shell in the canvas's menu** and no `shell` argument for `spawn_agent`: the agent's name says which one it is
+    ("Claude Code (WSL)"), and its setting where it runs.
+11. **Generate ✨ stays on the computer**: it runs the agent without a terminal.
+
+### Testing
+
+**Unit:**
+
+- `templum-terminal`: `is_shell` names a program by its file stem, in any case, on every OS's path
+  (`C:/Windows/System32/wsl.exe` is `wsl`, `PowerShell.exe` is `powershell`, `/usr/bin/wslu` isn't `wsl`).
+- `agents.rs`: each entry's `shell` from `[agents]` (one of Templum's, changed; one of the person's; an account's own,
+  not its agent's); `Draft` and `AccountDraft` keep it from `of` to `to_config`, Default with nothing else gives no
+  entry; `to_value` writes it.
+- `settings`: the Shell list (Default first, every shell, an account's without WSL, a label not found last); a row's
+  description with its shell, and with "(not available)".
+
+**Headless UI (`workspace/tests/`)**, with made-up shells (`Workspace::shells`) whose programs are the tests' quiet
+one, or a link named `wsl` to it (Unix), so no test depends on the machine's shells:
+
+- an agent set to a shell opens in it, its block keeps it and its saved item names it; another agent opens in the
+  default; one whose label isn't found opens in the default; an account set to WSL opens in the default;
+- an agent set to WSL gets no Templum flags on its line (Unix), and OpenCode set to WSL no server variable;
+- an agent set to WSL counts as installed (the menu's list, the welcome's) when its program isn't found, and one in
+  the default doesn't; with Settings ▸ Shell set to WSL every agent does;
+- `spawn_agent` of an agent set to WSL is refused with the reason, and opens no block;
+- the agent dialog's Shell list sets `shell` in config.toml and Default removes it; the row's switch keeps it;
+- the account dialog's Shell list sets an account's `shell`.
+
+**Manual (Linux):** Claude Code set to fish opens in fish (its block's title before the agent sets one), Codex in the
+default zsh; after a restart Claude Code resumes in fish. Windows (PowerShell 7, Git Bash, WSL) not checked by hand: no
+Windows machine at hand.
