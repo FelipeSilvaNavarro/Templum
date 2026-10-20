@@ -397,7 +397,6 @@ mod tests {
         login_hint: None,
         overrides: &[],
         keychain: Keychain::Never,
-        note: None,
     };
 
     /// A source folder and an account's, each with its login.

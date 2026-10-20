@@ -52,8 +52,6 @@ pub struct Kind {
     /// Variables that win over every account's login.
     pub overrides: &'static [&'static str],
     pub keychain: Keychain,
-    /// The dialog's line under the items.
-    pub note: Option<&'static str>,
 }
 
 const fn item(key: &'static str, label: &'static str, paths: &'static [&'static str]) -> Item {
@@ -107,11 +105,6 @@ const KINDS: &[Kind] = &[
             "CLAUDE_SECURESTORAGE_CONFIG_DIR",
         ],
         keychain: Keychain::MacOs,
-        note: Some(
-            "MCP servers you added with `claude mcp add -s user` live with the login: add them \
-             again in this account, or keep them in a project's `.mcp.json`. It also asks again \
-             to trust each folder.",
-        ),
     },
     Kind {
         agent: "codex",
@@ -142,11 +135,6 @@ const KINDS: &[Kind] = &[
         login_hint: None,
         overrides: &[],
         keychain: Keychain::Never,
-        note: Some(
-            "Codex's own list of sessions to resume reads a database of each folder: another \
-             account's shared sessions resume by their id. Skills in ~/.agents/skills are every \
-             account's.",
-        ),
     },
     Kind {
         agent: "gemini",
@@ -171,11 +159,6 @@ const KINDS: &[Kind] = &[
         login_hint: Some("/auth"),
         overrides: &[],
         keychain: Keychain::Never,
-        note: Some(
-            "Gemini CLI rewrites its settings.json, so each account has its own. Its login is \
-             this folder's when you sign in with Google (the default); an API key goes to the \
-             system's keychain, one for every folder.",
-        ),
     },
     Kind {
         agent: "copilot",
@@ -201,7 +184,6 @@ const KINDS: &[Kind] = &[
         login_hint: None,
         overrides: &["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
         keychain: Keychain::Always,
-        note: Some("Copilot CLI not logged in here uses the GitHub CLI's login (gh)."),
     },
     Kind {
         agent: "pi",
@@ -228,7 +210,6 @@ const KINDS: &[Kind] = &[
         login_hint: Some("/login"),
         overrides: &[],
         keychain: Keychain::Never,
-        note: None,
     },
     Kind {
         agent: "grok",
@@ -255,7 +236,6 @@ const KINDS: &[Kind] = &[
         login_hint: None,
         overrides: &[],
         keychain: Keychain::Never,
-        note: None,
     },
     Kind {
         agent: "kimi",
@@ -275,7 +255,6 @@ const KINDS: &[Kind] = &[
         login_hint: None,
         overrides: &[],
         keychain: Keychain::Never,
-        note: None,
     },
     Kind {
         agent: "crush",
@@ -290,10 +269,6 @@ const KINDS: &[Kind] = &[
         login_hint: None,
         overrides: &[],
         keychain: Keychain::Never,
-        note: Some(
-            "Crush keeps its login and its settings in one file, crush.json: this account shares \
-             nothing. Its sessions are each project's (.crush/), every account's.",
-        ),
     },
 ];
 

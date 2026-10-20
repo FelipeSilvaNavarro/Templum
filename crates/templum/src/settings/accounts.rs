@@ -110,8 +110,7 @@ fn path_note(ui: Ui, id: &str) -> Option<AnyElement> {
     };
     Some(if cfg!(windows) {
         note(format!(
-            "%USERPROFILE%\\.local\\bin isn't on your Path, so {id} works only in Templum's \
-             terminals. Add it in Edit environment variables for your account."
+            "Add %USERPROFILE%\\.local\\bin to your Path to use {id} outside Templum."
         ))
         .into_any_element()
     } else {
@@ -121,9 +120,7 @@ fn path_note(ui: Ui, id: &str) -> Option<AnyElement> {
             .flex_col()
             .gap(px(4.0))
             .child(note(format!(
-                "~/.local/bin isn't on your PATH, so {id} works only in Templum's terminals. To \
-                 use it in the others, add this line to your shell's startup file (~/.bashrc, \
-                 ~/.zshrc):"
+                "Add this to your shell's startup file to use {id} outside Templum:"
             )))
             .child(
                 div().text_size(px(11.0)).child(
@@ -135,7 +132,6 @@ fn path_note(ui: Ui, id: &str) -> Option<AnyElement> {
                     .selectable(true),
                 ),
             )
-            .child(note("In fish: fish_add_path ~/.local/bin".to_string()))
             .test_support()
             .into_any_element()
     })
@@ -603,12 +599,6 @@ impl Render for Form {
         for text in override_notes(kind, &agent, set) {
             notes = notes.child(note(text));
         }
-        if let Some(text) = kind.note {
-            notes = notes.child(note(text.to_string()));
-        }
-        notes = notes.child(note(
-            "Its login is never shared: log in to it with Log in.".to_string(),
-        ));
         column.child(notes)
     }
 }

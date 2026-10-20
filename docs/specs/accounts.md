@@ -119,29 +119,27 @@ several paths shares them together: they only make sense as one.
   `output-styles` Output styles (`output-styles/`); `hooks` Hook scripts (`hooks/`); `plugins` Plugins (`plugins/`);
   `keybindings` Keybindings (`keybindings.json`); `sessions` Sessions, for /resume (`projects/`, `file-history/`,
   `plans/`); `history` Prompt history (`history.jsonl`). Claude Code writes `settings.json` and `.claude.json`
-  through a link (checked with 2.1.286). Its note: "MCP servers you added with `claude mcp add -s user` live with the
-  login: add them again in this account, or keep them in a project's `.mcp.json`. It also asks again to trust each
-  folder."
+  through a link (checked with 2.1.286). MCP servers added with `claude mcp add -s user` live with the login: an
+  account adds them again, or keeps them in a project's `.mcp.json`. It also asks again to trust each folder.
 - **Codex:** `config` Settings, MCP servers and profiles (`config.toml`); `instructions` Instructions (`AGENTS.md`);
   `hooks` Hooks (`hooks.json`); `rules` Rules (`rules/`); `agents` Agents (`agents/`); `skills` Skills (`skills/`);
   `plugins` Plugins (`plugins/`); `sessions` Sessions (`sessions/`, `session_index.jsonl`); `history` Prompt history
   (`history.jsonl`). Codex writes `config.toml` through a link (checked with 0.154); that file also keeps which folders
   and hooks the person trusts. Its databases (`state_5.sqlite` and the others) are never shared: two processes of two
-  folders on one database is what Codex's lock bugs are made of. Its note: "Codex's own list of sessions to resume
-  reads a database of each folder: another account's shared sessions resume by their id. Skills in ~/.agents/skills
-  are every account's."
+  folders on one database is what Codex's lock bugs are made of. Codex's own list of sessions to resume reads a
+  database of each folder: another account's shared sessions resume by their id. Skills in ~/.agents/skills are every
+  account's.
 - **Gemini CLI:** `instructions` Instructions (`GEMINI.md`); `commands` Commands (`commands/`); `skills` Skills
   (`skills/`); `extensions` Extensions (`extensions/`). Not `settings.json`: Gemini CLI writes it by a rename, which
   replaces a link with a file (checked with 0.63). Not its sessions: their folders are named from a map
-  (`projects.json`) that it rewrites the same way. Its note: "Gemini CLI rewrites its settings.json, so each account
-  has its own. Its login is this folder's when you sign in with Google (the default); an API key goes to the system's
-  keychain, one for every folder."
+  (`projects.json`) that it rewrites the same way. Its login is this folder's when the person signs in with Google (the
+  default); an API key goes to the system's keychain, one for every folder.
 - **GitHub Copilot CLI:** `settings` Settings (`settings.json`); `instructions` Instructions
   (`copilot-instructions.md`, `instructions/`); `agents` Agents (`agents/`); `skills` Skills (`skills/`); `hooks`
   Hooks (`hooks/`); `extensions` Extensions (`extensions/`); `mcp` MCP servers (`mcp-config.json`); `lsp` Language
   servers (`lsp-config.json`). Not its sessions (`session-store.db`, a database) nor its plugins (their list is in
   `config.json`, with the login). Its login is in the system's keychain, one per GitHub account, and `config.json`
-  says which one this folder uses. Its note: "Copilot CLI not logged in here uses the GitHub CLI's login (gh)."
+  says which one this folder uses. Copilot CLI not logged in here uses the GitHub CLI's login (gh).
 - **Pi:** `settings` Settings (`settings.json`); `keybindings` Keybindings (`keybindings.json`); `system` System
   prompt (`SYSTEM.md`, `APPEND_SYSTEM.md`); `extensions` Extensions (`extensions/`); `skills` Skills (`skills/`);
   `prompts` Prompts (`prompts/`); `themes` Themes (`themes/`); `tools` Tools (`tools/`); `sessions` Sessions
@@ -154,8 +152,7 @@ several paths shares them together: they only make sense as one.
 - **Kimi Code:** `config` Settings (`config.toml`); `instructions` Instructions (`AGENTS.md`); `mcp` MCP servers
   (`mcp.json`); `skills` Skills (`skills/`); `plugins` Plugins (`plugins/`); `sessions` Sessions (`sessions/`).
 - **Crush:** none. Its login and the settings it writes are one file, `crush.json`: an account of Crush is a login of
-  its own and shares nothing (its sessions are each project's, `.crush/`, already common to every account). Its note
-  says so.
+  its own and shares nothing (its sessions are each project's, `.crush/`, already common to every account).
 
 **Variables that win over every account's login,** named under the items when Templum's own environment has one (the
 person's shell may too): Claude Code `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
@@ -397,11 +394,9 @@ exit /b %errorlevel%
   macOS the shell's, read at start as `read_shell_path` does, else Templum's own; on Windows the registry's Path),
   the dialog and the Accounts heading say so once, with what to add, and Templum's terminals still have the command
   ([Typed in a terminal](#typed-in-a-terminal)):
-  - Linux, macOS: "~/.local/bin isn't on your PATH, so claudinho works only in Templum's terminals. To use it in the
-    others, add this line to your shell's startup file (~/.bashrc, ~/.zshrc): export PATH="$HOME/.local/bin:$PATH".
-    In fish: fish_add_path ~/.local/bin". The line is selectable text.
-  - Windows: "%USERPROFILE%\.local\bin isn't on your Path, so claudinho works only in Templum's terminals. Add it in
-    Edit environment variables for your account."
+  - Linux, macOS: "Add this to your shell's startup file to use claudinho outside Templum:" over the selectable line
+    `export PATH="$HOME/.local/bin:$PATH"` (fish's own `export` takes it too).
+  - Windows: "Add %USERPROFILE%\.local\bin to your Path to use claudinho outside Templum."
 
 ## Where an account shows up
 
@@ -507,8 +502,7 @@ Unchanged per account: they come from what is typed, not from the folder. What d
   [Gemini CLI without its extension](connections.md#gemini-cli-without-its-extension) checks that account's folder,
   and its Install links the extension there (the same `gemini extensions link`, run with the account's variable).
 - **Claude Code** keeps the person's user-scope MCP servers in `.claude.json`, with the login: an account doesn't
-  share them. Its dialog says so under the items: "MCP servers you added with `claude mcp add -s user` live with the
-  login: add them again in this account, or keep them in a project's `.mcp.json`."
+  share them; the dialog doesn't say it, to stay short.
 
 ### Commit messages
 
@@ -559,8 +553,8 @@ color from the theme. Esc and the ✕ close it without saving.
        37's controls unchanged: **Share everything with** (`account-share-all`) and a row per item, Own or shared,
        with "Linked by you to …", the Developer Mode words and "Shared once Claude Code writes one" as before. Custom
        opens on the choices Same or Fresh last made.
-  5. **Notes** (11, `title_dim`), each when it applies: the [not on PATH](#its-command) note; a variable that wins over
-     every account's login (as before); the agent's note (Claude Code's MCP servers).
+  5. **Notes** (11, `title_dim`), only when one applies: the [not on PATH](#its-command) note; a variable that wins
+     over every account's login (as before). Nothing is shown otherwise: the dialog stays short.
 - **Footer** (a hairline over it, 20 at the sides, 12 up and down): at the right **Create claudinho**
   (`account-save`), the card dialog's solid accent button, its label following the name ("Create" while empty);
   while the name is empty or breaks a rule it is faint (`ui.hover`, `title_dim` text) and does nothing. Enter in the
