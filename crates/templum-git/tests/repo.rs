@@ -630,6 +630,33 @@ fn log_files_diffs_tags_branches_and_reverts() {
 }
 
 #[test]
+fn a_remote_branchs_own_name_is_not_made_a_local_branch() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("First", false).unwrap();
+    let _remote = with_remote(&repo);
+    let head = repo.run(&["rev-parse", "HEAD"]).unwrap();
+    // `git checkout -b origin/main` is accepted, and then "origin/main" names two refs.
+    let err = repo.new_branch("origin/main", None).unwrap_err();
+    assert!(err.command.starts_with("git checkout -b"), "{err}");
+    assert!(err.first_line().contains("remote branch"), "{err}");
+    assert_eq!(repo.status().unwrap().branch.as_deref(), Some("main"));
+    assert_eq!(repo.run(&["rev-parse", "HEAD"]).unwrap(), head);
+    assert!(
+        repo.run(&["rev-parse", "--verify", "-q", "refs/heads/origin/main"])
+            .is_err()
+    );
+    // From a commit too, and a name that only starts like a remote's is fine.
+    assert!(repo.new_branch("origin/main", Some("HEAD")).is_err());
+    repo.new_branch("origin/other", None).unwrap();
+    assert_eq!(
+        repo.status().unwrap().branch.as_deref(),
+        Some("origin/other")
+    );
+}
+
+#[test]
 fn branches_checkouts_renames_merges_and_deletes() {
     let (dir, repo) = fresh();
     write(dir.path(), "a.txt", "one\n");

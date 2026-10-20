@@ -1368,10 +1368,26 @@ impl Repo {
         self.run(&["checkout", "-q", "--detach", hash]).map(drop)
     }
 
-    /// A branch named `name` at `from` (HEAD without), checked out. A name git refuses is an
-    /// error before anything is made.
+    /// A branch named `name` at `from` (HEAD without), checked out. A name git refuses, or a
+    /// remote branch's own (`origin/main`: git would make it, and from then on `origin/main`
+    /// would be ambiguous and name this one), is an error before anything is made.
     pub fn new_branch(&self, name: &str, from: Option<&str>) -> Result<(), GitError> {
         self.check_ref_format(name)?;
+        let remote = format!("refs/remotes/{name}");
+        if self
+            .run(&["show-ref", "--verify", "--quiet", &remote])
+            .is_ok()
+        {
+            return Err(GitError {
+                command: shown(&self.program, &["checkout", "-b", name]),
+                code: None,
+                stderr: format!(
+                    "fatal: '{name}' is a remote branch: a local branch of that name would \
+                     make '{name}' ambiguous."
+                ),
+                missing: false,
+            });
+        }
         let mut args = vec!["checkout", "-q", "-b", name];
         if let Some(from) = from {
             args.push(from);

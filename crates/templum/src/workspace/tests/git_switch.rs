@@ -364,6 +364,44 @@ fn a_create_entry_never_switches_away_from_a_detached_head(cx: &mut TestAppConte
     assert_eq!(notification_count(handle, cx), 1, "git's own refusal");
 }
 
+/// `git checkout -b origin/main` is accepted, and then `origin/main` is ambiguous: rebase, merge
+/// and Compare against it would use the stale local branch. The creation (the first row, as for
+/// any name) is refused, and HEAD stays.
+#[gpui_kit::test]
+fn a_create_entry_refuses_a_remote_branchs_full_name(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = two_branches();
+    let _remote = add_remote(repo.path());
+    git_run(repo.path(), &["checkout", "-q", "--detach", "feat"]);
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| window.click("git-branch-here", cx))
+        .unwrap();
+    settle(handle, cx);
+    cx.simulate_input(handle, "origin/main");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, |g| {
+        assert_eq!(g.status.branch, None, "still detached");
+    });
+    assert_eq!(
+        git_run(repo.path(), &["rev-parse", "HEAD"]),
+        git_run(repo.path(), &["rev-parse", "feat"]),
+        "HEAD stayed on its commit"
+    );
+    assert_eq!(
+        git_run(repo.path(), &["branch", "--list", "origin/main"]),
+        "",
+        "no local branch of a remote's name"
+    );
+    assert_eq!(notification_count(handle, cx), 1, "the reason");
+}
+
 #[gpui_kit::test]
 fn branches_that_cannot_be_read_say_so_and_the_dialog_stays_closed(cx: &mut TestAppContext) {
     no_motion(cx);

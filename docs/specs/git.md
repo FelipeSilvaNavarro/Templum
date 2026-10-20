@@ -99,7 +99,8 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
     dialog with the row **first**, for any name typed, so Enter right after typing never switches: it makes the name
     typed even when another branch holds it (`login` while `feature/login` or `origin/login` exists), and git
     refuses a local name that is taken in its own words, HEAD staying where it is (from a detached HEAD a switch
-    would leave its commits behind). **New branch here…** (a commit's menu)
+    would leave its commits behind). A remote branch's full name (`origin/login`) is refused too, saying so: a
+    local branch of that name would make `origin/login` ambiguous for every comparison and merge. **New branch here…** (a commit's menu)
     opens it too; from a commit it lists no branches (there is nothing to switch to from there) and creates at that
     commit.
   - **where it stands with the server:** "↑2 ↓1", "up to date", or "not published", with a tooltip in words
