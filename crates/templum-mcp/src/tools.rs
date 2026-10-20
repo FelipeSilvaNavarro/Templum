@@ -59,8 +59,9 @@ pub enum Call {
         wait: bool,
         timeout: u64,
     },
+    /// Without a `block`, the task the caller is on is answered.
     ReplyTo {
-        block: String,
+        block: Option<String>,
         text: String,
     },
     WaitForIdle {
@@ -682,13 +683,20 @@ pub fn list() -> Value {
         },
         {
             "name": "reply",
-            "description": "Answers the task an agent connected to you handed you (it began with [from <title> \
-                            (<id>), task t7]): the agent waiting for it gets your text now. When it isn't waiting, the \
-                            text is typed into its terminal after a line saying it is from you.",
+            "description": "Answers the task you are on (it began [from <title> (<id>), task t7]): call it once, \
+                            when you are done, with your whole answer as text. It ends the task, and the agent that \
+                            handed it gets your text now. With block, writes to that connected agent instead: typed \
+                            into its terminal after a line saying it is from you.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "block": block, "text": { "type": "string" } },
-                "required": ["block", "text"],
+                "properties": {
+                    "block": {
+                        "type": "string",
+                        "description": "The agent to write to; leave it out to answer the task you are on.",
+                    },
+                    "text": { "type": "string" },
+                },
+                "required": ["text"],
             },
         },
         {
@@ -1085,7 +1093,7 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             timeout: seconds(TASK_WAIT)?,
         },
         "reply" => Call::ReplyTo {
-            block: text("block")?,
+            block: optional("block")?,
             text: text("text")?,
         },
         "wait_for_idle" => Call::WaitForIdle {
@@ -1600,6 +1608,31 @@ mod tests {
                 enter: false
             })
         );
+    }
+
+    /// `reply` without a block answers the task its caller is on.
+    #[test]
+    fn reply_needs_only_its_text() {
+        assert_eq!(
+            parse("reply", &json!({ "text": "Line 42." })),
+            Ok(Call::ReplyTo {
+                block: None,
+                text: "Line 42.".into()
+            })
+        );
+        assert_eq!(
+            parse("reply", &json!({ "block": "k9x1d", "text": "Line 42." })),
+            Ok(Call::ReplyTo {
+                block: Some("k9x1d".into()),
+                text: "Line 42.".into()
+            })
+        );
+        let tools = list();
+        let reply = tools["tools"]
+            .as_array()
+            .and_then(|t| t.iter().find(|t| t["name"] == "reply"))
+            .expect("reply is listed");
+        assert_eq!(reply["inputSchema"]["required"], json!(["text"]));
     }
 
     #[test]

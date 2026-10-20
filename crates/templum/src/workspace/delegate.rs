@@ -796,16 +796,24 @@ impl Workspace {
         }
     }
 
-    /// `reply` from the terminal `from` to the agent `block`: its calls waiting on the caller
-    /// (`delegate` with `wait`, `wait_for_idle`) get `text`; with none, the text is typed into it
-    /// as a message. Either way the task it handed the caller is answered.
+    /// `reply` from the terminal `from`: without a `block`, or to the agent that handed the caller
+    /// its task, the caller's answer, which ends that task (`finish_task`). To another connected
+    /// agent `block`, a message: its calls waiting on the caller (`delegate` with `wait`,
+    /// `wait_for_idle`) get `text`; with none, the text is typed into it. No task ends then
+    /// (docs/specs/agent-protocol.md, 2).
     pub(super) fn reply_to(
         &mut self,
         from: &str,
-        block: &str,
+        block: Option<&str>,
         text: &str,
         cx: &mut Context<Self>,
     ) -> Reply {
+        if text.trim().is_empty() {
+            return Reply::err("reply needs your answer as text.");
+        }
+        let Some(block) = block else {
+            return self.finish_task(from, text, cx);
+        };
         let (space_id, me) = self.caller(from).expect("call found the caller");
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let to = match target(space, me, block) {
@@ -813,12 +821,21 @@ impl Workspace {
             Err(refused) => return refused,
         };
         if to == me {
-            return Reply::err("This block is yours: reply to the agent that handed you the task.");
+            return Reply::err(
+                "This block is yours: leave block out to answer the task you are on.",
+            );
         }
         let Some(pane) = space.terminal(to) else {
             return Reply::err(format!("{block} isn't a terminal."));
         };
         let asker = pane.term.id().to_string();
+        if self
+            .pane(from)
+            .and_then(|p| p.handed.as_ref())
+            .is_some_and(|h| h.by == asker)
+        {
+            return self.finish_task(from, text, cx);
+        }
         let waiting: Vec<u64> = self
             .waits
             .iter()
@@ -831,23 +848,13 @@ impl Workspace {
             if let Err(refused) = pane.takes_handing(block) {
                 return refused;
             }
-            // The task this agent handed the replier, if any: the reply is its end.
-            let to = self
-                .pane(from)
-                .and_then(|p| p.handed.as_ref())
-                .filter(|h| h.by == asker)
-                .map(|h| format!(" to task t{}", h.id))
-                .unwrap_or_default();
             let reply = format!(
-                "[reply from {}{to}] Its reply is in the pasted text.\n{text}",
+                "[reply from {}] Its reply is in the pasted text.\n{text}",
                 self.signature(space, me, cx)
             );
             self.send_task(&asker, &reply, false, cx);
         }
         if let Some(mine) = self.pane_mut(from) {
-            if mine.handed.as_ref().is_some_and(|h| h.by == asker) {
-                mine.handed = None;
-            }
             mine.answer = Some(text.to_string());
         }
         let answered = !waiting.is_empty();
@@ -860,6 +867,45 @@ impl Workspace {
         } else {
             format!("Typed into {block}.")
         })
+    }
+
+    /// The agent in the terminal `terminal` answers the task it is on with `text`, whole: the task
+    /// ends. The calls of the agent that handed it waiting for it (`delegate` with `wait`,
+    /// `wait_for_idle`) get `text`; with none, that agent hears the end as any end is told
+    /// (`tell_end`). Other agents' calls waiting on its turn stay for the turn's end
+    /// (docs/specs/agent-protocol.md, 2).
+    pub(super) fn finish_task(
+        &mut self,
+        terminal: &str,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let Some(handed) = self.pane_mut(terminal).and_then(|p| p.handed.take()) else {
+            return Reply::err(
+                "You are on no task: reply answers the task an agent handed you; name a block to \
+                 write to one.",
+            );
+        };
+        if let Some(pane) = self.pane_mut(terminal) {
+            pane.answer = Some(text.to_string());
+        }
+        let reply = Reply::ok(text);
+        let waiting: Vec<u64> = self
+            .waits
+            .iter()
+            .filter(|w| {
+                w.from == handed.by && matches!(&w.what, Waiting::Turn { of, .. } if of == terminal)
+            })
+            .map(|w| w.key)
+            .collect();
+        if waiting.is_empty() {
+            self.tell_end(terminal, &handed, &reply, cx);
+        }
+        for key in waiting {
+            self.answer(key, reply.clone(), cx);
+        }
+        cx.notify();
+        Reply::ok(format!("Answered task t{}.", handed.id))
     }
 
     /// `wait_for_idle` from the terminal `from` on the agent `block`: its last answer now when it

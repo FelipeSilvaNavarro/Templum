@@ -305,7 +305,7 @@ fn reply_answers_the_task_before_its_turn_ends(cx: &mut TestAppContext) {
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     let reply = json!({ "block": uid, "text": "Line 42." });
     let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply);
-    assert_eq!((failed, text), (false, format!("Answered {uid}.")));
+    assert_eq!((failed, text.as_str()), (false, "Answered task t1."));
     assert_eq!(answered(&answers), (false, "Line 42.".to_string()));
     ws.read_with(cx, |ws, _| {
         assert!(ws.space.terminal(theirs).unwrap().handed.is_none())
@@ -319,6 +319,33 @@ fn reply_answers_the_task_before_its_turn_ends(cx: &mut TestAppContext) {
         json!({ "event": "stopped", "message": "Fixed it too." }),
     );
     assert!(answers.try_recv().is_err(), "answered once");
+}
+
+/// `reply` without a block ends the task its caller is on, once, with the whole text; a blank
+/// one is refused and the task stays open (docs/specs/agent-protocol.md, 2).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn reply_without_a_block_answers_the_task_you_are_on(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let reply = |text: &str| json!({ "text": text });
+    let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply("Done."));
+    assert!(failed && text.starts_with("You are on no task"), "{text}");
+    let task = json!({ "block": them, "task": "find the bug", "wait": true });
+    let waiting = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply("  "));
+    assert_eq!(
+        (failed, text.as_str()),
+        (true, "reply needs your answer as text.")
+    );
+    assert!(waiting.try_recv().is_err(), "still open");
+    let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply("Line 42."));
+    assert_eq!((failed, text.as_str()), (false, "Answered task t1."));
+    assert_eq!(answered(&waiting), (false, "Line 42.".to_string()));
+    // Once: the task is over.
+    let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply("Again."));
+    assert!(failed && text.starts_with("You are on no task"), "{text}");
 }
 
 #[cfg(unix)]
@@ -345,22 +372,40 @@ fn reply_with_no_one_waiting_types_into_the_agent(cx: &mut TestAppContext) {
         mine,
         &format!("({them})] Its reply is in the pasted text. Done.[reply from"),
     );
-    // The reply to a task the agent it goes to handed: its line names the task.
+}
+
+/// A reply to the agent that handed the caller its task is the task's end: with no call of that
+/// agent waiting, it is told as any end is, not typed as a reply.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_reply_with_no_one_waiting_is_the_tasks_end(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
     let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    asker(&ws, cx, mine);
     let task = json!({ "block": them, "task": "find the bug" });
     let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
     assert!(!failed, "{text}");
-    let reply = json!({ "block": uid, "text": "Line 42." });
-    let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply);
-    assert_eq!((failed, text), (false, format!("Typed into {uid}.")));
-    screen_with(&ws, cx, mine, "Line 42.");
-    enter(cx);
-    screen_with(
+    let (failed, text) = call(
+        handle,
         &ws,
         cx,
-        mine,
-        &format!("({them}) to task t1] Its reply is in the pasted text. Line 42.[reply from"),
+        &worker,
+        "reply",
+        json!({ "text": "Line 42." }),
     );
+    assert_eq!((failed, text.as_str()), (false, "Answered task t1."));
+    after(cx, 1000);
+    // `cat` echoes what is typed: the notice, its first line and its answer as one line.
+    let shown = screen_with(&ws, cx, mine, "Line 42.");
+    assert!(
+        shown.contains("[task t1 from ")
+            && shown.contains(&format!("({them}): done in "))
+            && shown.contains(" s] Its answer is in the pasted text. Line 42."),
+        "{shown}"
+    );
+    assert!(!shown.contains("[reply from"), "{shown}");
+    assert!(notices(&ws, cx).is_empty());
 }
 
 #[gpui_kit::test]

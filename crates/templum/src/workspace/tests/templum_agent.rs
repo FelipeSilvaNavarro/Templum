@@ -2723,6 +2723,36 @@ fn a_tasks_end_wakes_the_templum_agent(cx: &mut TestAppContext) {
     rows_until(&ws, cx, ended);
 }
 
+/// The Templum Agent, which no block names, is answered by `reply` without a block as by a turn's
+/// end (docs/specs/agent-protocol.md, 2).
+#[gpui_kit::test]
+fn a_reply_ends_the_templum_agents_task(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    let (_, uid, terminal) = handed_by_the_templum_agent(handle, &ws, cx);
+    let reply = json!({ "text": "Card 4 is done." });
+    let (failed, text) = super::bus::call(handle, &ws, cx, &terminal, "reply", reply);
+    assert_eq!((failed, text.as_str()), (false, "Answered task t1."));
+    super::bus::after(
+        cx,
+        crate::workspace::delegate::SPENT_AFTER.as_millis() as u64,
+    );
+    assert_eq!(
+        notices(&ws, cx),
+        [(::templum_agent::NoticeLevel::Done, Some(uid))]
+    );
+    let sent = ws.read_with(cx, |ws, _| ws.templum_agent.sent.clone());
+    assert!(
+        sent.iter().any(|m| m.starts_with("[task t1 from ")),
+        "{sent:?}"
+    );
+    assert!(
+        sent.iter().any(|m| m.contains("Card 4 is done.")),
+        "{sent:?}"
+    );
+    rows_until(&ws, cx, ended);
+}
+
 #[gpui_kit::test]
 fn a_failed_task_is_red(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();

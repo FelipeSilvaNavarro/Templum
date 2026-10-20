@@ -471,7 +471,7 @@ impl Workspace {
                 every,
             } => self.schedule(terminal, &block, &text, when, every, cx),
             Call::CancelSchedule { schedule } => self.cancel_schedule(terminal, &schedule),
-            Call::ReplyTo { block, text } => self.reply_to(terminal, &block, &text, cx),
+            Call::ReplyTo { block, text } => self.reply_to(terminal, block.as_deref(), &text, cx),
             Call::WaitForIdle { block, timeout } => {
                 return self.wait_for_idle(terminal, &block, timeout);
             }
