@@ -1254,6 +1254,143 @@ mod tests {
     }
 
     #[test]
+    fn a_name_must_be_a_lowercase_word() {
+        let rule = "Use lowercase letters, digits, - and _, starting with a letter";
+        let long = "a".repeat(33);
+        for bad in [
+            "Claudinho",
+            "claude inho",
+            "1claude",
+            "-x",
+            "",
+            "clau$de",
+            &long,
+        ] {
+            let problem = name_problem(bad, |_| false, None, None, |_| None);
+            assert_eq!(problem.as_deref(), Some(rule), "{bad}");
+        }
+        for good in ["claudinho", "claudio", "work-2", "a_b", &"a".repeat(32)] {
+            assert_eq!(
+                name_problem(good, |_| false, None, None, |_| None),
+                None,
+                "{good}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_isnt_an_agent_a_shell_word_nor_taken() {
+        let p = |n: &str| name_problem(n, |x| x == "claudio", None, None, |_| None);
+        assert_eq!(
+            p("claude").as_deref(),
+            Some("claude is one of Templum's agents")
+        );
+        assert_eq!(
+            p("templum").as_deref(),
+            Some("templum is Templum's own command")
+        );
+        assert_eq!(
+            p("claudio").as_deref(),
+            Some("claudio is already an agent or an account in Templum")
+        );
+        for word in ["cd", "source", "end", "test"] {
+            assert_eq!(p(word), Some(format!("{word} is a word of your shell")));
+        }
+    }
+
+    #[test]
+    fn a_name_isnt_a_command_of_the_computer() {
+        use templum_usage::accounts::command::{Command, write};
+        let (commands, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (commands, data) = (commands.path(), data.path());
+        let found = |n: &str| (n == "gh2").then(|| PathBuf::from("/usr/bin/gh2"));
+        let p = |n: &str| name_problem(n, |_| false, Some(data), Some(commands), found);
+        // A program found: its path.
+        assert_eq!(
+            p("gh2").as_deref(),
+            Some("gh2 is already a command: /usr/bin/gh2")
+        );
+        // A file of the commands folder: its path.
+        std::fs::write(commands.join("claudinho"), "#!/bin/sh\n").unwrap();
+        assert_eq!(
+            p("claudinho"),
+            Some(format!(
+                "claudinho is already a command: {}",
+                commands.join("claudinho").display()
+            ))
+        );
+        // The command another data folder wrote: an installed Templum and a --dev one.
+        let folder = Path::new("/x/accounts/claudio");
+        let of = |id, data| Command {
+            id,
+            title: "Claude Code",
+            program: "claude",
+            var: "CLAUDE_CONFIG_DIR",
+            folder,
+            data,
+        };
+        write(commands, &of("claudio", Path::new("/x"))).unwrap();
+        assert!(
+            p("claudio")
+                .unwrap()
+                .starts_with("claudio is already a command: ")
+        );
+        // Its own, also when the program lookup finds that very file.
+        write(commands, &of("claudia", data)).unwrap();
+        let finds_file = |n: &str| Some(commands.join(n)).filter(|f| f.exists());
+        assert_eq!(
+            name_problem("claudia", |_| false, Some(data), Some(commands), finds_file),
+            None
+        );
+        assert_eq!(p("claudia"), None);
+        if cfg!(windows) {
+            std::fs::write(commands.join("claudite.exe"), "").unwrap();
+            assert!(p("claudite").is_some());
+        }
+    }
+
+    #[test]
+    fn a_name_whose_folder_is_still_kept_is_refused() {
+        let data = tempfile::tempdir().unwrap();
+        let kept = data.path().join("accounts").join("claudinho");
+        std::fs::create_dir_all(&kept).unwrap();
+        let problem = name_problem("claudinho", |_| false, Some(data.path()), None, |_| None);
+        assert_eq!(
+            problem,
+            Some(format!(
+                "Templum still keeps a folder for claudinho ({}): choose another name",
+                tilde(&kept)
+            ))
+        );
+        assert_eq!(
+            name_problem("claudio", |_| false, Some(data.path()), None, |_| None),
+            None
+        );
+    }
+
+    #[test]
+    fn an_older_accounts_id_may_be_a_command() {
+        assert_eq!(command_problem("claude2", None, None, |_| None), None);
+        assert!(command_problem("Work", None, None, |_| None).is_some());
+        assert_eq!(
+            command_problem("test", None, None, |_| None).as_deref(),
+            Some("test is a word of your shell")
+        );
+    }
+
+    #[test]
+    fn the_commands_folder_is_the_tests_own() {
+        assert_eq!(
+            commands_dir(),
+            None,
+            "tests never reach the person's ~/.local/bin"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        COMMANDS.set(Some(dir.path().to_path_buf()));
+        assert_eq!(commands_dir().as_deref(), Some(dir.path()));
+    }
+
+    #[test]
     fn a_default_title_isnt_written_as_a_name() {
         let list = agents("[agents]\nclaudinho = { of = \"claude\" }\n");
         assert_eq!(AccountDraft::of(by(&list, "claudinho")).name, "");
