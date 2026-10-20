@@ -1165,9 +1165,8 @@ pub struct Workspace {
     pub(crate) shells: Vec<templum_terminal::ShellOption>,
     pub(crate) default_shell: String,
     /// `shells` was read before the login shell's PATH arrived (`read_shell_path` is a thread
-    /// started with Templum): it may lack the shells only that PATH has, Homebrew's fish from the
-    /// Dock. Read again by the first menu after it arrives, or by a restored terminal that names a
-    /// shell the list lacks, which waits for it.
+    /// started with Templum): it may lack a shell only that PATH has, outside the usual install
+    /// folders. Read again by the first menu opened after it arrives.
     pub(crate) shells_early: bool,
     /// What the user typed in the panel's text fields that can't apply yet (an unclosed quote),
     /// by the config key it is for.

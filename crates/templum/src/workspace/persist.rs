@@ -240,17 +240,8 @@ impl Workspace {
     /// its label, never by a program: a file edited or from another computer can only pick a
     /// shell this computer lists, and one that isn't here opens the default (the block forgets
     /// it, and the canvas loses no block for a shell that is gone).
-    fn found_shell(&mut self, label: &str) -> Option<templum_terminal::ShellOption> {
-        let find = |ws: &Self| ws.shells.iter().find(|s| s.label == label).cloned();
-        let mut found = find(self);
-        // The list was read before the login shell's PATH arrived: a shell only that PATH has
-        // (Homebrew's fish from the Dock) isn't in it yet. Waiting costs once, and only for a
-        // label the list lacks: the block would otherwise lose its shell for good.
-        if found.is_none() && self.shells_early {
-            templum_terminal::wait_for_shell_path();
-            self.load_shells();
-            found = find(self);
-        }
+    fn found_shell(&self, label: &str) -> Option<templum_terminal::ShellOption> {
+        let found = self.shells.iter().find(|s| s.label == label).cloned();
         if found.is_none() {
             eprintln!("templum: no shell {label:?} here: the default one opens");
         }

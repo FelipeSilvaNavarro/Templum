@@ -108,10 +108,13 @@ Labels stay as they are: Windows names (**Git Bash**, **PowerShell 7**, **Window
 The list and the default's name are read when Templum starts and, as before, when Settings or the welcome opens
 (`Workspace::shells`, `Workspace::default_shell`). Reading them costs a file read and a few `stat`s.
 
-The login shell's PATH is read on a thread that starts with Templum, and a list read before it arrives may lack the
-shells only it has (Homebrew's fish, when Templum starts from the Dock). Such a list (`Workspace::shells_early`) is
-read again by the first menu opened after the PATH arrives, and a restored terminal that names a shell the list lacks
-waits for the PATH (5 seconds at most, once) before it falls back: its block doesn't lose a shell for the sake of a race.
+The login shell's PATH is read on a thread that starts with Templum, and a list read before it arrives may lack a shell
+only it has. Nothing waits for it: the window must not be late because a startup file is slow. Where programs are
+looked up (`program_dirs`) also lists the usual package managers' folders (Homebrew's on macOS and Linux, Nix's,
+MacPorts', `~/.cargo/bin`), so Homebrew's fish from the Dock is found at once. A list read early
+(`Workspace::shells_early`) is read again by the first menu opened after the PATH arrives. A restored terminal that
+names a shell the list lacks opens the default and forgets it (see [minors](../minors.md), *A shell only the login
+shell's PATH finds*).
 
 ### The menus
 
@@ -190,7 +193,9 @@ Taken by the planner (card 60 left them open):
 
 - `unix_shells` adds `bash`, `zsh`, `fish`, `nu`, `pwsh` found on a made-up PATH after `/etc/shells`, once each by
   name, by their path; a name `/etc/shells` lists isn't added again;
-- with `login`, every shell found gets `-l`; without, none.
+- with `login`, every shell found gets `-l`; without, none;
+- `program_dirs` lists Homebrew's (Apple Silicon and Linuxbrew), Nix's and MacPorts' folders, so a shell from a
+  package manager is found whatever PATH the app was started with.
 
 **Headless UI (`workspace/tests/`)**, with a made-up list (`Workspace::shells`, `Workspace::default_shell`) whose
 shells run the tests' quiet program, so no test depends on the machine's shells:
@@ -201,9 +206,12 @@ shells run the tests' quiet program, so no test depends on the machine's shells:
 - **Add ▸ Terminal ▸** a shell opens it at the right-click;
 - **Default (*name*)**'s name: the configured shell's label, the file name of a program typed by hand, the system's
   name without a program;
-- a terminal's saved item carries its shell's label; a canvas file whose `shell` is the first shell found restores
-  the block running it; a saved item whose label isn't found restores it running the default, its shell forgotten;
-  closing it and Ctrl+Z bring it back with it;
+- a terminal's saved item carries its shell's label; a canvas file whose `shell` is `sh` (**Command Prompt** on
+  Windows) restores the block running it (the one test that reads the machine's own list, so it picks a shell that
+  reads no profile, and is skipped where the list lacks it); a saved item whose label isn't found restores it running
+  the default, its shell forgotten, at once even while the list is early; closing it and Ctrl+Z bring it back with
+  it;
+- a menu opened after the login shell's PATH arrived reads an early list again;
 - `agent_env` for a terminal running `wsl.exe` gives no agent words while the default gives them; on Unix, with
   Windows PowerShell configured, a terminal running bash gets the Codex words;
 - the existing tests that click the toolbar's Terminal or **Add ▸ Terminal** pick **Default** in the new menu.

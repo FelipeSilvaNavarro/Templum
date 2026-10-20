@@ -415,6 +415,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Programs in a terminal
 
+- [ ] **A shell only the login shell's PATH finds is forgotten on the first restore.** `found_shell`
+  (`crates/templum/src/workspace/persist.rs`) looks a saved terminal's shell up in `Workspace::shells`, read before the
+  login shell's PATH arrives (`read_shell_path`, a thread); `program_dirs`
+  (`crates/templum-terminal/src/agent.rs`) covers Homebrew, Nix, MacPorts and `~/.cargo/bin`, but a shell elsewhere
+  (a version manager's shim, a company's folder) started from the Dock or a desktop menu is missing, and the block
+  reopens the default, its saved shell forgotten for good (saved without it at the next write). Fix: write the login
+  PATH to a file in the data folder once it is read, and let `program_dirs` use that file until the fresh read arrives.
 - [ ] **Programs never hear the focus come and go.** Claude Code and Codex turn on focus reporting (mode 1004), but
   no block sends `CSI I` / `CSI O` (`focus_block`, `crates/templum/src/workspace/blocks.rs`), so a program that
   waits for focus to redraw or to stop notifying doesn't know. Fix: send them to the terminal losing and the one

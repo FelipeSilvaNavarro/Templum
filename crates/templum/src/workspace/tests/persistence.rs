@@ -844,12 +844,22 @@ fn a_saved_shell_comes_back_and_one_not_found_opens_the_default(cx: &mut TestApp
 }
 
 /// At start, a canvas file's terminal runs its shell: the startup restore reads the list first.
+/// It runs the machine's own list, so the shell is one that reads no profile (`sh`, never a login
+/// bash or Git Bash); a machine whose list lacks it skips the check.
 #[gpui_kit::test]
 fn a_canvas_files_terminal_starts_its_shell(cx: &mut TestAppContext) {
-    let first = templum_terminal::available_shells()
+    let label = if cfg!(windows) {
+        "Command Prompt"
+    } else {
+        "sh"
+    };
+    let Some(first) = templum_terminal::available_shells()
         .into_iter()
-        .next()
-        .expect("CI lists a shell");
+        .find(|s| s.label == label)
+    else {
+        eprintln!("skipped: this computer lists no {label}");
+        return;
+    };
     let data = tempfile::tempdir().unwrap();
     write_canvas(
         data.path(),
@@ -899,25 +909,29 @@ fn a_restored_agents_line_follows_its_terminals_shell(cx: &mut TestAppContext) {
     assert!(!shown.contains("--settings"), "{shown}");
 }
 
-/// The list read at start can miss a shell only the login shell's PATH has (Homebrew's fish from
-/// the Dock): a saved terminal that names one waits for that PATH and gets its shell, instead of
-/// the default and the loss of its choice.
+/// A saved shell the list lacks opens the default at once, even while the login shell's PATH is
+/// still to come: the window doesn't wait for it, and `shells_early` stays for the next menu to
+/// read the list again.
 #[gpui_kit::test]
-fn a_saved_shell_missing_from_an_early_list_is_looked_up_again(cx: &mut TestAppContext) {
-    let first = templum_terminal::available_shells()
-        .into_iter()
-        .next()
-        .expect("CI lists a shell");
+fn a_saved_shell_missing_from_an_early_list_opens_the_default_without_waiting(
+    cx: &mut TestAppContext,
+) {
+    use templum_terminal::ShellOption;
     let (handle, ws) = open(cx);
-    // The list as an early read left it.
+    let (program, args) = quiet();
+    let quiet_shell = ShellOption {
+        label: "Quiet".into(),
+        program,
+        args,
+    };
     ws.update(cx, |ws, _| {
-        ws.shells = Vec::new();
+        ws.shells = vec![quiet_shell.clone()];
         ws.shells_early = true;
     });
     let item: crate::session::Item = serde_json::from_value(serde_json::json!({
         "kind": "terminal",
         "rect": { "x": 0.0, "y": 900.0, "w": 700.0, "h": 450.0 },
-        "shell": first.label,
+        "shell": "fish",
     }))
     .unwrap();
     let id = cx
@@ -927,7 +941,8 @@ fn a_saved_shell_missing_from_an_early_list_is_looked_up_again(cx: &mut TestAppC
         .unwrap()
         .unwrap();
     ws.read_with(cx, |ws, _| {
-        assert_eq!(ws.space.terminal(id).unwrap().shell, Some(first));
-        assert!(!ws.shells_early, "read again");
+        assert_eq!(ws.space.terminal(id).unwrap().shell, None);
+        assert_eq!(ws.shells, vec![quiet_shell], "the list wasn't read again");
+        assert!(ws.shells_early);
     });
 }

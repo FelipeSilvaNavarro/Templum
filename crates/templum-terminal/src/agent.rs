@@ -736,8 +736,8 @@ pub fn read_shell_path() {
     });
 }
 
-/// Set when [`read_shell_path`] starts: what [`shell_path_pending`] and [`wait_for_shell_path`]
-/// go by, so nothing waits for a read that was never started (the tests, `--bench`).
+/// Set when [`read_shell_path`] starts: what [`shell_path_pending`] goes by, so nothing counts as
+/// pending for a read that was never started (the tests, `--bench`).
 #[cfg(unix)]
 static SHELL_PATH_READ_STARTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -753,18 +753,6 @@ pub fn shell_path_pending() -> bool {
 pub fn shell_path_pending() -> bool {
     false
 }
-
-/// Waits until the user's shell's PATH is read: at most the read's own limit (5 s). At once when
-/// no read was started.
-#[cfg(unix)]
-pub fn wait_for_shell_path() {
-    if SHELL_PATH_READ_STARTED.load(std::sync::atomic::Ordering::SeqCst) {
-        SHELL_PATH.wait();
-    }
-}
-
-#[cfg(not(unix))]
-pub fn wait_for_shell_path() {}
 
 /// Printed before the PATH, to find it among what the shell's startup files print.
 #[cfg(unix)]
@@ -817,6 +805,7 @@ fn program_dirs() -> Vec<PathBuf> {
             ".npm-global/bin",
             ".bun/bin",
             ".cargo/bin",
+            ".nix-profile/bin",
             ".deno/bin",
             ".volta/bin",
             "go/bin",
@@ -833,7 +822,18 @@ fn program_dirs() -> Vec<PathBuf> {
             dirs.extend(versions.flatten().map(|v| v.path().join("bin")));
         }
     }
-    dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+    // What a desktop launch's PATH lacks: Homebrew's (Apple Silicon, Linuxbrew, Intel), Nix's,
+    // MacPorts'.
+    dirs.extend(
+        [
+            "/opt/homebrew/bin",
+            "/home/linuxbrew/.linuxbrew/bin",
+            "/nix/var/nix/profiles/default/bin",
+            "/opt/local/bin",
+            "/usr/local/bin",
+        ]
+        .map(PathBuf::from),
+    );
     dirs
 }
 
@@ -881,6 +881,25 @@ mod tests {
 
     fn builtins() -> Vec<Detect> {
         Agent::all().map(Agent::detect).collect()
+    }
+
+    /// A shell or an agent from a package manager is found when Templum starts from the Dock or a
+    /// desktop menu, without waiting for the login shell's PATH.
+    #[test]
+    fn programs_are_looked_up_in_the_package_managers_folders() {
+        let dirs = program_dirs();
+        for dir in [
+            "/opt/homebrew/bin",
+            "/home/linuxbrew/.linuxbrew/bin",
+            "/nix/var/nix/profiles/default/bin",
+            "/opt/local/bin",
+            "/usr/local/bin",
+        ] {
+            assert!(dirs.contains(&PathBuf::from(dir)), "{dir}");
+        }
+        if let Some(home) = std::env::home_dir() {
+            assert!(dirs.contains(&home.join(".nix-profile/bin")));
+        }
     }
 
     #[test]
