@@ -134,6 +134,17 @@ pub fn run(
                         }
                     }
                 }
+                // `reply -`: the answer is standard input, whatever its length, unquoted.
+                if call.name == "reply" && call.arguments["text"] == "-" {
+                    let mut text = String::new();
+                    match stdin.read_to_string(&mut text) {
+                        Ok(_) => call.arguments["text"] = json!(text),
+                        Err(e) => {
+                            let _ = writeln!(stderr, "templum: couldn't read stdin: {e}");
+                            return 2;
+                        }
+                    }
+                }
                 Some(call)
             }
             Err(usage) => {
@@ -238,6 +249,8 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
                 json!({ "block": block, "task": task.join(" "), "wait": wait }),
             )
         }
+        // The task its shell is on, answered with what comes on standard input (`run` reads it).
+        ("reply", ["-"]) => ("reply", json!({ "text": "-" })),
         ("reply", [block, text @ ..]) if !text.is_empty() => {
             ("reply", json!({ "block": block, "text": text.join(" ") }))
         }
@@ -525,7 +538,7 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("connect", _) => return Err("connect <block> [--json]"),
         ("spawn", _) => return Err(SPAWN),
         ("delegate", _) => return Err("delegate <block> <task> [--wait] [--json]"),
-        ("reply", _) => return Err("reply <block> <text> [--json]"),
+        ("reply", _) => return Err("reply [<block>] <text>|- [--json]"),
         ("wait", _) => return Err(WAIT),
         ("kanban", _) => return Err(KANBAN),
         ("note", _) => return Err(NOTE),
@@ -987,6 +1000,50 @@ mod tests {
         let (code, _, err) = run_with(&["plan", &missing], &env(&bus), "");
         assert_eq!(code, 2, "{err}");
         assert!(err.starts_with("templum: couldn't read "), "{err}");
+    }
+
+    /// `templum reply -` answers the task its shell is on with its standard input, whole; with a
+    /// block it writes to that agent, from the arguments or from `-`.
+    #[test]
+    fn reply_reads_its_answer_from_stdin() {
+        let (seen, calls) = std::sync::mpsc::channel();
+        let (_dir, bus) = test_bus(move |m| {
+            if let Incoming::Request { id, params, .. } = &m.incoming {
+                let _ = seen.send(params.clone());
+                let _ = m.reply.send(tool_result(id, &Reply::ok("ok")));
+            }
+        });
+        for (args, stdin, arguments) in [
+            (
+                &["reply", "-"][..],
+                "Line 42.\n",
+                json!({ "text": "Line 42.\n" }),
+            ),
+            (
+                &["reply", "k9x1d", "-"][..],
+                "Line 42.",
+                json!({ "block": "k9x1d", "text": "Line 42." }),
+            ),
+            (
+                &["reply", "k9x1d", "Line", "42."][..],
+                "ignored",
+                json!({ "block": "k9x1d", "text": "Line 42." }),
+            ),
+        ] {
+            let (code, _, err) = run_with(args, &env(&bus), stdin);
+            assert_eq!(code, 0, "{args:?}: {err}");
+            assert_eq!(
+                calls.recv_timeout(LIMIT).unwrap(),
+                json!({ "name": "reply", "arguments": arguments }),
+                "{args:?}"
+            );
+        }
+        let (code, _, err) = run_with(&["reply"], &env(&bus), "");
+        assert_eq!(code, 2, "{err}");
+        assert!(
+            err.starts_with("usage: templum reply [<block>] <text>|- [--json]"),
+            "{err}"
+        );
     }
 
     #[test]
