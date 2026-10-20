@@ -228,7 +228,7 @@ horizontally scrolled long line. It costs one `range_to_bounds` per word on scre
 
 - rows are `round(1.5 × 13 × s)` px apart: the editor's own rows (`block.rs:585-592`);
 - a word sits at the text area's left edge plus its span × `s`;
-- where the text area starts at `s` is computed the way Full lays it out. In a note, `FIXED_LEFT × s` and
+- where the text area starts at `s` is computed the way Full lays it out. In a note, `TEXT_LEFT × s` and
   `FIXED_TOP × s` from its box: the note's compensation makes both scale (`note.rs:26-34`, `144-149`). In an editor
   tab, gpui-kit's fixed 6 px left and 8 px top padding (`gpui-component-0.7.1 src/input/input.rs:591-602`), then the
   line numbers: their digits at `s` plus a fixed 6 px margin (`gpui-base-0.7.1 src/input/base/element.rs:50-53`,

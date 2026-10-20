@@ -264,10 +264,14 @@ close, resize, move, focus, hover lift, pop-in and fade-out, menus, zoom.
   Ctrl+B types nothing.
 - **Title:** the note's first line with text, trimmed, cut at 60 characters with "…"; "Untitled" when it has none. The
   block's title is the note on screen's; "Notes" with no tab open.
-- **Tabs:** a strip of 28 world units under the header: each open note's title, the one on screen underlined in the
-  accent color. A click shows a tab; its × closes the tab (the note stays); **+** opens a new note in a new tab.
-  A note is open in **one tab at most**: opening it again shows that tab, in its block, in its workspace.
-- **No tab open:** the block says "No note open here" with **New note** and **Open a note…** (the dialog, for it).
+- **Tabs:** a strip of 28 world units under the header, a hairline below it: each open note's title as a rounded tab,
+  the one on screen lit (a faint fill and the full text color, the others dim). A click shows a tab; its × closes the
+  tab (the note stays), and shows on the tab on screen and on the one under the pointer; **+** opens a new note in a
+  new tab. A note is open in **one tab at most**: opening it again shows that tab, in its block, in its workspace.
+  The note's text starts 14 world units in, in line with the first tab's label, and wraps 20 from the right edge.
+- **No tab open:** the block says "No note open here" with a tinted **New note** and a plain **Open a note…** (the
+  dialog, for it), under a notebook icon when the area under the strip is 170 world units tall or more; under 110 it
+  keeps to the two buttons.
 - **Notes dialog** (the header's notebook button, **All notes…** in the block's menu, **Notes…** in the canvas
   menu): every note, the most recently changed first; each row its title, when it last changed ("5 min ago"), where
   it is open ("Open", "Open in Workspace 2") and its next line with text. The field on top finds notes by their text,
@@ -280,8 +284,9 @@ close, resize, move, focus, hover lift, pop-in and fade-out, menus, zoom.
 - **Blank notes go:** a note with no text whose tab or block closes is removed; nothing is lost.
 - **Keyboard:** focusing the block focuses the note on screen, so typing goes there. Templum's shortcuts (Ctrl+Shift+…)
   keep working from inside it. Copy, paste, undo and search are the editor's own.
-- **Color:** Color ▸ in the menu tints the note on screen (the background mixed with the label's ANSI color, readable
-  in every built-in theme); a note keeps its color in every block.
+- **Color:** Color ▸ in the menu tints the note on screen: the theme's background taken a tenth of the way to the
+  label's ANSI color in lightness, with the color's hue and 40% of its saturation (a calm amber or navy in a dark theme,
+  a pastel in a light one, readable in every built-in theme); a note keeps its color in every block.
 - **Right-click a note block:** All notes…, Copy all, Send to ▸, Color ▸, Close.
 - **Copy and paste** a note block (canvas selection): the pasted block shows copies of its notes.
 - **Files:** `notes.json`: `{ "version": 1, "next_id": 7, "notes": [{ "id": 3, "text": "…", "color": "yellow",

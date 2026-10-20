@@ -102,12 +102,14 @@ impl gpui_kit::base::animation::Lerp for Ui {
     }
 }
 
-/// How much of its label's color a colored note's card takes.
-const NOTE_TINT: f32 = 0.18;
+/// A colored note's card has its label's hue, this share of its saturation and this share of the
+/// way from the theme's background to its lightness.
+const NOTE_CHROMA: f32 = 0.4;
+const NOTE_TINT: f32 = 0.10;
 
 impl Theme {
-    /// A colored note's card: the theme's background with a little of the label's color, so
-    /// the text on it stays readable.
+    /// A colored note's card: the theme's background, tinted with the label's hue, so the text
+    /// on it stays readable.
     pub fn note_bg(&self, label: Label) -> Hsla {
         hsla(note_tint(&self.palette, label), 1.0)
     }
@@ -289,7 +291,16 @@ fn luminance(c: Rgb) -> f32 {
 }
 
 fn note_tint(palette: &Palette, label: Label) -> Rgb {
-    mix(palette.background, palette.ansi[label.ansi()], NOTE_TINT)
+    let (bg, color) = (
+        hsla(palette.background, 1.0),
+        hsla(palette.ansi[label.ansi()], 1.0),
+    );
+    rgb(Hsla {
+        h: color.h,
+        s: color.s * NOTE_CHROMA,
+        l: bg.l + (color.l - bg.l) * NOTE_TINT,
+        a: 1.0,
+    })
 }
 
 /// Linear blend in sRGB: `t = 0` is `a`, `t = 1` is `b`.

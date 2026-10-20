@@ -299,6 +299,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Notes
 
+- [ ] **A note block with more tabs than fit keeps the tab on screen out of view.** The strip scrolls sideways
+  (`tab_strip`, `crates/templum/src/tab_strip.rs`) but nothing scrolls it to the lit tab, so opening a note from the
+  Notes dialog into a full block shows no tab lit, and the + is out of reach until the strip is scrolled. Fix: keep a
+  `ScrollHandle` for the strip and `scroll_to_item` the active tab when it changes.
 - [ ] **Undoing a blank note's close brings back an empty block.** A blank note goes when its block closes
   (`drop_if_blank`, `crates/templum/src/workspace/note_tabs.rs`), so Ctrl+Z after closing it, or Ctrl+Shift+Z after
   undoing a new note block, shows "No note open here". Fix: in `add_saved`, a note item whose notes are all gone opens

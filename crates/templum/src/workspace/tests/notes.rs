@@ -211,7 +211,9 @@ fn tabs_hold_several_notes_and_closing_one_keeps_it(cx: &mut TestAppContext) {
     })
     .unwrap();
     assert_eq!(shown(&ws, cx, id), first);
+    // The × of a tab that isn't on screen shows while the pointer is on the tab.
     cx.update_window(handle, |_, window, cx| {
+        window.hover(tab(1), cx);
         window.click(close(1), cx);
         window.render_frame(cx);
     })

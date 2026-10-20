@@ -213,7 +213,7 @@ fn place(
 /// Where a note's text starts in its box at zoom `s`: its box makes up for gpui-kit's fixed
 /// parts, so they all scale (`note.rs`).
 pub(crate) fn note_origin(_: &WordMap, s: f32) -> (f32, f32) {
-    (crate::note::FIXED_LEFT * s, crate::note::FIXED_TOP * s)
+    (crate::note::TEXT_LEFT * s, crate::note::FIXED_TOP * s)
 }
 
 /// Where an editor tab's text starts in its area at zoom `s`: gpui-kit's fixed padding, the line
@@ -358,8 +358,8 @@ mod tests {
     #[test]
     fn a_notes_text_starts_where_its_box_puts_it_at_every_zoom() {
         let m = map(Vec::new(), (0.0, 0.0));
-        assert_eq!(note_origin(&m, 1.0), (30.0, 8.0));
-        assert_eq!(note_origin(&m, 0.25), (7.5, 2.0));
+        assert_eq!(note_origin(&m, 1.0), (14.0, 8.0));
+        assert_eq!(note_origin(&m, 0.25), (3.5, 2.0));
     }
 
     #[test]
