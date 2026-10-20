@@ -674,13 +674,29 @@ impl Render for Workspace {
                 git_block::SIZE.h.min(vp.h - 2.0 * GIT_GAP),
             );
             let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
-            div()
+            let popup = div()
                 .absolute()
                 .left(px(left))
                 .bottom(px(GIT_GAP))
                 .w(px(w))
                 .h(px(h))
-                .child(git_block::popup(self, g, w, h, cx))
+                // Presses inside the popup don't reach the backdrop.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(git_block::popup(self, g, w, h, cx));
+            // A press anywhere outside the popup closes it, and nothing below gets it.
+            div()
+                .id("git-backdrop")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|ws, _: &MouseDownEvent, window, cx| {
+                        ws.close_git(window, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(popup)
         });
         // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
         let open = self.templum_agent.open;
@@ -754,8 +770,9 @@ impl Render for Workspace {
                     .when(self.sidebar, |el| el.child(sidebar::render(self, cx)))
                     .child(area),
             )
-            .children(git)
+            // The Git popup over the Templum agent.
             .children(agent)
+            .children(git)
             // Under what the title bar opens: the settings, the theme picker, the screen.
             .children(welcome)
             .children(panel)

@@ -210,6 +210,39 @@ fn an_old_git_block_becomes_the_workspaces_git_and_the_canvas_keeps_the_rest(
     .unwrap();
 }
 
+/// The popup is over the Templum Agent's pill: a press where they overlap is the popup's. A press
+/// outside the popup closes it, and nothing below gets it.
+#[gpui_kit::test]
+fn a_press_outside_the_git_popup_closes_it(cx: &mut TestAppContext) {
+    let repo = git_repo();
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let pill = window.find("agent-pill").bounds().center();
+        assert!(window.find("git-popup").bounds().contains(&pill));
+        click(window, cx, (pill.x.into(), pill.y.into()), 1);
+        ws.update(cx, |ws, cx| {
+            assert!(ws.git_open, "a press inside keeps it open");
+            assert!(
+                !ws.agent_has_keys(window, cx) && ws.settings.is_none(),
+                "the pill under it doesn't get the press"
+            );
+        });
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, (1200.0, 100.0), 1);
+        window.render_frame(cx);
+        assert!(window.try_find("git-popup").is_none());
+    })
+    .unwrap();
+    assert!(
+        !ws.read_with(cx, |ws, _| ws.git_open),
+        "a press outside closes it"
+    );
+}
+
 /// Shell integration's `finished` count: a command run in the repository from a terminal of
 /// this workspace refreshes the block.
 #[cfg(unix)]
