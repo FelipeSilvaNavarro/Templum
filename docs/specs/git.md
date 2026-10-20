@@ -487,7 +487,7 @@ headlessly.
 | File | Holds |
 |---|---|
 | `git_block/diff_view/` | The diff panel: its rows (file, hunk, lines, folded stretch), unified and split layouts, highlighting with the cache, the selection, the sticky title. |
-| `git_block/*.rs` | The tabs reorganized around the left column and the panel; the block's focus handle and key handler; the branch switcher; the banners; the Generate button, its spinner and the first-use confirmation (what `message.rs` runs). |
+| `git_block/*.rs` | The tabs reorganized around the left column and the panel; the block's focus handle and key handler; the branch dialog; the banners; the Generate button, its spinner and the first-use confirmation (what `message.rs` runs). |
 | `config.rs`, `settings/` | `[agents]`'s `generate` and `models`; `[git.commit_message]`; `[git.repositories]` (an owned table name in `Edit`); the Git section and the agents dialog's new part. |
 | `workspace/` | `copy` for the focused Git's selection; `git_ops.rs`: opening, closing and pointing the workspace's Git (`toggle_git`, `open_git`, `close_git`, `set_git_folder`, `git_folders`, `poll_git`); `render.rs` places the popup. |
 | `sidebar.rs` | The Git button at the sidebar's foot. |
@@ -534,7 +534,7 @@ date order.
   and copy, Send to;
 - each hunk button, an untracked file's row without them, the trash's Undo and Restore, a discard over the cap
   and one without a data folder, Commit all changes, Commit & Push, Undo commit (its message back in the fields);
-- the branch switcher and the switch question's four answers; the unpushed-commits notification;
+- the branch dialog and the switch question's four answers; the unpushed-commits notification;
 - Sync's fast-forward and diverged cases, Publish to the only remote and the menu with several, Clone;
 - Compare, conflicts region by region with the markers' labels (a merge and a rebase), Mark resolved and
   Continue;
@@ -561,7 +561,7 @@ One plan per batch, each usable on its own:
 |---|---|
 | 1 | The diff panel (Unified) in Changes, with selection, folding, special files, highlighting |
 | 2 | Hunk stage and discard, the trash, the new layout and size, the keyboard, Commit all changes, Commit & Push, Undo commit |
-| 3 | Safe actions: the branch switcher and the switch question, Sync, Publish, Clone, tooltips, the detached-HEAD banner |
+| 3 | Safe actions: the branch dialog and the switch question, Sync, Publish, Clone, tooltips, the detached-HEAD banner |
 | 4 | Branches tab, Compare, conflicts region by region |
 | 5 | History with the graph, search modes, file history, Restore this version, Blame, Split mode |
 | 6 | Commit messages from an agent: Generate, Settings ▸ Git, the agents dialog's Commit messages part |
