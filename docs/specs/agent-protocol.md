@@ -1,10 +1,12 @@
 # Agent protocol: every task answered through Templum
 
 - **Date:** 2026-10-20
-- **Status:** Planned (kanban card 69, "Comunicação entre agentes"; it covers card 68, "Integração com codex zoado",
-  and the part of card 58, "opencode, cline e amp não injetando MCP templum", that isn't one agent's own
-  plumbing). Phase 1 is planned whole in
-  [docs/plans/2026-10-20-agent-protocol.md](../plans/2026-10-20-agent-protocol.md); phase 2 is outlined there.
+- **Status:** Implemented, phase 1 (kanban card 69, "Comunicação entre agentes"; it covers card 68, "Integração com
+  codex zoado", and the part of card 58, "opencode, cline e amp não injetando MCP templum", that isn't one agent's own
+  plumbing). Phase 1 was planned whole in
+  [docs/plans/2026-10-20-agent-protocol.md](../plans/2026-10-20-agent-protocol.md); phase 2 is outlined there, not
+  done. [Calls made while implementing it](#calls-made-while-implementing-it) lists where the code settled what the
+  text above left open.
 - **Builds on:** [connections.md](connections.md) (Delegating, Hooks and agent state, An agent's state, Every agent
   that can take it), [agent-parity.md](agent-parity.md) (what each agent gets), [agent-tools.md](agent-tools.md),
   [ask-user.md](ask-user.md). Card 30's rule stays: a subagent tells its master only when its task ends, or when it is
@@ -298,6 +300,27 @@ No test needs a real agent: CI (Linux, macOS, Windows) has none.
 - **What each test proves** is listed with its task in the plan: every one fails without its change.
 - **By hand, once, where installed** (not in CI): Codex with the new flag still trusted its hooks; a Copilot CLI
   signed in calls `reply` unasked; an OpenCode subagent answers with `reply`.
+
+## Calls made while implementing it
+
+- **A still screen with no task behind it ends the turn's waits as before.** Quiet (5) is for an agent with Templum's
+  tools, no hooks **and a task**; one with tools and no task whose screen goes still still answers the calls that wait
+  on its turn (`wait_for_idle` from another agent) with the still-screen text, or they would hang until their timeout.
+- **Quiet answers other agents' waits at every still screen**, and the asker's call or notice once per task (a change
+  starts it over).
+- **`reply` to a block that is not the caller's asker** still sets the replier's last answer, as before; it ends no
+  task.
+- **`reply` to the caller's own block** is refused with "This block is yours: leave block out to answer the task you
+  are on."
+- **`no_tools_why`:** `<agent>` in the spec's wording is the agent's command (`command codex`); a Gemini CLI in an
+  account is looked up in that account's folder, as the install notice does.
+- **A task's text is longer than the screen now** (the lines plus how to answer): the tests that looked for a task's
+  first line on the visible screen read the terminal's history (`history_with`).
+- **The Templum Agent's own `delegate` says** "what it sends with its reply tool (Templum asks it to)": it has no
+  `reply` of its own, its subagents do.
+- **By hand, once:** Codex lists Templum's server with the new flag and refuses a wrong value (scratch `CODEX_HOME`);
+  Copilot CLI's `--help` documents the `MyMCP(tool)` pattern the word uses. Not checked, as the Risks say: that Codex
+  keeps trusting Templum's hooks with the extra flag, and a signed-in Copilot CLI calling `reply` unasked.
 
 ## Considered and left out
 

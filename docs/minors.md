@@ -193,6 +193,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   on a loaded machine lands past the 150 ms glide. A person sees nothing; a contributor may see CI fail once. Fix:
   let the test set the glide's clock (a progress it passes in, or a start far enough from both ends that a late frame
   stays mid-glide), not the real clock.
+- [ ] **`a_clone_stopped_midway_leaves_no_folder_and_an_empty_one_empty` fails now and then on Linux.**
+  (`crates/templum-git/tests/repo.rs:2003`, "Couldn't run …/slow-git: Text file busy (os error 26)", seen once in a
+  full `cargo test --workspace` during card 69; it passed alone and on the next run.) The test writes its fake `git`
+  script and runs it at once while another test thread forks, which holds the file's write descriptor open (ETXTBSY).
+  A person sees nothing; a contributor may see CI fail once. Fix: write the script, `sync_all` it and drop the
+  handle, then retry the spawn once on `ErrorKind::ExecutableFileBusy`, or create the script before any thread starts.
 
 ## Release and benches
 
@@ -518,6 +524,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The gallery's cache keeps themes GitHub no longer lists.** `refresh` (`crates/templum/src/gallery.rs`) only
   adds files to `<data folder>/theme-gallery/`; a theme changed upstream leaves its old file there (a few hundred
   bytes each). Fix: after a refresh, delete the `.toml` files `index.json` doesn't name.
+
+- [ ] **The gallery test failed once in a full run.** `the_gallery_previews_restores_and_installs`
+  (`crates/templum/src/workspace/tests/themes.rs:661`) found "Catppuccin Latte" where it expected "Paper" after
+  clicking "gallery-theme-Paper", in one run of `cargo test -p templum` (card 69's, under load); alone, three times, and in
+  the next full run, it passed. Fix: find what the click raced with (a frame not rendered before the read) and wait for
+  it, as the neighbouring tests do.
 
 ## Settings panel
 
@@ -1391,6 +1403,13 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   `crates/templum/src/workspace/bus.rs`): a `claude -p` an agent's shell tool runs inherits `TEMPLUM_TERMINAL`, so
   while it runs its `templum mcp` makes `list_blocks` and `delegate` say the block has Templum's tools. Fix: count a
   connection only while the snapshot's agent process is its ancestor.
+
+- [ ] **A subagent whose own task never ends can't end its task by a turn's end.** Left by the plan of card 69
+  (`Workspace::hands_out`, `crates/templum/src/workspace/delegate.rs`): while a task the subagent handed out stays in
+  its pane (also past its timeout, and a spawn's prompt included), the end of its turns ends nothing of its own task,
+  and a still screen tells nothing. Its master hears its call's timeout, or nothing if it didn't wait, until the
+  subagent replies, its agent leaves or its block closes. Fix: ignore a handed task past its timeout in `hands_out`,
+  and tell the master once, as quiet does.
 
 ## Placing new blocks
 
