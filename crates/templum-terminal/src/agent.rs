@@ -792,13 +792,29 @@ fn shell_path(shell: &str) -> Option<String> {
     path
 }
 
-/// PATH (as [`path_var`] reads it), the shell's, then the usual per-user install folders.
-fn program_dirs() -> Vec<PathBuf> {
+/// The folders of the PATH a shell started now gets: [`path_var`]'s and, once [`read_shell_path`]
+/// has read them, the user's shell's.
+pub fn shell_path_dirs() -> Vec<PathBuf> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut dirs: Vec<PathBuf> = path_var()
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
     #[cfg(unix)]
     dirs.extend(SHELL_PATH.get().into_iter().flatten().cloned());
+    dirs
+}
+
+/// Whether `dir` is one of `dirs`, as a shell resolves them (a `..`, a link): compared
+/// canonicalized when they exist, else as written.
+pub fn on_path(dir: &Path, dirs: &[PathBuf]) -> bool {
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let dir = real(dir);
+    dirs.iter().any(|d| real(d) == dir)
+}
+
+/// PATH (as [`path_var`] reads it), the shell's, then the usual per-user install folders.
+fn program_dirs() -> Vec<PathBuf> {
+    let mut dirs = shell_path_dirs();
     if let Some(home) = std::env::home_dir() {
         for sub in [
             ".local/bin",
@@ -1422,5 +1438,19 @@ mod tests {
         let path = shell_path(&shell.to_string_lossy()).unwrap();
         assert!(path.starts_with("/from/rc:"), "{path}");
         assert_eq!(shell_path("/no/such/shell"), None);
+    }
+
+    /// A folder is on the PATH through a `..` or a link, as the shell resolves it.
+    #[test]
+    fn a_folder_is_on_path_through_a_dot_dot() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(t.path().join(".local/bin")).unwrap();
+        std::fs::create_dir_all(t.path().join(".local/share")).unwrap();
+        let bin = t.path().join(".local/bin");
+        assert!(on_path(&bin, &[t.path().join(".local/share/../bin")]));
+        assert!(!on_path(&bin, &[t.path().join("other")]));
+        // Neither exists: compared as written.
+        assert!(on_path(Path::new("/no/bin"), &[PathBuf::from("/no/bin")]));
+        assert!(!on_path(Path::new("/no/bin"), &[]));
     }
 }

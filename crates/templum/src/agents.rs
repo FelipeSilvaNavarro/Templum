@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use templum_terminal::{Agent, Detect, program_name};
+use templum_usage::accounts::command::{self, SHELL_WORDS};
 use templum_usage::accounts::{Kind, Report, Share, When};
 
 use crate::config::{AgentConfig, CommitMessage, valid_agent_id};
@@ -394,6 +395,119 @@ pub(crate) fn new_account_id(
         .map(|n| format!("{of}{n}"))
         .find(|id| !taken(id) && !left(id) && Agent::from_name(id).is_none())
         .expect("a free id")
+}
+
+/// Where the commands of accounts go: `~/.local/bin`, on every OS. Tests never reach it: a test
+/// that needs it sets `COMMANDS` to a temporary folder.
+#[allow(dead_code)] // The accounts' commands use it from the next commit.
+pub(crate) fn commands_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    return COMMANDS.with_borrow(Clone::clone);
+    #[cfg(not(test))]
+    std::env::home_dir().map(|home| home.join(".local").join("bin"))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Where a test's accounts' commands go; None: nowhere.
+    pub(crate) static COMMANDS: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether `id` can be an account's command: a lowercase letter, then lowercase letters, digits,
+/// `-` and `_`, at most 32 in all. Lowercase because macOS and Windows don't tell `Claude` from
+/// `claude`.
+#[allow(dead_code)] // The accounts' commands use it from the next commit.
+pub(crate) fn is_command_word(id: &str) -> bool {
+    let mut chars = id.chars();
+    id.len() <= 32
+        && chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// Rules 1 and 2 of docs/specs/accounts.md, Its name: a word, not one of Templum's.
+fn word_problem(id: &str) -> Option<String> {
+    if !is_command_word(id) {
+        return Some("Use lowercase letters, digits, - and _, starting with a letter".into());
+    }
+    if Agent::from_name(id).is_some() {
+        return Some(format!("{id} is one of Templum's agents"));
+    }
+    (id == "templum").then(|| "templum is Templum's own command".into())
+}
+
+/// Rules 4 to 6: not a word of a shell, nor a command of the computer (a program `program` finds,
+/// a file of the `commands` folder) other than the one Templum wrote for `id` in `data`.
+fn computer_problem(
+    id: &str,
+    data: Option<&Path>,
+    commands: Option<&Path>,
+    program: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Option<String> {
+    if SHELL_WORDS.contains(&id) {
+        return Some(format!("{id} is a word of your shell"));
+    }
+    let own = |path: &Path| data.is_some_and(|d| command::is_own(path, id, d));
+    let kept = |dir: &Path| -> Option<PathBuf> {
+        let file = |name: &std::ffi::OsStr| {
+            let name = name.to_string_lossy().to_lowercase();
+            name == id || (name.starts_with(&format!("{id}.")) && !name.ends_with(".templum-new"))
+        };
+        let found: Vec<PathBuf> = if cfg!(windows) {
+            let all = std::fs::read_dir(dir).into_iter().flatten().flatten();
+            all.map(|e| e.path())
+                .filter(|p| p.file_name().is_some_and(file))
+                .collect()
+        } else {
+            vec![dir.join(id)]
+        };
+        found
+            .into_iter()
+            .find(|p| p.symlink_metadata().is_ok() && !own(p))
+    };
+    let taken = program(id)
+        .filter(|path| !own(path))
+        .or_else(|| commands.and_then(kept))?;
+    Some(format!("{id} is already a command: {}", taken.display()))
+}
+
+/// What keeps `id` from being the command of an account of config.toml: rules 1, 2, 4, 5 and 6
+/// of docs/specs/accounts.md, Its name. None: it can be one.
+#[allow(dead_code)] // The accounts' commands use it from the next commit.
+pub(crate) fn command_problem(
+    id: &str,
+    data: Option<&Path>,
+    commands: Option<&Path>,
+    program: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<String> {
+    word_problem(id).or_else(|| computer_problem(id, data, commands, &program))
+}
+
+/// What keeps `name` from being a new account's id, the first rule broken in the order of
+/// docs/specs/accounts.md, Its name. `taken`: an id of `[agents]`, in any case. `program` finds a
+/// program on the computer (`templum_terminal::locate`). None: it is free.
+#[allow(dead_code)] // The accounts' commands use it from the next commit.
+pub(crate) fn name_problem(
+    name: &str,
+    taken: impl Fn(&str) -> bool,
+    data: Option<&Path>,
+    commands: Option<&Path>,
+    program: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<String> {
+    word_problem(name)
+        .or_else(|| {
+            taken(name).then(|| format!("{name} is already an agent or an account in Templum"))
+        })
+        .or_else(|| computer_problem(name, data, commands, &program))
+        .or_else(|| {
+            let left = data?.join("accounts").join(name);
+            left.symlink_metadata().is_ok().then(|| {
+                format!(
+                    "Templum still keeps a folder for {name} ({}): choose another name",
+                    tilde(&left)
+                )
+            })
+        })
 }
 
 /// Where an account's agent keeps its files.
@@ -1075,6 +1189,143 @@ mod tests {
             "claude3",
             "its folder, with a login, is still there"
         );
+    }
+
+    #[test]
+    fn a_name_must_be_a_lowercase_word() {
+        let rule = "Use lowercase letters, digits, - and _, starting with a letter";
+        let long = "a".repeat(33);
+        for bad in [
+            "Claudinho",
+            "claude inho",
+            "1claude",
+            "-x",
+            "",
+            "clau$de",
+            &long,
+        ] {
+            let problem = name_problem(bad, |_| false, None, None, |_| None);
+            assert_eq!(problem.as_deref(), Some(rule), "{bad}");
+        }
+        for good in ["claudinho", "claudio", "work-2", "a_b", &"a".repeat(32)] {
+            assert_eq!(
+                name_problem(good, |_| false, None, None, |_| None),
+                None,
+                "{good}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_isnt_an_agent_a_shell_word_nor_taken() {
+        let p = |n: &str| name_problem(n, |x| x == "claudio", None, None, |_| None);
+        assert_eq!(
+            p("claude").as_deref(),
+            Some("claude is one of Templum's agents")
+        );
+        assert_eq!(
+            p("templum").as_deref(),
+            Some("templum is Templum's own command")
+        );
+        assert_eq!(
+            p("claudio").as_deref(),
+            Some("claudio is already an agent or an account in Templum")
+        );
+        for word in ["cd", "source", "end", "test"] {
+            assert_eq!(p(word), Some(format!("{word} is a word of your shell")));
+        }
+    }
+
+    #[test]
+    fn a_name_isnt_a_command_of_the_computer() {
+        use templum_usage::accounts::command::{Command, write};
+        let (commands, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (commands, data) = (commands.path(), data.path());
+        let found = |n: &str| (n == "gh2").then(|| PathBuf::from("/usr/bin/gh2"));
+        let p = |n: &str| name_problem(n, |_| false, Some(data), Some(commands), found);
+        // A program found: its path.
+        assert_eq!(
+            p("gh2").as_deref(),
+            Some("gh2 is already a command: /usr/bin/gh2")
+        );
+        // A file of the commands folder: its path.
+        std::fs::write(commands.join("claudinho"), "#!/bin/sh\n").unwrap();
+        assert_eq!(
+            p("claudinho"),
+            Some(format!(
+                "claudinho is already a command: {}",
+                commands.join("claudinho").display()
+            ))
+        );
+        // The command another data folder wrote: an installed Templum and a --dev one.
+        let folder = Path::new("/x/accounts/claudio");
+        let of = |id, data| Command {
+            id,
+            title: "Claude Code",
+            program: "claude",
+            var: "CLAUDE_CONFIG_DIR",
+            folder,
+            data,
+        };
+        write(commands, &of("claudio", Path::new("/x"))).unwrap();
+        assert!(
+            p("claudio")
+                .unwrap()
+                .starts_with("claudio is already a command: ")
+        );
+        // Its own, also when the program lookup finds that very file.
+        write(commands, &of("claudia", data)).unwrap();
+        let finds_file = |n: &str| Some(commands.join(n)).filter(|f| f.exists());
+        assert_eq!(
+            name_problem("claudia", |_| false, Some(data), Some(commands), finds_file),
+            None
+        );
+        assert_eq!(p("claudia"), None);
+        if cfg!(windows) {
+            std::fs::write(commands.join("claudite.exe"), "").unwrap();
+            assert!(p("claudite").is_some());
+        }
+    }
+
+    #[test]
+    fn a_name_whose_folder_is_still_kept_is_refused() {
+        let data = tempfile::tempdir().unwrap();
+        let kept = data.path().join("accounts").join("claudinho");
+        std::fs::create_dir_all(&kept).unwrap();
+        let problem = name_problem("claudinho", |_| false, Some(data.path()), None, |_| None);
+        assert_eq!(
+            problem,
+            Some(format!(
+                "Templum still keeps a folder for claudinho ({}): choose another name",
+                tilde(&kept)
+            ))
+        );
+        assert_eq!(
+            name_problem("claudio", |_| false, Some(data.path()), None, |_| None),
+            None
+        );
+    }
+
+    #[test]
+    fn an_older_accounts_id_may_be_a_command() {
+        assert_eq!(command_problem("claude2", None, None, |_| None), None);
+        assert!(command_problem("Work", None, None, |_| None).is_some());
+        assert_eq!(
+            command_problem("test", None, None, |_| None).as_deref(),
+            Some("test is a word of your shell")
+        );
+    }
+
+    #[test]
+    fn the_commands_folder_is_the_tests_own() {
+        assert_eq!(
+            commands_dir(),
+            None,
+            "tests never reach the person's ~/.local/bin"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        COMMANDS.set(Some(dir.path().to_path_buf()));
+        assert_eq!(commands_dir().as_deref(), Some(dir.path()));
     }
 
     #[test]

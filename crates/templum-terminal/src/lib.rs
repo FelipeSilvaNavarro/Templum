@@ -14,7 +14,8 @@ mod terminal;
 #[cfg(unix)]
 pub use agent::read_shell_path;
 pub use agent::{
-    Agent, Detect, agent_of, installed, locate, path_var, program_name, shell_path_pending,
+    Agent, Detect, agent_of, installed, locate, on_path, path_var, program_name, shell_path_dirs,
+    shell_path_pending,
 };
 pub use alacritty_terminal::index::Side;
 pub use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
