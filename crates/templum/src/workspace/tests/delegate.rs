@@ -8,6 +8,7 @@ use templum_canvas::Wire;
 
 use super::bus::{
     after, answered, call, call_later, event, has_server, history_with, me, screen_with,
+    server_gone,
 };
 #[cfg(unix)]
 use super::bus::{bus_note, result_of, screen_until};
@@ -2578,6 +2579,207 @@ fn ticks(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, from: usi
         shows(ws, cx, id, &format!("tick {i}"));
         after(cx, 1000);
     }
+}
+
+/// Their agent has Templum's tools and no hooks: its screen going still doesn't end the task it is
+/// on. The master waiting for it hears so as an error, and the task stays open for its reply
+/// (docs/specs/agent-protocol.md, 5).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_quiet_agent_keeps_its_task_and_its_waiting_master_hears_so(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    has_server(handle, &ws, cx, &worker, 7);
+    let task = json!({ "block": them, "task": "go", "wait": true });
+    let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    ticks(&ws, cx, theirs, 0, 4);
+    assert!(
+        delegated.try_recv().is_err(),
+        "it waits while the agent works"
+    );
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    let (failed, text) = answered(&delegated);
+    assert!(
+        failed
+            && text.starts_with(&format!(
+                "{them} hasn't answered task t1: its screen has been still for 5 seconds."
+            ))
+            && text.contains("tick 3"),
+        "{text}"
+    );
+    let handed = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(theirs)
+                .unwrap()
+                .handed
+                .as_ref()
+                .map(|h| h.id)
+        })
+    };
+    assert_eq!(handed(&ws, cx), Some(1), "the task stays open");
+    // wait_for_idle waits for its reply, and gets it.
+    let idle = json!({ "block": them });
+    let idle = call_later(handle, &ws, cx, &terminal, 2, "wait_for_idle", idle);
+    after(cx, 1000);
+    assert!(idle.try_recv().is_err(), "it waits for the reply");
+    let reply = json!({ "text": "Line 42." });
+    let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply);
+    assert_eq!((failed, text.as_str()), (false, "Answered task t1."));
+    assert_eq!(answered(&idle), (false, "Line 42.".to_string()));
+    assert_eq!(handed(&ws, cx), None);
+}
+
+/// A master with no call waiting is told once, as a dialog is; the reply then ends the task once,
+/// and a later still screen tells nothing (docs/specs/agent-protocol.md, 5).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_quiet_agent_is_told_once_to_a_master_not_waiting(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    asker(&ws, cx, mine);
+    has_server(handle, &ws, cx, &worker, 7);
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "go" }),
+    );
+    ticks(&ws, cx, theirs, 0, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    // Typed into mine at once.
+    assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
+    history_with(
+        &ws,
+        cx,
+        mine,
+        "hasn't answered: its screen is still] Its screen is in the pasted text.",
+    );
+    // At work again and still again: mine was typed into a moment ago, so a second notice
+    // would wait in the queue. There is none.
+    ticks(&ws, cx, theirs, 4, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
+    // Its reply ends the task: one notice, the end.
+    let reply = json!({ "text": "Line 42." });
+    let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply);
+    assert_eq!((failed, text.as_str()), (false, "Answered task t1."));
+    after(cx, 1000);
+    let told = notices(&ws, cx);
+    assert!(
+        told.len() == 1
+            && told[0].0 == terminal
+            && told[0].1.starts_with("[task t1 from ")
+            && told[0].1.contains(": done in ")
+            && told[0].1.ends_with("Line 42."),
+        "{told:?}"
+    );
+    // Nothing after the end.
+    ticks(&ws, cx, theirs, 8, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    assert_eq!(notices(&ws, cx).len(), 1, "{:?}", notices(&ws, cx));
+}
+
+/// The master changes the task: a quiet agent that goes still again is told once more.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_change_starts_quiet_over(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    asker(&ws, cx, mine);
+    has_server(handle, &ws, cx, &worker, 7);
+    let task = json!({ "block": them, "task": "go" });
+    call(handle, &ws, cx, &terminal, "delegate", task.clone());
+    ticks(&ws, cx, theirs, 0, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    history_with(&ws, cx, mine, "hasn't answered: its screen is still]");
+    assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
+    // A change to t1.
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert_eq!(
+        (failed, text),
+        (false, format!("Typed into {them} as a change to task t1."))
+    );
+    ticks(&ws, cx, theirs, 4, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    let told = notices(&ws, cx);
+    assert!(
+        told.len() == 1 && told[0].1.contains("hasn't answered: its screen is still]"),
+        "{told:?}"
+    );
+}
+
+/// Its server gone (the bridge died): it has no Templum tools again, and its screen ends the task
+/// as that of any agent without them.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_quiet_agent_without_tools_ends_its_task_by_its_screen(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    has_server(handle, &ws, cx, &worker, 7);
+    server_gone(handle, &ws, cx, &worker, 7);
+    let task = json!({ "block": them, "task": "go", "wait": true });
+    let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    ticks(&ws, cx, theirs, 0, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    let (failed, text) = answered(&delegated);
+    assert!(
+        !failed && text.starts_with("Its screen has been still for 5 seconds"),
+        "{text}"
+    );
+}
+
+/// A subagent that waits on a task of its own (it handed one to a third) says nothing by a still
+/// screen either (docs/specs/agent-protocol.md, 5).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_quiet_agent_waiting_on_its_own_task_says_nothing(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let third = another_agent(handle, &ws, cx, theirs);
+    asker(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let (_, other) = me(&ws, cx, third);
+    has_server(handle, &ws, cx, &worker, 7);
+    let task = json!({ "block": them, "task": "go", "wait": true });
+    let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    call(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        "delegate",
+        json!({ "block": other, "task": "look" }),
+    );
+    ticks(&ws, cx, theirs, 0, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    assert!(delegated.try_recv().is_err(), "no answer");
+    assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(theirs).unwrap().handed.is_some())
+    });
 }
 
 /// The state of terminal block `id`'s agent.

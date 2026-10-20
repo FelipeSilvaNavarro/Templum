@@ -10,8 +10,9 @@ use templum_mcp::{Reply, tools};
 use templum_terminal::{KEY_NAMES, named_key};
 use templum_usage::Session;
 
+use super::activity::STILL;
 use super::bus::{Outcome, clean_title, flat, target};
-use super::waits::Waiting;
+use super::waits::{LAST_LINES, Waiting};
 use super::{AgentState, Handed, Pane, Space, Workspace};
 
 /// How long after a task is typed its Enter goes: an agent may take keys that come in one burst
@@ -795,6 +796,7 @@ impl Workspace {
                 (Some(_), Some(handed)) => {
                     handed.taken = false;
                     handed.behind = false;
+                    handed.quiet = false;
                     handed.until = until;
                 }
                 _ => {
@@ -1028,6 +1030,79 @@ impl Workspace {
         }
         for key in waiting {
             self.answer(key, reply.clone(), cx);
+        }
+    }
+
+    /// What the calls waiting on the turn of the agent in `terminal` get when its screen has been
+    /// still: it may be done, but nothing says so.
+    pub(super) fn still_screen(&self, terminal: &str) -> Reply {
+        let lines = self
+            .pane(terminal)
+            .map(|pane| pane.term.shared().lines(LAST_LINES).join("\n"))
+            .unwrap_or_default();
+        Reply::ok(format!(
+            "Its screen has been still for {STILL} seconds, and Templum heard no answer: it may \
+             be done, stopped, or asking its person. The last lines of its screen:\n{}",
+            tools::tail(&lines, tools::MAX_TEXT)
+        ))
+    }
+
+    /// The screen of the agent in `terminal`, which has Templum's tools and no hooks, went still
+    /// while it is on a task: it may be done without replying, stopped, or asking its person. The
+    /// task stays open (its `reply` still ends it) and its master is told once: a call of its
+    /// waiting for the task gets an error, else a notice is typed as a dialog's is. Other agents'
+    /// calls waiting for its turn get `still_screen`: for them its turn ended. Nothing while it
+    /// waits for a task of its own (docs/specs/agent-protocol.md, 5).
+    pub(super) fn went_quiet(&mut self, terminal: &str, cx: &mut Context<Self>) {
+        let Some(handed) = self.pane(terminal).and_then(|p| p.handed.as_ref()) else {
+            return;
+        };
+        if self.hands_out(terminal) {
+            return;
+        }
+        let (id, by, told) = (handed.id, handed.by.clone(), handed.quiet);
+        let (asked, others): (Vec<u64>, Vec<u64>) = {
+            let turn = |w: &&super::waits::Wait| matches!(&w.what, Waiting::Turn { of, .. } if of == terminal);
+            let waiting = self.waits.iter().filter(turn);
+            let (asked, others): (Vec<_>, Vec<_>) = waiting.partition(|w| w.from == by);
+            (
+                asked.iter().map(|w| w.key).collect(),
+                others.iter().map(|w| w.key).collect(),
+            )
+        };
+        for key in others {
+            let reply = self.still_screen(terminal);
+            self.answer(key, reply, cx);
+        }
+        if told {
+            return;
+        }
+        if let Some(handed) = self.pane_mut(terminal).and_then(|p| p.handed.as_mut()) {
+            handed.quiet = true;
+        }
+        if asked.is_empty() {
+            let text = format!(
+                "[task t{id} from {} hasn't answered: its screen is still] {SCREEN_LEAD}\n{}",
+                self.signature_of(terminal, cx),
+                self.pane(terminal).map(Pane::tail).unwrap_or_default()
+            );
+            self.notice_to(by, text, terminal, NoticeLevel::Waiting, cx);
+        }
+        for key in asked {
+            let lines = self
+                .pane(terminal)
+                .map(|pane| pane.term.shared().lines(LAST_LINES).join("\n"))
+                .unwrap_or_default();
+            let reply = Reply::err(format!(
+                "{} hasn't answered task t{id}: its screen has been still for {STILL} seconds. It \
+                 may be done without replying, stopped, or asking its person. The task stays open, \
+                 and its reply still ends it: wait_for_idle waits for it, send_keys answers a \
+                 dialog, and delegate to it again asks it for its answer. The last lines of its \
+                 screen:\n{}",
+                self.uid_of(terminal),
+                tools::tail(&lines, tools::MAX_TEXT)
+            ));
+            self.answer(key, reply, cx);
         }
     }
 

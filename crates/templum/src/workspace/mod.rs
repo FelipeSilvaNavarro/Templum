@@ -157,6 +157,9 @@ pub(crate) struct Handed {
     /// Claude Code queued it behind the turn under way (`Submitted` at its Enter while it worked):
     /// that turn's end isn't its answer, unless a tool's end takes it into the turn first.
     pub behind: bool,
+    /// Its master was told its agent went quiet (a still screen, no answer): once per task; a
+    /// change from the master starts it over (docs/specs/agent-protocol.md, 5).
+    pub quiet: bool,
     /// Its agent's usage when it was handed over: what its end says it spent counts from it.
     pub usage: Option<templum_usage::Session>,
 }
@@ -172,6 +175,7 @@ impl Handed {
             until: since + timeout,
             taken: false,
             behind: false,
+            quiet: false,
             usage: None,
         }
     }

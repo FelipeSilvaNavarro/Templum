@@ -8,9 +8,7 @@ use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::time::Duration;
 
 use gpui_kit::Context;
-use templum_mcp::{Reply, tools};
 
-use super::waits::LAST_LINES;
 use super::{AgentState, Body, Workspace};
 
 /// How often Templum looks at the agents' screens.
@@ -19,7 +17,7 @@ pub(super) const LOOK: Duration = Duration::from_secs(1);
 /// "Working (5s)" changes once a second, and a look may fall between two changes.
 const CHANGING: u32 = 3;
 /// How many looks in a row saw the screen still for its agent to be at rest.
-const STILL: u32 = 5;
+pub(super) const STILL: u32 = 5;
 /// How many looks in a row saw the screen still for an agent whose hooks speak, at work, to
 /// seem stuck: its hooks would have said its turn ended.
 pub(super) const STUCK: u32 = 30;
@@ -100,8 +98,9 @@ impl Workspace {
     /// A look at every agent's screen, in every workspace: the state it gives, where that is new.
     /// A look after the person typed, clicked or scrolled in it tells nothing (they change it).
     /// An agent at work whose screen went still ends the task it was on, with its last lines: no
-    /// event will. One whose hooks speak, still for 30 looks, seems stuck: it keeps its task, and
-    /// waits for its person.
+    /// event will. Unless it has Templum's tools, which it answers its task with (`reply`): its
+    /// master is only told once that it went quiet. One whose hooks speak, still for 30 looks,
+    /// seems stuck: it keeps its task, and waits for its person.
     pub(super) fn look_at_agents(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
         let mut still = Vec::new();
@@ -141,16 +140,19 @@ impl Workspace {
             changed = true;
         }
         for terminal in still {
-            let lines = self
+            // An agent on a task with Templum's tools and no hooks can answer it with `reply`: a
+            // still screen only tells its master it went quiet. Any other has no other way to say
+            // it is done.
+            let quiet = self
                 .pane(&terminal)
-                .map(|pane| pane.term.shared().lines(LAST_LINES).join("\n"))
-                .unwrap_or_default();
-            let reply = Reply::ok(format!(
-                "Its screen has been still for {STILL} seconds, and Templum heard no answer: it may \
-                 be done, stopped, or asking its person. The last lines of its screen:\n{}",
-                tools::tail(&lines, tools::MAX_TEXT)
-            ));
-            self.end_turn(&terminal, reply, cx);
+                .is_some_and(|p| !p.speaks && p.handed.is_some())
+                && self.has_tools(&terminal);
+            if quiet {
+                self.went_quiet(&terminal, cx);
+            } else {
+                let reply = self.still_screen(&terminal);
+                self.end_turn(&terminal, reply, cx);
+            }
         }
         for terminal in stuck {
             self.needs_you(&terminal, Some(STUCK_TEXT), true, cx);
