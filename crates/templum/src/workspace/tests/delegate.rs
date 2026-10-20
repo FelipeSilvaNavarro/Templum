@@ -3016,6 +3016,151 @@ fn a_sub_task_that_went_quiet_doesnt_keep_the_subagents_task_open(cx: &mut TestA
     );
 }
 
+/// A → B → C: C went quiet on a dialog and B was told. B answers it with `send_keys`, and its turn
+/// ends ("waiting for C"): the keys of the asker start C's wait over, so B's task stays open, and
+/// a C whose screen stays still after them tells B again (docs/specs/agent-protocol.md, 5).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_masters_keys_start_a_quiet_agents_wait_over(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let third = another_agent(handle, &ws, cx, theirs);
+    asker(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let (helper, other) = me(&ws, cx, third);
+    has_server(handle, &ws, cx, &helper, 7);
+    // A hands B t1, which takes it and hands C t2; C goes still on a dialog: B is told.
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "go" }),
+    );
+    screen_with(&ws, cx, theirs, "go");
+    enter(cx);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    call(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        "delegate",
+        json!({ "block": other, "task": "look" }),
+    );
+    screen_with(&ws, cx, third, "look");
+    enter(cx);
+    ticks(&ws, cx, third, 0, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    assert_eq!(told_quiet(&ws, cx, third), Some(true));
+    // B answers the dialog.
+    let keys = json!({ "block": other, "keys": ["2"] });
+    let answers = call_later(handle, &ws, cx, &worker, 8, "send_keys", keys);
+    assert!(!heard(cx, &answers).0);
+    assert_eq!(told_quiet(&ws, cx, third), Some(false));
+    assert_eq!(state_of(&ws, cx, third), Some(AgentState::Working));
+    // Its turn ends: it waits for C again, so its own task stays.
+    let waiting = json!({ "event": "stopped", "message": "Answered C's dialog; waiting for C." });
+    event(handle, &ws, cx, &worker, waiting);
+    after(cx, 1000);
+    assert_eq!(task_of(&ws, cx, theirs), Some(1));
+    for _ in 0..2 {
+        after(cx, 1000);
+    }
+    assert_eq!(
+        told_quiet(&ws, cx, third),
+        Some(false),
+        "not still for 5 looks yet"
+    );
+    // C's screen stays still after the keys: B is told again, and its next turn's end answers.
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while told_quiet(&ws, cx, third) != Some(true) {
+        assert!(Instant::now() < deadline, "told again");
+        after(cx, 1000);
+    }
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let line = json!({ "event": "stopped", "message": "Line 42." });
+    event(handle, &ws, cx, &worker, line);
+    after(cx, 1000);
+    assert_eq!(task_of(&ws, cx, theirs), None);
+    assert_eq!(task_of(&ws, cx, third), Some(2), "C is still on its task");
+    let shown = screen_with(&ws, cx, mine, "Line 42.");
+    assert!(shown.contains("[task t1 from "), "{shown}");
+}
+
+/// Another agent's `wait_for_idle` on a subagent whose turn already ended while it waits on a task
+/// of its own is answered now, with the turn's message; its master's own wait stays
+/// (docs/specs/agent-protocol.md, 4).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn waiting_for_a_subagent_that_waits_on_its_own_task_ended_its_turn(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let third = another_agent(handle, &ws, cx, theirs);
+    asker(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let (helper, other) = me(&ws, cx, third);
+    let task = json!({ "block": them, "task": "go", "wait": true });
+    let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    screen_with(&ws, cx, theirs, "go");
+    enter(cx);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    call(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        "delegate",
+        json!({ "block": other, "task": "look" }),
+    );
+    let waiting = json!({ "event": "stopped", "message": "Waiting for the third." });
+    event(handle, &ws, cx, &worker, waiting);
+    after(cx, 1000);
+    // C asks after the turn ended; A, its master, waits for the task.
+    let idle = json!({ "block": them });
+    let (failed, text) = call(handle, &ws, cx, &helper, "wait_for_idle", idle.clone());
+    assert_eq!((failed, text.as_str()), (false, "Waiting for the third."));
+    let masters = call_later(handle, &ws, cx, &terminal, 2, "wait_for_idle", idle);
+    after(cx, 1000);
+    assert!(masters.try_recv().is_err(), "its master's wait stays");
+    assert!(delegated.try_recv().is_err());
+    assert_eq!(task_of(&ws, cx, theirs), Some(1));
+}
+
+/// The same when it went quiet (no hooks): the others get its still screen at once.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn waiting_for_a_quiet_subagent_ended_its_turn(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let third = another_agent(handle, &ws, cx, theirs);
+    asker(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let (helper, _) = me(&ws, cx, third);
+    has_server(handle, &ws, cx, &worker, 7);
+    let task = json!({ "block": them, "task": "go", "wait": true });
+    let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    ticks(&ws, cx, theirs, 0, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    assert_eq!(told_quiet(&ws, cx, theirs), Some(true));
+    assert!(answered(&delegated).0, "its master was told");
+    let idle = json!({ "block": them });
+    let (failed, text) = call(handle, &ws, cx, &helper, "wait_for_idle", idle);
+    assert!(
+        !failed
+            && text.starts_with("Its screen has been still for 5 seconds")
+            && text.contains("tick 3"),
+        "{text}"
+    );
+    assert_eq!(task_of(&ws, cx, theirs), Some(1));
+}
+
 /// A subagent that waits on a task of its own and whose turn ends keeps its task, but the other
 /// agents waiting for its turn (`wait_for_idle`) hear the turn ended, as they do when it goes
 /// quiet; its master's own wait stays (docs/specs/agent-protocol.md, 4).

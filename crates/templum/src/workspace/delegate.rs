@@ -343,6 +343,16 @@ impl Workspace {
             )));
         }
         let worker = pane.term.id().to_string();
+        // The asker answers a dialog of the agent that went quiet on its task: it waits for the
+        // task again, and a screen that stays still after the keys tells it once more
+        // (docs/specs/agent-protocol.md, 5).
+        if let Some(pane) = self.pane_mut(&worker)
+            && let Some(handed) = pane.handed.as_mut().filter(|h| h.by == asker && h.quiet)
+        {
+            handed.quiet = false;
+            pane.state = Some(AgentState::Working);
+            pane.looks.heard();
+        }
         let said = match keys.len() {
             1 => format!("Pressed 1 key in {block}."),
             n => format!("Pressed {n} keys in {block}."),
@@ -979,10 +989,24 @@ impl Workspace {
                 "{block} runs no agent: read_terminal reads its screen."
             )));
         }
+        let worker = pane.term.id();
         let mine = pane.handed.as_ref().is_some_and(|h| h.by == from);
+        // Another agent waits for its turn, not its task: a turn that ended while the task stays
+        // open (it waits on a task of its own, or went quiet) answers it now
+        // (docs/specs/agent-protocol.md, 4 and 5).
+        let quiet = pane.handed.as_ref().is_some_and(|h| h.quiet);
+        let rests = !mine
+            && pane.state == Some(AgentState::Idle)
+            && (quiet || self.waits_on_its_own(worker));
+        if rests {
+            return Outcome::Now(match &pane.answer {
+                Some(answer) if !quiet => Reply::ok(answer),
+                _ => self.still_screen(worker),
+            });
+        }
         if mine || pane.busy(Instant::now()) {
             let what = Waiting::Turn {
-                of: pane.term.id().to_string(),
+                of: worker.to_string(),
                 uid: block.to_string(),
             };
             return Outcome::Wait(Box::new(what), Some(timeout));

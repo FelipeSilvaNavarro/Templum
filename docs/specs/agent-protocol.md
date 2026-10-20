@@ -168,15 +168,15 @@ a turn with nothing handed out any more) ends its task. Its screen going still m
 
 Two exceptions. A task whose agent went quiet (5) isn't waited for any more: its master was told, reads that agent's
 screen and answers its own task with its turn's end, as it would if the sub-task were over; a `delegate` of it to that
-agent again (a change) starts the wait over. And the calls of other agents that wait for the subagent's turn
+agent again (a change), or `send_keys` from its master into it (its dialog answered), starts the wait over. And the calls of other agents that wait for the subagent's turn
 (`wait_for_idle` on an agent they didn't hand the task) don't wait for its task: the turn's end, or its screen going
 still, answers them as it would any turn, with its last message or the still-screen text.
 
 ### 5. Quiet: a still screen and no answer
 
 An agent that has Templum's tools but no hooks, on a task, whose screen stays still for 5 looks after it worked (the
-same looks as today), went quiet without answering. Once per task (`Handed::quiet`; a change from the asker starts it
-over):
+same looks as today), went quiet without answering. Once per task (`Handed::quiet`; a change, or keys from the asker,
+starts it over, and a screen that stays still after the keys tells it again):
 
 - the asker's calls that wait for the task get, as an error result (it is no answer), "k9x1d hasn't answered task t7:
   its screen has been still for 5 seconds. It may be done without replying, stopped, or asking its person. The task
@@ -316,6 +316,13 @@ No test needs a real agent: CI (Linux, macOS, Windows) has none.
   on its turn (`wait_for_idle` from another agent) with the still-screen text, or they would hang until their timeout.
 - **Quiet answers other agents' waits at every still screen**, and the asker's call or notice once per task (a change
   starts it over). An agent that waits for a task of its own is left alone, with or without Templum's tools.
+- **Keys from the asker start quiet over, typed text doesn't.** `send_keys` is how the master answers a dialog (6), so
+  its keys into an agent that went quiet clear `quiet`, set it to work again and start its looks over: the master's
+  turn ending with "answered, waiting" no longer ends its own task, and a screen still after the keys tells it once
+  more. `send_to_terminal` is another path (`type_text`, no asker, no task check, also the Templum Agent's) and stays
+  as it was.
+- **`wait_for_idle` from an agent that isn't the asker** answers at once when the subagent's turn already ended (idle)
+  and its task stays open for one of its own or because it went quiet, as it would have at that turn's end (4).
 - **"Handed out" means since its own task was handed to it** (4): a task it handed out before, which nobody ended, is
   not what this one waits for, or a forgotten sub-task would keep every later task of that agent open.
 - **`reply` to a block that is not the caller's asker** still sets the replier's last answer, as before; it ends no

@@ -1432,6 +1432,13 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   `crates/templum/src/workspace/activity.rs`) The still-screen check runs once, when the state goes from Working to
   Idle; the task then waits for the screen to move and go still again. A master sees nothing until its timeout. Fix:
   in `closed`, end the task of a terminal that lost its last connection and whose state is Idle, as a still screen does.
+- [ ] **A subagent's turn can end before it sees the notice of its sub-task's end or quiet, and that ends its task.**
+  Left by the second review of card 69 (`hands_out`, `crates/templum/src/workspace/delegate.rs`; `agent_event`,
+  `crates/templum/src/workspace/bus.rs`): B hands C a task; C answers it, or goes quiet, while B is still in its turn,
+  and B's turn ends before it reads the `[task t2 …]` notice. The sub-task no longer counts, so that turn's end ends
+  B's own task, and its master gets B's last words ("…I handed it to C; waiting.") as the answer. Rare with Claude
+  Code. Fix: in `hands_out`, keep counting a sub-task whose end or quiet notice to B is queued, or was typed during
+  B's current turn, until B's next `Submitted` or `Working` event after it.
 
 ## Placing new blocks
 
