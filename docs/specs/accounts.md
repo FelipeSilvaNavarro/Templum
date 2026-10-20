@@ -9,7 +9,7 @@
   [usage.md](usage.md) (limits are an account's), [connections.md](connections.md) (`spawn_agent`, what is typed into
   an agent, agents typed in a terminal), [persistence.md](persistence.md#agents) and
   [kanban.md](kanban.md#who-a-card-is-for)
-- **Shells** (kanban card 66, planned): an account has a shell of its own, never WSL:
+- **Shells** (kanban card 66): an account has a shell of its own, never WSL:
   [shells.md](shells.md#a-shell-for-each-agent)
 
 ## Goal

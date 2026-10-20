@@ -3,7 +3,7 @@
 - **Date:** 2026-10-11; [A shell for each terminal](#a-shell-for-each-terminal) and
   [A shell for each agent](#a-shell-for-each-agent) 2026-10-20
 - **Status:** Implemented, *A shell for each terminal* too (kanban card 60,
-  [plan](../plans/2026-10-20-shell-per-terminal.md)); *A shell for each agent*: planned (kanban card 66,
+  [plan](../plans/2026-10-20-shell-per-terminal.md)); *A shell for each agent* too (kanban card 66,
   [plan](../plans/2026-10-20-shell-per-agent.md))
 - **Builds on:** [config.md](config.md) (`[shell]`), [settings.md](settings.md),
   [context-menus.md](context-menus.md), [persistence.md](persistence.md),
