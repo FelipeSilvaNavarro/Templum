@@ -1378,6 +1378,19 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   Fix: in a WSL block, list those variables in `WSLENV` (`/p` for paths), type Claude Code's and Codex's flags with
   their files as `/mnt/c/…` paths, and run the MCP bridge as `templum.exe` through WSL's interop, which reaches
   Windows' loopback.
+- [ ] **Gemini CLI and Qwen Code ask before `reply`.** Left by the plan of card 69
+  (`docs/specs/agent-protocol.md`, 9): every task now asks for `reply`, and these two show "Allow execution of MCP
+  tool reply?" until the person allows it always; a subagent there waits on its own dialog. They let a whole server
+  run unasked (`trust: true`), never one tool, and Templum pre-allows only `reply`. Fix: a per-tool rule if either
+  gains one (Gemini CLI's policy files), written into the extension and Qwen Code's `mcp.json`.
+- [ ] **A subagent with Templum's tools that never replies and never goes still is never told.** Left by the plan of
+  card 69 (`went_quiet`, `crates/templum/src/workspace/delegate.rs`): a screen that redraws every second (a clock, a
+  counter) never stays still for 5 looks, so neither quiet nor an end comes; a waiting master hears its call's
+  timeout, one not waiting hears nothing. Fix: once the task is past its timeout, tell its master once, as quiet does.
+- [ ] **A nested agent's server counts as the block's.** Left by the plan of card 69 (`Workspace::has_tools`,
+  `crates/templum/src/workspace/bus.rs`): a `claude -p` an agent's shell tool runs inherits `TEMPLUM_TERMINAL`, so
+  while it runs its `templum mcp` makes `list_blocks` and `delegate` say the block has Templum's tools. Fix: count a
+  connection only while the snapshot's agent process is its ancestor.
 
 ## Placing new blocks
 
