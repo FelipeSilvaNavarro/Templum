@@ -1466,21 +1466,18 @@ Left by the final review of kanban card 37; line numbers are those of `developme
   there too.
 - [ ] **The menu switch of an account rewrites its entry.** The row's switch
   (`crates/templum/src/settings/accounts.rs:103`) saves through `save_account`: it applies the folder's choices as
-  Save does (keeping aside a copy the agent wrote) and writes the default title ("Claude Code (claude2)") as `name`.
-  Fix: edit only `agents.<id>.show`.
+  Save does (keeping aside a copy the agent wrote) and writes its command again when its text changed. Fix: edit only
+  `agents.<id>.show`.
 - [ ] **`Report::theirs` is filled and never read.** `crates/templum-usage/src/accounts/folder.rs:37`: the dialog reads a
   folder with `read` instead. Fix: delete it and its assertions.
 - [ ] **Windows' test pins deleting only.** `a_folder_is_a_junction_and_a_file_needs_the_privilege`
   (`crates/templum-usage/src/accounts/folder.rs:627`) never makes an item own again nor re-points a junction, so
   whether `at` takes a junction's target (`\\?\`-prefixed) for Templum's is untested there. Fix: `apply(&[])` after,
   then assert the junction is gone and its target's file stays.
-- [ ] **A deleted account's id is given to the next one.** `new_account_id` (`crates/templum/src/agents.rs:282`)
-  reuses `claude2` after it was deleted: a stopped workspace's block of the old one then comes back as the new
-  account's, typing `--resume <its old session>` there, where the spec wants it plain. Fix: remember the ids
-  deleted (a list in config.toml) and skip them.
-- [ ] **The dialog may show another id than Save writes.** `Form::id` (`crates/templum/src/settings/accounts.rs:268`)
-  checks the agents in effect, `save_account` the pending config too: with an account added and not yet applied,
-  the dialog says "Its id: claude2" and saves `claude3`. Fix: pass the pending config's keys to the form.
+- [ ] **A deleted account's name can be typed again.** `save_account`
+  (`crates/templum/src/workspace/preferences.rs:78`) accepts the name of an account deleted before: a stopped
+  workspace's block of the old one then comes back as the new account's, typing `--resume <its old session>` there,
+  where the spec wants it plain. Fix: remember the ids deleted (a list in config.toml) and skip them.
 - [ ] **Gemini CLI's own folder is two answers.** `Dirs::of` (`crates/templum-usage/src/lib.rs:176`) ignores
   `GEMINI_CLI_HOME`, `Kind::own_folder` follows it, so with it set the extension notice and the accounts disagree on
   where Gemini CLI's own folder is. Fix: `Dirs::of` takes Claude Code's, Codex's and Gemini CLI's from

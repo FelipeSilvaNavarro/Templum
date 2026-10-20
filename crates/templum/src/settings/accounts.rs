@@ -20,7 +20,7 @@ use gpui_kit::{
 use templum_usage::accounts::{Found, Kind};
 
 use super::row::{Row, menu_button};
-use crate::agents::{AccountDraft, AgentEntry, new_account_id, own_state, tilde};
+use crate::agents::{AccountDraft, AgentEntry, own_state, tilde};
 use crate::theme::Ui;
 use crate::workspace::{Workspace, show_notification};
 
@@ -108,9 +108,7 @@ fn account_row(ws: &Workspace, entity: &Entity<Workspace>, entry: &AgentEntry) -
                     ..AccountDraft::of(&entry)
                 };
                 let id = entry.id.clone();
-                e.update(cx, |ws, cx| {
-                    ws.save_account(Some(&id), &draft, window, cx).ok()
-                });
+                e.update(cx, |ws, cx| ws.save_account(&id, &draft, window, cx).ok());
             })
     };
     let pill = |name: String, label: &'static str| {
@@ -270,9 +268,11 @@ impl Form {
             return Some(id.clone());
         }
         let kind = self.kind?;
-        Some(new_account_id(kind.agent, self.data.as_deref(), |x| {
-            self.agents.iter().any(|a| a.id.eq_ignore_ascii_case(x))
-        }))
+        // ponytail: until the dialog asks for a name, a new account is its agent's id and the first
+        // free number.
+        (2..)
+            .map(|n| format!("{}{n}", kind.agent))
+            .find(|id| !self.agents.iter().any(|a| a.id.eq_ignore_ascii_case(id)))
     }
 
     /// The folder its agent would run on: the one typed, else Templum's.
@@ -653,6 +653,12 @@ fn ask_delete(ws: &gpui_kit::WeakEntity<Workspace>, id: &str, window: &mut Windo
                 .to_string(),
         );
     }
+    if ws
+        .upgrade()
+        .is_some_and(|ws| ws.read(cx).command_removed(id))
+    {
+        lines.push(format!("Its command {id} is removed."));
+    }
     let (ws, id) = (ws.clone(), id.to_string());
     crate::prompt::confirm(
         format!("Delete {}?", entry.title),
@@ -695,14 +701,12 @@ pub(crate) fn account_dialog(
             .button_props(DialogButtonProps::default().ok_text("Save"))
             .child(form.clone())
             .on_ok(move |_, window, cx| {
-                let (id, draft) = form.read_with(cx, |f, cx| (f.id.clone(), f.draft(cx)));
-                let Some(draft) = draft else {
+                let (id, draft) = form.read_with(cx, |f, cx| (f.id(), f.draft(cx)));
+                let (Some(id), Some(draft)) = (id, draft) else {
                     show_notification(window, cx, Notification::warning("Choose its agent first"));
                     return false;
                 };
-                let saved = entity.update(cx, |ws, cx| {
-                    ws.save_account(id.as_deref(), &draft, window, cx)
-                });
+                let saved = entity.update(cx, |ws, cx| ws.save_account(&id, &draft, window, cx));
                 match saved {
                     Ok(_) => true,
                     Err(problem) => {

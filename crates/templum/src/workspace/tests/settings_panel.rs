@@ -865,7 +865,7 @@ fn a_folder_change_waits_for_the_blocks_and_keeps_the_old_one(cx: &mut TestAppCo
                     folder: Some(new.display().to_string()),
                     ..crate::agents::AccountDraft::of(&entry)
                 };
-                ws.save_account(Some("claude2"), &draft, window, cx)
+                ws.save_account("claude2", &draft, window, cx)
             })
         })
         .unwrap()
@@ -1053,7 +1053,7 @@ fn an_account_folder_in_templums_folder_for_accounts_is_refused(cx: &mut TestApp
                         .unwrap()
                         .clone();
                     let draft = crate::agents::AccountDraft::of(&entry);
-                    ws.save_account(Some("claude3"), &draft, window, cx)
+                    ws.save_account("claude3", &draft, window, cx)
                 })
             })
             .unwrap();
@@ -1084,7 +1084,7 @@ fn a_chosen_folders_own_files_are_never_moved(cx: &mut TestAppContext) {
     std::fs::create_dir_all(claudes.join("skills").join("mine")).unwrap();
     let empty = mine.path().join("empty");
     std::fs::create_dir_all(&empty).unwrap();
-    let mut save = |of: &str, folder: &std::path::Path, keys: &[&str]| {
+    let mut save = |id: &str, of: &str, folder: &std::path::Path, keys: &[&str]| {
         let draft = crate::agents::AccountDraft {
             of: of.to_string(),
             show: true,
@@ -1096,22 +1096,22 @@ fn a_chosen_folders_own_files_are_never_moved(cx: &mut TestAppContext) {
             ..Default::default()
         };
         cx.update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| ws.save_account(None, &draft, window, cx))
+            ws.update(cx, |ws, cx| ws.save_account(id, &draft, window, cx))
         })
         .unwrap()
         .unwrap()
     };
-    save("claude", &documents, &["sessions", "skills"]);
+    save("claude2", "claude", &documents, &["sessions", "skills"]);
     assert!(documents.join("projects").join("app").is_dir());
     assert!(!is_link(&documents.join("projects")) && !documents.join("projects.own").exists());
     assert!(
         is_link(&documents.join("skills")),
         "what is missing is linked"
     );
-    save("codex", &claudes, &["skills"]);
+    save("codex2", "codex", &claudes, &["skills"]);
     assert!(claudes.join("skills").join("mine").is_dir());
     assert!(!is_link(&claudes.join("skills")) && !claudes.join("skills.own").exists());
-    save("claude", &empty, &["skills", "settings"]);
+    save("claude3", "claude", &empty, &["skills", "settings"]);
     assert_eq!(
         std::fs::read_link(empty.join("skills")).unwrap(),
         claudes.join("skills")
@@ -1121,25 +1121,6 @@ fn a_chosen_folders_own_files_are_never_moved(cx: &mut TestAppContext) {
 #[cfg(unix)]
 fn is_link(path: &std::path::Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
-}
-
-/// A new account's id isn't one written by hand in other case: one folder on macOS and Windows.
-#[gpui_kit::test]
-fn a_new_accounts_id_differs_more_than_by_case(cx: &mut TestAppContext) {
-    let data = tempfile::tempdir().unwrap();
-    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
-    super::agents::with_agents(&ws, cx, "[agents.Claude2]\nof = \"claude\"\n");
-    let draft = crate::agents::AccountDraft {
-        of: "claude".to_string(),
-        show: true,
-        ..Default::default()
-    };
-    let saved = cx
-        .update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| ws.save_account(None, &draft, window, cx))
-        })
-        .unwrap();
-    assert_eq!(saved, Ok("claude3".to_string()));
 }
 
 /// The row's Log in opens a block of the account; its dialog's Delete asks, then deletes it.

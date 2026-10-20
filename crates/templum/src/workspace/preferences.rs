@@ -21,6 +21,18 @@ use crate::theme_picker::Picker;
 
 use super::{Workspace, missing_themes, show_notification};
 
+/// A command Templum couldn't make, as a notification.
+pub(super) fn tell_commands(
+    failure: Option<String>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    if let Some(message) = failure {
+        eprintln!("templum: {message}");
+        show_notification(window, cx, Notification::warning(message));
+    }
+}
+
 impl Workspace {
     /// Saves an agent from the settings: `id` names one already known (one of Templum's, or of
     /// the user's), None a new one of the user's. One of Templum's back at its defaults leaves
@@ -57,26 +69,34 @@ impl Workspace {
         Ok(id)
     }
 
-    /// Saves an account from Settings ▸ Agents ▸ Accounts (docs/specs/accounts.md): `id` names
-    /// one already there, None a new one (its agent's id and the first free number). Its folder
-    /// then gets its choices, a real item in the way of a link kept aside in Templum's folder and
-    /// left in one the person chose. A change of folder waits for its blocks to close and for no
-    /// other account to share from it. Returns its id.
+    /// Saves an account from Settings ▸ Agents ▸ Accounts (docs/specs/accounts.md): `id` is its
+    /// name, the one of an account already there or a new one's, which `agents::name_problem`
+    /// checks first. Its folder then gets its choices, a real item in the way of a link kept aside
+    /// in Templum's folder and left in one the person chose, and its command is written. A change
+    /// of folder waits for its blocks to close and for no other account to share from it.
+    /// Returns its id.
     pub(crate) fn save_account(
         &mut self,
-        id: Option<&str>,
+        id: &str,
         draft: &agents::AccountDraft,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<String, String> {
         let pending = self.pending.as_ref().unwrap_or(&self.config);
-        let id = match id {
-            Some(id) => id.to_string(),
-            None => agents::new_account_id(&draft.of, self.data_dir.as_deref(), |x| {
+        let id = id.to_string();
+        if !pending.agents.contains_key(&id) {
+            let taken = |x: &str| {
                 pending.agents.keys().any(|k| k.eq_ignore_ascii_case(x))
                     || self.agents.iter().any(|a| a.id.eq_ignore_ascii_case(x))
-            }),
-        };
+            };
+            let commands = agents::commands_dir();
+            let data = self.data_dir.as_deref();
+            if let Some(problem) =
+                agents::name_problem(&id, taken, data, commands.as_deref(), agents::locate)
+            {
+                return Err(problem);
+            }
+        }
         if let Some(problem) = draft.problem(&id, &pending.agents, self.data_dir.as_deref()) {
             return Err(problem);
         }
@@ -107,7 +127,35 @@ impl Workspace {
         );
         let report = entry.apply(&list, templum_usage::accounts::When::Saved);
         self.tell_account(&entry, &report, window, cx);
+        let (state, failure) = agents::make_command(&entry, &list, self.data_dir.as_deref());
+        self.commands.insert(id.clone(), state);
+        tell_commands(failure, window, cx);
         Ok(id)
+    }
+
+    /// Makes the command of each account in effect, or says why it has none: `commands`. Run where
+    /// the agents in effect are computed. Returns the failures to tell, each once while it stays
+    /// the same.
+    pub(crate) fn sync_commands(&mut self) -> Vec<String> {
+        let before = std::mem::take(&mut self.commands);
+        let mut failures = Vec::new();
+        for entry in self.agents.iter().filter(|a| a.account.is_some()) {
+            let (state, failure) =
+                agents::make_command(entry, &self.agents, self.data_dir.as_deref());
+            if before.get(&entry.id) != Some(&state) {
+                failures.extend(failure);
+            }
+            self.commands.insert(entry.id.clone(), state);
+        }
+        failures
+    }
+
+    /// Whether the account `id` has a command of Templum's own to remove with it.
+    pub(crate) fn command_removed(&self, id: &str) -> bool {
+        let (Some(dir), Some(data)) = (agents::commands_dir(), self.data_dir.as_deref()) else {
+            return false;
+        };
+        templum_usage::accounts::command::is_own(&dir.join(id), id, data)
     }
 
     /// Why the account `id` can't be deleted or moved now, if it can't: a block of a running
@@ -176,6 +224,11 @@ impl Workspace {
                 other.title, entry.title
             ));
         }
+        if let (Some(dir), Some(data)) = (agents::commands_dir(), self.data_dir.as_deref()) {
+            templum_usage::accounts::command::remove(&dir, id, data)
+                .map_err(|e| format!("Couldn't remove the command {id}: {e}"))?;
+        }
+        self.commands.remove(id);
         if !account.chosen {
             match templum_usage::accounts::delete(account.kind, &account.folder) {
                 Ok(()) => {}
@@ -366,6 +419,10 @@ impl Workspace {
                 &agents::codex_models(),
                 self.data_dir.as_deref(),
             );
+            let failures = self.sync_commands();
+            for failure in failures {
+                tell_commands(Some(failure), window, cx);
+            }
         }
         let (agent, was) = (&self.config.templum_agent, &old.templum_agent);
         if (&agent.agent, &agent.model, &agent.effort) != (&was.agent, &was.model, &was.effort) {

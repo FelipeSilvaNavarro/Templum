@@ -51,7 +51,7 @@ pub(crate) use git_message::TryIt;
 pub(crate) use waits::{Wait, Waiting};
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -1152,6 +1152,8 @@ pub struct Workspace {
     pub(crate) keymap: Keymap,
     /// The AI agents in effect: Templum's, with the config's changes, and the user's.
     pub(crate) agents: Vec<AgentEntry>,
+    /// Each account's command: the file that runs it, or why it has none.
+    pub(crate) commands: BTreeMap<String, Result<PathBuf, String>>,
     /// The agent Generate ✨ runs, and whether it is ready; read when the config changes, not
     /// each frame (finding a program looks in many folders).
     // ponytail: an agent installed while Templum runs shows its ✨ after the next config change
@@ -1603,6 +1605,7 @@ impl Workspace {
             config,
             keymap,
             agents: effective_agents,
+            commands: BTreeMap::new(),
             commit_agent,
             bus,
             bus_env,
@@ -1635,6 +1638,9 @@ impl Workspace {
                     let _ = trash.prune(std::time::SystemTime::now());
                 })
                 .detach();
+        }
+        for failure in ws.sync_commands() {
+            preferences::tell_commands(Some(failure), window, cx);
         }
         ws.load_spaces(window, cx);
         ws.restore_conversation();

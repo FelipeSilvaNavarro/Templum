@@ -682,6 +682,7 @@ pub(super) fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32))
     (f32::from(o.x) + p.0, f32::from(o.y) + p.1)
 }
 
+mod accounts;
 mod agents;
 mod block_ids;
 mod blocks;
