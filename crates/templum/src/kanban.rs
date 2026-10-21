@@ -11,6 +11,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::Confirm;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
@@ -397,6 +398,34 @@ fn board_view(
         .into_any_element()
 }
 
+/// A column's scrollbar, over its list of cards: gpui-component's, as the notes' and the menus'
+/// are, which the theme shows on hover or while scrolling and only once the cards overflow.
+/// Its track and thumb (the widths gpui-component draws at zoom 1) scale with the zoom `z`
+/// like everything in the block: unscaled, the track would be a quarter of a column at 0.25.
+fn column_scrollbar(handle: &ScrollHandle, id: ElementId, z: f32) -> AnyElement {
+    div()
+        .id(id)
+        .absolute()
+        .inset_0()
+        .child(
+            Scrollbar::vertical(handle)
+                .id("thumb")
+                .viewport_from_layout()
+                .styles(|s| {
+                    s.track(|t| t.width(px(16.0 * z)))
+                        .thumb(|t| {
+                            t.width(px(6.0 * z))
+                                .inset(px(4.0 * z))
+                                .min_length(px(48.0 * z))
+                        })
+                        .thumb_hover(|t| t.width(px(8.0 * z)))
+                        .thumb_active(|t| t.width(px(8.0 * z)))
+                }),
+        )
+        .test_support()
+        .into_any_element()
+}
+
 fn column_view(
     ws: &Workspace,
     n: usize,
@@ -514,24 +543,38 @@ fn column_view(
         })
         .child(header)
         .child(
+            // The scrollbar goes over the list, not in it: in it, it would scroll away.
             div()
-                .id(name("cards", n, col))
+                .relative()
                 .flex_1()
                 .min_h(px(0.0))
-                .overflow_y_scroll()
-                .track_scroll(&edge.read(cx).handle)
-                // A card dragged near the top or bottom of the list scrolls it.
-                .on_drag_move(on_edge::<CardDrag>(&edge, BlockId(n as u64), true, z, cx))
+                .flex()
+                .flex_col()
                 .child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.0 * z))
-                        .px(px(6.0 * z))
-                        .pb(px(6.0 * z))
-                        .children(cards),
+                        .id(name("cards", n, col))
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .overflow_y_scroll()
+                        .track_scroll(&edge.read(cx).handle)
+                        // A card dragged near the top or bottom of the list scrolls it.
+                        .on_drag_move(on_edge::<CardDrag>(&edge, BlockId(n as u64), true, z, cx))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.0 * z))
+                                .px(px(6.0 * z))
+                                .pb(px(6.0 * z))
+                                .children(cards),
+                        )
+                        .test_support(),
                 )
-                .test_support(),
+                .child(column_scrollbar(
+                    &edge.read(cx).handle,
+                    name("scrollbar", n, col),
+                    z,
+                )),
         )
         .child(add)
         .test_support()

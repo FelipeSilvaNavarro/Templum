@@ -2,7 +2,9 @@
 
 - **Date:** 2026-10-10
 - **Status:** Implemented; [version 2](#version-2-kanban-card-40) (who a card is for, priority, a checklist, the
-  card's id, scrolling while dragging, the open card redone) implemented
+  card's id, scrolling while dragging, the open card redone) implemented; agents
+  [edit and delete their own comments](#editing-and-deleting-a-comment-kanban-card-77) (card 77) and a long column
+  has [a scrollbar](#a-scrollbar-in-a-column-kanban-card-78) (card 78)
 - **Builds on:** [workspaces.md](workspaces.md) and [persistence.md](persistence.md)
 
 ## Goal
@@ -65,7 +67,8 @@ or a card's title, in any case; one row per board, in their order, with how many
   - **Right-click a column's title:** Rename…, Add a card and Delete. Deleting a column with cards asks first.
     Every menu is listed in [context-menus.md](context-menus.md).
   - **Dragging a column's title** onto another column moves it to that column's place.
-- **Cards** stack in their column, which scrolls when they don't fit.
+- **Cards** stack in their column, which scrolls when they don't fit, and shows a
+  [scrollbar](#a-scrollbar-in-a-column-kanban-card-78) then.
   - A card shows its labels as small colored bars, its title, a line icon when it has a description, how many
     comments it has ("2 comments"), and its assignee's block title at the right. (Version 2 adds its id, priority
     and checklist: [its face](#a-cards-face).)
@@ -538,3 +541,39 @@ the same text is no edit; deleting; a file from before gives its comments ids th
 command line's verbs build them. **Headless UI:** an agent edits and deletes its own comment, is refused the person's
 and another agent's (nothing changes, no Ctrl+Z step), the open card shows each change at once, and Ctrl+Z undoes the
 delete, then the edit.
+
+## A scrollbar in a column (kanban card 78)
+
+The card, as the person wrote it: *"Kanban scroll: nas colunas do kanban, quando os itens passarem da tela, crie uma
+barra de scroll para facilitar a movimentação."* A column's cards already scrolled (wheel, and a card dragged near
+the edge), but nothing showed that there were more, or let the pointer take hold of them.
+
+- **The scrollbar** is gpui-component's, the one the notes' editors and the menus draw, over the right edge of a
+  column's list of cards (the header and "+ Add a card" stay out of it). It appears as the theme says (on hover over
+  the track, or while scrolling, following the system) and only once the cards overflow. Dragging its thumb scrolls the
+  column; a press on the track jumps there.
+- **It scales with the zoom,** like everything in the block: its track (16 units at zoom 1) and thumb (6, 8 under the
+  pointer) are multiplied by the zoom, so at 0.25 it is as thin, against the column, as at 2. Unscaled, its track would
+  take a quarter of a 260-wide column at 0.25. Zoom changes no layout.
+- **It sits over the list, not in it:** the list scrolls inside a box of its own and the scrollbar is drawn over that
+  box, so it doesn't scroll away with the cards and takes no room from them. While it shows, a press in its track (the
+  right 16 units of the list) belongs to it and not to the card under it.
+- **The wheel is unchanged:** over a column of a picked block a vertical wheel scrolls its cards, over any other block
+  it moves the canvas like over every block ([navigation.md](navigation.md#the-wheel-over-blocks), `route_wheel`).
+  The card asked for the scrollbar; a kanban that took the wheel without being picked would be the one block that
+  does.
+- **Dragging a card** is as before: the scrollbar draws no hit box that blocks the cards under it, and a drag near a
+  column's top or bottom scrolls it, scrolled or not, with the pointer over the strip or not.
+
+### Testing
+
+**Headless UI:** a column with 30 cards has a scrollbar over exactly its list, and a press on its track near the
+bottom scrolls the cards; at zoom 0.5 the track is 8 pixels, so a press 3 pixels inside the edge scrolls and one 12 pixels
+inside (a card) doesn't; a card held at the strip of a column scrolled to its end scrolls it back up. **Not testable
+headlessly:** dropping a card (no `on_drop` fires in the harness, [minors.md](../minors.md)), so a drop on the strip is
+checked by hand. **Bench:** `--bench-mixed` still draws its kanban blocks with the scrollbar, and costs no more than without it
+(release, on the dev machine with the person's Templum running: p95 31.4 ms with the scrollbar, 32.5 ms without, p50 19.1
+and 18.3, so both over the 16.7 bar there: the machine's, not the scrollbar's).
+
+**Manual (Hyprland):** a long column at zoom 0.5, 1 and 2: the scrollbar's thumb follows the wheel and is dragged; a
+card dropped on a long column's right edge lands in it.

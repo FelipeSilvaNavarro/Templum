@@ -972,6 +972,164 @@ fn dragging_a_card_near_a_long_columns_bottom_scrolls_its_cards(cx: &mut TestApp
     assert_eq!(now(cx, cards[3]), before, "scrolling stopped with the drag");
 }
 
+/// A board with a To do column of 30 cards, the canvas `steps` zoom steps from 100% (instant):
+/// the pointer goes to `from_right` pixels inside the right edge of that column's list, near its
+/// bottom, and presses there. Returns how far the first card moved up, in pixels.
+fn press_inside_the_lists_right_edge(
+    cx: &mut TestAppContext,
+    steps: i32,
+    from_right: f32,
+) -> (f32, f32) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (block, board, first) = board_with_a_card(handle, &ws, cx);
+    let n = block.0;
+    let todo = ws.update(cx, |ws, _| {
+        let todo = ws.boards.board(board).unwrap().columns[0].id;
+        for _ in 0..29 {
+            ws.edit_boards(|b| b.add_card(board, todo)).unwrap();
+        }
+        todo
+    });
+    let el = |what: &str, id: u64| gpui_kit::ElementId::Name(format!("{what}-{n}-{id}").into());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let card = window.find(el("card", first)).bounds().center();
+        ws.update(cx, |ws, cx| {
+            ws.zoom_to(steps, Point::new(f32::from(card.x), f32::from(card.y)), cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    // The camera glides to its zoom; the bounds are read once it landed.
+    std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
+    let list = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(el("cards", todo)).bounds()
+        })
+        .unwrap();
+    ws.read_with(cx, |ws, _| assert!(ws.space.flight.is_none(), "landed"));
+    let top = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(el("card", first)).bounds().top()
+        })
+        .unwrap()
+    };
+    let (z, before) = (ws.read_with(cx, |ws, _| ws.space.view.zoom()), top(cx));
+    // The scrollbar covers the list, and the cards overflow it.
+    let bar = cx
+        .update_window(handle, |_, window, _| {
+            window.find(el("scrollbar", todo)).bounds()
+        })
+        .unwrap();
+    assert_eq!(bar, list, "the scrollbar is over the list");
+    let at = point(list.right() - px(from_right), list.bottom() - px(12.0 * z));
+    press(handle, cx, at);
+    (z, f32::from(before - top(cx)))
+}
+
+/// The pointer moves to `at` and clicks there: over a scrollbar's track, it is shown first.
+fn press(handle: AnyWindowHandle, cx: &mut TestAppContext, at: gpui_kit::Point<gpui_kit::Pixels>) {
+    cx.update_window(handle, |_, window, cx| {
+        let moved = PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+            position: at,
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        });
+        window.dispatch_event(moved, cx);
+        window.render_frame(cx);
+        let down = MouseDownEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        };
+        window.dispatch_event(PlatformInput::MouseDown(down), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    release(handle, cx, at);
+}
+
+/// A column whose cards overflow has a scrollbar over its list, which pressing on scrolls.
+#[gpui_kit::test]
+fn a_long_column_has_a_scrollbar_that_scrolls_its_cards(cx: &mut TestAppContext) {
+    let (z, moved) = press_inside_the_lists_right_edge(cx, 0, 6.0);
+    assert_eq!(z, 1.0);
+    assert!(
+        moved > 100.0,
+        "pressing on the track scrolled the cards: {moved}"
+    );
+}
+
+/// The track scales with the zoom, like everything in the block: at half size it is 8 pixels
+/// wide, so 12 pixels in is a card, not the track, and 3 pixels in is the track.
+#[gpui_kit::test]
+fn the_scrollbar_scales_with_the_zoom(cx: &mut TestAppContext) {
+    let (z, moved) = press_inside_the_lists_right_edge(cx, -4, 3.0);
+    assert_eq!(z, 0.5);
+    assert!(moved > 50.0, "on the half-size track: {moved}");
+    let (_, moved) = press_inside_the_lists_right_edge(cx, -4, 12.0);
+    assert_eq!(moved, 0.0, "past the half-size track, over a card");
+}
+
+/// A card dragged over another long column's scrollbar, near the top of that column scrolled to
+/// its end, scrolls the cards back up: the scrollbar over the list takes no part in a drag.
+#[gpui_kit::test]
+fn a_card_dragged_over_a_scrolled_columns_scrollbar_scrolls_it_back_up(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (block, board, first) = board_with_a_card(handle, &ws, cx);
+    let n = block.0;
+    let (doing, cards) = ws.update(cx, |ws, _| {
+        let doing = ws.boards.board(board).unwrap().columns[1].id;
+        let cards: Vec<u64> = (0..30)
+            .map(|_| ws.edit_boards(|b| b.add_card(board, doing)).unwrap())
+            .collect();
+        (doing, cards)
+    });
+    let el = |what: &str, id: u64| gpui_kit::ElementId::Name(format!("{what}-{n}-{id}").into());
+    let bounds = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(el("cards", doing)).bounds()
+        })
+        .unwrap();
+    let top = |cx: &mut TestAppContext, card: u64| {
+        cx.update_window(handle, |_, window, _| {
+            window.find(el("card", card)).bounds().top()
+        })
+        .unwrap()
+    };
+    // Doing is scrolled to its end by a press on its track, near the bottom.
+    press(
+        handle,
+        cx,
+        point(bounds.right() - px(6.0), bounds.bottom() - px(12.0)),
+    );
+    let scrolled = top(cx, cards[0]);
+    assert!(
+        scrolled < bounds.top() - px(100.0),
+        "the cards of Doing scrolled up"
+    );
+    // The first card of To do is held at the track's strip, at the top of Doing.
+    let from = cx
+        .update_window(handle, |_, window, _| {
+            window.find(el("card", first)).bounds().center()
+        })
+        .unwrap();
+    let to = point(bounds.right() - px(6.0), bounds.top() + px(8.0));
+    hold_drag(handle, cx, from, to);
+    assert!(
+        top(cx, cards[0]) > scrolled,
+        "dragging at the top scrolled Doing back up"
+    );
+    release(handle, cx, to);
+}
+
 #[gpui_kit::test]
 fn dragging_a_card_near_the_boards_right_edge_scrolls_its_columns(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);

@@ -644,6 +644,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   such clicks (`edit_typed`, `crates/templum/src/kanban.rs:748`): type in the open card's title, click a priority, an
   item or the assignee, type more, then Ctrl+Z: the later typing goes with the click. Fix: reset the `typed` flag when
   a click in the dialog makes its own undo step.
+- [ ] **No headless test drops a card.** Found with card 78 (`crates/templum/src/workspace/tests/kanban.rs`): the
+  tests drag a card (`hold_drag`, gpui-kit's `drag` and `drag_to`) and its `on_drag` starts, but no `on_drop` of a
+  card or a column fires, at the commit before the column scrollbar too; gpui-kit's own `drag_to` test drops on a
+  bare view, so something in the workspace's window (a layer over the blocks, or its mouse-up listener) swallows it
+  in the harness. A change to dropping is checked by hand. Fix: find what takes the mouse-up (print in the card's
+  `on_drop` and in `Workspace::release`), then add a test that drops a card on a card, on a column's end and on a
+  long column's scrollbar strip.
 
 ## Connections
 
