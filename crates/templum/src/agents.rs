@@ -1523,10 +1523,18 @@ mod tests {
              test = {{ of = \"claude\" }}\n\
              tab = {{ of = \"claude\", folder = \"{tab}\" }}\n"
         );
-        let folder = Path::new("/data").join("accounts").join("claudinho");
+        let list = agents(&text);
+        // The folder as the account has it (on Windows its `/data` reads `\data`).
+        let folder = by(&list, "claudinho")
+            .var()
+            .unwrap()
+            .1
+            .to_string_lossy()
+            .into_owned();
+        assert!(folder.ends_with("claudinho"));
         assert_eq!(
-            accounts_env(&agents(&text)),
-            format!("claudinho\tclaude\tCLAUDE_CONFIG_DIR\t{}", folder.display())
+            accounts_env(&list),
+            format!("claudinho\tclaude\tCLAUDE_CONFIG_DIR\t{folder}")
         );
         assert_eq!(accounts_env(&agents("")), "");
         let two =
