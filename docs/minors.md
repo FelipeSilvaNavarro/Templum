@@ -180,6 +180,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Tests
 
+- [ ] **The PowerShell piping test failed once on macOS CI.** `powershell_gives_typed_agents_templums_words`
+  (`crates/templum-terminal/src/integration.rs`) types `'x' | claude -p review` right after `typed_qwen`'s last
+  command; on PR #46's macOS runner the line never showed on the screen and the wait for `claude.args` ran out (30
+  s), while the run before passed. PowerShell can drop what is typed while it gets its next prompt ready, as
+  `type_first` already handles for the first line. Fix: wait for the prompt (the reported folder, or `wait_pressing`
+  with `\r`) before typing each piped line.
 - [ ] **Three tests don't check the words they are about.** `discard_all_with_a_filter_on_takes_only_the_rows_shown`
   (`crates/templum/src/workspace/tests/git_layout.rs`) doesn't check the count in the question;
   `a_hunk_that_changed_since_it_was_read_is_refused` (`tests/git_hunks.rs`) checks the notification count, not "The
