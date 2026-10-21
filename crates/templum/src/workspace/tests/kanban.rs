@@ -816,6 +816,122 @@ fn a_deleted_comment_leaves_a_row_with_undo_until_the_dialog_closes(cx: &mut Tes
     );
 }
 
+/// Starts an edit of the person's comment and types over all of it: `text` is the whole draft.
+fn draft(handle: AnyWindowHandle, cx: &mut TestAppContext, comment: u64, text: &str) {
+    click_comment(handle, cx, "edit", comment);
+    retype(handle, cx, text);
+}
+
+/// Types over all of the text of the field being edited.
+fn retype(handle: AnyWindowHandle, cx: &mut TestAppContext, text: &str) {
+    cx.update_window(handle, |_, window, cx| {
+        #[cfg(target_os = "macos")]
+        window.press("cmd-a", cx);
+        #[cfg(not(target_os = "macos"))]
+        window.press("ctrl-a", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, text);
+}
+
+/// An edit trims both ends, as a new comment does, and Shift+Enter adds a line (Enter saves).
+#[gpui_kit::test]
+fn an_edit_trims_both_ends_and_shift_enter_adds_a_line(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, _) = card_open_with_two_comments(handle, &ws, cx);
+    draft(handle, cx, person, "  padded on both sides \n ");
+    click_comment(handle, cx, "save", person);
+    assert_eq!(
+        thread(&ws, cx, board, card)[0].2,
+        "padded on both sides",
+        "trimmed at the start too"
+    );
+    draft(handle, cx, person, "first");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("shift-enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, "second");
+    assert!(
+        comment_part(handle, cx, "edit-field", person),
+        "Shift+Enter saves nothing"
+    );
+    click_comment(handle, cx, "save", person);
+    assert_eq!(thread(&ws, cx, board, card)[0].2, "first\nsecond");
+}
+
+/// What was typed in an edit isn't lost when the person presses another comment's pencil or Done:
+/// a draft with text is saved then, an empty one is dropped.
+#[gpui_kit::test]
+fn a_draft_is_saved_when_another_pencil_or_done_is_pressed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, agent) = card_open_with_two_comments(handle, &ws, cx);
+    let second = ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| b.add_comment(board, card, "you", "Second", 3).unwrap())
+    });
+    // Another pencil: the first draft is saved, the second comment is being edited.
+    draft(handle, cx, person, "first, changed");
+    click_comment(handle, cx, "edit", second);
+    let saved = thread(&ws, cx, board, card);
+    assert_eq!(saved[0].2, "first, changed");
+    assert!(saved[0].3, "it reads edited");
+    assert!(!comment_part(handle, cx, "edit-field", person));
+    assert!(comment_part(handle, cx, "edit-field", second));
+    // An empty draft is dropped, not saved.
+    cx.update_window(handle, |_, window, cx| {
+        #[cfg(target_os = "macos")]
+        window.press("cmd-a", cx);
+        #[cfg(not(target_os = "macos"))]
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    click_comment(handle, cx, "edit", person);
+    assert_eq!(thread(&ws, cx, board, card), saved, "nothing to save");
+    assert!(comment_part(handle, cx, "edit-field", person));
+    // Done saves the draft in the field and closes the dialog.
+    cx.simulate_input(handle, " and more");
+    cx.update_window(handle, |_, window, cx| {
+        window.click("card-done", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(thread(&ws, cx, board, card)[0].2, "first, changed and more");
+    assert_eq!(thread(&ws, cx, board, card)[1].0, agent);
+    cx.update_window(handle, |_, window, _| {
+        assert!(window.try_find("card-done").is_none(), "the dialog closed")
+    })
+    .unwrap();
+}
+
+/// A dialog that closes in the middle of an edit lets go of the edit's field: the field's
+/// subscription holds the edit weakly.
+#[gpui_kit::test]
+fn closing_the_dialog_in_an_edit_releases_its_field(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, person, _) = {
+        let (board, card, person, agent) = card_open_with_two_comments(handle, &ws, cx);
+        (board, card, person, agent)
+    };
+    click_comment(handle, cx, "edit", person);
+    let field = cx
+        .update_window(handle, |_, window, cx| {
+            window.focused(cx).map(|f| f.downgrade())
+        })
+        .unwrap()
+        .expect("the field has the keyboard");
+    cx.update_window(handle, |_, window, cx| {
+        window.close_dialog(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(field.upgrade().is_none(), "the field outlived the dialog");
+}
+
 /// Escape and Cancel end an edit and change nothing (Escape doesn't close the card's dialog); Enter
 /// saves; the same words are no edit and no step of Ctrl+Z; an empty text can't be saved.
 #[gpui_kit::test]

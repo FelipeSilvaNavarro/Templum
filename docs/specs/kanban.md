@@ -613,10 +613,11 @@ add one.
   a `check`; a faint `ui.hover` fill while the text is empty, as Comment is). **Enter** saves (Shift+Enter adds a line)
   and **Escape** or Cancel ends the edit and changes nothing; Escape ends only the edit, not the dialog, and Enter only
   saves, not confirms it (the field's wrapper takes the dialog's cancel and confirm). One comment is edited at a
-  time (starting another drops the first), and a comment gone meanwhile (an agent, Ctrl+Z) ends its edit. When it
-  ends, the keyboard goes to the comment field.
-- **A comment needs text:** Save does nothing while the field is empty (the trash is how to remove one). Saving the
-  same words changes nothing: no "edited", no step of Ctrl+Z.
+  time: starting another, or closing the dialog (Done, Enter in the title), **saves the draft** of the first if it
+  holds text, and drops an empty one; a comment gone meanwhile (an agent, Ctrl+Z) ends its edit. When it ends, the
+  keyboard goes to the comment field.
+- **A comment needs text:** Save does nothing while the field is empty (the trash is how to remove one). The text is
+  trimmed at both ends, as a new comment's is. Saving the same words changes nothing: no "edited", no step of Ctrl+Z.
 - **The model is card 77's:** `Boards::edit_comment` and `remove_comment`; an edited comment keeps its author, its
   place and its time and reads "3 min ago · edited" ("edited" for the person's too: what was first said is gone),
   and each save and each delete is one `edit_boards` step.
@@ -643,5 +644,7 @@ out of the open card at once and one Ctrl+Z brings it back; a deleted comment le
 when the dialog is closed and opened again; editing the person's makes the text a field with Save and
 Cancel, typing and Save change the text, mark it edited and keep its author and time, and one Ctrl+Z undoes it;
 Escape and Cancel change nothing and Escape leaves the dialog open; Enter saves and leaves it open; saving the same
-words takes no step (one Ctrl+Z undoes the edit before); an empty field can't be saved; a comment removed meanwhile
+words takes no step (one Ctrl+Z undoes the edit before); an empty field can't be saved; the text is trimmed at both
+ends and Shift+Enter adds a line; another comment's pencil, and Done, save a draft with text and drop an empty one;
+a dialog closed in the middle of an edit lets go of the edit's field; a comment removed meanwhile
 ends its edit. **Not seen in a window:** the buttons' look on hover and the editor's box ([minors.md](../minors.md)).

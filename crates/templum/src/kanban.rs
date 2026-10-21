@@ -1057,6 +1057,22 @@ type Finish = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 /// order they were deleted: a row stands where each was, with Undo, until the dialog closes.
 type Deleted = Rc<RefCell<Vec<(usize, Comment)>>>;
 
+/// Saves what the person typed in the comment being edited, if it holds text, and ends the edit:
+/// a dialog that closes, or another comment's pencil, mustn't drop it silently. The same words
+/// change nothing.
+fn save_draft(ws: &Entity<Workspace>, editing: &Editing, board: u64, card: u64, cx: &mut App) {
+    let Some((id, input)) = editing.borrow_mut().take() else {
+        return;
+    };
+    let text = input.read(cx).value().trim().to_string();
+    if !text.is_empty() {
+        ws.update(cx, |ws, cx| {
+            ws.edit_boards(|b| b.edit_comment(board, card, id, &text));
+            cx.notify();
+        });
+    }
+}
+
 /// What stands where the person deleted comment `id`: it says so, and Undo (`undo`) puts the
 /// comment back.
 fn removed_comment(
@@ -1297,7 +1313,7 @@ pub(crate) fn open_card(
                 return;
             };
             if save {
-                let text = input.read(cx).value().trim_end().to_string();
+                let text = input.read(cx).value().trim().to_string();
                 // A comment needs text: the trash button takes one away.
                 if text.trim().is_empty() {
                     return;
@@ -1430,6 +1446,8 @@ pub(crate) fn open_card(
                                 (ws.clone(), editing.clone(), finish.clone());
                             let text = c.text.clone();
                             move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                // Another comment's draft is kept, not dropped.
+                                save_draft(&ws, &editing, board, card, cx);
                                 let input = cx.new(|cx| {
                                     TextareaState::new(window, cx)
                                         .auto_grow(2, 8)
@@ -1437,14 +1455,18 @@ pub(crate) fn open_card(
                                         .default_value(text.clone())
                                 });
                                 // Enter saves (Shift+Enter adds a line); typing lights Save up.
-                                let (ws_typing, finish) = (ws.clone(), finish.clone());
+                                // The field outlives the edit when the dialog closes in the middle of
+                                // it: its subscription holds `finish` (and so the field) weakly.
+                                let (ws_typing, finish) = (ws.clone(), Rc::downgrade(&finish));
                                 window
                                     .subscribe(
                                         &input,
                                         cx,
                                         move |_, event: &InputEvent, window, cx| match event {
                                             InputEvent::PressEnter { shift: false, .. } => {
-                                                finish(true, window, cx)
+                                                if let Some(finish) = finish.upgrade() {
+                                                    finish(true, window, cx)
+                                                }
                                             }
                                             InputEvent::Change => {
                                                 ws_typing.update(cx, |_, cx| cx.notify())
@@ -1820,11 +1842,23 @@ pub(crate) fn open_card(
             .child(delete)
             .child(
                 pill("card-done", "Done", None, ui.accent, ui.surface)
-                    .on_click(|_, window, cx| window.close_dialog(cx))
+                    .on_click({
+                        let (ws, editing) = (ws.clone(), editing.clone());
+                        move |_, window, cx| {
+                            save_draft(&ws, &editing, board, card, cx);
+                            window.close_dialog(cx)
+                        }
+                    })
                     .test_support(),
             );
         alert
             .title(header)
+            // Enter in the title confirms the dialog, Escape cancels it: an edit in the middle
+            // keeps what was typed (Done, which closes it by itself, does the same).
+            .on_close({
+                let (ws, editing) = (ws.clone(), editing.clone());
+                move |_, _, cx| save_draft(&ws, &editing, board, card, cx)
+            })
             .width(px(DIALOG_W))
             // A block's own color, not the canvas's: the fields and the faint fills read on it.
             .bg(ui.surface)
