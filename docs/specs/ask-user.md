@@ -151,7 +151,7 @@ color (`ui.surface`) under hairlines, rounded 12, the yellow frame of the block'
 what is lit, every color a theme token, every size a world size × the zoom (so it scales like a photo: no zoom
 changes where its text wraps, and it is drawn at the Full level of detail only, as before). The frame is a column of
 three parts, **a header and a foot that stay and a body between them that scrolls**, so a long question never
-pushes "Waiting for your answer" or Send out of reach:
+pushes "Waiting for your answer" or Send out of reach (a block too short for that: *A small block*, below):
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -194,6 +194,12 @@ pushes "Waiting for your answer" or Send out of reach:
   kanban column's, `kanban::scrollbar_over`: shown on hover and while scrolling, only once the body overflows) and the
   wheel over it, not over the terminal (with Ctrl it zooms the canvas). Its scroll follows the zoom
   (`PreviewScroll::follow`), so the same words stay in view when the canvas zooms.
+- **A small block** keeps the dialog usable: the body keeps at least 90 world units. Where 80% of the terminal's area
+  (under its title bar) can't hold the header (51), the foot (51 on one line, 89 when its buttons wrap), the banner if
+  any and those 90, the balloon takes the whole area; where even that can't, **the whole frame scrolls as one body**
+  (header, banner, questions and foot), with the scrollbar over it, so every part is reachable by the wheel. The foot's
+  buttons wrap on a second line in a dialog narrower than 260, Send on the right, so none is cut at the sides. A
+  test (`the_balloons_fixed_parts_are_as_tall_as_its_fit_assumes`) keeps the heights `balloon::fit` assumes true.
 - **Questions** stack in their order with a gap of 18 and a hairline between them. Each starts with its header as a
   chip (the kanban card number's look: `ui.accent` on `ui.accent` at 16%, rounded 6, 11.5 semibold), then its text,
   whole (14.5, medium, line height 1.4); a multiSelect's says "Pick any" under it, dim, with lucide `list-checks`.

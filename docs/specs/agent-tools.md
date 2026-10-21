@@ -329,7 +329,7 @@ conversation.
 
   the header chip "Plan" and the title (or "A plan" when none); the plan rendered as Markdown by `markdown::preview`
   (headings, lists, code, scaled with the zoom like a photo), in a frame on the canvas color that scrolls on its own,
-  at most 60% of the balloon's height; then the Comment field (the note of `ask_user`); then **Reject** on the left and
+  at most 60% of the body's height (the balloon less its header and foot); the wheel over it scrolls it when it overflows, not the body; then the Comment field (the note of `ask_user`); then **Reject** on the left and
   **Approve** on the right. Its keys are `ask_user`'s: ↓ and Tab move through Comment, Reject and Approve, Enter on
   Approve or Reject presses it, Esc gives the keyboard back; presses within 0.5 s of it showing are ignored. The sound,
   the notification ("Asks you to approve a plan: *title*"), the alert, "1 of 3", the deadline, a cancel typed back,

@@ -24,6 +24,18 @@ use crate::workspace::{Wait, Waiting, Workspace};
 
 /// Its width, and its height at most (its body scrolls past that), of the terminal's.
 const SHARE: f32 = 0.8;
+/// The least of its height its body keeps, world units: a block too short to hold a header, a
+/// foot and this lets the balloon take the whole area, and one too short for that scrolls the
+/// whole frame.
+pub(crate) const MIN_BODY: f32 = 90.0;
+/// The header's and the foot's height, world units: their padding, their tile or buttons and
+/// their hairline (a test keeps these true); and the balloon's own border, both sides.
+pub(crate) const BORDER: f32 = 2.0;
+pub(crate) const HEAD: f32 = 51.0;
+pub(crate) const FOOT: f32 = 51.0;
+/// A dialog narrower than this, world units, wraps its foot's buttons on two lines (FOOT_WRAPPED).
+pub(crate) const ONE_LINE: f32 = 260.0;
+pub(crate) const FOOT_WRAPPED: f32 = 89.0;
 /// What a question whose client stopped waiting says under the header.
 const STOPPED: &str = "The agent stopped waiting: your answer will be typed into its terminal.";
 /// Its text's size, world units: the questions.
@@ -40,7 +52,7 @@ const PREVIEW_LINES: f32 = 18.0;
 /// A dialog narrower than this, world units, lays a preview under the options instead of beside
 /// them.
 const BESIDE: f32 = 520.0;
-/// The most of the balloon's height a plan's frame takes; it scrolls past that.
+/// The most of the body's height a plan's frame takes; it scrolls past that.
 const PLAN_SHARE: f32 = 0.6;
 /// The most characters of a plan's title shown.
 const PLAN_TITLE: usize = 60;
@@ -51,6 +63,28 @@ struct Parts {
     sub: Option<String>,
     body: Div,
     foot: Div,
+}
+
+/// The stopped line's height, margin included, in a balloon `w` wide (world units): the line's
+/// words, about 560 wide, wrap in what the sides, the icon and the padding leave.
+pub(crate) fn notice(w: f32) -> f32 {
+    let lines = (560.0 / (w - 2.0 * SIDE - 42.0).max(40.0)).ceil();
+    28.0 + 19.5 * lines
+}
+
+/// What the balloon gets of its terminal's area, `area` high (world units; its width is `w`): its
+/// height at most, and whether its whole frame scrolls. SHARE of the area while that holds the
+/// header, the foot and MIN_BODY; else the whole area; else, as even that leaves the body less
+/// than MIN_BODY, the frame scrolls as one.
+fn fit(area: f32, w: f32, stopped: bool) -> (f32, bool) {
+    let area = area.max(0.0);
+    let foot = if w < ONE_LINE { FOOT_WRAPPED } else { FOOT };
+    let needs = BORDER + HEAD + foot + if stopped { notice(w) } else { 0.0 } + MIN_BODY;
+    if area * SHARE >= needs {
+        (area * SHARE, false)
+    } else {
+        (area, area < needs)
+    }
 }
 
 /// The balloon of the terminal block `id`, whose terminal is `terminal`, at zoom `z`, centered on
@@ -72,12 +106,25 @@ pub(crate) fn render(
     let ui = ws.ui;
     // The yellow of the dot of a block waiting for its person.
     let waiting = hsla(ws.theme.palette.ansi[3], 1.0);
-    // The balloon's width, world units: SHARE of the terminal's.
-    let width = ws.space.canvas.get(id).map_or(0.0, |b| b.rect.w) * SHARE;
+    // The balloon's width, world units: SHARE of the terminal's; its height at most, below.
+    let rect = ws.space.canvas.get(id).map(|b| b.rect).unwrap_or_default();
+    let width = rect.w * SHARE;
+    let stopped = matches!(wait.what, Waiting::Question { stopped: true, .. });
+    let (tallest, whole) = fit(rect.h - chrome::TITLE_H, width, stopped);
     let Parts { sub, body, foot } = match &wait.what {
         Waiting::Question {
             ask, form, scroll, ..
-        } if ask.plan.is_some() => plan(ws, wait, ask, form, scroll, id, z, cx),
+        } if ask.plan.is_some() => plan(
+            ws,
+            wait,
+            ask,
+            form,
+            scroll,
+            id,
+            (tallest - BORDER - HEAD - FOOT).max(MIN_BODY),
+            z,
+            cx,
+        ),
         Waiting::Question { ask, form, .. } => question(ws, wait, ask, form, n, width, z, cx),
         Waiting::Allow { then } => allow(ws, wait, then.buttons(), n, z, cx),
         Waiting::Turn { .. } | Waiting::Event { .. } => return None,
@@ -148,7 +195,7 @@ pub(crate) fn render(
         })
         .test_support();
     // Its client gave up on the call: said where it stays in sight.
-    let stopped = matches!(wait.what, Waiting::Question { stopped: true, .. }).then(|| {
+    let stopped = stopped.then(|| {
         div()
             .id(part(n, "stopped"))
             .flex()
@@ -174,33 +221,15 @@ pub(crate) fn render(
     });
     // Its key in the body's and the foot's ids: a press on a request withdrawn before its release
     // is no click on the next one's button drawn in its place.
-    let body = div()
-        .id(part(n, "body"))
-        .flex_1()
-        .min_h(px(0.0))
-        .overflow_y_scroll()
-        .track_scroll(&wait.body.handle)
-        .child(
-            div()
-                .id(("balloon-wait", key))
-                .flex()
-                .flex_col()
-                .gap(px(10.0 * z))
-                .px(px(SIDE * z))
-                .py(px(16.0 * z))
-                .child(body)
-                .test_support(),
-        )
-        .test_support();
-    wait.body.follow(z);
-    // The scrollbar goes over the body, not in it.
-    let scrolling = div()
-        .relative()
+    let content = div()
+        .id(("balloon-wait", key))
         .flex()
         .flex_col()
-        .min_h(px(0.0))
+        .gap(px(10.0 * z))
+        .px(px(SIDE * z))
+        .py(px(16.0 * z))
         .child(body)
-        .child(scrollbar_over(&wait.body.handle, part(n, "scrollbar"), z));
+        .test_support();
     let foot = div()
         .id(("balloon-foot", key))
         .flex()
@@ -211,7 +240,35 @@ pub(crate) fn render(
         .py(px(10.0 * z))
         .border_t_1()
         .border_color(ui.hairline)
-        .child(foot);
+        .child(foot)
+        .test_support();
+    // The header, the stopped line and the foot stay around a body that scrolls; in a block too
+    // short for that the whole frame is the body.
+    let mut above = vec![head.into_any_element()];
+    above.extend(stopped.map(IntoElement::into_any_element));
+    let mut scrolled = vec![content.into_any_element()];
+    let mut below = vec![foot.into_any_element()];
+    if whole {
+        scrolled.splice(0..0, above.drain(..));
+        scrolled.append(&mut below);
+    }
+    let body = div()
+        .id(part(n, "body"))
+        .flex_1()
+        .min_h(px(0.0))
+        .overflow_y_scroll()
+        .track_scroll(&wait.body.handle)
+        .children(scrolled)
+        .test_support();
+    wait.body.follow(z);
+    // The scrollbar goes over the body, not in it.
+    let scrolling = div()
+        .relative()
+        .flex()
+        .flex_col()
+        .min_h(px(0.0))
+        .child(body)
+        .child(scrollbar_over(&wait.body.handle, part(n, "scrollbar"), z));
     // The terminal's area, under the title bar, centers it; it takes no press: the terminal
     // around the dialog still does.
     Some(
@@ -228,7 +285,7 @@ pub(crate) fn render(
                 div()
                     .id(("balloon", n))
                     .w(relative(SHARE))
-                    .max_h(relative(SHARE))
+                    .max_h(px(tallest * z))
                     .flex()
                     .flex_col()
                     .overflow_hidden()
@@ -266,10 +323,9 @@ pub(crate) fn render(
                             cx.stop_propagation();
                         }
                     })
-                    .child(head)
-                    .children(stopped)
+                    .children(above)
                     .child(scrolling)
-                    .child(foot)
+                    .children(below)
                     .test_support(),
             )
             .into_any_element(),
@@ -454,11 +510,7 @@ fn question(
     }
     let many = ask.json && ask.questions.len() > 1;
     let total = ask.questions.len();
-    let foot = div()
-        .flex()
-        .items_center()
-        .gap(px(8.0 * z))
-        .w_full()
+    let foot = foot_row(z)
         .child(
             ghost(part(n, "dismiss"), "Dismiss", ui, z)
                 .on_click(cx.listener(once(move |ws, window, cx| {
@@ -492,6 +544,7 @@ fn question(
                 ui,
                 z,
             )
+            .ml_auto()
             .on_hover(hover(key, Row::Send, cx))
             .on_click(cx.listener(once(move |ws, window, cx| {
                 ws.send_question(key, window, cx)
@@ -511,7 +564,7 @@ fn question(
 
 /// A plan's dialog (docs/specs/agent-tools.md, propose_plan): the chip "Plan" and its title, its
 /// Markdown in a frame on the canvas color that scrolls on its own, at most PLAN_SHARE of the
-/// balloon's height, the comment, then Reject on the left and Approve on the right.
+/// body's height `h` (world units), the comment, then Reject on the left and Approve on the right.
 #[allow(clippy::too_many_arguments)]
 fn plan(
     ws: &Workspace,
@@ -520,6 +573,7 @@ fn plan(
     form: &Form,
     scroll: &crate::markdown::PreviewScroll,
     id: BlockId,
+    h: f32,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> Parts {
@@ -532,12 +586,8 @@ fn plan(
         };
     };
     let title: String = ask.summary().chars().take(PLAN_TITLE).collect();
-    // The balloon's size, world units: SHARE of the terminal's area, less the body's padding.
-    let rect = ws.space.canvas.get(id).map(|b| b.rect).unwrap_or_default();
-    let (w, h) = (
-        rect.w * SHARE - 2.0 * SIDE - 2.0,
-        (rect.h - chrome::TITLE_H) * SHARE,
-    );
+    // The plan's width, world units: the balloon's less the body's padding.
+    let w = ws.space.canvas.get(id).map_or(0.0, |b| b.rect.w) * SHARE - 2.0 * SIDE - 2.0;
     let head = div()
         .id(part(n, "plan-title"))
         .flex()
@@ -552,11 +602,18 @@ fn plan(
                 .child(title),
         )
         .test_support();
+    let overflows = scroll.handle.clone();
     let frame = div()
         .flex()
         .flex_col()
         .max_h(px(h * PLAN_SHARE * z))
         .overflow_hidden()
+        // The wheel scrolls a plan that overflows, not the dialog's body around it.
+        .on_scroll_wheel(move |e: &ScrollWheelEvent, _, cx| {
+            if !e.modifiers.control && overflows.max_offset().y > px(0.0) {
+                cx.stop_propagation();
+            }
+        })
         .rounded(px(8.0 * z))
         .border_1()
         .border_color(ui.hairline)
@@ -614,13 +671,7 @@ fn plan(
     Parts {
         sub: Some("Plan to approve".into()),
         body,
-        foot: div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .w_full()
-            .child(reject)
-            .child(approve),
+        foot: foot_row(z).child(reject).child(approve.ml_auto()),
     }
 }
 
@@ -921,12 +972,8 @@ fn allow(
     Parts {
         sub: None,
         body: div().min_w(px(0.0)).child(ws.allow_line(wait, cx)),
-        foot: div()
-            .flex()
-            .items_center()
+        foot: foot_row(z)
             .justify_end()
-            .gap(px(8.0 * z))
-            .w_full()
             .child(
                 ghost(part(n, "deny"), no, ui, z)
                     .on_click(cx.listener(once(move |ws, _, cx| ws.answer_allow(key, false, cx))))
@@ -938,6 +985,17 @@ fn allow(
                     .test_support(),
             ),
     }
+}
+
+/// A foot's row of buttons: they wrap on a second line in a dialog too narrow for one, so none is
+/// cut at the side; a button with `ml_auto` keeps the right.
+fn foot_row(z: f32) -> Div {
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(8.0 * z))
+        .w_full()
 }
 
 /// A button's click, but not a double click's second: once a request is answered, the next one's

@@ -105,6 +105,15 @@ fn scroll_to(window: &mut Window, cx: &mut gpui_kit::App, n: usize, what: &str) 
     window.render_frame(cx);
     let target = window.find(crate::balloon::part(n, what)).bounds();
     let balloon = window.find(crate::balloon::part(n, "body")).bounds();
+    // In the header or the foot, which stay in the balloon: nothing to scroll. In the body, a
+    // part out of view lies past the balloon's edge.
+    let frame = window.find(("balloon", n)).bounds();
+    if frame.contains(&target.origin)
+        && frame.contains(&target.bottom_right())
+        && (target.top() >= balloon.bottom() || target.bottom() <= balloon.top())
+    {
+        return;
+    }
     let by = if target.bottom() > balloon.bottom() {
         balloon.bottom() - target.bottom() - px(8.0)
     } else if target.top() < balloon.top() {
@@ -1625,6 +1634,127 @@ fn a_huge_dialog_scrolls_its_body_between_a_header_and_a_foot_that_stay(cx: &mut
     assert!(answer.starts_with("Option 29 "), "{answer}");
 }
 
+/// A dialog in a short or a narrow block stays usable: where its terminal's area holds a header,
+/// a foot and a body of 90 it keeps that body (the balloon takes the whole area before it gives
+/// the body up); where even that is too short the whole frame scrolls. Send is never cut at the
+/// side, and every size reaches an option and Send with the mouse.
+#[gpui_kit::test]
+fn a_dialog_in_a_small_block_keeps_its_body_and_reaches_send(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let min = ws.read_with(cx, |ws, _| chrome::min_block_size(ws.cell.size));
+    // (width, height, whether the area holds the header, the foot and a body of 90)
+    let sizes = [
+        (min.w, min.h, false),
+        (min.w, 150.0, false),
+        (min.w, 220.0, false),
+        (min.w, 300.0, false),
+        (400.0, min.h, false),
+        (400.0, 150.0, false),
+        (400.0, 180.0, false),
+        (400.0, 220.0, false),
+        (400.0, 230.0, true),
+        (400.0, 260.0, true),
+        (400.0, 300.0, true),
+    ];
+    for (conn, (w, h, holds)) in sizes.into_iter().enumerate() {
+        ws.update(cx, |ws, _| {
+            let rect = &mut ws.space.canvas.get_mut(mine).unwrap().rect;
+            (rect.w, rect.h) = (w, h);
+            let at = Point::new(rect.x, rect.y);
+            ws.space.canvas.camera = Camera::at(at, 1.0);
+        });
+        let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
+        let answers = call_later(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            conn as u64 + 1,
+            "ask_user",
+            asked,
+        );
+        shown(handle, cx);
+        let [balloon, body, send] = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                let at = |id: gpui_kit::ElementId| window.find(id).bounds();
+                [
+                    at(("balloon", n).into()),
+                    at(crate::balloon::part(n, "body")),
+                    at(crate::balloon::part(n, "send")),
+                ]
+            })
+            .unwrap();
+        let size = format!("{w} x {h}: {balloon:?} {body:?} {send:?}");
+        assert!(
+            f32::from(balloon.size.height) <= h - chrome::TITLE_H + 1.0,
+            "the balloon fits its terminal, {size}"
+        );
+        assert!(
+            send.left() >= balloon.left() && send.right() <= balloon.right(),
+            "Send is cut at the side, {size}"
+        );
+        assert!(body.size.height > px(0.0), "{size}");
+        if holds {
+            assert!(body.size.height >= px(89.0), "the body keeps room, {size}");
+            assert!(send.bottom() <= balloon.bottom(), "Send is cut, {size}");
+        }
+        click_part(handle, cx, n, "q0-option-1");
+        click_part(handle, cx, n, "send");
+        let (failed, text) = answered(&answers);
+        assert!(!failed && text == "No", "{text}: {size}");
+    }
+}
+
+/// The header, the foot and the stopped line are as tall as the balloon's fit assumes: where they
+/// grow past it, the block that "holds" a body of 90 would cut it.
+#[gpui_kit::test]
+fn the_balloons_fixed_parts_are_as_tall_as_its_fit_assumes(cx: &mut TestAppContext) {
+    use crate::balloon::{FOOT, FOOT_WRAPPED, HEAD, ONE_LINE, notice};
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    roomy(&ws, cx, mine);
+    agent_without_notices(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let question = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 3, "ask_user", question);
+    let cancel = json!({ "requestId": 3, "reason": "The person pressed Esc" });
+    bus_note(handle, &ws, cx, 3, "notifications/cancelled", cancel);
+    let key = last_wait(&ws, cx);
+    let heights = |cx: &mut TestAppContext, w: f32| {
+        ws.update(cx, |ws, _| {
+            ws.space.canvas.get_mut(mine).unwrap().rect.w = w
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let at = |id: gpui_kit::ElementId| f32::from(window.find(id).bounds().size.height);
+            [
+                at(crate::balloon::part(n, "waiting")),
+                at(("balloon-foot", key).into()),
+                at(crate::balloon::part(n, "stopped")),
+            ]
+        })
+        .unwrap()
+    };
+    // A dialog just wide enough for the foot on one line, and wider ones: the stopped line wraps
+    // on fewer lines (its margin, 12, is not in its height).
+    for w in [ONE_LINE / 0.8, 400.0, 500.0, 900.0] {
+        let [head, foot, stopped] = heights(cx, w);
+        assert!((head, foot) == (HEAD, FOOT), "{w}: {head} {foot}");
+        assert!(
+            (stopped + 12.0 - notice(w * 0.8)).abs() < 1.0,
+            "{w}: {stopped}"
+        );
+    }
+    // And one narrower, which wraps the foot.
+    let [_, wrapped, _] = heights(cx, 180.0);
+    assert_eq!(wrapped, FOOT_WRAPPED);
+}
+
 /// Whether the balloon's element `what` is inside its body's viewport.
 fn window_shows(handle: AnyWindowHandle, cx: &mut TestAppContext, n: usize, what: &str) -> bool {
     cx.update_window(handle, |_, window, cx| {
@@ -2390,7 +2520,7 @@ fn a_plan_a_question_and_a_request_wait_in_turn(cx: &mut TestAppContext) {
     assert_eq!(answered(&request), (false, format!("Connected to {k}.")));
 }
 
-/// A long plan scrolls in its frame, which takes at most 60% of the balloon's height.
+/// A long plan scrolls in its frame, which takes at most 60% of the body's height.
 #[gpui_kit::test]
 fn a_long_plan_scrolls_in_its_frame(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
@@ -2424,6 +2554,62 @@ fn a_long_plan_scrolls_in_its_frame(cx: &mut TestAppContext) {
         );
     })
     .unwrap();
+}
+
+/// The wheel over a long plan scrolls the plan and leaves the dialog's body alone, even where
+/// the body overflows too (a block this short): the plan's frame is sized from the body, not from
+/// the whole balloon.
+#[gpui_kit::test]
+fn the_wheel_over_a_long_plan_scrolls_the_plan_not_the_body(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let long: String = (1..=150).map(|i| format!("{i}. Step {i}\n")).collect();
+    let _plan = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        3,
+        "propose_plan",
+        json!({ "plan": long }),
+    );
+    shown(handle, cx);
+    let key = last_wait(&ws, cx);
+    let plan_scroll = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| match &ws.waits.last().unwrap().what {
+            Waiting::Question { scroll, .. } => f32::from(scroll.handle.offset().y),
+            _ => panic!("a plan"),
+        })
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = window.find(crate::balloon::part(n, "body")).bounds();
+        let content = window.find(("balloon-wait", key)).bounds();
+        let frame = window.find(crate::balloon::part(n, "plan-body")).bounds();
+        assert!(
+            content.size.height > body.size.height,
+            "the body overflows too"
+        );
+        assert!(
+            frame.size.height <= body.size.height * 0.6 + px(1.0),
+            "{frame:?} in {body:?}"
+        );
+        window.hover(("balloon", n), cx);
+        let at = (f32::from(frame.center().x), f32::from(frame.center().y));
+        wheel(
+            window,
+            cx,
+            at,
+            ScrollDelta::Pixels(point(px(0.0), px(-40.0))),
+            false,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(plan_scroll(cx) < 0.0, "the plan scrolled");
+    assert_eq!(body_scroll(&ws, cx), 0.0, "the body did not");
 }
 
 /// A plan off screen is a notification that says so: "Asks you to approve a plan: …".
