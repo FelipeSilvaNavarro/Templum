@@ -558,12 +558,13 @@ fn column_view(
                         .overflow_y_scroll()
                         .track_scroll(&edge.read(cx).handle)
                         // The scrollbar over the list takes every press on its strip, whatever the
-                        // button, before the card and the block under it: the middle button goes
-                        // ahead of it, in the capture phase, and pans the canvas as it does over
-                        // the rest of the block. A right-click opens the card's menu from the card
-                        // (`card_view`).
+                        // button, before the card and the block under it: these go ahead of it, in
+                        // the capture phase. The block is picked, and the middle button pans the
+                        // canvas as it does over the rest of the block. A right-click opens the
+                        // card's menu from the card (`card_view`).
                         .capture_any_mouse_down(cx.listener(
                             move |ws, e: &MouseDownEvent, window, cx| {
+                                ws.focus_block(BlockId(n as u64), window, cx);
                                 if e.button == MouseButton::Middle {
                                     ws.begin_pan(e.position);
                                     cx.stop_propagation();
@@ -760,10 +761,10 @@ fn card_view(
                 open_card(board, current, false, window, cx)
             }
         }))
-        // In the capture phase, ahead of a long column's scrollbar (see `column_view`).
+        // In the capture phase, ahead of a long column's scrollbar (see `column_view`). The list
+        // has picked the block by then.
         .capture_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
             if e.button == MouseButton::Right {
-                ws.focus_block(BlockId(n as u64), window, cx);
                 ws.open_menu(Target::Card { board, card: id }, e.position, window, cx);
                 cx.stop_propagation();
             }

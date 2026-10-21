@@ -1265,6 +1265,25 @@ fn a_middle_drag_from_a_long_columns_scrollbar_strip_pans_the_canvas(cx: &mut Te
     });
 }
 
+/// With "Focus follows the pointer" off, pressing a long column's scrollbar picks its block like
+/// any other press in it, so the wheel scrolls its list and not the canvas after.
+#[gpui_kit::test]
+fn pressing_a_long_columns_scrollbar_picks_its_block(cx: &mut TestAppContext) {
+    let long = LongTodo::new(cx);
+    long.ws.update(cx, |ws, _| {
+        ws.config.canvas.focus_follows_pointer = false;
+        ws.space.focused = None;
+    });
+    let at = long.strip_over_the_first_card(cx);
+    cx.update_window(long.handle, |_, window, cx| {
+        hover_at(window, cx, at);
+        press_with(window, cx, MouseButton::Left, Modifiers::default(), at, at);
+    })
+    .unwrap();
+    long.ws
+        .read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(long.block)));
+}
+
 #[gpui_kit::test]
 fn dragging_a_card_near_the_boards_right_edge_scrolls_its_columns(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
