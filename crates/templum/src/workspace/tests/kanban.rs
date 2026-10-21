@@ -1284,6 +1284,38 @@ fn pressing_a_long_columns_scrollbar_picks_its_block(cx: &mut TestAppContext) {
         .read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(long.block)));
 }
 
+/// The wheel scrolls a long column's cards over the list and over its scrollbar, and never pans
+/// the canvas.
+#[gpui_kit::test]
+fn the_wheel_scrolls_a_long_columns_cards_over_its_list_and_its_scrollbar(cx: &mut TestAppContext) {
+    let long = LongTodo::new(cx);
+    let list = long.list(cx);
+    let camera = long.ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    let (center, strip) = (
+        (f32::from(list.center().x), f32::from(list.center().y)),
+        (
+            f32::from(list.right() - px(6.0)),
+            f32::from(list.center().y),
+        ),
+    );
+    for (what, at) in [("the center", center), ("the scrollbar", strip)] {
+        let before = long.top(cx);
+        cx.update_window(long.handle, |_, window, cx| {
+            hover_at(window, cx, at);
+            let down = ScrollDelta::Pixels(point(px(0.), px(-100.)));
+            wheel(window, cx, at, down, false);
+        })
+        .unwrap();
+        let now = long.top(cx);
+        assert!(
+            now < before - 50.0,
+            "the wheel at {what}: {before} to {now}"
+        );
+    }
+    long.ws
+        .read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera, camera));
+}
+
 #[gpui_kit::test]
 fn dragging_a_card_near_the_boards_right_edge_scrolls_its_columns(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
