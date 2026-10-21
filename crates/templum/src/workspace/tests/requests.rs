@@ -1064,6 +1064,79 @@ fn a_press_on_the_balloon_stays_in_it_and_a_middle_drag_pans(cx: &mut TestAppCon
     });
 }
 
+/// A question of thirty options in the block `mine`, so the dialog's body overflows and has a
+/// scrollbar; the point on the middle of its strip, where the pointer is shown first.
+fn strip_of_a_long_dialog(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    mine: BlockId,
+) -> (f32, f32) {
+    let (terminal, _) = me(ws, cx, mine);
+    let options: Vec<Value> = (0..30).map(|i| json!(format!("Option {i}"))).collect();
+    let asked = json!({ "question": "Which?", "options": options });
+    let _asked = call_later(handle, ws, cx, &terminal, 1, "ask_user", asked);
+    shown(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = window
+            .find(crate::balloon::part(mine.0 as usize, "body"))
+            .bounds();
+        let at = (f32::from(body.right()) - 5.0, f32::from(body.center().y));
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: point(px(at.0), px(at.1)),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        at
+    })
+    .unwrap()
+}
+
+/// The dialog's scrollbar takes the presses on its strip, but a press there still gives its block
+/// the keyboard (with "Focus follows the pointer" off) and a middle drag from it pans the canvas,
+/// as over the rest of the balloon.
+#[gpui_kit::test]
+fn the_dialogs_scrollbar_strip_picks_its_block_and_lets_a_middle_drag_pan(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    ws.update(cx, |ws, _| ws.config.canvas.focus_follows_pointer = false);
+    let at = strip_of_a_long_dialog(handle, &ws, cx, mine);
+    focus_dialog(handle, &ws, cx, kanban);
+    assert_eq!(ws.read_with(cx, |ws, _| ws.space.focused), Some(kanban));
+    let before = ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    cx.update_window(handle, |_, window, cx| {
+        press_with(window, cx, MouseButton::Left, Modifiers::default(), at, at);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.focused),
+        Some(mine),
+        "the press on the strip picked its block"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        let to = (at.0 - 50.0, at.1);
+        press_with(
+            window,
+            cx,
+            MouseButton::Middle,
+            Modifiers::default(),
+            at,
+            to,
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_ne!(ws.space.canvas.camera, before, "a middle drag pans");
+        assert!(ws.drag.is_none());
+    });
+}
+
 /// A double click answers one request: once the question is answered, the next request's buttons
 /// are drawn under the pointer, and the second click mustn't choose for the person.
 #[gpui_kit::test]

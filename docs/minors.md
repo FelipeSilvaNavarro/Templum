@@ -618,6 +618,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   editing box (`crates/templum/src/kanban.rs`, `comment_view`, `comment_action`) were laid out and tested headless
   only. A person may meet buttons that crowd a long author name or an editor too tall at 8 rows. Fix: run
   `cargo run -p templum -- --dev`, open a card with comments, and correct what looks wrong.
+- [ ] **A comment can be edited or deleted only with the mouse.** The pencil and the trash of a comment in the card's
+  dialog (`comment-edit-{id}`, `comment-delete-{id}`, `comment_action`, `crates/templum/src/kanban.rs`) show on hover
+  and take no focus, so a person at the keyboard can't reach them (Tab skips them). Fix: let Tab reach them (a
+  `focusable` element that is shown while it has focus), or open a comment's edit from Enter on it.
 - [ ] **A short card list scrolls from anywhere but its exact middle while a card is dragged over it.** A list
   shorter than its two edge zones (80 world units: a block resized near its smallest whose cards overflow) is in both
   zones at once, and `edge_scroll` gives (2 × at − length) / 40 × 900: 10 units off its middle scrolls at 450 a
@@ -1199,11 +1203,6 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
 
 Left by the ask_user dialog's redesign (kanban card 81, `docs/specs/ask-user.md`).
 
-- [ ] **A press on the dialog's scrollbar doesn't give its block the keyboard.** The scrollbar over the body
-  (`balloon::render`, `crates/templum/src/balloon.rs`) takes its presses before the balloon's `press_on_balloon`
-  runs, as the kanban column's did (commit adc9e28). A person who drags the thumb in a block they weren't working in
-  scrolls the dialog but has to click it once more before its keys work. Fix: a `capture_any_mouse_down` on the body
-  that calls `press_on_balloon`, as `column_view` does with `focus_block` (check `a_click_in_the_dialogs_field_keeps_the_keyboard_there`).
 - [ ] **The wheel over a dialog of a block that isn't the one worked in pans the canvas.** `route_wheel`
   (`crates/templum/src/workspace/input.rs`) gives the wheel to a block's content only when it is focused or selected,
   and the balloon is the block's content: with focus not following the pointer, a huge dialog can't be scrolled by

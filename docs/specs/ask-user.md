@@ -192,7 +192,9 @@ pushes "Waiting for your answer" or Send out of reach (a block too short for tha
   right under the header, which stays with it (a rounded 8 box of the waiting yellow at 12%, lucide `circle-alert`).
 - **Body** (18 at the sides, 16 up and down): everything below scrolls, with gpui-component's scrollbar over it (the
   kanban column's, `kanban::scrollbar_over`: shown on hover and while scrolling, only once the body overflows) and the
-  wheel over it, not over the terminal (with Ctrl it zooms the canvas). Its scroll follows the zoom
+  wheel over it, not over the terminal (with Ctrl it zooms the canvas). A press on the scrollbar's strip picks the
+  dialog's block and a middle drag from it pans the canvas, as anywhere in the balloon (the balloon takes both in the
+  capture phase, ahead of the scrollbar, as the kanban column does). Its scroll follows the zoom
   (`PreviewScroll::follow`), so the same words stay in view when the canvas zooms.
 - **A small block** keeps the dialog usable: the body keeps at least 90 world units. Where 80% of the terminal's area
   (under its title bar) can't hold the header (51), the foot (51 on one line, 89 when its buttons wrap), the banner if

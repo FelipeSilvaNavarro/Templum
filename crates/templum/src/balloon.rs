@@ -267,6 +267,17 @@ pub(crate) fn render(
         .flex()
         .flex_col()
         .min_h(px(0.0))
+        // The scrollbar takes every press on its strip before the balloon's handler below, whatever
+        // the button: these go ahead of it, in the capture phase. The block takes the keyboard, and
+        // the middle button pans the canvas, as over the rest of the balloon.
+        .capture_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+            if e.button == MouseButton::Middle {
+                ws.begin_pan(e.position);
+                cx.stop_propagation();
+            } else {
+                ws.press_on_balloon(key, id, window, cx);
+            }
+        }))
         .child(body)
         .child(scrollbar_over(&wait.body.handle, part(n, "scrollbar"), z));
     // The terminal's area, under the title bar, centers it; it takes no press: the terminal
