@@ -305,6 +305,16 @@ fn an_agent_edits_and_deletes_only_its_own_comments(cx: &mut TestAppContext) {
     );
     assert!(shown(cx, mine), "the open card still shows it");
 
+    // The same text again changes nothing, and says so: no edit, no step of Ctrl+Z.
+    let steps = ws.read_with(cx, |ws, _| ws.boards_undo.len());
+    let (failed, text) = call(handle, &ws, cx, &me, "edit_comment", args(mine));
+    assert!(
+        !failed && text == format!("Comment {mine} already says that."),
+        "{text}"
+    );
+    assert_eq!(thread(cx), after);
+    assert_eq!(ws.read_with(cx, |ws, _| ws.boards_undo.len()), steps);
+
     // Deleting it takes it off the open card at once.
     let (failed, text) = call(
         handle,

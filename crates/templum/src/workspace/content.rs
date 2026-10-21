@@ -386,7 +386,16 @@ impl Workspace {
         if text.trim().is_empty() {
             return Reply::err("A comment needs text. delete_comment removes one.");
         }
-        self.edit_boards(|b| b.edit_comment(board, card, comment, text.trim_end()));
+        let text = text.trim_end();
+        let same = self
+            .boards
+            .card(board, card)
+            .and_then(|c| c.comments.iter().find(|c| c.id == comment))
+            .is_some_and(|c| c.text == text);
+        if same {
+            return Reply::ok(format!("Comment {comment} already says that."));
+        }
+        self.edit_boards(|b| b.edit_comment(board, card, comment, text));
         cx.notify();
         Reply::ok(format!("Edited comment {comment} on card {card}."))
     }

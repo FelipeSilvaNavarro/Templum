@@ -577,7 +577,9 @@ runs "any X" when its agent is X or runs X's program (the first word of their co
   A comment is named by its **number**, a never-reused id like a checklist item's: `list_cards` with `card` shows it
   (`comment 51 by b7k2m "Claude Code", 3 min ago, edited:`) and `comment_card` says it. A number that isn't on the
   card is refused (`Card 40 has no comment 99: list_cards with card shows its comments.`); an `edit_comment` whose
-  text is blank is refused too (`delete_comment` removes one). They are not in the Templum Agent's tools, as
+  text is blank is refused too (`delete_comment` removes one). An `edit_comment` with the text the comment already has
+  changes nothing, takes no Ctrl+Z step and doesn't mark it "edited": it answers `Comment 52 already says that.`
+  (not an error). They are not in the Templum Agent's tools, as
   `edit_item` and `delete_item` aren't.
 - **The instructions** ask an agent to claim its card when it starts and to check its checklist's items as it
   finishes them ([The MCP server](#the-mcp-server)).
