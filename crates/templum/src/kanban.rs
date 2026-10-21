@@ -557,6 +557,19 @@ fn column_view(
                         .min_h(px(0.0))
                         .overflow_y_scroll()
                         .track_scroll(&edge.read(cx).handle)
+                        // The scrollbar over the list takes every press on its strip, whatever the
+                        // button, before the card and the block under it: the middle button goes
+                        // ahead of it, in the capture phase, and pans the canvas as it does over
+                        // the rest of the block. A right-click opens the card's menu from the card
+                        // (`card_view`).
+                        .capture_any_mouse_down(cx.listener(
+                            move |ws, e: &MouseDownEvent, window, cx| {
+                                if e.button == MouseButton::Middle {
+                                    ws.begin_pan(e.position);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
                         // A card dragged near the top or bottom of the list scrolls it.
                         .on_drag_move(on_edge::<CardDrag>(&edge, BlockId(n as u64), true, z, cx))
                         .child(
@@ -747,14 +760,14 @@ fn card_view(
                 open_card(board, current, false, window, cx)
             }
         }))
-        .on_mouse_down(
-            MouseButton::Right,
-            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+        // In the capture phase, ahead of a long column's scrollbar (see `column_view`).
+        .capture_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+            if e.button == MouseButton::Right {
                 ws.focus_block(BlockId(n as u64), window, cx);
                 ws.open_menu(Target::Card { board, card: id }, e.position, window, cx);
                 cx.stop_propagation();
-            }),
-        )
+            }
+        }))
         .test_support()
         .into_any_element()
 }

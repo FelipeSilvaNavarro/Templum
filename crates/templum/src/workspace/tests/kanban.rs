@@ -1130,6 +1130,141 @@ fn a_card_dragged_over_a_scrolled_columns_scrollbar_scrolls_it_back_up(cx: &mut 
     release(handle, cx, to);
 }
 
+/// A kanban block with a To do column of 30 cards, whose list has a scrollbar.
+struct LongTodo {
+    handle: AnyWindowHandle,
+    ws: Entity<Workspace>,
+    block: BlockId,
+    board: u64,
+    todo: u64,
+    first: u64,
+}
+
+impl LongTodo {
+    fn new(cx: &mut TestAppContext) -> Self {
+        no_motion(cx);
+        let (handle, ws) = open(cx);
+        let (block, board, first) = board_with_a_card(handle, &ws, cx);
+        let todo = ws.update(cx, |ws, _| {
+            let todo = ws.boards.board(board).unwrap().columns[0].id;
+            for _ in 0..29 {
+                ws.edit_boards(|b| b.add_card(board, todo)).unwrap();
+            }
+            todo
+        });
+        Self {
+            handle,
+            ws,
+            block,
+            board,
+            todo,
+            first,
+        }
+    }
+
+    fn el(&self, what: &str, id: u64) -> gpui_kit::ElementId {
+        gpui_kit::ElementId::Name(format!("{what}-{}-{id}", self.block.0).into())
+    }
+
+    /// The list's bounds, as drawn now.
+    fn list(&self, cx: &mut TestAppContext) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(self.el("cards", self.todo)).bounds()
+        })
+        .unwrap()
+    }
+
+    /// The first card's top: it moves up as the list scrolls.
+    fn top(&self, cx: &mut TestAppContext) -> f32 {
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            f32::from(window.find(self.el("card", self.first)).bounds().top())
+        })
+        .unwrap()
+    }
+
+    /// Inside the scrollbar's track (16 pixels wide) and the first card (which ends 6 pixels
+    /// short of the list's edge).
+    fn strip_over_the_first_card(&self, cx: &mut TestAppContext) -> (f32, f32) {
+        let list = self.list(cx);
+        let card = cx
+            .update_window(self.handle, |_, window, _| {
+                window.find(self.el("card", self.first)).bounds()
+            })
+            .unwrap();
+        (
+            f32::from(list.right() - px(10.0)),
+            f32::from(card.center().y),
+        )
+    }
+}
+
+/// The pointer moves to `at` and a frame is drawn: a scrollbar over its track is shown.
+fn hover_at(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32)) {
+    window.dispatch_event(
+        PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+            position: point(px(at.0), px(at.1)),
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        }),
+        cx,
+    );
+    window.render_frame(cx);
+}
+
+/// A long column's scrollbar takes the presses on its strip, but a right-click on a card there
+/// still opens the card's menu.
+#[gpui_kit::test]
+fn a_right_click_on_a_long_columns_scrollbar_strip_opens_the_cards_menu(cx: &mut TestAppContext) {
+    let long = LongTodo::new(cx);
+    let at = long.strip_over_the_first_card(cx);
+    cx.update_window(long.handle, |_, window, cx| {
+        hover_at(window, cx, at);
+        press_with(window, cx, MouseButton::Right, Modifiers::default(), at, at);
+        window.render_frame(cx);
+        // Open, Send to ▸, —, Delete card.
+        window.within("popup-menu").click(3usize, cx);
+    })
+    .unwrap();
+    // The menu fades out for a moment: a click meanwhile would land on it.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    cx.update_window(long.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "Delete card asks");
+        window.within("dialog").click("ok", cx);
+    })
+    .unwrap();
+    long.ws.read_with(cx, |ws, _| {
+        assert!(ws.boards.card(long.board, long.first).is_none(), "deleted")
+    });
+}
+
+/// The same strip lets a middle-button drag pan the canvas, as the rest of the block does.
+#[gpui_kit::test]
+fn a_middle_drag_from_a_long_columns_scrollbar_strip_pans_the_canvas(cx: &mut TestAppContext) {
+    let long = LongTodo::new(cx);
+    let at = long.strip_over_the_first_card(cx);
+    let before = long.ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    cx.update_window(long.handle, |_, window, cx| {
+        hover_at(window, cx, at);
+        let to = (at.0 - 50.0, at.1);
+        press_with(
+            window,
+            cx,
+            MouseButton::Middle,
+            Modifiers::default(),
+            at,
+            to,
+        );
+    })
+    .unwrap();
+    long.ws.read_with(cx, |ws, _| {
+        assert_ne!(ws.space.canvas.camera, before, "a middle drag pans");
+        assert!(ws.drag.is_none());
+    });
+}
+
 #[gpui_kit::test]
 fn dragging_a_card_near_the_boards_right_edge_scrolls_its_columns(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
