@@ -8,6 +8,13 @@ use gpui_kit::{Context, Entity, Window};
 use super::row::Row;
 use crate::workspace::Workspace;
 
+/// Linux: the entry is an XDG autostart file, which only some sessions run.
+#[cfg(target_os = "linux")]
+const XDG_NOTE: &str = ". Hyprland, sway and niri without uwsm or dex don't run these files: \
+                        start Templum from their own config there";
+#[cfg(not(target_os = "linux"))]
+const XDG_NOTE: &str = "";
+
 /// What a click on the toggle does.
 pub(super) type Choose = fn(&mut Workspace, bool, &mut Window, &mut Context<Workspace>);
 
@@ -34,9 +41,10 @@ pub(super) fn autostart_row(
     }
     let e = entity.clone();
     row.description(ws.autostart.error.clone().unwrap_or_else(|| {
-        "Opens Templum when you sign in to this computer. It is your system's own startup \
-         entry: switch it off in its startup apps and this follows"
-            .into()
+        format!(
+            "Opens Templum when you sign in to this computer. It is your system's own startup \
+             entry: switch it off in its startup apps and this follows{XDG_NOTE}"
+        )
     }))
     .control(
         Switch::new("autostart-switch")

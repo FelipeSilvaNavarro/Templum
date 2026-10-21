@@ -184,6 +184,9 @@ switch off.
 | macOS | `~/Library/LaunchAgents/io.github.kingdaswinx.templum.plist` | `ProgramArguments` = the executable inside the bundle, `AssociatedBundleIdentifiers` = Templum's, so System Settings ▸ Login Items lists the item under Templum, `RunAtLoad`, only in a desktop session (`Aqua`) |
 | Windows | the `Templum` value of `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, written with `reg.exe` from `%SystemRoot%\System32` (no console window) | the executable in quotes |
 
+- **Plain tiling sessions don't run it.** The Linux entry is an XDG autostart file: GNOME, KDE, Xfce and the like
+  run it, but Hyprland, sway and niri on their own don't (uwsm or `dex -a` does). On Linux the row says so, and
+  there Templum is started from the compositor's own config (`exec-once = templum` in Hyprland).
 - **Switched off by the system's tools:** a Linux file with `Hidden=true` or `X-GNOME-Autostart-enabled=false`,
   and a Windows entry that Task Manager or Settings ▸ Apps ▸ Startup switched off (its `StartupApproved` value),
   read as off. Turning it on writes the entry again and clears that value.
