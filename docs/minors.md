@@ -596,10 +596,28 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`crates/templum/src/autostart.rs`) only checks that the LaunchAgent's file exists; the switch macOS keeps for a
   background item lives in launchd's database. A person sees the toggle on while the system won't start Templum.
   Fix: ask `launchctl print-disabled gui/<uid>` for the label and read it as off.
-- [ ] **Windows: a path with letters outside the OEM code page makes startup write the entry every time.** `reg`
-  reads `reg.exe`'s output as UTF-8, but it prints the OEM code page, so the data read back differs from the
-  quoted path and `refresh` writes it again at each start. Nothing is visible; it is one `reg add` per start. Fix:
-  read the value with `reg export` or through `chcp 65001`, or compare after replacing non-ASCII characters.
+- [ ] **Windows: `reg.exe`'s output is read as UTF-8, but it prints the OEM code page.** `reg`/`reg_ok`
+  (`crates/templum/src/autostart.rs`) decode stdout and stderr with `from_utf8_lossy`. Two things show: a program path
+  with letters outside the OEM code page reads back garbled, so `refresh` takes the entry's file for gone and writes it
+  again at each start (invisible: one `reg add` per start), and on a localized Windows the reason a change failed
+  (`reg_ok`'s first stderr line, shown on the row and in the notification) has broken letters. Fix: decode with the
+  OEM code page (`GetOEMCP` with `encoding_rs`, which is already in the lock file), or run `reg` through `chcp 65001`.
+- [ ] **Windows: uninstalling Templum leaves its `Run` value.** The NSIS and MSI uninstallers
+  (`[package.metadata.packager]` in `crates/templum/Cargo.toml`) know nothing of the `Templum` value `autostart.rs`
+  writes under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (nor `Templum (dev)`), so after uninstalling,
+  Windows still tries to start a program that is gone at each login, and the startup apps list keeps a dead entry.
+  Fix: delete the value from both uninstallers (NSIS: `DeleteRegValue` in a custom template or hook; MSI: a
+  `RegistryValue` with a remove action), and check both on a Windows machine.
+- [ ] **Linux: a program path with a line break or bytes that aren't UTF-8 breaks the `.desktop` file.**
+  `exec_line` and `desktop_entry` (`crates/templum/src/autostart.rs`) write `launch.program.to_string_lossy()`: a
+  line break ends the `Exec=` line early and a lossy `�` names a file that doesn't exist, so the entry starts
+  nothing (or something else) while the switch shows on. Rare: it takes such a name in the AppImage's path. Fix:
+  refuse it in `set(true)` ("The path of Templum has a character a startup entry can't hold").
+- [ ] **A settings panel opened right before a change can show the old reading.** `load_autostart`
+  (`crates/templum/src/workspace/autostart.rs`) reads the system off the UI thread and writes `status` when it ends,
+  with no mind to a change made meanwhile; one that ends after `set_autostart` finished puts the older state on the
+  switch until the panel is opened again. Needs a click within the milliseconds a read takes (seconds on Windows). Fix:
+  a counter bumped by each read and change; a reading applies only if it is the latest.
 - [ ] **A Linux entry in Flatpak or Snap would be written inside the sandbox.** Neither is a way Templum is
   packaged today, but `XDG_CONFIG_HOME` there is the sandbox's, not the desktop's. Fix: ask the Background portal
   (`org.freedesktop.portal.Background.RequestBackground`) when `FLATPAK_ID` is set.
