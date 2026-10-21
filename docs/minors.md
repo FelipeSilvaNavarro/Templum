@@ -651,6 +651,22 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   in the harness. A change to dropping is checked by hand. Fix: find what takes the mouse-up (print in the card's
   `on_drop` and in `Workspace::release`), then add a test that drops a card on a card, on a column's end and on a
   long column's scrollbar strip.
+- [ ] **A scrolled column shows other cards after a zoom.** Found by the review of card 78 (`column_view` and
+  `board_view`, `crates/templum/src/kanban.rs:493`, and the columns' row at `:356`): `EdgeScroll`'s offset is in pixels
+  and isn't rescaled when the zoom changes, as `keep_list_rows` does for `editor.rs`'s lists, so zooming a block whose
+  column is scrolled moves its cards and the scrollbar's thumb, and breaks "zoom scales like a photo". Fix: keep the
+  last frame's zoom in `EdgeScroll` and rescale the offset by the ratio.
+- [ ] **A column's scroll resets when it isn't drawn.** Found by the review of card 78 (`column_view`,
+  `crates/templum/src/kanban.rs:493`): the offset lives in `use_keyed_state`, which lasts only while the column is
+  drawn, so switching the block's board, or the workspace, and back puts every column at its top. Fix: keep the offsets
+  per (block, column) in the `Workspace`.
+- [ ] **A right-click in the gap between two cards, on a long column's scrollbar strip, scrolls the column.** Left by
+  the fix of the strip taking right and middle presses (`card_view`, `crates/templum/src/kanban.rs`): the card opens
+  its menu from the capture phase, ahead of the scrollbar, but the 6 units between cards (and the list's padding) have
+  no card to do it, so the scrollbar's bubble listener takes that right press as a jump. Without the scrollbar, the
+  press would open the block's menu. Fix: open the block's menu from the list's capture handler when the pointer is
+  over the strip and no card is (the cards as direct children of the scrolling box give their bounds through
+  `ScrollHandle::bounds_for_item`).
 
 ## Connections
 

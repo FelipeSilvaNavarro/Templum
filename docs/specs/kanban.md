@@ -557,7 +557,11 @@ the edge), but nothing showed that there were more, or let the pointer take hold
   take a quarter of a 260-wide column at 0.25. Zoom changes no layout.
 - **It sits over the list, not in it:** the list scrolls inside a box of its own and the scrollbar is drawn over that
   box, so it doesn't scroll away with the cards and takes no room from them. While it shows, a press in its track (the
-  right 16 units of the list) belongs to it and not to the card under it.
+  right 16 units of the list) belongs to it and not to the card under it. Only the left button, though: a right-click
+  on a card there still opens the card's menu and a middle drag still pans the canvas, and any press in the list picks
+  its block (with "Focus follows the pointer" off, a scrolled kanban would otherwise stay unpicked and the wheel would
+  pan the canvas). The scrollbar takes every press in the bubble phase and stops it, so the list picks the block, and
+  pans for the middle button, in the capture phase, and a card opens its menu there too.
 - **The wheel is unchanged:** over a column of a picked block a vertical wheel scrolls its cards, over any other block
   it moves the canvas like over every block ([navigation.md](navigation.md#the-wheel-over-blocks), `route_wheel`).
   The card asked for the scrollbar; a kanban that took the wheel without being picked would be the one block that
@@ -569,7 +573,9 @@ the edge), but nothing showed that there were more, or let the pointer take hold
 
 **Headless UI:** a column with 30 cards has a scrollbar over exactly its list, and a press on its track near the
 bottom scrolls the cards; at zoom 0.5 the track is 8 pixels, so a press 3 pixels inside the edge scrolls and one 12 pixels
-inside (a card) doesn't; a card held at the strip of a column scrolled to its end scrolls it back up. **Not testable
+inside (a card) doesn't; a card held at the strip of a column scrolled to its end scrolls it back up; a right-click on
+a card at the strip opens its menu, a middle drag from there pans the canvas, a press there picks an unpicked block
+(focus following the pointer off), and the wheel scrolls the cards over the list and over the strip. **Not testable
 headlessly:** dropping a card (no `on_drop` fires in the harness, [minors.md](../minors.md)), so a drop on the strip is
 checked by hand. **Bench:** `--bench-mixed` still draws its kanban blocks with the scrollbar, and costs no more than without it
 (release, on the dev machine with the person's Templum running: p95 31.4 ms with the scrollbar, 32.5 ms without, p50 19.1
