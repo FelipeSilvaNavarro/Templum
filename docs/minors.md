@@ -644,6 +644,17 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Kanban
 
+- [ ] **Esc or Enter in the title saving a comment edit's draft is untested, and Esc is unspecified.** `on_close`
+  (`crates/templum/src/kanban.rs`) saves the edit's draft when the card dialog closes by Escape from another field or
+  Enter in the title; `docs/specs/kanban.md` lists only "Done, Enter in the title", and no test covers `on_close`
+  (the tests use Done and `window.close_dialog`, which skips it). Fix: add "Escape outside the edit's field" to the
+  spec, and a test that types a draft, focuses the title, presses Escape (and Enter) and checks the saved text.
+- [ ] **Two deleted comments undone in the order they were deleted come back in the wrong order.** `deleted` keeps
+  each comment's index at deletion (`crates/templum/src/kanban.rs`) and `restore_comment` (`board.rs`) inserts at it:
+  delete B then C from [A,B,C], Undo B then C, and the thread reads [A,C,B]; the same when an agent removes an earlier
+  comment meanwhile. A person sees a later comment above an earlier one. Fix: insert by id order (ids grow with time),
+  before the first comment whose id is greater, draw the Undo rows the same way, and correct `docs/specs/kanban.md`'s
+  "at its own place".
 - [ ] **Ctrl+Z in an open card's dialog doesn't undo an item's ✕, a label or a priority.** A deleted comment has an
   Undo row in its place (`removed_comment`, `crates/templum/src/kanban.rs`), but the dialog's other changes, like an
   item's ✕ or a label, are steps of the kanban's Ctrl+Z, and with the dialog open the key goes to the field that has
@@ -1238,6 +1249,30 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
   comes, drop a wait whose client went away (its MCP connection's request id answered or abandoned).
 
 Left by the ask_user dialog's redesign (kanban card 81, `docs/specs/ask-user.md`).
+
+- [ ] **The ask_user balloon grows when its block shrinks past the first threshold.** `fit`
+  (`crates/templum/src/balloon.rs`) gives 80% of the area while it holds what the dialog needs, else the whole area:
+  400×271 gives at most 194, 400×270 gives 242, so a person resizing a block sees the dialog jump taller as the block
+  gets shorter. Fix: `((area * SHARE).max(needs.min(area)), area < needs)`.
+- [ ] **A keyboard highlight on Send, Approve or Reject isn't scrolled into view when the whole frame scrolls.**
+  `reveal` (`crates/templum/src/balloon.rs`) is attached to options, Other and the note, not to `send_button` or the
+  plan's buttons: in a small block ↑/Shift+Tab puts the highlight on a Send out of view (Enter still sends). Fix:
+  attach `reveal(Row::Send, wait)` to Send and `reveal(Row::Option(0, i))` to Approve/Reject.
+- [ ] **A plan's frame ignores the stopped banner and a wrapped foot.** `(tallest - BORDER - HEAD - FOOT)`
+  (`crates/templum/src/balloon.rs`) overestimates the body by `notice(w)`, and by 38 when the foot wraps: in a narrow
+  block whose plan the agent stopped waiting for, the frame can be taller than the body and the wheel over it never
+  scrolls the body to Comment. Fix: subtract the same foot and notice that `fit` uses.
+- [ ] **In a narrow dialog the header's title runs over "1 of 3".** "Waiting for your answer" is `flex_shrink_0`
+  (`crates/templum/src/balloon.rs`): under about 290 wide it covers the count badge and is clipped, so a person may not
+  see other requests wait. Fix: let the title truncate (`min_w_0` + `truncate`), keep the badge `flex_shrink_0`.
+- [ ] **The small-block test covers only today's shape.** `a_dialog_in_a_small_block_keeps_its_body_and_reaches_send`
+  (`crates/templum/src/workspace/tests/requests.rs`) answers `question`/`options` only; a plan, two buttons, several
+  questions with Other and the note, and a stopped question in a small block aren't driven. Fix: loop the same sizes
+  over those calls.
+- [ ] **connections.md and ask-user.md's Testing lag the small-block fixes.** `docs/specs/connections.md` still says
+  "at most 80% of its height" with no small-block exception, and `docs/specs/ask-user.md`'s Testing doesn't list the
+  small-block, fit-heights, keys-scroll, plan-wheel or scrollbar-strip tests. Fix: point connections.md to
+  ask-user.md's *A small block* and add the tests to the list.
 
 - [ ] **The wheel over a dialog of a block that isn't the one worked in pans the canvas.** `route_wheel`
   (`crates/templum/src/workspace/input.rs`) gives the wheel to a block's content only when it is focused or selected,
