@@ -260,6 +260,7 @@ fn launch_agent(launch: &Launch) -> String {
          <plist version=\"1.0\">\n<dict>\n\
          \t<key>Label</key>\n\t<string>{LABEL}{}</string>\n\
          {}\
+         \t<key>AssociatedBundleIdentifiers</key>\n\t<array>\n\t\t<string>{LABEL}</string>\n\t</array>\n\
          \t<key>RunAtLoad</key>\n\t<true/>\n\
          \t<key>LimitLoadToSessionType</key>\n\t<string>Aqua</string>\n\
          </dict>\n</plist>\n",
@@ -478,6 +479,8 @@ mod tests {
              \t<key>ProgramArguments</key>\n\t<array>\n\
              \t\t<string>/Applications/Templum.app/Contents/MacOS/templum</string>\n\
              \t</array>\n\
+             \t<key>AssociatedBundleIdentifiers</key>\n\t<array>\n\
+             \t\t<string>io.github.kingdaswinx.templum</string>\n\t</array>\n\
              \t<key>RunAtLoad</key>\n\t<true/>\n\
              \t<key>LimitLoadToSessionType</key>\n\t<string>Aqua</string>\n\
              </dict>\n</plist>\n"

@@ -181,7 +181,7 @@ switch off.
 | System | Entry | It starts |
 |---|---|---|
 | Linux | `$XDG_CONFIG_HOME/autostart/templum.desktop` (`~/.config` when unset or relative), with the name, comment and icon of the apps menu's `templum.desktop` | `Exec="<executable>"`, quoted as the Desktop Entry spec asks, and `TryExec=<executable>` so the desktop skips the entry when the file is gone |
-| macOS | `~/Library/LaunchAgents/io.github.kingdaswinx.templum.plist` | `ProgramArguments` = the executable inside the bundle, `RunAtLoad`, only in a desktop session (`Aqua`) |
+| macOS | `~/Library/LaunchAgents/io.github.kingdaswinx.templum.plist` | `ProgramArguments` = the executable inside the bundle, `AssociatedBundleIdentifiers` = Templum's, so System Settings ▸ Login Items lists the item under Templum, `RunAtLoad`, only in a desktop session (`Aqua`) |
 | Windows | the `Templum` value of `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, written with `reg.exe` (no console window) | the executable in quotes |
 
 - **Switched off by the system's tools:** a Linux file with `Hidden=true` or `X-GNOME-Autostart-enabled=false`,
