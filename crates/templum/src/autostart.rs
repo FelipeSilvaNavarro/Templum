@@ -350,7 +350,8 @@ fn command_line(launch: &Launch) -> String {
 
 /// The program of a `.desktop` file's `Exec=` line, undoing `exec_line`: the file's `\\`, then the
 /// quoting of the first argument (`\"`, `\$`, ``\` ``, `\\` and `%%`). An unquoted program ends at
-/// the first space.
+/// the first space. A backslash that is none of those (the file's `\s`, `\n`, `\t`, `\r`, a
+/// backslash outside the quotes) is an escape this doesn't decode: None, the program can't be told.
 fn exec_program(text: &str) -> Option<PathBuf> {
     let value = text.lines().find_map(|l| l.strip_prefix("Exec="))?;
     let value = value.trim_start().replace(r"\\", r"\");
@@ -363,7 +364,11 @@ fn exec_program(text: &str) -> Option<PathBuf> {
             None if quoted => return None,
             Some(c) if !quoted && c.is_whitespace() => break,
             None => break,
-            Some('\\') if quoted => program.push(chars.next()?),
+            Some('\\') if quoted => match chars.next()? {
+                c @ ('"' | '`' | '$' | '\\') => program.push(c),
+                _ => return None,
+            },
+            Some('\\') => return None,
             Some('%') if chars.peek() == Some(&'%') => {
                 chars.next();
                 program.push('%');
@@ -374,12 +379,16 @@ fn exec_program(text: &str) -> Option<PathBuf> {
     (!program.is_empty()).then(|| program.into())
 }
 
-/// The first string of a LaunchAgent's `ProgramArguments`, without the XML entities.
+/// The first string of a LaunchAgent's `ProgramArguments`, without the XML entities. A numeric
+/// reference (`&#38;`) isn't decoded: None, the program can't be told.
 fn agent_program(plist: &str) -> Option<PathBuf> {
     let (_, after) = plist.split_once("<key>ProgramArguments</key>")?;
     let (_, after) = after.split_once("<array>")?;
     let (_, after) = after.split_once("<string>")?;
     let (program, _) = after.split_once("</string>")?;
+    if program.contains("&#") {
+        return None;
+    }
     // `&amp;` last, so `&amp;lt;` stays `&lt;`.
     let program = program
         .replace("&lt;", "<")
@@ -859,6 +868,62 @@ mod tests {
         );
         assert_eq!(agent_program("<plist></plist>"), None);
         assert_eq!(run_program(r"C:\t.exe"), None);
+    }
+
+    #[test]
+    fn an_escape_the_parsers_dont_decode_reads_as_a_program_that_cant_be_told() {
+        // The Desktop Entry file's `\s`, `\n`, `\t`, `\r`, quoted or not, and a backslash the
+        // quoting doesn't know.
+        for exec in [
+            r#"Exec="/opt/my\sapp""#,
+            r#"Exec="/opt/my\napp""#,
+            r#"Exec="/opt/my\tapp""#,
+            r#"Exec="/opt/my\rapp""#,
+            r"Exec=/opt/my\sapp",
+            r"Exec=/opt/my\\app",
+        ] {
+            assert_eq!(exec_program(&format!("{exec}\n")), None, "{exec}");
+        }
+        // The decoded ones still are.
+        assert_eq!(
+            exec_program(r#"Exec="/a\\\\b\\"c" --dev"#),
+            Some(r#"/a\b"c"#.into())
+        );
+        // XML numeric references; a literal `&#` is written `&amp;#`.
+        let agent =
+            |p: &str| format!("<key>ProgramArguments</key><array><string>{p}</string></array>");
+        assert_eq!(agent_program(&agent("/a&#38;b")), None);
+        assert_eq!(agent_program(&agent("/a&#x26;b")), None);
+        assert_eq!(
+            agent_program(&agent("/a&amp;#38;b")),
+            Some("/a&#38;b".into())
+        );
+    }
+
+    #[test]
+    fn startup_leaves_an_entry_written_with_escapes_it_cant_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let moved = Autostart::in_dir("linux", dir.path(), "/opt/templum", false);
+        let Place::Desktop(path) = &moved.place else {
+            unreachable!()
+        };
+        let by_hand = "[Desktop Entry]\nType=Application\nExec=\"/no/such\\sdir/t\"\n";
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, by_hand).unwrap();
+        assert_eq!(moved.refresh(), Ok(()));
+        assert_eq!(fs::read_to_string(path).unwrap(), by_hand);
+        // The same for a LaunchAgent with a numeric reference.
+        let agent = Autostart::in_dir("macos", dir.path(), "/opt/templum", false);
+        let Place::Agent(path) = &agent.place else {
+            unreachable!()
+        };
+        let by_hand = agent
+            .contents()
+            .replace("/opt/templum", "/no/such&#47;dir/t");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, &by_hand).unwrap();
+        assert_eq!(agent.refresh(), Ok(()));
+        assert_eq!(fs::read_to_string(path).unwrap(), by_hand);
     }
 
     /// A file that is there, another Templum's program.

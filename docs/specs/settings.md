@@ -297,7 +297,9 @@ Tests are written first, as always. Everything runs in CI on Linux, macOS and Wi
   turn it on; the welcome's default (`State::offered`) is on only with no entry at all, and not for `--dev` or the
   disk image;
 - the `--dev` entry doesn't touch the installed one's;
-- the program an entry names is read back whatever it holds (spaces, quotes, `$`, backslashes, `%`, `&`, `<`);
+- the program an entry names is read back whatever it holds (spaces, quotes, `$`, backslashes, `%`, `&`, `<`), and
+  one written with an escape the parsers don't decode (`\s`, `\n`, `\t`, `\r` in a `.desktop` file, `&#38;` in a
+  LaunchAgent) can't be told, so startup leaves it alone;
 - startup rewrites an entry that is on for an executable that is gone, and leaves alone one that names a file that
   exists, one that is off, switched off or edited by hand, and anything a second Templum finds;
 - a reading never lands over a change: Settings opened from the welcome's last page shows what the welcome applied
