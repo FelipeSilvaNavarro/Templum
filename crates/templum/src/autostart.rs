@@ -22,16 +22,26 @@ struct Launch {
     program: PathBuf,
     /// A build beside the installed Templum: its own entry, started with `--dev`.
     dev: bool,
+    /// macOS: run from the disk image or from the copy macOS runs a downloaded app in, which
+    /// are gone once the image is ejected or the app is moved.
+    temporary: bool,
 }
 
 impl Launch {
     /// This Templum.
     fn current(dev: bool) -> Option<Launch> {
-        let program = match templum_update::Install::detect() {
-            templum_update::Install::AppImage(file) => file,
+        use templum_update::{Install, Why};
+        let install = Install::detect();
+        let temporary = install == Install::Manual(Why::NotInstalled);
+        let program = match install {
+            Install::AppImage(file) => file,
             _ => std::env::current_exe().ok()?,
         };
-        Some(Launch { program, dev })
+        Some(Launch {
+            program,
+            dev,
+            temporary,
+        })
     }
 
     fn title(&self) -> &'static str {
@@ -121,6 +131,7 @@ impl Autostart {
         let launch = Launch {
             program: program.into(),
             dev,
+            temporary: false,
         };
         let home = dir.to_path_buf();
         // The folders the system names under a home, so a test's files stay inside `dir`.
@@ -147,6 +158,9 @@ impl Autostart {
     /// Turns the entry on (written for this executable) or off (removed); off when it isn't
     /// there is no error.
     pub fn set(&self, on: bool) -> Result<(), String> {
+        if on && self.launch.temporary {
+            return Err("Move Templum to Applications first".into());
+        }
         match (&self.place, on) {
             (Place::Desktop(path) | Place::Agent(path), true) => {
                 if let Some(dir) = path.parent() {
@@ -427,6 +441,7 @@ mod tests {
         Launch {
             program: program.into(),
             dev,
+            temporary: false,
         }
     }
 
@@ -682,6 +697,20 @@ mod tests {
             assert!(!dev.is_on());
             installed.set(false).unwrap();
         }
+    }
+
+    #[test]
+    fn a_templum_run_from_the_disk_image_wont_write_an_entry_that_would_vanish() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut entry = Autostart::in_dir("macos", dir.path(), "/Volumes/T/Templum.app", false);
+        entry.launch.temporary = true;
+        assert_eq!(
+            entry.set(true),
+            Err("Move Templum to Applications first".into())
+        );
+        assert!(!entry.is_on());
+        // Taking an entry away is always allowed.
+        assert_eq!(entry.set(false), Ok(()));
     }
 
     #[test]

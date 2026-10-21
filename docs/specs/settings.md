@@ -187,6 +187,8 @@ switch off.
 - **Switched off by the system's tools:** a Linux file with `Hidden=true` or `X-GNOME-Autostart-enabled=false`,
   and a Windows entry that Task Manager or Settings ▸ Apps ▸ Startup switched off (its `StartupApproved` value),
   read as off. Turning it on writes the entry again and clears that value.
+- **Run from the disk image** (macOS, or the copy macOS runs a downloaded app in): turning it on is refused with
+  "Move Templum to Applications first", since the file the entry names would vanish. Turning it off still works.
 - **`--dev`** (beside an installed Templum) has an entry of its own (`templum-dev.desktop`, `….templum.dev.plist`,
   `Templum (dev)`) that starts `templum --dev`, so it never overwrites or removes the installed one's.
 - **Moved or reinstalled.** At startup, an entry that is on but whose executable no longer exists is written again
