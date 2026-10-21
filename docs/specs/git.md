@@ -68,10 +68,20 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
 
 ## 1. Layout and navigation
 
-- **Where it shows:** a popup over the canvas's bottom-left corner, beside the sidebar, 760 × 540 (smaller in a
-  small window), drawn at a fixed scale: it never zooms with the canvas. The Git button (GitBranch icon) at the
+- **Where it shows:** a popup over the canvas's bottom-left corner, beside the sidebar, at the **Size**
+  below, drawn at a fixed scale: it never zooms with the canvas. The Git button (GitBranch icon) at the
   sidebar's foot, apart from the workspaces under a hairline, or Ctrl+Shift+G (Cmd+Shift+G), opens and closes it;
   so do Esc, while the Git has the keyboard and no field does, and its ✕.
+- **Size:** 760 × 540 until the person drags it to another. Its **right edge**, its **top edge** and the corner
+  between them resize it, each showing the matching resize cursor on hover; the left edge rests against the sidebar
+  and the bottom one against the window's, so the popup grows to the right and upward, its bottom-left corner
+  staying where it is. It is never smaller than 600 × 420 and never bigger than the window less the 8 px it keeps
+  from the window's edges and the sidebar (a window with less room than the minimum gets the room). The size is
+  **kept** in `workspaces/index.json` (`git_size`, see [workspaces.md](workspaces.md)), written when the pointer is
+  let go and shared by every workspace's Git, so closing and opening the popup, or restarting Templum, gives it
+  back. Only the size **drawn** is clamped to the window: a smaller window shrinks the popup, and a larger one
+  gives the size set back; a drag keeps what it sets inside the room it was dragged in, so the pointer going back
+  shrinks the popup at once. The Split diff's sides follow the popup's width.
 - **One Git per workspace:** switching workspace shows that workspace's repository. The first time the popup opens
   in a workspace it picks the focused terminal's folder, else another terminal's, else the workspace's folder, else
   the newest recent folder; with none, the folder dialog asks. Its status is read every 2 s only while the popup is
@@ -504,7 +514,7 @@ headlessly.
 | `git_block/diff_view/` | The diff panel: its rows (file, hunk, lines, folded stretch), unified and split layouts, highlighting with the cache, the selection, the sticky title. |
 | `git_block/*.rs` | The tabs reorganized around the left column and the panel; the block's focus handle and key handler; the branch dialog; the banners; the Generate button, its spinner and the first-use confirmation (what `message.rs` runs). |
 | `config.rs`, `settings/` | `[agents]`'s `generate` and `models`; `[git.commit_message]`; `[git.repositories]` (an owned table name in `Edit`); the Git section and the agents dialog's new part. |
-| `workspace/` | `copy` for the focused Git's selection; `git_ops.rs`: opening, closing and pointing the workspace's Git (`toggle_git`, `open_git`, `close_git`, `set_git_folder`, `git_folders`, `poll_git`); `render.rs` places the popup. |
+| `workspace/` | `copy` for the focused Git's selection; `git_ops.rs`: opening, closing and pointing the workspace's Git (`toggle_git`, `open_git`, `close_git`, `set_git_folder`, `git_folders`, `poll_git`); `render.rs` places the popup; `input.rs` resizes it (`begin_git_resize`, `release_git_resize`, `git_popup_size`). |
 | `sidebar.rs` | The Git button at the sidebar's foot. |
 | `session.rs` | `SavedGit`: the workspace's Git, with `diff` and `lists`. |
 
