@@ -24,7 +24,7 @@ use gpui_kit::{
 };
 use templum_canvas::{BlockId, EDGE_ZONE, Point, Rect, Size, edge_scroll};
 
-use crate::board::{Assignee, Board, Boards, Card, Column, Label, Priority};
+use crate::board::{Assignee, Board, Boards, Card, Column, Comment, Label, Priority};
 use crate::checklists;
 use crate::git_block::Check;
 use crate::git_block::widgets::{check_box, field, icon_button};
@@ -1053,6 +1053,52 @@ pub(crate) fn danger(id: impl Into<ElementId>, label: &'static str, red: Hsla) -
 type Editing = Rc<RefCell<Option<(u64, Entity<TextareaState>)>>>;
 /// Ends that edit: saved (true) or not.
 type Finish = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+/// The comments the person deleted from an open card, each with its place in the thread, in the
+/// order they were deleted: a row stands where each was, with Undo, until the dialog closes.
+type Deleted = Rc<RefCell<Vec<(usize, Comment)>>>;
+
+/// What stands where the person deleted comment `id`: it says so, and Undo (`undo`) puts the
+/// comment back.
+fn removed_comment(
+    id: u64,
+    ui: Ui,
+    undo: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(format!("comment-deleted-{id}").into()))
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .px(px(12.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_dashed()
+        .border_color(ui.hairline)
+        .text_size(px(12.5))
+        .text_color(ui.title)
+        .child(
+            Icon::new(IconName::Trash)
+                .size(px(13.0))
+                .text_color(ui.title_dim),
+        )
+        .child("Comment deleted")
+        .child(div().text_color(ui.title_dim).child("·"))
+        .child(
+            div()
+                .id(ElementId::Name(format!("comment-undo-{id}").into()))
+                .px(px(6.0))
+                .py(px(2.0))
+                .rounded(px(5.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(ui.accent)
+                .cursor_pointer()
+                .hover(move |s| s.bg(ui.accent.opacity(0.12)))
+                .child("Undo")
+                .on_click(undo)
+                .test_support(),
+        )
+}
 
 /// A comment in the thread: its author's round mark, then who and when above what was said (its
 /// `body`: the bubble, or the field it is edited in). `actions`: the buttons that show at the
@@ -1243,6 +1289,7 @@ pub(crate) fn open_card(
     // The comment being edited in its place, and its field: one at a time. It ends with Save
     // (Enter), Cancel (Escape), or its comment being gone.
     let editing: Editing = Rc::default();
+    let deleted: Deleted = Rc::default();
     let finish: Finish = {
         let (ws, editing, comment) = (ws.clone(), editing.clone(), comment.clone());
         Rc::new(move |save, window, cx| {
@@ -1275,6 +1322,10 @@ pub(crate) fn open_card(
             *last.borrow_mut() = (c.clone(), place(&ws_now.boards, board, card));
         }
         let (shown, place) = last.borrow().clone();
+        // A comment that is in the thread again (Ctrl+Z, an agent) needs no Undo.
+        deleted
+            .borrow_mut()
+            .retain(|(_, c)| shown.comments.iter().all(|x| x.id != c.id));
         // Each change from the dialog is one step of the kanban's Ctrl+Z.
         let edit = {
             let ws = ws.clone();
@@ -1370,9 +1421,9 @@ pub(crate) fn open_card(
                 let field = editing_now.as_ref().filter(|(e, _)| *e == id);
                 let mut actions = div().flex().gap(px(2.0));
                 if field.is_none() {
-                    // The person may delete any comment: the board is theirs, and Ctrl+Z brings
-                    // it back, as a card or an item. They may edit only their own: an agent's
-                    // words changed by someone else would still wear its name.
+                    // The person may delete any comment: the board is theirs, and a row with Undo
+                    // stands where it was, as well as Ctrl+Z. They may edit only their own: an
+                    // agent's words changed by someone else would still wear its name.
                     if mine {
                         let begin = {
                             let (ws, editing, finish) =
@@ -1437,7 +1488,23 @@ pub(crate) fn open_card(
                             &group,
                             ui,
                         )
-                        .on_click(edit(Rc::new(move |b| b.remove_comment(board, card, id))))
+                        .on_click({
+                            let (ws, deleted) = (ws.clone(), deleted.clone());
+                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                ws.update(cx, |ws, cx| {
+                                    let thread = ws.boards.card(board, card).map(|c| &c.comments);
+                                    let Some((index, comment)) = thread.and_then(|t| {
+                                        let i = t.iter().position(|c| c.id == id)?;
+                                        Some((i, t[i].clone()))
+                                    }) else {
+                                        return;
+                                    };
+                                    ws.edit_boards(|b| b.remove_comment(board, card, id));
+                                    deleted.borrow_mut().push((index, comment));
+                                    cx.notify();
+                                })
+                            }
+                        })
                         .test_support(),
                     );
                 }
@@ -1528,6 +1595,33 @@ pub(crate) fn open_card(
                     .test_support()
             })
             .collect();
+        // The comments the person deleted stand as a row with Undo where each was.
+        let gone = deleted.borrow().clone();
+        let len = shown.comments.len();
+        let mut live = comments.into_iter();
+        let mut comments = Vec::new();
+        for at in 0..=len {
+            for (_, c) in gone.iter().filter(|(index, _)| (*index).min(len) == at) {
+                let id = c.id;
+                let (ws, deleted) = (ws.clone(), deleted.clone());
+                let row = removed_comment(id, ui, move |_, _, cx| {
+                    let taken = {
+                        let mut gone = deleted.borrow_mut();
+                        gone.iter()
+                            .position(|(_, c)| c.id == id)
+                            .map(|i| gone.remove(i))
+                    };
+                    if let Some((index, comment)) = taken {
+                        ws.update(cx, |ws, cx| {
+                            ws.edit_boards(|b| b.restore_comment(board, card, index, comment));
+                            cx.notify();
+                        });
+                    }
+                });
+                comments.push(row.test_support());
+            }
+            comments.extend(live.next());
+        }
         let can_send = !comment.read(cx).value().trim().is_empty();
         let add = {
             let (ws, comment) = (ws.clone(), comment.clone());

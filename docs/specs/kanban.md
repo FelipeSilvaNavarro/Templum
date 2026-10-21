@@ -39,9 +39,10 @@ same board stay in sync.
 - **Everything inside scales with the zoom**, like a terminal's text.
 - **Undo:** with a kanban block focused, Ctrl+Z (Cmd+Z on macOS) undoes the last change to the boards (a card or a
   column added, moved, renamed or deleted, a label, a board added or deleted), up to 50. Typing in a card's dialog
-  is undone in its fields. Delete card in a card's menu asks first. A comment added, an assignee freed, and an agent's
-  change ([connections.md](connections.md#tools); a comment edited or deleted by its author among them) are steps
-  of this Ctrl+Z too.
+  is undone in its fields. Delete card in a card's menu asks first. A comment added, an assignee freed, a comment the
+  person edits or deletes in the card's dialog ([below](#the-person-edits-and-deletes-a-comment-kanban-card-83), whose Undo row
+  is one more step), and an agent's change ([connections.md](connections.md#tools); a comment edited or deleted by its
+  author among them) are steps of this Ctrl+Z too.
 
 ### No board
 
@@ -591,7 +592,7 @@ The card, as the person wrote it: *"Permitir usuário excluir/editar um comentá
 fix and remove their own comments ([card 77](#editing-and-deleting-a-comment-kanban-card-77)); the person could only
 add one.
 
-- **Which comments:** the person **deletes any** comment (the board is theirs, as the cards are, and Ctrl+Z brings it
+- **Which comments:** the person **deletes any** comment (the board is theirs, as the cards are, and Undo brings it
   back) and **edits only their own** ("You"): an agent's words changed by someone else would still wear its name; to
   correct one, delete it and write another.
 - **The buttons** show at the right end of a comment's first line while the pointer is over the comment: `pencil`
@@ -599,8 +600,13 @@ add one.
   the comment") on every one: 22 × 22, rounded 5, the icon 12 in `title_dim`, `ui.hover` under the pointer, as the
   checklist item's ✕. They are laid over the line's end, so showing them moves nothing.
 - **Delete** is at once, with no question, as an item's ✕ and **Delete card** are in this dialog; it is a step of the
-  kanban's Ctrl+Z (taken once the dialog is closed: with it open, Ctrl+Z goes to the field that has the keyboard,
-  [minors.md](../minors.md)).
+  kanban's Ctrl+Z (taken once the dialog is closed: with it open, Ctrl+Z goes to the field that has the keyboard, and
+  afterwards it would undo every later change of the boards with it). So a row stands **in the comment's place** until
+  the dialog closes: a dashed hairline box, `trash`, "Comment deleted", "·" and **Undo** (`comment-deleted-{id}`,
+  `comment-undo-{id}`; the accent, semibold). Undo puts the same comment back (its number, author, text, time and
+  edited flag, `Boards::restore_comment`) at its place in the thread, or at the end when the thread is shorter now, as
+  one more step of Ctrl+Z (which takes it away again). Several deletes leave several rows, each at its own place; a
+  comment that is in the thread again (Ctrl+Z, an agent) drops its row, and closing the dialog drops them all.
 - **Edit** is in place: the comment's bubble becomes a box (a hairline in the accent at 60%, `ui.card`, rounded 8) with
   its text in a field (`comment-edit-field-{id}`, 2 rows growing to 8, the caret after the last word) and, at the
   bottom right, **Cancel** (a ghost button, `comment-cancel-{id}`) and **Save** (`comment-save-{id}`, the accent with
@@ -619,8 +625,10 @@ add one.
 
 1. **Delete any, edit only your own,** the card's own suggestion: a board's person may remove what an agent said
    there, but changing its words would misattribute them.
-2. **No question before a delete,** because the dialog's other deletes (an item, the card) have none and are undone
-   by Ctrl+Z, and a question in a dialog is a dialog in a dialog.
+2. **No question before a delete, but an Undo row:** the dialog's other deletes (an item, the card) have no question
+   and a question in a dialog is a dialog in a dialog; yet the trash is 22 px, hover-only and 2 px from the pencil, and
+   Ctrl+Z with the dialog open goes to the field that has the keyboard (and, once closed, undoes everything after the
+   delete too: an agent's moves and comments, the person's typing). The row is the way back that touches nothing else.
 3. **The same field as the new comment's,** a `Textarea`, not a single line: a comment may hold several lines, which
    Shift+Enter writes.
 4. **Escape through the dialog's cancel:** GPUI runs key bindings before key-down listeners, so a listener on the
@@ -630,7 +638,9 @@ add one.
 ### Testing
 
 **Headless UI:** the person's comment has Edit and Delete and an agent's only Delete; deleting the agent's takes it
-out of the open card at once and one Ctrl+Z brings it back; editing the person's makes the text a field with Save and
+out of the open card at once and one Ctrl+Z brings it back; a deleted comment leaves a row with Undo where it was
+(above the next comment), Undo restores it whole and once, one Ctrl+Z takes the restore away, and the row is gone
+when the dialog is closed and opened again; editing the person's makes the text a field with Save and
 Cancel, typing and Save change the text, mark it edited and keep its author and time, and one Ctrl+Z undoes it;
 Escape and Cancel change nothing and Escape leaves the dialog open; Enter saves and leaves it open; saving the same
 words takes no step (one Ctrl+Z undoes the edit before); an empty field can't be saved; a comment removed meanwhile

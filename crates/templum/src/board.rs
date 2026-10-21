@@ -505,6 +505,26 @@ impl Boards {
         self.edit_card(board, card, |c| c.comments.retain(|c| c.id != comment));
     }
 
+    /// Puts a deleted `comment` back, as it was (its id, author, text, time and edited flag), at
+    /// `index` of the card's thread, or at its end when the thread is shorter now. False, and
+    /// nothing changes, when the card is gone or already has a comment with its id.
+    pub fn restore_comment(
+        &mut self,
+        board: u64,
+        card: u64,
+        index: usize,
+        comment: Comment,
+    ) -> bool {
+        let mut restored = false;
+        self.edit_card(board, card, |c| {
+            if c.comments.iter().all(|x| x.id != comment.id) {
+                c.comments.insert(index.min(c.comments.len()), comment);
+                restored = true;
+            }
+        });
+        restored
+    }
+
     pub fn toggle_label(&mut self, board: u64, card: u64, label: Label) {
         self.edit_card(board, card, |card| {
             if let Some(i) = card.labels.iter().position(|l| *l == label) {
@@ -909,8 +929,48 @@ mod tests {
                 (second, "Thanks".into(), false)
             ]
         );
+        let gone = boards.card(board, card).unwrap().comments[0].clone();
         boards.remove_comment(board, card, first);
         assert_eq!(thread(&boards), [(second, "Thanks".into(), false)]);
+        // A deleted comment comes back whole at its place, once; a shorter thread takes it at the end.
+        assert!(boards.restore_comment(board, card, 0, gone.clone()));
+        assert!(
+            !boards.restore_comment(board, card, 0, gone.clone()),
+            "it is there"
+        );
+        assert_eq!(boards.card(board, card).unwrap().comments[0], gone);
+        assert_eq!(
+            thread(&boards),
+            [
+                (first, "Done.".into(), true),
+                (second, "Thanks".into(), false)
+            ]
+        );
+        boards.remove_comment(board, card, first);
+        assert!(boards.restore_comment(board, card, 7, gone));
+        assert_eq!(
+            thread(&boards),
+            [
+                (second, "Thanks".into(), false),
+                (first, "Done.".into(), true)
+            ]
+        );
+        boards.remove_comment(board, card, first);
+        assert!(
+            !boards.restore_comment(
+                board,
+                999,
+                0,
+                Comment {
+                    id: first,
+                    by: "you".into(),
+                    text: "x".into(),
+                    at: 1,
+                    edited: false
+                }
+            ),
+            "a card that is gone takes none"
+        );
         // Its id is never given again.
         let third = boards.add_comment(board, card, "you", "More", 30).unwrap();
         assert!(third > second);

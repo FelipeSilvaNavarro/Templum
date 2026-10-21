@@ -725,6 +725,97 @@ fn the_person_deletes_any_comment_and_edits_only_their_own(cx: &mut TestAppConte
     assert_eq!(thread(&ws, cx, board, card), whole, "one Ctrl+Z step");
 }
 
+/// A comment the person deletes by mistake is easy to get back: a row "Comment deleted · Undo"
+/// stands where it was until the dialog closes, and Undo puts the same comment (its number,
+/// author, text, time and edited flag) back at its place, as one more step of Ctrl+Z.
+#[gpui_kit::test]
+fn a_deleted_comment_leaves_a_row_with_undo_until_the_dialog_closes(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, agent) = card_open_with_two_comments(handle, &ws, cx);
+    // An edited comment: the flag must come back too.
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| b.edit_comment(board, card, person, "Please check again"))
+    });
+    let whole = thread(&ws, cx, board, card);
+    assert!(whole[0].3, "edited");
+    let place = |cx: &mut TestAppContext, what: &str, comment: u64| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let id = gpui_kit::ElementId::Name(format!("comment-{what}-{comment}").into());
+            window.try_find(id).map(|found| found.bounds())
+        })
+        .unwrap()
+    };
+    let click_undo = |cx: &mut TestAppContext, comment: u64| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let done = window.find("card-done").bounds().center();
+            let at = (
+                f32::from(done.x),
+                f32::from(window.viewport_size().height) / 2.0,
+            );
+            wheel(
+                window,
+                cx,
+                at,
+                ScrollDelta::Pixels(point(px(0.0), px(-3000.0))),
+                false,
+            );
+            window.render_frame(cx);
+            window.click(
+                gpui_kit::ElementId::Name(format!("comment-undo-{comment}").into()),
+                cx,
+            );
+            window.render_frame(cx);
+        })
+        .unwrap()
+    };
+    // Delete the first of two: a row stands in its place, above the other comment.
+    click_comment(handle, cx, "delete", person);
+    assert_eq!(thread(&ws, cx, board, card), whole[1..]);
+    let row = place(cx, "deleted", person).expect("a row where it was");
+    assert!(place(cx, "undo", person).is_some(), "with Undo");
+    let other = cx
+        .update_window(handle, |_, window, _| {
+            window
+                .find(gpui_kit::ElementId::Name(format!("comment-{agent}").into()))
+                .bounds()
+        })
+        .unwrap();
+    assert!(row.bottom() <= other.top(), "above the next comment");
+    // Undo: the same comment at the same place, once.
+    click_undo(cx, person);
+    assert_eq!(thread(&ws, cx, board, card), whole, "whole, at its place");
+    assert!(place(cx, "deleted", person).is_none(), "the row is gone");
+    // One more step of Ctrl+Z: it takes the restore back (and the row does not return).
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(thread(&ws, cx, board, card), whole[1..]);
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(
+        thread(&ws, cx, board, card),
+        whole,
+        "and the delete before it"
+    );
+    assert!(place(cx, "deleted", person).is_none());
+    // The row lasts until the dialog closes.
+    click_comment(handle, cx, "delete", agent);
+    assert!(place(cx, "deleted", agent).is_some());
+    cx.update_window(handle, |_, window, cx| {
+        window.close_dialog(cx);
+        window.render_frame(cx);
+        ws.update(cx, |ws, cx| {
+            let current = ws.boards.card(board, card).cloned().unwrap();
+            crate::kanban::open_card(board, current, false, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        place(cx, "deleted", agent).is_none(),
+        "gone with the dialog"
+    );
+}
+
 /// Escape and Cancel end an edit and change nothing (Escape doesn't close the card's dialog); Enter
 /// saves; the same words are no edit and no step of Ctrl+Z; an empty text can't be saved.
 #[gpui_kit::test]

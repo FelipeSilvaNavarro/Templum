@@ -608,11 +608,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Kanban
 
-- [ ] **Ctrl+Z in an open card's dialog doesn't bring back a deleted comment.** A comment deleted from the dialog
-  (`comment-delete-{id}`, `crates/templum/src/kanban.rs`), like an item's ✕, is one step of the kanban's Ctrl+Z,
-  but with the dialog open the key goes to the field that has the keyboard, so the person closes the dialog first. A
-  person who deletes the wrong comment may not know. Fix: let the dialog's Ctrl+Z undo the board when no text field
-  has the keyboard, or show "Undo" in a notification after a delete.
+- [ ] **Ctrl+Z in an open card's dialog doesn't undo an item's ✕, a label or a priority.** A deleted comment has an
+  Undo row in its place (`removed_comment`, `crates/templum/src/kanban.rs`), but the dialog's other changes, like an
+  item's ✕ or a label, are steps of the kanban's Ctrl+Z, and with the dialog open the key goes to the field that has
+  the keyboard; closed, it undoes the whole boards' snapshot, every later change of the agents and the person with
+  it. A person who removes the wrong item may not know. Fix: let the dialog's Ctrl+Z undo the board when no text
+  field has the keyboard, or give an item's ✕ the comment's Undo row.
 - [ ] **The comment buttons and the editor aren't seen in a window.** Card 83's pencil and trash on hover and the
   editing box (`crates/templum/src/kanban.rs`, `comment_view`, `comment_action`) were laid out and tested headless
   only. A person may meet buttons that crowd a long author name or an editor too tall at 8 rows. Fix: run
