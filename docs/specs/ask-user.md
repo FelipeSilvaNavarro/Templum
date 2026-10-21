@@ -274,7 +274,8 @@ the same rows and keys, the same answers.
 - **The highlight** is on one row (an option, an Other row, the note or Send) or on none, as the dialog opens. ↓ and
   Tab put it on the first row, ↑ and Shift+Tab on Send, then move it; hovering a row puts it there. With no row
   highlighted, Space and Enter do nothing: a key meant for the terminal while the pointer drifts over the block
-  can't answer.
+  can't answer. A move by the keys (not the pointer, nor the wheel) scrolls the body just enough to show the row,
+  once, when it is drawn: a wheel that scrolls it away after isn't fought.
 - **Space** picks the highlighted option (single-select) or checks and unchecks it (multiSelect).
 - **Enter** on a single-select question's option that isn't picked picks it, and sends nothing: the highlight goes to
   the next question without an answer (wrapping to the first) or, when that was the last, to Send. Anywhere else

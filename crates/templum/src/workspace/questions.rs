@@ -226,6 +226,7 @@ impl Workspace {
             (Some(by), _) => {
                 form.step(ask, by);
                 self.focus_highlight(key, window, cx);
+                self.reveal_highlight(key);
             }
             (None, "space") => {
                 if let Some(Row::Option(q, i)) = form.highlight {
@@ -289,7 +290,17 @@ impl Workspace {
             return;
         }
         self.focus_highlight(key, window, cx);
+        self.reveal_highlight(key);
         cx.notify();
+    }
+
+    /// The highlight the keys moved: the dialog's body scrolls to show its row when it is drawn.
+    fn reveal_highlight(&self, key: u64) {
+        if let Some(wait) = self.waits.iter().find(|w| w.key == key)
+            && let Waiting::Question { form, .. } = &wait.what
+        {
+            wait.reveal.set(form.highlight);
+        }
     }
 
     /// The row of the question's field that has the keyboard, if one does.

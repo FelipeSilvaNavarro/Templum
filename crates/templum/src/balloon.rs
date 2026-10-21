@@ -10,8 +10,8 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, FontWeight, Hsla, MouseButton,
-    MouseDownEvent, ScrollWheelEvent, SharedString, Stateful, TestSupportExt, Window, div, point,
-    px, relative,
+    MouseDownEvent, ScrollWheelEvent, SharedString, Stateful, TestSupportExt, Window, canvas, div,
+    point, px, relative,
 };
 use templum_canvas::{BlockId, chrome};
 use templum_mcp::ask::{Ask, Choice, Form, Row, clean_preview};
@@ -415,6 +415,7 @@ fn question(
             let mark = ask.json.then_some(question.multi);
             choices = choices.child(
                 option(id, mark, picked, lit, choice, ui, z)
+                    .children(reveal(Row::Option(q, i), wait))
                     .on_click(cx.listener(once(move |ws, window, cx| {
                         ws.pick_option(key, q, i, window, cx)
                     })))
@@ -456,7 +457,9 @@ fn question(
                         }),
                 );
             }
-            other = other.child(git_block::field(input, z).flex_1().min_w(px(0.0)));
+            other = other
+                .child(git_block::field(input, z).flex_1().min_w(px(0.0)))
+                .children(reveal(Row::Other(q), wait));
             choices = choices.child(other.on_hover(hover(key, Row::Other(q), cx)).test_support());
         }
         let panel = |choices: Div| {
@@ -503,6 +506,7 @@ fn question(
                         .rounded(px(8.0 * z))
                         .when(form.highlight == Some(Row::Note), |el| el.bg(ui.hover))
                         .child(git_block::field(input, z).w_full())
+                        .children(reveal(Row::Note, wait))
                         .on_hover(hover(key, Row::Note, cx))
                         .test_support(),
                 ),
@@ -641,6 +645,7 @@ fn plan(
                     .rounded(px(8.0 * z))
                     .when(form.highlight == Some(Row::Note), |el| el.bg(ui.hover))
                     .child(git_block::field(input, z).w_full())
+                    .children(reveal(Row::Note, wait))
                     .on_hover(hover(key, Row::Note, cx))
                     .test_support(),
             )
@@ -673,6 +678,39 @@ fn plan(
         body,
         foot: foot_row(z).child(reject).child(approve.ml_auto()),
     }
+}
+
+/// Scrolls the body to show `row` once, when the keys just moved the highlight to it and it is
+/// cut at an edge (or out of view): an invisible layer over the row, which sees where it was
+/// laid out. A wheel that scrolls it away later isn't fought.
+fn reveal(row: Row, wait: &Wait) -> Option<AnyElement> {
+    if wait.reveal.get() != Some(row) {
+        return None;
+    }
+    let (wanted, body) = (wait.reveal.clone(), wait.body.handle.clone());
+    Some(
+        canvas(
+            move |at, window, _| {
+                if wanted.take().is_none() {
+                    return;
+                }
+                let (view, offset, max) = (body.bounds(), body.offset(), body.max_offset());
+                let by = if at.top() < view.top() {
+                    view.top() - at.top()
+                } else if at.bottom() > view.bottom() {
+                    view.bottom() - at.bottom()
+                } else {
+                    return;
+                };
+                body.set_offset(point(offset.x, (offset.y + by).clamp(-max.y, px(0.0))));
+                window.request_animation_frame();
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
+        .into_any_element(),
+    )
 }
 
 /// Hovering a row of the question `key` highlights it.

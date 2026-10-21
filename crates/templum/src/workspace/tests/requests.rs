@@ -2055,6 +2055,77 @@ fn the_keys_answer_a_question(cx: &mut TestAppContext) {
     assert_eq!(answered(&answers), (false, "No".to_string()));
 }
 
+/// The keys' highlight (↓ ↑ Tab) goes down a long list and back up with the row always in view:
+/// the body scrolls to show it, once, and a wheel that scrolls it away after isn't fought.
+#[gpui_kit::test]
+fn the_keys_scroll_the_body_to_the_highlighted_row(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let options: Vec<Value> = (0..30)
+        .map(|i| json!({ "label": format!("Option {i}"), "description": "More words." }))
+        .collect();
+    let asked = json!({ "questions": [{ "question": "Which?", "options": options }] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    focus_dialog(handle, &ws, cx, mine);
+    let frames = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+        })
+        .unwrap()
+    };
+    assert!(
+        !window_shows(handle, cx, n, "q0-option-29"),
+        "it starts below"
+    );
+    for i in 0..30 {
+        press(handle, cx, &["down"]);
+        frames(cx);
+        assert!(
+            window_shows(handle, cx, n, &format!("q0-option-{i}")),
+            "option {i} is highlighted and out of view"
+        );
+    }
+    // Other, below the last option.
+    press(handle, cx, &["tab"]);
+    frames(cx);
+    assert!(
+        window_shows(handle, cx, n, "q0-other"),
+        "Other is out of view"
+    );
+    // Back up.
+    for i in (0..30).rev() {
+        press(handle, cx, &["up"]);
+        frames(cx);
+        if i == 29 {
+            continue;
+        }
+        assert!(
+            window_shows(handle, cx, n, &format!("q0-option-{i}")),
+            "going up, option {i} is out of view"
+        );
+    }
+    // A wheel that scrolls the highlighted row away stays scrolled.
+    let before = body_scroll(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.hover(("balloon", n), cx);
+        let body = window.find(crate::balloon::part(n, "body")).bounds();
+        let at = (f32::from(body.left()) + 4.0, f32::from(body.center().y));
+        wheel(
+            window,
+            cx,
+            at,
+            ScrollDelta::Pixels(point(px(0.0), px(-300.0))),
+            false,
+        );
+    })
+    .unwrap();
+    frames(cx);
+    assert!(body_scroll(&ws, cx) < before - 100.0, "the wheel scrolled");
+}
+
 /// Space picks without sending; Enter on the option already picked sends.
 #[gpui_kit::test]
 fn space_picks_and_enter_on_the_picked_option_sends(cx: &mut TestAppContext) {
