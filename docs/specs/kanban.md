@@ -378,7 +378,8 @@ header and the footer stay). Sizes in pixels; every color comes from the theme.
        theme's accent at 16% for the person's own, on ANSI magenta at 16% for an agent's or a block's), then the author
        (12.5 semibold) and its age (11) over the text in a bubble (13, line height 1.5, rounded 8, 12 and 8 inside;
        `ui.card`, and the accent at 10% for the person's own). With none: a dashed hairline box with "No comments
-       yet".
+       yet". While the pointer is over a comment, two small icon buttons show at the right end of its first line:
+       edit (`pencil`) on the person's own and delete (`trash`) on any ([below](#the-person-edits-and-deletes-a-comment-kanban-card-83)).
      - **The comment field** (`comment-field` is its text): a box (hairline border, `ui.card`, rounded 8) holding the
        2-row field (placeholder "Write a comment") and, at the bottom right, **Comment** (`add-comment`, `arrow-up`
        icon, 26 high): the solid accent once something is typed, a faint `ui.hover` while the field is empty.
@@ -515,8 +516,8 @@ comment (`comment_card`) but not fix a wrong one.
   is missing for a comment its author never changed, and nothing else in the file changes, so an older Templum reads it
   and a file from before loads unchanged.
 - **Whose to change:** an agent changes only a comment whose `by` is its own block id. The person's (`"you"`) and
-  other agents' are refused, saying whose they are. The person edits nothing here: the card's dialog has no
-  comment editing in this change, and its Ctrl+Z is the way back.
+  other agents' are refused, saying whose they are. The person's own changes, in the card's dialog, are
+  [card 83's](#the-person-edits-and-deletes-a-comment-kanban-card-83).
 - **A step of Ctrl+Z each:** the kanban's, like a comment added.
 - **The open card** shows the change at once: it reads the card each frame. An edited comment keeps its author,
   its place in the thread and its time, and its age reads "3 min ago · edited" so the person can tell that what they
@@ -583,3 +584,54 @@ and 18.3, so both over the 16.7 bar there: the machine's, not the scrollbar's).
 
 **Manual (Hyprland):** a long column at zoom 0.5, 1 and 2: the scrollbar's thumb follows the wheel and is dragged; a
 card dropped on a long column's right edge lands in it.
+
+## The person edits and deletes a comment (kanban card 83)
+
+The card, as the person wrote it: *"Permitir usuário excluir/editar um comentário no card do kanban."* Agents already
+fix and remove their own comments ([card 77](#editing-and-deleting-a-comment-kanban-card-77)); the person could only
+add one.
+
+- **Which comments:** the person **deletes any** comment (the board is theirs, as the cards are, and Ctrl+Z brings it
+  back) and **edits only their own** ("You"): an agent's words changed by someone else would still wear its name; to
+  correct one, delete it and write another.
+- **The buttons** show at the right end of a comment's first line while the pointer is over the comment: `pencil`
+  (`comment-edit-{id}`, tooltip "Edit the comment") on the person's own and `trash` (`comment-delete-{id}`, "Delete
+  the comment") on every one: 22 × 22, rounded 5, the icon 12 in `title_dim`, `ui.hover` under the pointer, as the
+  checklist item's ✕. They are laid over the line's end, so showing them moves nothing.
+- **Delete** is at once, with no question, as an item's ✕ and **Delete card** are in this dialog; it is a step of the
+  kanban's Ctrl+Z (taken once the dialog is closed: with it open, Ctrl+Z goes to the field that has the keyboard,
+  [minors.md](../minors.md)).
+- **Edit** is in place: the comment's bubble becomes a box (a hairline in the accent at 60%, `ui.card`, rounded 8) with
+  its text in a field (`comment-edit-field-{id}`, 2 rows growing to 8, the caret after the last word) and, at the
+  bottom right, **Cancel** (a ghost button, `comment-cancel-{id}`) and **Save** (`comment-save-{id}`, the accent with
+  a `check`; a faint `ui.hover` fill while the text is empty, as Comment is). **Enter** saves (Shift+Enter adds a line)
+  and **Escape** or Cancel ends the edit and changes nothing; Escape ends only the edit, not the dialog, and Enter only
+  saves, not confirms it (the field's wrapper takes the dialog's cancel and confirm). One comment is edited at a
+  time (starting another drops the first), and a comment gone meanwhile (an agent, Ctrl+Z) ends its edit. When it
+  ends, the keyboard goes to the comment field.
+- **A comment needs text:** Save does nothing while the field is empty (the trash is how to remove one). Saving the
+  same words changes nothing: no "edited", no step of Ctrl+Z.
+- **The model is card 77's:** `Boards::edit_comment` and `remove_comment`; an edited comment keeps its author, its
+  place and its time and reads "3 min ago · edited" ("edited" for the person's too: what was first said is gone),
+  and each save and each delete is one `edit_boards` step.
+
+### Calls made for card 83
+
+1. **Delete any, edit only your own,** the card's own suggestion: a board's person may remove what an agent said
+   there, but changing its words would misattribute them.
+2. **No question before a delete,** because the dialog's other deletes (an item, the card) have none and are undone
+   by Ctrl+Z, and a question in a dialog is a dialog in a dialog.
+3. **The same field as the new comment's,** a `Textarea`, not a single line: a comment may hold several lines, which
+   Shift+Enter writes.
+4. **Escape through the dialog's cancel:** GPUI runs key bindings before key-down listeners, so a listener on the
+   field can't stop the Escape that closes the dialog; the field hands it on as the dialog's `Cancel` action, which
+   its wrapper takes.
+
+### Testing
+
+**Headless UI:** the person's comment has Edit and Delete and an agent's only Delete; deleting the agent's takes it
+out of the open card at once and one Ctrl+Z brings it back; editing the person's makes the text a field with Save and
+Cancel, typing and Save change the text, mark it edited and keep its author and time, and one Ctrl+Z undoes it;
+Escape and Cancel change nothing and Escape leaves the dialog open; Enter saves and leaves it open; saving the same
+words takes no step (one Ctrl+Z undoes the edit before); an empty field can't be saved; a comment removed meanwhile
+ends its edit. **Not seen in a window:** the buttons' look on hover and the editor's box ([minors.md](../minors.md)).

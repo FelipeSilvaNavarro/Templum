@@ -8,8 +8,10 @@ use std::time::Instant;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::dialog::Confirm;
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::dialog::{Cancel, Confirm};
+use gpui_kit::component::input::{
+    Input, InputEvent, InputState, Position, Textarea, TextareaState,
+};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::tooltip::Tooltip;
@@ -1047,9 +1049,22 @@ pub(crate) fn danger(id: impl Into<ElementId>, label: &'static str, red: Hsla) -
         .child(label)
 }
 
-/// A comment in the thread: its author's round mark, then who and when above what was said.
-/// `mine`: the person's own, in the theme's accent.
-fn comment_view(ui: Ui, tint: Hsla, mine: bool, who: &str, when: String, text: String) -> Div {
+/// The comment of an open card being edited in its place, by its number, and its field.
+type Editing = Rc<RefCell<Option<(u64, Entity<TextareaState>)>>>;
+/// Ends that edit: saved (true) or not.
+type Finish = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+
+/// A comment in the thread: its author's round mark, then who and when above what was said (its
+/// `body`: the bubble, or the field it is edited in). `actions`: the buttons that show at the
+/// right of the first line while the pointer is over the comment.
+fn comment_view(
+    ui: Ui,
+    tint: Hsla,
+    who: &str,
+    when: String,
+    actions: Div,
+    body: impl IntoElement,
+) -> Div {
     let initial = who
         .chars()
         .next()
@@ -1081,7 +1096,9 @@ fn comment_view(ui: Ui, tint: Hsla, mine: bool, who: &str, when: String, text: S
                 .flex_col()
                 .gap(px(4.0))
                 .child(
+                    // The buttons are laid over the line's right end, so showing them moves nothing.
                     div()
+                        .relative()
                         .flex()
                         .items_baseline()
                         .gap(px(6.0))
@@ -1091,23 +1108,50 @@ fn comment_view(ui: Ui, tint: Hsla, mine: bool, who: &str, when: String, text: S
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(who.to_string()),
                         )
-                        .child(div().text_size(px(11.0)).text_color(ui.title).child(when)),
+                        .child(div().text_size(px(11.0)).text_color(ui.title).child(when))
+                        .child(actions.absolute().top(px(-4.0)).right_0()),
                 )
-                .child(
-                    div()
-                        .px(px(12.0))
-                        .py(px(8.0))
-                        .rounded(px(8.0))
-                        .bg(if mine {
-                            ui.accent.opacity(0.10)
-                        } else {
-                            ui.card
-                        })
-                        .text_size(px(13.0))
-                        .line_height(relative(1.5))
-                        .child(text),
-                ),
+                .child(body),
         )
+}
+
+/// What a comment said, in its bubble: the person's own in the theme's accent.
+fn bubble(ui: Ui, mine: bool, text: String) -> Div {
+    div()
+        .px(px(12.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .bg(if mine {
+            ui.accent.opacity(0.10)
+        } else {
+            ui.card
+        })
+        .text_size(px(13.0))
+        .line_height(relative(1.5))
+        .child(text)
+}
+
+/// A small icon button of a comment, shown while the pointer is over its `group`.
+fn comment_action(
+    id: String,
+    icon: IconName,
+    tip: &'static str,
+    group: &SharedString,
+    ui: Ui,
+) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(id.into()))
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(22.0))
+        .rounded(px(5.0))
+        .opacity(0.0)
+        .group_hover(group.clone(), |s| s.opacity(1.0))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(Icon::new(icon).size(px(12.0)).text_color(ui.title_dim))
+        .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
 }
 
 /// The open card: title, description and labels apply as they change. `new`: the title is
@@ -1196,6 +1240,31 @@ pub(crate) fn open_card(
         })
         .detach();
     }
+    // The comment being edited in its place, and its field: one at a time. It ends with Save
+    // (Enter), Cancel (Escape), or its comment being gone.
+    let editing: Editing = Rc::default();
+    let finish: Finish = {
+        let (ws, editing, comment) = (ws.clone(), editing.clone(), comment.clone());
+        Rc::new(move |save, window, cx| {
+            let Some((id, input)) = editing.borrow().clone() else {
+                return;
+            };
+            if save {
+                let text = input.read(cx).value().trim_end().to_string();
+                // A comment needs text: the trash button takes one away.
+                if text.trim().is_empty() {
+                    return;
+                }
+                // The same words are no edit, and no step of Ctrl+Z.
+                ws.update(cx, |ws, _| {
+                    ws.edit_boards(|b| b.edit_comment(board, card, id, &text))
+                });
+            }
+            *editing.borrow_mut() = None;
+            comment.update(cx, |c, cx| c.focus(window, cx));
+            ws.update(cx, |_, cx| cx.notify());
+        })
+    };
     // A card gone meanwhile (an agent, another block, Ctrl+Z) draws its last values.
     let last = RefCell::new((current, String::new()));
     window.open_alert_dialog(cx, move |alert, _, cx| {
@@ -1278,18 +1347,184 @@ pub(crate) fn open_card(
             }
         };
         let agent_tint = hsla(palette.ansi[5], 1.0);
+        // A comment gone meanwhile (an agent, Ctrl+Z) ends its edit.
+        if editing
+            .borrow()
+            .as_ref()
+            .is_some_and(|(id, _)| !shown.comments.iter().any(|c| c.id == *id))
+        {
+            *editing.borrow_mut() = None;
+        }
+        let editing_now = editing.borrow().clone();
         let comments: Vec<_> = shown
             .comments
             .iter()
             .map(|c| {
-                let mine = c.by == "you";
+                let (id, mine) = (c.id, c.by == "you");
                 let tint = if mine { ui.accent } else { agent_tint };
                 let mut when = notes::ago(c.at, now);
                 if c.edited {
                     when.push_str(" · edited");
                 }
-                comment_view(ui, tint, mine, &author(&c.by), when, c.text.clone())
-                    .id(ElementId::Name(format!("comment-{}", c.id).into()))
+                let group = SharedString::from(format!("comment-group-{id}"));
+                let field = editing_now.as_ref().filter(|(e, _)| *e == id);
+                let mut actions = div().flex().gap(px(2.0));
+                if field.is_none() {
+                    // The person may delete any comment: the board is theirs, and Ctrl+Z brings
+                    // it back, as a card or an item. They may edit only their own: an agent's
+                    // words changed by someone else would still wear its name.
+                    if mine {
+                        let begin = {
+                            let (ws, editing, finish) =
+                                (ws.clone(), editing.clone(), finish.clone());
+                            let text = c.text.clone();
+                            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                let input = cx.new(|cx| {
+                                    TextareaState::new(window, cx)
+                                        .auto_grow(2, 8)
+                                        .submit_on_enter(true)
+                                        .default_value(text.clone())
+                                });
+                                // Enter saves (Shift+Enter adds a line); typing lights Save up.
+                                let (ws_typing, finish) = (ws.clone(), finish.clone());
+                                window
+                                    .subscribe(
+                                        &input,
+                                        cx,
+                                        move |_, event: &InputEvent, window, cx| match event {
+                                            InputEvent::PressEnter { shift: false, .. } => {
+                                                finish(true, window, cx)
+                                            }
+                                            InputEvent::Change => {
+                                                ws_typing.update(cx, |_, cx| cx.notify())
+                                            }
+                                            _ => {}
+                                        },
+                                    )
+                                    .detach();
+                                // The caret goes after the last word, as to go on writing.
+                                let line = text.lines().count().saturating_sub(1) as u32;
+                                let column =
+                                    text.lines().last().map_or(0, |l| l.encode_utf16().count());
+                                input.update(cx, |input, cx| {
+                                    input.set_cursor_position(
+                                        Position::new(line, column as u32),
+                                        window,
+                                        cx,
+                                    )
+                                });
+                                *editing.borrow_mut() = Some((id, input));
+                                ws.update(cx, |_, cx| cx.notify());
+                            }
+                        };
+                        actions = actions.child(
+                            comment_action(
+                                format!("comment-edit-{id}"),
+                                IconName::Pencil,
+                                "Edit the comment",
+                                &group,
+                                ui,
+                            )
+                            .on_click(begin)
+                            .test_support(),
+                        );
+                    }
+                    actions = actions.child(
+                        comment_action(
+                            format!("comment-delete-{id}"),
+                            IconName::Trash,
+                            "Delete the comment",
+                            &group,
+                            ui,
+                        )
+                        .on_click(edit(Rc::new(move |b| b.remove_comment(board, card, id))))
+                        .test_support(),
+                    );
+                }
+                let body = match field {
+                    None => bubble(ui, mine, c.text.clone()).into_any_element(),
+                    Some((_, input)) => {
+                        let can_save = !input.read(cx).value().trim().is_empty();
+                        let (bg, color) = if can_save {
+                            (ui.accent, ui.surface)
+                        } else {
+                            (ui.hover, ui.title_dim)
+                        };
+                        let (cancel, save) = (finish.clone(), finish.clone());
+                        let escape = finish.clone();
+                        div()
+                            .id(ElementId::Name(format!("comment-editor-{id}").into()))
+                            .flex()
+                            .flex_col()
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(ui.accent.opacity(0.6))
+                            .bg(ui.card)
+                            // Enter saves: it mustn't confirm (close) the dialog. Escape, which the
+                            // field hands on as the dialog's cancel, only ends the edit.
+                            .on_action(|_: &Confirm, _, cx| cx.stop_propagation())
+                            .on_action(move |_: &Cancel, window, cx| {
+                                escape(false, window, cx);
+                                cx.stop_propagation();
+                            })
+                            .child(
+                                div()
+                                    .id(ElementId::Name(format!("comment-edit-field-{id}").into()))
+                                    .child(Textarea::new(input).appearance(false).bordered(false))
+                                    .test_support(),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(6.0))
+                                    .px(px(8.0))
+                                    .pb(px(8.0))
+                                    .child(
+                                        div()
+                                            .id(ElementId::Name(
+                                                format!("comment-cancel-{id}").into(),
+                                            ))
+                                            .h(px(26.0))
+                                            .px(px(10.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .rounded(px(8.0))
+                                            .text_size(px(12.5))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(ui.title)
+                                            .cursor_pointer()
+                                            .hover(move |s| s.bg(ui.hover))
+                                            .child("Cancel")
+                                            .on_click(move |_: &ClickEvent, window, cx| {
+                                                cancel(false, window, cx)
+                                            })
+                                            .test_support(),
+                                    )
+                                    .child(
+                                        pill(
+                                            ElementId::Name(format!("comment-save-{id}").into()),
+                                            "Save",
+                                            Some(IconName::Check),
+                                            bg,
+                                            color,
+                                        )
+                                        .h(px(26.0))
+                                        .px(px(10.0))
+                                        .when(!can_save, |el| el.cursor_default())
+                                        .on_click(move |_: &ClickEvent, window, cx| {
+                                            save(true, window, cx)
+                                        })
+                                        .test_support(),
+                                    ),
+                            )
+                            .into_any_element()
+                    }
+                };
+                comment_view(ui, tint, &author(&c.by), when, actions, body)
+                    .id(ElementId::Name(format!("comment-{id}").into()))
+                    .group(group)
                     .test_support()
             })
             .collect();

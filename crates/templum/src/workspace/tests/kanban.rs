@@ -567,6 +567,243 @@ fn the_open_card_adds_a_comment_and_frees_its_assignee(cx: &mut TestAppContext) 
     );
 }
 
+/// A card with two comments, the person's and an agent's, open in its dialog: the comments'
+/// numbers, person's first.
+fn card_open_with_two_comments(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (u64, u64, u64, u64) {
+    no_motion(cx);
+    let (_, board, card) = board_with_a_card(handle, ws, cx);
+    let (person, agent) = ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| {
+            (
+                b.add_comment(board, card, "you", "Please check", 1)
+                    .unwrap(),
+                b.add_comment(board, card, "zzzzz", "Seen", 2).unwrap(),
+            )
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        ws.update(cx, |ws, cx| {
+            let current = ws.boards.card(board, card).cloned().unwrap();
+            crate::kanban::open_card(board, current, false, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    // The dialog slides in for 0.25 s first: presses meanwhile are lost.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    (board, card, person, agent)
+}
+
+/// Whether the open card draws the element `what`-`comment`.
+fn comment_part(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    what: &str,
+    comment: u64,
+) -> bool {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let id = gpui_kit::ElementId::Name(format!("comment-{what}-{comment}").into());
+        window.try_find(id).is_some()
+    })
+    .unwrap()
+}
+
+/// Clicks the open card's `comment-{what}-{comment}` and draws the result: the comments are at
+/// the end of a dialog that scrolls in a window this short, so its body is scrolled down first,
+/// and the pointer brought onto the comment, which shows its buttons.
+fn click_comment(handle: AnyWindowHandle, cx: &mut TestAppContext, what: &str, comment: u64) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // The wheel at the middle of the dialog's body, under its footer's Done.
+        let done = window.find("card-done").bounds().center();
+        let at = (
+            f32::from(done.x),
+            f32::from(window.viewport_size().height) / 2.0,
+        );
+        wheel(
+            window,
+            cx,
+            at,
+            ScrollDelta::Pixels(point(px(0.0), px(-3000.0))),
+            false,
+        );
+        window.render_frame(cx);
+        // Its buttons show under the pointer only.
+        window.hover(
+            gpui_kit::ElementId::Name(format!("comment-{comment}").into()),
+            cx,
+        );
+        window.render_frame(cx);
+        window.click(
+            gpui_kit::ElementId::Name(format!("comment-{what}-{comment}").into()),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+/// The card's comments: number, author, text, edited, time.
+fn thread(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    board: u64,
+    card: u64,
+) -> Vec<(u64, String, String, bool, u64)> {
+    ws.read_with(cx, |ws, _| {
+        let c = ws.boards.card(board, card).unwrap();
+        c.comments
+            .iter()
+            .map(|c| (c.id, c.by.clone(), c.text.clone(), c.edited, c.at))
+            .collect()
+    })
+}
+
+/// The person deletes any comment (the board is theirs; Ctrl+Z brings it back) but edits only their
+/// own: an agent's words changed by someone else would still wear its name. Each change is one
+/// step of the kanban's Ctrl+Z, and an edit keeps the comment's author, place and time.
+#[gpui_kit::test]
+fn the_person_deletes_any_comment_and_edits_only_their_own(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, agent) = card_open_with_two_comments(handle, &ws, cx);
+    let whole = thread(&ws, cx, board, card);
+    assert!(comment_part(handle, cx, "edit", person));
+    assert!(comment_part(handle, cx, "delete", person));
+    assert!(comment_part(handle, cx, "delete", agent));
+    assert!(
+        !comment_part(handle, cx, "edit", agent),
+        "an agent's comment has no edit button"
+    );
+    // Delete the agent's.
+    click_comment(handle, cx, "delete", agent);
+    assert_eq!(thread(&ws, cx, board, card), whole[..1]);
+    assert!(
+        !comment_part(handle, cx, "delete", agent),
+        "the open card shows it"
+    );
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(
+        thread(&ws, cx, board, card),
+        whole,
+        "one Ctrl+Z step brings it back"
+    );
+    // Edit the person's: the text becomes a field with Save and Cancel, the caret after the last word.
+    click_comment(handle, cx, "edit", person);
+    for what in ["edit-field", "save", "cancel"] {
+        assert!(comment_part(handle, cx, what, person), "{what}");
+    }
+    assert!(
+        !comment_part(handle, cx, "edit", person),
+        "its buttons give way to Save and Cancel"
+    );
+    cx.simulate_input(handle, " (fixed)");
+    click_comment(handle, cx, "save", person);
+    let edited = thread(&ws, cx, board, card);
+    assert_eq!(
+        edited[0],
+        (
+            person,
+            "you".to_string(),
+            "Please check (fixed)".to_string(),
+            true,
+            1
+        ),
+        "author and time stay, and it reads as edited"
+    );
+    assert_eq!(edited[1], whole[1], "the other comment is as it was");
+    assert!(
+        !comment_part(handle, cx, "edit-field", person),
+        "the field is gone"
+    );
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(thread(&ws, cx, board, card), whole, "one Ctrl+Z step");
+}
+
+/// Escape and Cancel end an edit and change nothing (Escape doesn't close the card's dialog); Enter
+/// saves; the same words are no edit and no step of Ctrl+Z; an empty text can't be saved.
+#[gpui_kit::test]
+fn escape_and_cancel_end_an_edit_enter_saves_and_nothing_is_saved_for_nothing(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, _) = card_open_with_two_comments(handle, &ws, cx);
+    let whole = thread(&ws, cx, board, card);
+    let open = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("card-done").is_some()
+        })
+        .unwrap()
+    };
+    // Escape.
+    click_comment(handle, cx, "edit", person);
+    cx.simulate_input(handle, " more");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(open(cx), "Escape ends the edit, not the dialog");
+    assert!(!comment_part(handle, cx, "edit-field", person));
+    assert_eq!(thread(&ws, cx, board, card), whole);
+    // Cancel.
+    click_comment(handle, cx, "edit", person);
+    cx.simulate_input(handle, " more");
+    click_comment(handle, cx, "cancel", person);
+    assert!(!comment_part(handle, cx, "edit-field", person));
+    assert_eq!(thread(&ws, cx, board, card), whole);
+    // Enter saves, and the dialog stays.
+    click_comment(handle, cx, "edit", person);
+    cx.simulate_input(handle, " ok");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(open(cx), "Enter saves, it doesn't confirm the dialog");
+    let saved = thread(&ws, cx, board, card);
+    assert_eq!(saved[0].2, "Please check ok");
+    // Saving it as it is: no edit, no step.
+    click_comment(handle, cx, "edit", person);
+    click_comment(handle, cx, "save", person);
+    assert_eq!(thread(&ws, cx, board, card), saved);
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(
+        thread(&ws, cx, board, card),
+        whole,
+        "the one step is the edit before: the same words made none"
+    );
+    // An empty text isn't saved: the trash takes a comment away.
+    click_comment(handle, cx, "edit", person);
+    cx.update_window(handle, |_, window, cx| {
+        #[cfg(target_os = "macos")]
+        window.press("cmd-a", cx);
+        #[cfg(not(target_os = "macos"))]
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    click_comment(handle, cx, "save", person);
+    assert!(
+        comment_part(handle, cx, "edit-field", person),
+        "still editing"
+    );
+    assert_eq!(thread(&ws, cx, board, card), whole);
+    // Its comment gone meanwhile (Ctrl+Z, an agent, another block) ends the edit.
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| b.remove_comment(board, card, person))
+    });
+    assert!(!comment_part(handle, cx, "edit-field", person));
+    assert!(open(cx));
+}
+
 #[gpui_kit::test]
 fn a_card_shows_its_id_always_and_its_priority_and_checklist_when_it_has_them(
     cx: &mut TestAppContext,
