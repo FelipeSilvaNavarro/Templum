@@ -66,8 +66,8 @@ use gpui_kit::{
     Point as PixelPoint, SharedString, Subscription, Task, Window, WindowAppearance, px,
 };
 use templum_canvas::{
-    Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, Point, Rect,
-    ShapeKind, Size, Tile, Wire, chrome, free_spot, room_at,
+    Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Edges, Gesture, Guide, Point,
+    Rect, ShapeKind, Size, Tile, Wire, chrome, free_spot, room_at,
 };
 use templum_git::GitError;
 use templum_terminal::{Notify, Snapshot, Terminal};
@@ -568,6 +568,13 @@ enum Drag {
     Wire {
         from: BlockId,
         to: Point,
+    },
+    /// The Git popup's top or right edge (a corner is both) pressed at `from` (canvas points)
+    /// while the popup was drawn at `start`; the others rest against the sidebar and the window.
+    GitResize {
+        edges: Edges,
+        from: Point,
+        start: Size,
     },
 }
 
@@ -1087,6 +1094,12 @@ pub struct Workspace {
     index_frozen: bool,
     /// The sidebar is shown.
     pub(crate) sidebar: bool,
+    /// The Git popup's size the person dragged it to (none: `git_block::SIZE`), kept as dragged
+    /// and written in the index; what is drawn is `git_popup_size`.
+    pub(crate) git_size: Option<Size>,
+    /// What the window leaves the Git popup, as the last frame measured it (infinite before the
+    /// first): the drag and the diff panel read it without a window.
+    git_room: Size,
     pub(crate) cell: CellMetrics,
     /// IME pre-edit text, drawn at the cursor until committed.
     pub(crate) marked: Option<String>,
@@ -1541,6 +1554,8 @@ impl Workspace {
             notes_frozen: false,
             index_frozen: false,
             sidebar: true,
+            git_size: None,
+            git_room: Size::new(f32::INFINITY, f32::INFINITY),
             cell,
             marked: None,
             ime_cursor: None,

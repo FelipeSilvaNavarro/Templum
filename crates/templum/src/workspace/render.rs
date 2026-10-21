@@ -10,7 +10,7 @@ use gpui_kit::{
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
     TestSupportExt, Window, canvas, div, fill, point, px, size,
 };
-use templum_canvas::{BlockId, Camera, Gesture, Guide, Point, Rect, dot_grid, dot_size};
+use templum_canvas::{BlockId, Camera, Gesture, Guide, Point, Rect, Size, dot_grid, dot_size};
 
 use crate::block;
 use crate::git_block;
@@ -494,7 +494,10 @@ impl Render for Workspace {
                             if e.pressed_button.is_some() {
                                 ws.drag_to(e.position, e.modifiers.shift, cx);
                             } else {
-                                ws.end_drag();
+                                // A release this window never heard still keeps the popup's size.
+                                if !ws.release_git_resize(window, cx) {
+                                    ws.end_drag();
+                                }
                                 ws.hover_program(e.position, &e.modifiers);
                                 if ws.pointer.replace(e.position) != Some(e.position) {
                                     ws.follow_pointer(window, cx);
@@ -504,10 +507,10 @@ impl Render for Workspace {
                     }
                 });
                 let on_up = entity.clone();
-                window.on_mouse_event(move |e: &MouseUpEvent, phase, _, cx| {
+                window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
                     if phase == DispatchPhase::Bubble {
                         on_up.update(cx, |ws, cx| {
-                            if ws.release_program(e) {
+                            if ws.release_program(e) || ws.release_git_resize(window, cx) {
                                 return;
                             }
                             match e.button {
@@ -677,13 +680,11 @@ impl Render for Workspace {
             .as_ref()
             .map(|p| theme_picker::render(self, p, cx));
         let usage = self.usage_open.then(|| crate::usage::popover(self, cx));
-        // Over the canvas's bottom-left corner, beside the sidebar's Git button; a small window
-        // gets a smaller popup.
+        // Over the canvas's bottom-left corner, beside the sidebar's Git button, at the size the
+        // person dragged it to; a small window gets a smaller popup.
+        self.git_room = Size::new(vp.w - 2.0 * GIT_GAP, vp.h - 2.0 * GIT_GAP);
         let git = self.space.git().filter(|_| self.git_open).map(|g| {
-            let (w, h) = (
-                git_block::SIZE.w.min(vp.w - 2.0 * GIT_GAP),
-                git_block::SIZE.h.min(vp.h - 2.0 * GIT_GAP),
-            );
+            let Size { w, h } = self.git_popup_size();
             let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
             let popup = div()
                 .absolute()
@@ -693,7 +694,8 @@ impl Render for Workspace {
                 .h(px(h))
                 // Presses inside the popup don't reach the backdrop.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(git_block::popup(self, g, w, h, cx));
+                .child(git_block::popup(self, g, w, h, cx))
+                .children(git_block::resize_zones(cx));
             // A press anywhere outside the popup closes it, and nothing below gets it.
             div()
                 .id("git-backdrop")

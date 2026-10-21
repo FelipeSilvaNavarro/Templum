@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, ImageSource, Window};
-use templum_canvas::{BlockId, Rect, chrome};
+use templum_canvas::{BlockId, Rect, Size, chrome};
 
 use crate::alert;
 use crate::board;
@@ -189,6 +189,7 @@ impl Workspace {
             spaces.push(std::mem::take(&mut self.space));
         }
         self.sidebar = index.sidebar;
+        self.git_size = index.git_size.map(|s| Size::new(s.w, s.h));
         self.active = index.active.min(spaces.len() - 1);
         self.space = spaces.remove(self.active);
         self.others = spaces;
@@ -674,6 +675,7 @@ impl Workspace {
                 .collect(),
             active: self.active,
             sidebar: self.sidebar,
+            git_size: self.git_size.map(|s| session::SavedSize { w: s.w, h: s.h }),
         }
     }
 

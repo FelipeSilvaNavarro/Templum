@@ -32,11 +32,26 @@ mod view;
 pub(crate) mod widgets;
 pub(crate) mod words;
 
-pub(crate) use view::popup;
+pub(crate) use view::{popup, resize_zones};
 pub(crate) use widgets::field;
 
-/// The Git popup's size, pixels; a smaller window gets a smaller one.
+/// The Git popup's size, pixels, until the person drags it to another; a smaller window gets a
+/// smaller one.
 pub(crate) const SIZE: Size = Size { w: 760.0, h: 540.0 };
+/// The smallest the person can drag the popup to: the header's actions, a list column and a
+/// diff beside it still fit. A window with less room than this gets the room.
+pub(crate) const MIN: Size = Size { w: 600.0, h: 420.0 };
+
+/// The size the popup is drawn at: the one the person set (`SIZE` while none), at least `MIN`,
+/// at most `room`, which wins when it is smaller than `MIN`. Only what is drawn is clamped: the
+/// size set is kept, so a window that grows back gives it back.
+pub(crate) fn fit(set: Option<Size>, room: Size) -> Size {
+    let wanted = set.unwrap_or(SIZE);
+    Size::new(
+        wanted.w.max(MIN.w).min(room.w),
+        wanted.h.max(MIN.h).min(room.h),
+    )
+}
 /// Past this many changed files, a Filter files field shows above the lists.
 pub(crate) const FILTER_PAST: usize = 15;
 /// The lists' column width and the rows' height, world units.
@@ -723,5 +738,30 @@ mod tests {
             Check::of(&entry(None, Some(Change::Untracked))),
             Check::Unchecked
         );
+    }
+
+    #[test]
+    fn the_popup_is_drawn_at_the_size_set_inside_the_minimum_and_the_room() {
+        let big = Size::new(2000.0, 1500.0);
+        // Nothing set: today's size, or the room when the window has less.
+        assert_eq!(fit(None, big), SIZE);
+        assert_eq!(fit(None, Size::new(700.0, 500.0)), Size::new(700.0, 500.0));
+        // A set size is drawn as it is while it fits.
+        assert_eq!(
+            fit(Some(Size::new(900.0, 650.0)), big),
+            Size::new(900.0, 650.0)
+        );
+        // Too small a set size is lifted to the minimum; too large, cut to the room.
+        assert_eq!(fit(Some(Size::new(10.0, 10.0)), big), MIN);
+        let room = Size::new(1000.0, 600.0);
+        assert_eq!(fit(Some(Size::new(2000.0, 2000.0)), room), room);
+        // A window with less room than the minimum wins over it.
+        let tiny = Size::new(400.0, 300.0);
+        assert_eq!(fit(Some(Size::new(900.0, 650.0)), tiny), tiny);
+        // The size set isn't changed by drawing it smaller: the same set size fits again in a
+        // window that grew back.
+        let set = Some(Size::new(1400.0, 900.0));
+        assert_eq!(fit(set, Size::new(800.0, 500.0)), Size::new(800.0, 500.0));
+        assert_eq!(fit(set, big), Size::new(1400.0, 900.0));
     }
 }

@@ -7,9 +7,10 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, Div, ElementId, Hsla, KeyDownEvent, ScrollWheelEvent,
-    SharedString, TestSupportExt, div, px,
+    AnyElement, ClickEvent, Context, Div, ElementId, Hsla, KeyDownEvent, MouseButton,
+    MouseDownEvent, ScrollWheelEvent, SharedString, Stateful, TestSupportExt, div, px,
 };
+use templum_canvas::Edges;
 use templum_git::Operation;
 
 use super::branches::branches;
@@ -137,6 +138,57 @@ pub(crate) fn popup(
         .child(div().flex_1().min_h(px(0.0)).child(body(ws, git, 1.0, cx)))
         .test_support()
         .into_any_element()
+}
+
+/// How far the resize strips reach out of the popup and into it, pixels: outside it they take
+/// nothing the canvas needs, inside it they leave the diff's scrollbar its width.
+const EDGE_OUT: f32 = 6.0;
+const EDGE_IN: f32 = 2.0;
+
+/// Invisible strips on the popup's free edges, the right and the top, and a square at the corner
+/// between them, that resize it like a window's border (children of the popup's box, which they
+/// stick out of). The left edge rests against the sidebar and the bottom one against the
+/// window's, so they have none.
+pub(crate) fn resize_zones(cx: &mut Context<Workspace>) -> [AnyElement; 3] {
+    let thick = EDGE_OUT + EDGE_IN;
+    // Along an edge, clear of the corner's square.
+    let clear = 2.0 * thick - EDGE_OUT;
+    [
+        zone("git-resize-right", Edges::RIGHT, cx)
+            .right(px(-EDGE_OUT))
+            .w(px(thick))
+            .top(px(clear))
+            .bottom(px(0.0))
+            .cursor_ew_resize()
+            .test_support()
+            .into_any_element(),
+        zone("git-resize-top", Edges::TOP, cx)
+            .top(px(-EDGE_OUT))
+            .h(px(thick))
+            .left(px(0.0))
+            .right(px(clear))
+            .cursor_ns_resize()
+            .test_support()
+            .into_any_element(),
+        zone("git-resize-top-right", Edges::TOP_RIGHT, cx)
+            .top(px(-EDGE_OUT))
+            .right(px(-EDGE_OUT))
+            .size(px(2.0 * thick))
+            .cursor_nesw_resize()
+            .test_support()
+            .into_any_element(),
+    ]
+}
+
+/// A strip that starts the resize by `edges` when pressed.
+fn zone(name: &'static str, edges: Edges, cx: &mut Context<Workspace>) -> Stateful<Div> {
+    div().id(name).absolute().on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |ws, e: &MouseDownEvent, _, cx| {
+            ws.begin_git_resize(edges, e.position);
+            cx.stop_propagation();
+        }),
+    )
 }
 
 /// Under the folder's name: the branch (a click opens the branch dialog), where it stands with the

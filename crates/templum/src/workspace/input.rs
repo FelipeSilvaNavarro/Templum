@@ -15,6 +15,7 @@ use templum_canvas::{
 };
 use templum_terminal::{Button, KeyInput, MouseInput, MouseKind, SelectionKind, Side, Target};
 
+use crate::git_block;
 use crate::keys::{self, Command};
 use crate::menu;
 
@@ -179,6 +180,37 @@ impl Workspace {
         self.placing(&[id]);
     }
 
+    /// The Git popup's size as drawn: the one the person set, kept inside the room the window
+    /// leaves it (`git_block::fit`).
+    pub(crate) fn git_popup_size(&self) -> Size {
+        git_block::fit(self.git_size, self.git_room)
+    }
+
+    /// Pressed on the popup's right edge, top edge or the corner between them (`edges`).
+    pub(crate) fn begin_git_resize(&mut self, edges: Edges, pos: PixelPoint<Pixels>) {
+        self.drag = Some(Drag::GitResize {
+            edges,
+            from: self.local(pos),
+            start: self.git_popup_size(),
+        });
+    }
+
+    /// The popup's edge let go (or its button seen up): the size dragged to is written in the
+    /// index. False when no such drag was on.
+    pub(super) fn release_git_resize(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !matches!(self.drag, Some(Drag::GitResize { .. })) {
+            return false;
+        }
+        self.end_drag();
+        self.write_index(window, cx);
+        cx.notify();
+        true
+    }
+
     /// A terminal block's grid follows its rect.
     pub(super) fn fit_terminal(&mut self, id: BlockId, rect: Rect) {
         let (cols, rows) = chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
@@ -289,6 +321,16 @@ impl Workspace {
                 }
             }
             Some(Drag::Wire { to, .. }) => *to = self.space.canvas.camera.to_world(p),
+            // The popup sits at the bottom-left: its right edge grows it to the right, its top
+            // edge upward, so the pointer's way is the size's. Kept inside the room as dragged,
+            // so the popup never trails a pointer that went past the window.
+            Some(Drag::GitResize { edges, from, start }) => {
+                let wanted = Size::new(
+                    start.w + if edges.right { p.x - from.x } else { 0.0 },
+                    start.h + if edges.top { from.y - p.y } else { 0.0 },
+                );
+                self.git_size = Some(git_block::fit(Some(wanted), self.git_room));
+            }
             None => return,
         }
         cx.notify();
