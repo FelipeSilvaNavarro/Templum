@@ -221,10 +221,12 @@ impl Autostart {
 /// The Linux file. Name, comment and icon are the apps menu's entry's (`install.sh`).
 fn desktop_entry(launch: &Launch) -> String {
     format!(
-        "[Desktop Entry]\nType=Application\nName={}\nComment={COMMENT}\n{}\nIcon=templum\n\
-         Terminal=false\nX-GNOME-Autostart-enabled=true\n",
+        "[Desktop Entry]\nType=Application\nName={}\nComment={COMMENT}\n{}\nTryExec={}\n\
+         Icon=templum\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
         launch.title(),
         exec_line(launch),
+        // Unquoted, so the desktop skips the entry (no failed start) when the file is gone.
+        launch.program.to_string_lossy().replace('\\', r"\\"),
     )
 }
 
@@ -433,9 +435,12 @@ mod tests {
             desktop_entry(&launch("/home/a/.local/bin/templum", false)),
             "[Desktop Entry]\nType=Application\nName=Templum\n\
              Comment=An infinite canvas of terminals and AI agents\n\
-             Exec=\"/home/a/.local/bin/templum\"\nIcon=templum\nTerminal=false\n\
-             X-GNOME-Autostart-enabled=true\n"
+             Exec=\"/home/a/.local/bin/templum\"\nTryExec=/home/a/.local/bin/templum\n\
+             Icon=templum\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
         );
+        // Not quoted, with a backslash written twice, as any value of the file.
+        let odd = desktop_entry(&launch(r"/a b\c", false));
+        assert!(odd.contains("\nTryExec=/a b\\\\c\n"), "{odd}");
         let dev = desktop_entry(&launch("/src/target/debug/templum", true));
         assert!(dev.contains("Name=Templum (dev)\n"), "{dev}");
         assert!(
