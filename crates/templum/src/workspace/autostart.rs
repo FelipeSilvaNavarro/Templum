@@ -52,18 +52,26 @@ impl Workspace {
         cx.notify();
     }
 
-    /// At startup, an entry that is on gets this executable's path (Templum was moved or
-    /// installed elsewhere). Off the UI thread, and silent: the person asked for nothing.
+    /// At startup, an entry that is on but whose executable is gone gets this one's path
+    /// (Templum was moved or installed elsewhere). Off the UI thread, and silent: the person
+    /// asked for nothing. A second Templum open (it has no data folder: it keeps nothing) leaves
+    /// the entry to the first.
     pub(super) fn refresh_autostart(&self, cx: &mut Context<Self>) {
-        if let Some(entry) = self.autostart.entry.clone() {
-            cx.background_executor()
-                .spawn(async move {
-                    if let Err(err) = entry.refresh() {
-                        eprintln!("templum: couldn't update starting at login: {err}");
-                    }
-                })
-                .detach();
-        }
+        let Some(entry) = self
+            .autostart
+            .entry
+            .clone()
+            .filter(|_| self.data_dir.is_some())
+        else {
+            return;
+        };
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(err) = entry.refresh() {
+                    eprintln!("templum: couldn't update starting at login: {err}");
+                }
+            })
+            .detach();
     }
 }
 

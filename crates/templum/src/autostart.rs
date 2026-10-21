@@ -130,11 +130,13 @@ impl Autostart {
 
     /// The system starts Templum at login.
     pub fn is_on(&self) -> bool {
-        let Some(stored) = self.read() else {
-            return false;
-        };
+        self.read().is_some_and(|stored| self.on_given(&stored))
+    }
+
+    /// `is_on`, given what `read` found.
+    fn on_given(&self, stored: &str) -> bool {
         match self.place {
-            Place::Desktop(_) => !switched_off(&stored),
+            Place::Desktop(_) => !switched_off(stored),
             Place::Agent(_) => true,
             Place::Run => {
                 !reg(&reg_query(APPROVED_KEY, self.launch.title())).is_some_and(|o| startup_off(&o))
@@ -169,13 +171,23 @@ impl Autostart {
         }
     }
 
-    /// At startup: an entry that is on but starts another executable (Templum was moved,
-    /// reinstalled elsewhere) is written again for this one. Off, or switched off in the
-    /// system, it stays so, and what a person added to a file by hand stays too.
+    /// At startup: an entry that is on but whose executable is gone (Templum was moved or
+    /// reinstalled elsewhere, the build it named was deleted) is written again for this one. One
+    /// that names a file that still exists is another Templum's (a build beside the installed
+    /// one, a portable copy, an AppImage): two never take it from each other. Off, or switched
+    /// off in the system, it stays so, and so does an entry whose program can't be told (what a
+    /// person wrote by hand).
     pub fn refresh(&self) -> Result<(), String> {
-        match self.read() {
-            Some(stored) if !stored.contains(&self.runs()) && self.is_on() => self.set(true),
-            _ => Ok(()),
+        let Some(stored) = self.read() else {
+            return Ok(());
+        };
+        let gone = self
+            .stored_program(&stored)
+            .is_some_and(|p| p.is_absolute() && matches!(p.try_exists(), Ok(false)));
+        if gone && self.on_given(&stored) {
+            self.set(true)
+        } else {
+            Ok(())
         }
     }
 
@@ -196,12 +208,12 @@ impl Autostart {
         }
     }
 
-    /// The part of it that says what it starts.
-    fn runs(&self) -> String {
+    /// The executable a stored entry starts; None when it can't be told.
+    fn stored_program(&self, stored: &str) -> Option<PathBuf> {
         match self.place {
-            Place::Desktop(_) => exec_line(&self.launch),
-            Place::Agent(_) => program_arguments(&self.launch),
-            Place::Run => command_line(&self.launch),
+            Place::Desktop(_) => exec_program(stored),
+            Place::Agent(_) => agent_program(stored),
+            Place::Run => run_program(stored),
         }
     }
 }
@@ -273,6 +285,55 @@ fn program_arguments(launch: &Launch) -> String {
 fn command_line(launch: &Launch) -> String {
     let program = launch.program.to_string_lossy();
     format!("\"{program}\"{}", if launch.dev { " --dev" } else { "" })
+}
+
+/// The program of a `.desktop` file's `Exec=` line, undoing `exec_line`: the file's `\\`, then the
+/// quoting of the first argument (`\"`, `\$`, ``\` ``, `\\` and `%%`). An unquoted program ends at
+/// the first space.
+fn exec_program(text: &str) -> Option<PathBuf> {
+    let value = text.lines().find_map(|l| l.strip_prefix("Exec="))?;
+    let value = value.trim_start().replace(r"\\", r"\");
+    let mut chars = value.chars().peekable();
+    let quoted = chars.next_if_eq(&'"').is_some();
+    let mut program = String::new();
+    loop {
+        match chars.next() {
+            Some('"') if quoted => break,
+            None if quoted => return None,
+            Some(c) if !quoted && c.is_whitespace() => break,
+            None => break,
+            Some('\\') if quoted => program.push(chars.next()?),
+            Some('%') if chars.peek() == Some(&'%') => {
+                chars.next();
+                program.push('%');
+            }
+            Some(c) => program.push(c),
+        }
+    }
+    (!program.is_empty()).then(|| program.into())
+}
+
+/// The first string of a LaunchAgent's `ProgramArguments`, without the XML entities.
+fn agent_program(plist: &str) -> Option<PathBuf> {
+    let (_, after) = plist.split_once("<key>ProgramArguments</key>")?;
+    let (_, after) = after.split_once("<array>")?;
+    let (_, after) = after.split_once("<string>")?;
+    let (program, _) = after.split_once("</string>")?;
+    // `&amp;` last, so `&amp;lt;` stays `&lt;`.
+    let program = program
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+    Some(program.into())
+}
+
+/// What is between the first quotes of the Windows value's data (`command_line`).
+fn run_program(data: &str) -> Option<PathBuf> {
+    let (_, after) = data.split_once('"')?;
+    let (program, _) = after.split_once('"')?;
+    Some(program.into())
 }
 
 fn reg_add(name: &str, data: &str) -> Vec<String> {
@@ -627,11 +688,68 @@ mod tests {
     }
 
     #[test]
-    fn startup_writes_an_entry_that_is_on_again_when_templum_moved() {
+    fn the_program_of_a_stored_entry_is_read_back_whatever_it_holds() {
+        for program in [
+            "/opt/templum",
+            "/a b/Templum.AppImage",
+            r#"/a"b$c`d"#,
+            r"/a\b%f",
+            "/ü/ñ/t",
+        ] {
+            for dev in [false, true] {
+                let l = launch(program, dev);
+                assert_eq!(exec_program(&desktop_entry(&l)), Some(program.into()));
+                assert_eq!(agent_program(&launch_agent(&l)), Some(program.into()));
+            }
+        }
+        for program in [
+            r"C:\Program Files\Templum\templum.exe",
+            r"C:\src\templum.exe",
+        ] {
+            for dev in [false, true] {
+                let data = command_line(&launch(program, dev));
+                assert_eq!(run_program(&data), Some(program.into()));
+            }
+        }
+        let agent =
+            |p: &str| format!("<key>ProgramArguments</key><array><string>{p}</string></array>");
+        assert_eq!(
+            agent_program(&agent("/a&amp;lt;&quot;&apos;")),
+            Some("/a&lt;\"'".into())
+        );
+        // What a person wrote differently can't be told.
+        assert_eq!(exec_program("[Desktop Entry]\nName=T\n"), None);
+        assert_eq!(exec_program("Exec=\"/unclosed\n"), None);
+        assert_eq!(
+            exec_program("TryExec=/a/t\nExec=env X=1 /a/t\n"),
+            Some("env".into())
+        );
+        assert_eq!(agent_program("<plist></plist>"), None);
+        assert_eq!(run_program(r"C:\t.exe"), None);
+    }
+
+    /// A file that is there, another Templum's program.
+    fn existing(dir: &std::path::Path, name: &str) -> String {
+        let path = dir.join(name);
+        fs::write(&path, "").unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    /// A program that is nowhere, in `dir`.
+    fn missing(dir: &std::path::Path, name: &str) -> String {
+        dir.join(name).to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn startup_writes_an_entry_that_is_on_again_when_its_executable_is_gone() {
         let dir = tempfile::tempdir().unwrap();
+        let (old, new) = (
+            missing(dir.path(), "old/templum"),
+            missing(dir.path(), "new place/t"),
+        );
         for os in ["linux", "macos"] {
-            let old = Autostart::in_dir(os, dir.path(), "/old/place/templum", false);
-            let moved = Autostart::in_dir(os, dir.path(), "/new place/templum", false);
+            let old = Autostart::in_dir(os, dir.path(), &old, false);
+            let moved = Autostart::in_dir(os, dir.path(), &new, false);
             old.set(true).unwrap();
             assert_eq!(moved.refresh(), Ok(()));
             let (Place::Desktop(path) | Place::Agent(path)) = &moved.place else {
@@ -639,16 +757,36 @@ mod tests {
             };
             let text = fs::read_to_string(path).unwrap();
             assert_eq!(text, moved.contents());
-            assert!(!text.contains("/old/place"), "{text}");
+            assert!(!text.contains("old/templum"), "{text}");
             moved.set(false).unwrap();
+        }
+    }
+
+    #[test]
+    fn startup_leaves_the_entry_of_another_templum_that_still_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        // A build beside the installed Templum, a portable copy, a test AppImage.
+        let other = existing(dir.path(), "other templum");
+        let here = missing(dir.path(), "here");
+        for os in ["linux", "macos"] {
+            let theirs = Autostart::in_dir(os, dir.path(), &other, false);
+            let ours = Autostart::in_dir(os, dir.path(), &here, false);
+            theirs.set(true).unwrap();
+            assert_eq!(ours.refresh(), Ok(()));
+            let (Place::Desktop(path) | Place::Agent(path)) = &ours.place else {
+                unreachable!()
+            };
+            assert_eq!(fs::read_to_string(path).unwrap(), theirs.contents());
+            ours.set(false).unwrap();
         }
     }
 
     #[test]
     fn startup_leaves_alone_what_is_off_current_or_edited_by_hand() {
         let dir = tempfile::tempdir().unwrap();
-        let old = Autostart::in_dir("linux", dir.path(), "/old/templum", false);
-        let now = Autostart::in_dir("linux", dir.path(), "/new/templum", false);
+        let (gone, here) = (missing(dir.path(), "gone"), existing(dir.path(), "here"));
+        let old = Autostart::in_dir("linux", dir.path(), &gone, false);
+        let now = Autostart::in_dir("linux", dir.path(), &here, false);
         let Place::Desktop(path) = &now.place else {
             unreachable!()
         };
@@ -666,5 +804,10 @@ mod tests {
         fs::write(path, &edited).unwrap();
         assert_eq!(now.refresh(), Ok(()));
         assert_eq!(fs::read_to_string(path).unwrap(), edited);
+        // A program a person wrote without a path (found on PATH) can't be told gone.
+        let by_hand = "[Desktop Entry]\nType=Application\nExec=templum --dev\n";
+        fs::write(path, by_hand).unwrap();
+        assert_eq!(now.refresh(), Ok(()));
+        assert_eq!(fs::read_to_string(path).unwrap(), by_hand);
     }
 }

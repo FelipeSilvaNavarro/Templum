@@ -189,9 +189,11 @@ switch off.
   read as off. Turning it on writes the entry again and clears that value.
 - **`--dev`** (beside an installed Templum) has an entry of its own (`templum-dev.desktop`, `….templum.dev.plist`,
   `Templum (dev)`) that starts `templum --dev`, so it never overwrites or removes the installed one's.
-- **Moved or reinstalled.** At startup, an entry that is on but starts another executable is written again for
-  this one, off the UI thread. An entry that is off or switched off, and a line a person added to it by hand, stay
-  as they are.
+- **Moved or reinstalled.** At startup, an entry that is on but whose executable no longer exists is written again
+  for this one, off the UI thread. An entry that names a file that still exists is another Templum's (a build
+  from Cargo beside the installed one, a portable copy, a test AppImage) and stays, so two never take it from each
+  other. An entry that is off or switched off, one whose program can't be told, and a line a person added to it by
+  hand, stay as they are. A second Templum open (it keeps nothing) never refreshes.
 - **The bench** (`--bench…`) has no entry: it never touches the person's login items.
 - **No home folder:** the row says so and has no switch.
 - **It fails** (a read-only folder, `reg.exe` refusing): the row's description says why, a notification shows
@@ -282,8 +284,9 @@ Tests are written first, as always. Everything runs in CI on Linux, macOS and Wi
 - on, off, off again and read back in a temporary home (never the real one, nor the registry); removing the file
   by hand reads off; `Hidden=true` reads off and turning it on writes it again; an unwritable folder is an error;
 - the `--dev` entry doesn't touch the installed one's;
-- startup rewrites an entry that is on for another executable, and leaves alone one that is off, switched off or
-  edited by hand;
+- the program an entry names is read back whatever it holds (spaces, quotes, `$`, backslashes, `%`, `&`, `<`);
+- startup rewrites an entry that is on for an executable that is gone, and leaves alone one that names a file that
+  exists, one that is off, switched off or edited by hand, and anything a second Templum finds;
 - headless: the General tab finds an entry made outside, turns it on and off, and says why it failed.
 
 **Manual (Hyprland):**

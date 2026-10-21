@@ -88,26 +88,53 @@ fn the_start_at_login_switch_reads_the_system_and_changes_it(cx: &mut TestAppCon
     assert!(!on(&ws, cx));
 }
 
-#[gpui_kit::test]
-fn startup_points_an_entry_that_is_on_at_this_executable(cx: &mut TestAppContext) {
-    let home = tempfile::tempdir().unwrap();
-    let on = |program| crate::autostart::Autostart::in_dir("linux", home.path(), program, false);
-    // Templum was moved: the entry the person turned on names where it was.
-    on("/old/templum").set(true).unwrap();
-    let entry = on("/opt/templum");
+/// Opens a workspace with `entry` and a data folder (None: a second Templum open, which keeps
+/// nothing) and lets its startup finish.
+fn start_with(
+    entry: crate::autostart::Autostart,
+    data: Option<&std::path::Path>,
+    cx: &mut TestAppContext,
+) {
     cx.executor().allow_parking();
+    let data = data.map(std::path::Path::to_path_buf);
     cx.update(|cx| {
         gpui_kit::init(cx);
         bind_keys(cx);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-            cx.new(|cx| Workspace::with(Some(quiet()), Some(entry), None, None, window, cx))
+            cx.new(|cx| Workspace::with(Some(quiet()), Some(entry), None, data, window, cx))
         })
         .expect("open window");
     });
     cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn startup_points_an_entry_that_is_on_at_this_executable(cx: &mut TestAppContext) {
+    let home = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let on =
+        |program: &str| crate::autostart::Autostart::in_dir("linux", home.path(), program, false);
+    // Templum was moved: the entry the person turned on names where it was.
+    let old = home.path().join("old/templum");
+    on(old.to_str().unwrap()).set(true).unwrap();
+    start_with(on("/opt/templum"), Some(data.path()), cx);
     let path = home.path().join(".config/autostart/templum.desktop");
     let text = std::fs::read_to_string(path).unwrap();
     assert!(text.contains("Exec=\"/opt/templum\""), "{text}");
+}
+
+#[gpui_kit::test]
+fn a_second_templum_leaves_the_entry_to_the_first(cx: &mut TestAppContext) {
+    let home = tempfile::tempdir().unwrap();
+    let on =
+        |program: &str| crate::autostart::Autostart::in_dir("linux", home.path(), program, false);
+    let old = home.path().join("old/templum");
+    on(old.to_str().unwrap()).set(true).unwrap();
+    // No data folder: this one started empty beside the first.
+    start_with(on("/opt/templum"), None, cx);
+    let path = home.path().join(".config/autostart/templum.desktop");
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(text.contains("old/templum"), "{text}");
 }
 
 #[gpui_kit::test]
