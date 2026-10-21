@@ -1509,17 +1509,23 @@ mod tests {
 
     #[test]
     fn each_account_is_a_line_of_templum_accounts() {
-        let text = concat!(
-            "[agents]\n",
-            "claudinho = { of = \"claude\" }\n",
-            "Work = { of = \"codex\" }\n",
-            // A word of the shell would break it as a function.
-            "test = { of = \"claude\" }\n",
-            "tab = { of = \"claude\", folder = \"/with\\ttab\" }\n",
+        // `test` is a word of the shell, which would break it as a function; `tab`'s folder is a full
+        // path on each system, with a tab in it.
+        let tab = if cfg!(windows) {
+            r"C:\\with\ttab"
+        } else {
+            r"/with\ttab"
+        };
+        let text = format!(
+            "[agents]\n\
+             claudinho = {{ of = \"claude\" }}\n\
+             Work = {{ of = \"codex\" }}\n\
+             test = {{ of = \"claude\" }}\n\
+             tab = {{ of = \"claude\", folder = \"{tab}\" }}\n"
         );
         let folder = Path::new("/data").join("accounts").join("claudinho");
         assert_eq!(
-            accounts_env(&agents(text)),
+            accounts_env(&agents(&text)),
             format!("claudinho\tclaude\tCLAUDE_CONFIG_DIR\t{}", folder.display())
         );
         assert_eq!(accounts_env(&agents("")), "");
