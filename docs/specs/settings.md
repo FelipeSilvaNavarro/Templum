@@ -197,7 +197,8 @@ switch off.
   other. An entry that is off or switched off, one whose program can't be told, and a line a person added to it by
   hand, stay as they are. A second Templum open (it keeps nothing) never refreshes.
 - **The bench** (`--bench…`) has no entry: it never touches the person's login items.
-- **No home folder:** the row says so and has no switch.
+- **No entry** (no home folder, or the running executable can't be told): the row says "Templum can't add itself to
+  this system's startup apps" and has no switch.
 - **It fails** (a read-only folder, `reg.exe` refusing): the row's description says why, a notification shows
   the same, and the switch shows what the system has. Nothing crashes.
 

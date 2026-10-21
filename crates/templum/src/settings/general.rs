@@ -21,7 +21,7 @@ pub(super) fn rows(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<Row> {
 }
 
 /// "Start Templum when you log in", showing `on`; `choose` runs on a click. Without an entry (no
-/// home folder) it only says so.
+/// home folder, or no way to tell which executable is running) it only says so.
 pub(super) fn autostart_row(
     ws: &Workspace,
     entity: &Entity<Workspace>,
@@ -30,9 +30,7 @@ pub(super) fn autostart_row(
 ) -> Row {
     let row = Row::new("general.autostart", "Start Templum when you log in");
     if ws.autostart.entry.is_none() {
-        return row.description(
-            "No home folder was found, so Templum can't add itself to the startup apps",
-        );
+        return row.description("Templum can't add itself to this system's startup apps");
     }
     let e = entity.clone();
     row.description(ws.autostart.error.clone().unwrap_or_else(|| {
