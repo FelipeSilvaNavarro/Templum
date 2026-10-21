@@ -55,6 +55,121 @@ fn with_select_a_mouse_wheel_on_the_canvas_zooms(cx: &mut TestAppContext) {
     });
 }
 
+/// `three_blocks` with nothing selected and the keyboard on none of them: (terminal, note).
+fn unpicked_blocks(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (BlockId, BlockId) {
+    let (_, note, terminal) = three_blocks(handle, ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.focused = None;
+        ws.space.selected.clear();
+    });
+    (terminal, note)
+}
+
+/// Window positions over the terminal and over the note of `unpicked_blocks`.
+fn over_blocks(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> [(f32, f32); 2] {
+    [(240.0, 520.0), (410.0, 140.0)].map(|p| at(ws, cx, p))
+}
+
+const DOWN: ScrollDelta = ScrollDelta::Pixels(point(px(0.), px(60.)));
+
+#[gpui_kit::test]
+fn with_select_the_wheel_over_a_block_that_is_not_selected_moves_the_canvas(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (terminal, _) = unpicked_blocks(handle, &ws, cx);
+    let over = over_blocks(&ws, cx);
+    let before = ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    for at in over {
+        cx.update_window(handle, |_, window, cx| wheel(window, cx, at, DOWN, false))
+            .unwrap();
+    }
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.camera.origin.y, before.origin.y - 120.0);
+        assert!(!ws.space.terminal(terminal).unwrap().scrolled.get());
+    });
+    // A mouse's wheel zooms there, as over the empty canvas.
+    let mouse = ScrollDelta::Lines(point(0.0, 1.0));
+    cx.update_window(handle, |_, window, cx| {
+        wheel(window, cx, over[0], mouse, false)
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.1));
+}
+
+#[gpui_kit::test]
+fn with_select_the_wheel_over_the_block_with_the_keyboard_or_a_selected_one_stays_in_it(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (terminal, note) = unpicked_blocks(handle, &ws, cx);
+    let over = over_blocks(&ws, cx);
+    let before = ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    // A click on the terminal gives it the keyboard.
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, over[0], 1);
+        wheel(window, cx, over[0], DOWN, false);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.camera, before, "the terminal took it");
+        assert!(ws.space.terminal(terminal).unwrap().scrolled.get());
+    });
+    // The note, selected with the terminal's keyboard elsewhere: the note's, not the canvas's.
+    ws.update(cx, |ws, _| ws.space.selected = vec![note]);
+    cx.update_window(handle, |_, window, cx| {
+        wheel(window, cx, over[1], DOWN, false)
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera, before));
+    // With Ctrl it zooms the canvas, over a selected block too.
+    cx.update_window(handle, |_, window, cx| {
+        wheel(
+            window,
+            cx,
+            over[1],
+            ScrollDelta::Lines(point(0.0, 1.0)),
+            true,
+        )
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.1));
+}
+
+#[gpui_kit::test]
+fn the_pointer_coming_onto_a_block_gives_it_the_wheel_but_a_block_coming_under_it_does_not(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (terminal, _) = unpicked_blocks(handle, &ws, cx);
+    let over = over_blocks(&ws, cx);
+    // The canvas pans under a still pointer: the terminal comes under it and doesn't take the
+    // wheel (`follow_pointer` waits for the pointer to move).
+    let elsewhere = at(&ws, cx, (700.0, 700.0));
+    point_at(handle, cx, elsewhere);
+    ws.update(cx, |ws, _| ws.space.focused = None);
+    cx.update_window(handle, |_, window, cx| {
+        wheel(window, cx, over[0], DOWN, false)
+    })
+    .unwrap();
+    let panned = ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    assert_ne!(panned.origin.y, 0.0);
+    // The pointer moves onto the terminal: it takes the keyboard (Settings ▸ Canvas), and the wheel.
+    point_at(handle, cx, over[0]);
+    cx.update_window(handle, |_, window, cx| {
+        wheel(window, cx, over[0], DOWN, false)
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.camera, panned);
+        assert!(ws.space.terminal(terminal).unwrap().scrolled.get());
+    });
+}
+
 #[cfg(target_os = "macos")]
 const ZOOM_OUT: &str = "cmd--";
 #[cfg(not(target_os = "macos"))]

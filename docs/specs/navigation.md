@@ -7,7 +7,8 @@
 ## Goal
 
 On a canvas full of blocks, the empty spaces that pan it run out: a drag over a terminal selects its text, and the
-wheel scrolls its history. Templum gets two ways to move the canvas wherever the pointer is.
+wheel scrolls its history. Templum gets two ways to move the canvas wherever the pointer is, and the wheel scrolls a
+block only when the block is selected ([below](#the-wheel-over-blocks)).
 
 ## The hand: hold Alt
 
@@ -29,6 +30,33 @@ machine (Hyprland), window bindings use Super, so Alt with the mouse is free.
 While a block (or a selection) is held by its title, the wheel, or two fingers on a touchpad, pans the canvas, a
 mouse's wheel and Ctrl+wheel included, and the block stays under the pointer: it can be carried farther than the
 window shows without letting go.
+
+Bringing the pointer near the canvas's edge pans it too, the way the selection rectangle (Shift+drag) does: the
+same rule (`templum_canvas::edge_scroll`: a 40 px zone, faster the nearer the edge, full speed at it or past it,
+in screen pixels, so the zoom doesn't change it). The canvas keeps going while the pointer rests there, the block
+or every selected block stays under the pointer, and it stops when the button is let go or the pointer leaves the
+zone. A press on a title near the edge that doesn't move past a click pans nothing. In grid mode the tiles don't
+move freely, so nothing pans.
+
+## The wheel over blocks
+
+With the Select tool, a block's content takes the wheel only when the block is **selected**: it has the keyboard (a
+click, or the pointer moving onto it with *Focus follows the pointer*, below), or it is in the selection (Shift+drag,
+Shift+click on a title). Over any other block the wheel does what it does over empty space: two fingers on a
+touchpad pan the canvas, a mouse's wheel zooms it, Ctrl+wheel zooms. So a canvas panned with the wheel doesn't stop
+dead when a block slides under the pointer, and a terminal's history, a note, a kanban's columns, an editor's file
+or the Git block's lists scroll only once the block is picked.
+
+- One place decides: a layer over the blocks (`route_wheel`, `workspace/input.rs`) hears the wheel before any block's
+  own handler and, over a block that isn't selected, moves the canvas and stops the event there. The blocks keep
+  their handlers as they were (stop the wheel unless Ctrl is held), so what a selected block scrolls is unchanged.
+- **Focus follows the pointer** (the setting, on by default) makes the pointer *picking* a block: moving it onto a
+  block gives it the keyboard, so the wheel scrolls it from then on. A block that comes under a *still* pointer, as the
+  canvas pans, doesn't take the keyboard ([below](#the-keyboard-follows-the-pointer)) and so doesn't take the wheel.
+  With the setting off, a click picks the block.
+- Not affected: grid mode and fullscreen (no camera moves there, so every tile scrolls its own content, selected
+  or not); the Hand tool, Alt and the drawing tools (their layer already takes the wheel); a block held by its title
+  (the wheel moves the canvas, above); a block far away, drawn as bars (it scrolls nothing, as before).
 
 ## The middle button
 
@@ -71,6 +99,12 @@ tiles do ([grid.md](grid.md#moving-around)).
 - With the Hand tool, the wheel zooms over blocks and the empty canvas.
 - A double-click on a title frames the block above the toolbar; another goes back.
 - A middle-button drag over a terminal pans the canvas.
+- With Select, the wheel over a terminal and a note that aren't selected pans the canvas (a mouse's wheel zooms) and
+  scrolls neither; after a click on the terminal, the wheel is its own and the canvas stays; a note in the selection
+  keeps the wheel too, and Ctrl+wheel zooms over it.
+- The canvas panned under a still pointer doesn't give the wheel to the block that arrives under it; the pointer
+  moving onto the block does.
+- In grid mode, the wheel over a tile that isn't selected scrolls it.
 - Moving the pointer over a terminal gives it the keyboard, leaves it under the others and takes it from the note's
   editor; a block coming under a still pointer, or a move to where the pointer is, doesn't take it; a real move
   does.

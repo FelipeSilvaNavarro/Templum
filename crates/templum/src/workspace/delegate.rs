@@ -10,8 +10,9 @@ use templum_mcp::{Reply, tools};
 use templum_terminal::{KEY_NAMES, named_key};
 use templum_usage::Session;
 
+use super::activity::STILL;
 use super::bus::{Outcome, clean_title, flat, target};
-use super::waits::Waiting;
+use super::waits::{LAST_LINES, Waiting};
 use super::{AgentState, Handed, Pane, Space, Workspace};
 
 /// How long after a task is typed its Enter goes: an agent may take keys that come in one burst
@@ -44,10 +45,23 @@ const KEYS_SETTLE: Duration = Duration::from_millis(300);
 /// The last lines of a screen Templum answers with (`send_keys`, a task not taken).
 pub(super) const TAIL_LINES: usize = 20;
 /// What a task's first line asks, after who hands it over: Claude Code takes a long paste alone
-/// for data it was shown, and does what typed text with it asks.
-pub(super) const TASK_LEAD: &str = "Your task is in the pasted text: do it.";
+/// for data it was shown, and does what typed text with it asks. It asks for the answer through
+/// `reply` (docs/specs/agent-protocol.md, 1).
+pub(super) const TASK_LEAD: &str =
+    "Your task is in the pasted text: do it, then answer it with reply.";
 /// What a change's first line asks, after who changes which task.
-pub(super) const CHANGE_LEAD: &str = "The change is in the pasted text: do it.";
+pub(super) const CHANGE_LEAD: &str =
+    "The change is in the pasted text: do it, then answer the task with reply.";
+
+/// What ends a task's pasted text (a change's too): how task `id` is answered, with `reply`, or
+/// from a shell where the agent has no Templum tools.
+pub(super) fn answer_how(id: u64) -> String {
+    format!(
+        "\n\n(When task t{id} is done, call Templum's reply tool once, with your whole answer as \
+         its text: that ends the task and hands your answer over. Without Templum's tools, run \
+         `templum reply -` in your shell, the answer on its standard input.)"
+    )
+}
 /// What the first line of a task's end says follows it: its answer, or why it failed.
 pub(super) const DONE_LEAD: &str = "Its answer is in the pasted text.";
 pub(super) const FAILED_LEAD: &str = "What happened is in the pasted text.";
@@ -329,11 +343,26 @@ impl Workspace {
             )));
         }
         let worker = pane.term.id().to_string();
+        self.asker_wrote(&worker, asker);
         let said = match keys.len() {
             1 => format!("Pressed 1 key in {block}."),
             n => format!("Pressed {n} keys in {block}."),
         };
         Outcome::Later(self.press_keys(worker, by.to_string(), keys, said, cx))
+    }
+
+    /// `asker` wrote into the agent in `terminal` (keys, typed text, a reply): that is how it
+    /// answers a dialog of an agent that went quiet on the task `asker` handed it, so the agent
+    /// waits for the task again, and a screen that stays still after the writing tells `asker`
+    /// once more (docs/specs/agent-protocol.md, 5). Anyone else's writing changes nothing.
+    pub(super) fn asker_wrote(&mut self, terminal: &str, asker: &str) {
+        if let Some(pane) = self.pane_mut(terminal)
+            && let Some(handed) = pane.handed.as_mut().filter(|h| h.by == asker && h.quiet)
+        {
+            handed.quiet = false;
+            pane.state = Some(AgentState::Working);
+            pane.looks.heard();
+        }
     }
 
     /// `interrupt` from the terminal `from`: Esc once in the agent `block` while it works or waits
@@ -749,15 +778,34 @@ impl Workspace {
         }
         let worker = pane.term.id().to_string();
         let usage = pane.usage.clone();
+        // A task for an agent without Templum's tools says why, and what else ends it.
+        let no_tools = (mine.is_none() && !self.has_tools(&worker)).then(|| {
+            let shell = if self.replies_from_shell(pane) {
+                "it can still answer with `templum reply -` in its shell; else "
+            } else {
+                ""
+            };
+            format!(
+                " {block} has no Templum tools ({}): {shell}its turn's end or its screen going \
+                 still ends the task.",
+                self.no_tools_why(pane)
+            )
+        });
         let id = mine.unwrap_or_else(|| {
             self.next_task += 1;
             self.next_task
         });
         let line = match mine {
-            Some(_) => format!("[from {by}, a change to task t{id}] {CHANGE_LEAD}\n{task}"),
+            Some(_) => format!(
+                "[from {by}, a change to task t{id}] {CHANGE_LEAD}\n{task}{}",
+                answer_how(id)
+            ),
             None => {
                 let from = scheduled.map_or(String::new(), |s| format!(", scheduled s{s}"));
-                format!("[from {by}, task t{id}{from}] {TASK_LEAD}\n{task}")
+                format!(
+                    "[from {by}, task t{id}{from}] {TASK_LEAD}\n{task}{}",
+                    answer_how(id)
+                )
             }
         };
         self.send_task(&worker, &line, true, cx);
@@ -768,6 +816,7 @@ impl Workspace {
                 (Some(_), Some(handed)) => {
                     handed.taken = false;
                     handed.behind = false;
+                    handed.quiet = false;
                     handed.until = until;
                 }
                 _ => {
@@ -791,21 +840,32 @@ impl Workspace {
         } else {
             Outcome::Now(Reply::ok(match mine {
                 Some(_) => format!("Typed into {block} as a change to task t{id}."),
-                None => format!("Handed to {block} as task t{id}."),
+                None => format!(
+                    "Handed to {block} as task t{id}.{}",
+                    no_tools.unwrap_or_default()
+                ),
             }))
         }
     }
 
-    /// `reply` from the terminal `from` to the agent `block`: its calls waiting on the caller
-    /// (`delegate` with `wait`, `wait_for_idle`) get `text`; with none, the text is typed into it
-    /// as a message. Either way the task it handed the caller is answered.
+    /// `reply` from the terminal `from`: without a `block`, or to the agent that handed the caller
+    /// its task, the caller's answer, which ends that task (`finish_task`). To another connected
+    /// agent `block`, a message: its calls waiting on the caller (`delegate` with `wait`,
+    /// `wait_for_idle`) get `text`; with none, the text is typed into it. No task ends then
+    /// (docs/specs/agent-protocol.md, 2).
     pub(super) fn reply_to(
         &mut self,
         from: &str,
-        block: &str,
+        block: Option<&str>,
         text: &str,
         cx: &mut Context<Self>,
     ) -> Reply {
+        if text.trim().is_empty() {
+            return Reply::err("reply needs your answer as text.");
+        }
+        let Some(block) = block else {
+            return self.finish_task(from, text, cx);
+        };
         let (space_id, me) = self.caller(from).expect("call found the caller");
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let to = match target(space, me, block) {
@@ -813,12 +873,21 @@ impl Workspace {
             Err(refused) => return refused,
         };
         if to == me {
-            return Reply::err("This block is yours: reply to the agent that handed you the task.");
+            return Reply::err(
+                "This block is yours: leave block out to answer the task you are on.",
+            );
         }
         let Some(pane) = space.terminal(to) else {
             return Reply::err(format!("{block} isn't a terminal."));
         };
         let asker = pane.term.id().to_string();
+        if self
+            .pane(from)
+            .and_then(|p| p.handed.as_ref())
+            .is_some_and(|h| h.by == asker)
+        {
+            return self.finish_task(from, text, cx);
+        }
         let waiting: Vec<u64> = self
             .waits
             .iter()
@@ -831,23 +900,14 @@ impl Workspace {
             if let Err(refused) = pane.takes_handing(block) {
                 return refused;
             }
-            // The task this agent handed the replier, if any: the reply is its end.
-            let to = self
-                .pane(from)
-                .and_then(|p| p.handed.as_ref())
-                .filter(|h| h.by == asker)
-                .map(|h| format!(" to task t{}", h.id))
-                .unwrap_or_default();
             let reply = format!(
-                "[reply from {}{to}] Its reply is in the pasted text.\n{text}",
+                "[reply from {}] Its reply is in the pasted text.\n{text}",
                 self.signature(space, me, cx)
             );
             self.send_task(&asker, &reply, false, cx);
+            self.asker_wrote(&asker, from);
         }
         if let Some(mine) = self.pane_mut(from) {
-            if mine.handed.as_ref().is_some_and(|h| h.by == asker) {
-                mine.handed = None;
-            }
             mine.answer = Some(text.to_string());
         }
         let answered = !waiting.is_empty();
@@ -860,6 +920,45 @@ impl Workspace {
         } else {
             format!("Typed into {block}.")
         })
+    }
+
+    /// The agent in the terminal `terminal` answers the task it is on with `text`, whole: the task
+    /// ends. The calls of the agent that handed it waiting for it (`delegate` with `wait`,
+    /// `wait_for_idle`) get `text`; with none, that agent hears the end as any end is told
+    /// (`tell_end`). Other agents' calls waiting on its turn stay for the turn's end
+    /// (docs/specs/agent-protocol.md, 2).
+    pub(super) fn finish_task(
+        &mut self,
+        terminal: &str,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let Some(handed) = self.pane_mut(terminal).and_then(|p| p.handed.take()) else {
+            return Reply::err(
+                "You are on no task: reply answers the task an agent handed you; name a block to \
+                 write to one.",
+            );
+        };
+        if let Some(pane) = self.pane_mut(terminal) {
+            pane.answer = Some(text.to_string());
+        }
+        let reply = Reply::ok(text);
+        let waiting: Vec<u64> = self
+            .waits
+            .iter()
+            .filter(|w| {
+                w.from == handed.by && matches!(&w.what, Waiting::Turn { of, .. } if of == terminal)
+            })
+            .map(|w| w.key)
+            .collect();
+        if waiting.is_empty() {
+            self.tell_end(terminal, &handed, &reply, cx);
+        }
+        for key in waiting {
+            self.answer(key, reply.clone(), cx);
+        }
+        cx.notify();
+        Reply::ok(format!("Answered task t{}.", handed.id))
     }
 
     /// `wait_for_idle` from the terminal `from` on the agent `block`: its last answer now when it
@@ -896,10 +995,25 @@ impl Workspace {
                 "{block} runs no agent: read_terminal reads its screen."
             )));
         }
+        let worker = pane.term.id();
         let mine = pane.handed.as_ref().is_some_and(|h| h.by == from);
+        // Another agent waits for its turn, not its task: a turn that ended while the task stays
+        // open (it waits on a task of its own, or went quiet) answers it now
+        // (docs/specs/agent-protocol.md, 4 and 5). Its last answer is its turn's only where its
+        // hooks refresh it at each turn's end: an agent without them may hold one of an earlier task.
+        let quiet = pane.handed.as_ref().is_some_and(|h| h.quiet);
+        let rests = !mine
+            && pane.state == Some(AgentState::Idle)
+            && (quiet || self.waits_on_its_own(worker));
+        if rests {
+            return Outcome::Now(match &pane.answer {
+                Some(answer) if !quiet && pane.speaks => Reply::ok(answer),
+                _ => self.still_screen(worker),
+            });
+        }
         if mine || pane.busy(Instant::now()) {
             let what = Waiting::Turn {
-                of: pane.term.id().to_string(),
+                of: worker.to_string(),
                 uid: block.to_string(),
             };
             return Outcome::Wait(Box::new(what), Some(timeout));
@@ -924,6 +1038,28 @@ impl Workspace {
         }
     }
 
+    /// Some pane, in any workspace, holds a task the agent in `terminal` handed over (`delegate`,
+    /// or a spawn's prompt) since `since`, when its own task was handed to it, also past the
+    /// timeout of that one: the agent waits for it. One handed before its own task isn't what
+    /// this task waits for, nor one whose agent went quiet: the agent was told, and reads its
+    /// screen (docs/specs/agent-protocol.md, 4).
+    pub(super) fn hands_out(&self, terminal: &str, since: Instant) -> bool {
+        self.spaces().any(|space| {
+            space.terminals().any(|(_, pane)| {
+                pane.handed
+                    .as_ref()
+                    .is_some_and(|h| h.by == terminal && h.since >= since && !h.quiet)
+            })
+        })
+    }
+
+    /// The agent in `terminal` is on a task and waits for one it handed out for it.
+    pub(super) fn waits_on_its_own(&self, terminal: &str) -> bool {
+        self.pane(terminal)
+            .and_then(|p| p.handed.as_ref())
+            .is_some_and(|h| self.hands_out(terminal, h.since))
+    }
+
     /// The agent in the terminal `terminal` ended its turn, or its session: the task it was on is
     /// no longer handed over, and the calls waiting on it get `reply`; the agent that handed the
     /// task over hears so, typed, when no call of its waits for it (docs/specs/connections.md,
@@ -941,6 +1077,96 @@ impl Workspace {
         }
         for key in waiting {
             self.answer(key, reply.clone(), cx);
+        }
+    }
+
+    /// What the calls waiting on the turn of the agent in `terminal` get when its screen has been
+    /// still: it may be done, but nothing says so.
+    pub(super) fn still_screen(&self, terminal: &str) -> Reply {
+        let lines = self
+            .pane(terminal)
+            .map(|pane| pane.term.shared().lines(LAST_LINES).join("\n"))
+            .unwrap_or_default();
+        Reply::ok(format!(
+            "Its screen has been still for {STILL} seconds, and Templum heard no answer: it may \
+             be done, stopped, or asking its person. The last lines of its screen:\n{}",
+            tools::tail(&lines, tools::MAX_TEXT)
+        ))
+    }
+
+    /// The turn of the agent in `terminal`, which is on a task, ended or went still while the task
+    /// stays open: the calls of agents other than the task's asker that wait for it get `reply`.
+    /// For them the turn ended; the asker's own calls wait for the task's end
+    /// (docs/specs/agent-protocol.md, 4 and 5).
+    pub(super) fn answer_others(&mut self, terminal: &str, reply: Reply, cx: &mut Context<Self>) {
+        let Some(by) = self
+            .pane(terminal)
+            .and_then(|p| p.handed.as_ref())
+            .map(|h| h.by.clone())
+        else {
+            return;
+        };
+        let others: Vec<u64> = self
+            .waits
+            .iter()
+            .filter(|w| w.from != by)
+            .filter(|w| matches!(&w.what, Waiting::Turn { of, .. } if of == terminal))
+            .map(|w| w.key)
+            .collect();
+        for key in others {
+            self.answer(key, reply.clone(), cx);
+        }
+    }
+
+    /// The screen of the agent in `terminal`, which has Templum's tools and no hooks, went still
+    /// while it is on a task: it may be done without replying, stopped, or asking its person. The
+    /// task stays open (its `reply` still ends it) and its master is told once: a call of its
+    /// waiting for the task gets an error, else a notice is typed as a dialog's is. Other agents'
+    /// calls waiting for its turn get `still_screen`: for them its turn ended
+    /// (docs/specs/agent-protocol.md, 5).
+    pub(super) fn went_quiet(&mut self, terminal: &str, cx: &mut Context<Self>) {
+        let Some(handed) = self.pane(terminal).and_then(|p| p.handed.as_ref()) else {
+            return;
+        };
+        let (id, by, told) = (handed.id, handed.by.clone(), handed.quiet);
+        let reply = self.still_screen(terminal);
+        self.answer_others(terminal, reply, cx);
+        // What still waits for its turn is its asker's.
+        let asked: Vec<u64> = self
+            .waits
+            .iter()
+            .filter(|w| matches!(&w.what, Waiting::Turn { of, .. } if of == terminal))
+            .map(|w| w.key)
+            .collect();
+        if told {
+            return;
+        }
+        if let Some(handed) = self.pane_mut(terminal).and_then(|p| p.handed.as_mut()) {
+            handed.quiet = true;
+        }
+        if asked.is_empty() {
+            let text = format!(
+                "[task t{id} from {} hasn't answered: its screen is still] {SCREEN_LEAD}\n{}",
+                self.signature_of(terminal, cx),
+                self.pane(terminal).map(Pane::tail).unwrap_or_default()
+            );
+            self.notice_to(by, text, terminal, NoticeLevel::Waiting, cx);
+        }
+        for key in asked {
+            let lines = self
+                .pane(terminal)
+                .map(|pane| pane.term.shared().lines(LAST_LINES).join("\n"))
+                .unwrap_or_default();
+            let reply = Reply::err(format!(
+                "{} hasn't answered task t{id}: its screen has been still for {STILL} seconds. It \
+                 may be done without replying, stopped, or asking its person. The task stays open, \
+                 and its reply still ends it: wait_for_idle waits for it, send_keys answers a \
+                 dialog, delegate to it again asks it for its answer, and interrupt ends it. The \
+                 last lines of its screen:\n{}",
+                self.uid_of(terminal),
+                tools::tail(&lines, tools::MAX_TEXT)
+            ));
+            self.answer(key, reply, cx);
         }
     }
 
@@ -983,9 +1209,9 @@ impl Workspace {
             cx.background_executor().timer(SPENT_AFTER).await;
             let read = match (data, proc) {
                 (Some(data), Some(proc)) => {
+                    let dirs = crate::agents::dirs(&data);
                     cx.background_executor()
                         .spawn(async move {
-                            let dirs = templum_usage::Dirs::of(&data);
                             templum_usage::read(&[proc], &dirs, &[], crate::notes::now())
                                 .0
                                 .pop()

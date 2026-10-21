@@ -570,6 +570,7 @@ fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) 
                 pid: Some(42),
                 started: Some(1_700_000_000),
                 session: None,
+                folder_var: None,
             };
             ws.snapshot_done(
                 vec![(
@@ -671,8 +672,13 @@ fn restore(
 #[gpui_kit::test]
 fn two_blocks_one_folder_two_accounts_resume_their_own(cx: &mut TestAppContext) {
     use super::bus::screen_with;
+    let _own = super::agents::claude_keeping(&["a"]);
     let data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
+    // Each keeps its session in its own folder: the account's is `b`.
+    let account_folder = data.path().join("accounts").join("claude2");
+    std::fs::create_dir_all(account_folder.join("projects/-app")).unwrap();
+    std::fs::write(account_folder.join("projects/-app/b.jsonl"), "{}").unwrap();
     let (handle, ws) = open_as(
         cx,
         Some(telling_its_folder()),
@@ -688,7 +694,6 @@ fn two_blocks_one_folder_two_accounts_resume_their_own(cx: &mut TestAppContext) 
     );
     let item = saved_terminal(folder.path(), Some("claude2"), Some("b"), Some("claude2"));
     let account = restore(handle, &ws, cx, &item);
-    let account_folder = data.path().join("accounts").join("claude2");
     screen_with(&ws, cx, account, "claude --resume b");
     screen_with(
         &ws,
@@ -800,4 +805,149 @@ fn a_roles_words_are_typed_again_on_restore_while_it_exists(cx: &mut TestAppCont
     let plain = restore(handle, &ws, cx, &item("rol02"));
     let shown = screen_with(&ws, cx, plain, "-m gpt-5.6-luna");
     assert!(!shown.contains("read-only"), "{shown}");
+}
+
+/// A saved terminal comes back with the shell of its label among the shells found; one whose label
+/// isn't found comes back with the default, its shell forgotten.
+#[gpui_kit::test]
+fn a_saved_shell_comes_back_and_one_not_found_opens_the_default(cx: &mut TestAppContext) {
+    use templum_terminal::ShellOption;
+    let (handle, ws) = open(cx);
+    let (program, args) = quiet();
+    let quiet_shell = ShellOption {
+        label: "Quiet".into(),
+        program,
+        args,
+    };
+    ws.update(cx, |ws, _| ws.shells = vec![quiet_shell.clone()]);
+    let mut add = |x: f32, label: &str| {
+        let item: crate::session::Item = serde_json::from_value(serde_json::json!({
+            "kind": "terminal",
+            "rect": { "x": x, "y": 900.0, "w": 700.0, "h": 450.0 },
+            "shell": label,
+        }))
+        .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.add_saved(&item, window, cx))
+        })
+        .unwrap()
+        .expect("the block exists either way")
+    };
+    let (found, lost) = (add(0.0, "Quiet"), add(800.0, "PowerShell 7"));
+    ws.read_with(cx, |ws, _| {
+        let rect = templum_canvas::Rect::new(0.0, 0.0, 700.0, 450.0);
+        let found = ws.space.terminal(found).unwrap();
+        assert_eq!(found.shell, Some(quiet_shell.clone()));
+        assert_eq!(
+            found.item(rect, String::new()).shell.as_deref(),
+            Some("Quiet")
+        );
+        let lost = ws.space.terminal(lost).unwrap();
+        assert_eq!(lost.shell, None, "another computer's shell: forgotten");
+        assert_eq!(lost.item(rect, String::new()).shell, None);
+    });
+}
+
+/// At start, a canvas file's terminal runs its shell: the startup restore reads the list first.
+/// It runs the machine's own list, so the shell is one with no slow startup files (`sh`, never a login
+/// bash or Git Bash); a machine whose list lacks it skips the check.
+#[gpui_kit::test]
+fn a_canvas_files_terminal_starts_its_shell(cx: &mut TestAppContext) {
+    let label = if cfg!(windows) {
+        "Command Prompt"
+    } else {
+        "sh"
+    };
+    let Some(first) = templum_terminal::available_shells()
+        .into_iter()
+        .find(|s| s.label == label)
+    else {
+        eprintln!("skipped: this computer lists no {label}");
+        return;
+    };
+    let data = tempfile::tempdir().unwrap();
+    write_canvas(
+        data.path(),
+        &format!(
+            r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"shell":{}}}]}}"#,
+            serde_json::to_string(&first.label).unwrap()
+        ),
+    );
+    let (_, ws) = open_as(cx, Some(quiet()), None, Some(data.path().to_path_buf()));
+    tick(cx);
+    ws.read_with(cx, |ws, _| {
+        let blocks = ws.space.canvas.blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(ws.space.terminal(blocks[0].id).unwrap().shell, Some(first));
+    });
+}
+
+/// A restored agent's resume line is typed for its terminal's shell: none of Templum's words in WSL.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_restored_agents_line_follows_its_terminals_shell(cx: &mut TestAppContext) {
+    use super::bus::screen_with;
+    use templum_terminal::ShellOption;
+    let (data, folder, bin) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    // A shell named `wsl` that only echoes what is typed.
+    let wsl = bin.path().join("wsl");
+    std::os::unix::fs::symlink(templum_terminal::locate("cat").unwrap(), &wsl).unwrap();
+    let (handle, ws) = open_as(cx, Some(quiet()), None, Some(data.path().to_path_buf()));
+    ws.update(cx, |ws, _| {
+        ws.shells = vec![ShellOption {
+            label: "WSL".into(),
+            program: wsl.display().to_string(),
+            args: vec![],
+        }]
+    });
+    let mut item = saved_terminal(folder.path(), Some("claude"), None, None);
+    if let crate::session::Item::Terminal(t) = &mut item {
+        t.shell = Some("WSL".into());
+    }
+    let id = restore(handle, &ws, cx, &item);
+    let shown = screen_with(&ws, cx, id, "claude");
+    assert!(!shown.contains("--settings"), "{shown}");
+}
+
+/// A saved shell the list lacks opens the default at once, even while the login shell's PATH is
+/// still to come: the window doesn't wait for it, and `shells_early` stays for the next menu to
+/// read the list again.
+#[gpui_kit::test]
+fn a_saved_shell_missing_from_an_early_list_opens_the_default_without_waiting(
+    cx: &mut TestAppContext,
+) {
+    use templum_terminal::ShellOption;
+    let (handle, ws) = open(cx);
+    let (program, args) = quiet();
+    let quiet_shell = ShellOption {
+        label: "Quiet".into(),
+        program,
+        args,
+    };
+    ws.update(cx, |ws, _| {
+        ws.shells = vec![quiet_shell.clone()];
+        ws.shells_early = true;
+    });
+    let item: crate::session::Item = serde_json::from_value(serde_json::json!({
+        "kind": "terminal",
+        "rect": { "x": 0.0, "y": 900.0, "w": 700.0, "h": 450.0 },
+        "shell": "fish",
+    }))
+    .unwrap();
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.add_saved(&item, window, cx))
+        })
+        .unwrap()
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminal(id).unwrap().shell, None);
+        assert_eq!(ws.shells, vec![quiet_shell], "the list wasn't read again");
+        assert!(ws.shells_early);
+    });
 }

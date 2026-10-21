@@ -147,6 +147,65 @@ pub(super) fn bus_note(
     .unwrap();
 }
 
+/// `terminal`'s MCP client says `initialize` on connection `conn`: the agent's Templum server
+/// started (`ask_as` is always connection 0).
+pub(super) fn has_server(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    terminal: &str,
+    conn: u64,
+) {
+    let (reply, _) = std::sync::mpsc::channel();
+    let message = Message {
+        hello: Hello {
+            terminal: terminal.into(),
+            client: "mcp".into(),
+            control: None,
+        },
+        conn,
+        incoming: Incoming::Request {
+            id: json!(1),
+            method: "initialize".into(),
+            params: json!({ "protocolVersion": "2025-06-18" }),
+        },
+        reply,
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.serve(message, window, cx))
+    })
+    .unwrap();
+}
+
+/// The bridge of `terminal`'s MCP client on connection `conn` ended: its server is gone.
+#[cfg(unix)]
+pub(super) fn server_gone(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    terminal: &str,
+    conn: u64,
+) {
+    let (reply, _) = std::sync::mpsc::channel();
+    let message = Message {
+        hello: Hello {
+            terminal: terminal.into(),
+            client: "mcp".into(),
+            control: None,
+        },
+        conn,
+        incoming: Incoming::Notification {
+            method: templum_mcp::bus::CLOSED.into(),
+            params: Value::Null,
+        },
+        reply,
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.serve(message, window, cx))
+    })
+    .unwrap();
+}
+
 /// The answer that comes on `answers` within ten seconds, background jobs running meanwhile.
 #[cfg(unix)]
 pub(super) fn answer_soon(
@@ -227,6 +286,27 @@ pub(super) fn screen_until(
     }
 }
 
+/// `screen_with`, also in the history: a task is longer than the screen, whose start has scrolled
+/// off by the time it is looked at. A wrapped line is one line, as the terminal gives it.
+#[cfg(unix)]
+#[track_caller]
+pub(super) fn history_with(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    needle: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let shown = ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().screen());
+        if shown.replace('\n', "").contains(needle) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "not on the screen: {shown:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[gpui_kit::test]
 fn whoami_names_the_callers_block_and_workspace(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
@@ -273,9 +353,19 @@ fn initialize_lists_the_tools_and_says_who_the_agent_is(cx: &mut TestAppContext)
         "{instructions}"
     );
     assert!(
-        instructions.ends_with(
+        instructions.contains(
             "A task you hand over without wait comes back typed into your terminal as [task …]: it isn't the \
              person writing."
+        ),
+        "{instructions}"
+    );
+    // A task is answered with `reply`, and the person is asked with `ask_user`
+    // (docs/specs/agent-protocol.md, 1).
+    assert!(
+        instructions.ends_with(
+            " A task handed to you begins [from …, task t7]: when it is done, answer it once with \
+             reply, your whole answer as its text. When you need the person, ask with ask_user, not \
+             on your screen."
         ),
         "{instructions}"
     );
@@ -764,6 +854,49 @@ pub(super) fn event(
         ws.update(cx, |ws, cx| ws.serve(message, window, cx))
     })
     .unwrap();
+}
+
+/// Templum notes which terminals have its tools: an `initialize` from the MCP bridge while
+/// connections are on, until that connection closes; `list_blocks` says so of an agent without
+/// them (docs/specs/agent-protocol.md, 8).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_agents_tools_are_its_server_connected(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = super::delegate::two_agents(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let lines = |cx: &mut TestAppContext| {
+        let (_, list) = call(handle, &ws, cx, &terminal, "list_blocks", json!({}));
+        let of = |id: &str| {
+            list.lines()
+                .find(|l| l.starts_with(id))
+                .unwrap()
+                .to_string()
+        };
+        (of(&uid), of(&them))
+    };
+    let (mine_line, theirs_line) = lines(cx);
+    assert!(
+        theirs_line.ends_with("connected, no Templum tools"),
+        "{theirs_line}"
+    );
+    assert!(
+        !mine_line.contains("Templum tools"),
+        "no agent runs in mine: {mine_line}"
+    );
+    // The command line and a hook are not an agent's server.
+    ask_as(handle, &ws, cx, &worker, "cli", "initialize", json!({}));
+    ask_as(handle, &ws, cx, &worker, "hook", "initialize", json!({}));
+    assert!(lines(cx).1.contains("no Templum tools"));
+    has_server(handle, &ws, cx, &worker, 7);
+    assert!(!lines(cx).1.contains("Templum tools"), "{}", lines(cx).1);
+    server_gone(handle, &ws, cx, &worker, 7);
+    assert!(lines(cx).1.ends_with("connected, no Templum tools"));
+    // Connections off: an agent's server gets nothing, so it has no tools.
+    ws.update(cx, |ws, _| ws.config.connections.enabled = false);
+    has_server(handle, &ws, cx, &worker, 8);
+    ws.update(cx, |ws, _| ws.config.connections.enabled = true);
+    assert!(lines(cx).1.contains("no Templum tools"));
 }
 
 #[gpui_kit::test]

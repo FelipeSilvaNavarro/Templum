@@ -12,19 +12,63 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
+use gpui_kit::component::Icon;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, ListHorizontalSizingBehavior, MouseButton, MouseUpEvent,
-    Pixels, ShapedLine, TestSupportExt, UniformListScrollHandle, div, px, uniform_list,
+    AnyElement, ClickEvent, Context, Div, ListHorizontalSizingBehavior, MouseButton, MouseUpEvent,
+    Pixels, ShapedLine, Stateful, TestSupportExt, UniformListScrollHandle, div, px, uniform_list,
 };
 use templum_git::{FileDiff, WorkingDiff};
 
 pub(crate) use rows::{Note, Row, Shown, rows, split_rows};
 
-use super::widgets::{bar, centered, icon_button, small};
-use super::{FONT, Git};
+use super::widgets::{bar, centered, icon_button};
+use super::{FONT, Git, Tab};
 use crate::editor::keep_list_rows;
+use crate::theme::Ui;
 use crate::workspace::Workspace;
+
+/// The panel's keys, named by its keyboard button.
+const KEYS: &str = if cfg!(target_os = "macos") {
+    "↑↓ file · [ ] hunk · s stage · u unstage · d discard · ⏎ open · c message · ⌘⏎ commit"
+} else {
+    "↑↓ file · [ ] hunk · s stage · u unstage · d discard · ⏎ open · c message · Ctrl+⏎ commit"
+};
+
+/// A small icon button of the panel's header, named by its tooltip; `on`: tinted with the accent.
+fn toggle(
+    id: &'static str,
+    icon: IconName,
+    tip: &'static str,
+    on: bool,
+    ui: Ui,
+    z: f32,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .size(px(24.0 * z))
+        .rounded(px(6.0 * z))
+        .cursor_pointer()
+        .when(on, |el| el.bg(ui.accent.opacity(0.16)))
+        .hover(move |st| {
+            st.bg(if on {
+                ui.accent.opacity(0.24)
+            } else {
+                ui.hover
+            })
+        })
+        .child(
+            Icon::new(icon)
+                .size(px(14.0 * z))
+                .text_color(if on { ui.accent } else { ui.title }),
+        )
+        .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+}
 
 /// A row's height at zoom `z`: whole pixels, like an editor's rows (`block::exact_rows`).
 pub(crate) fn row_height(z: f32) -> f32 {
@@ -419,55 +463,123 @@ pub(crate) fn panel(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspac
     keep_list_rows(&base, &p.last_row, row_h);
     // Each frame paints the visible line rows again.
     p.shaped.borrow_mut().clear();
-    let header = bar(ui, z)
-        .when(git.lists_folded, |el| {
-            el.child(
-                icon_button("git-unfold-lists", IconName::PanelLeftOpen, ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(cx)))
-                    .test_support(),
+    // One toggle folds and unfolds the left column, in the same place (Branches has none).
+    let fold = (git.tab != Tab::Branches).then(|| {
+        let (id, icon, tip) = if git.lists_folded {
+            (
+                "git-unfold-lists",
+                IconName::PanelLeftOpen,
+                "Show the lists",
             )
-        })
+        } else {
+            ("git-fold-lists", IconName::PanelLeftClose, "Fold the lists")
+        };
+        icon_button(id, icon, ui, z)
+            .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+            .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(cx)))
+            .test_support()
+    });
+    let header = div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(4.0 * z))
+        .h(px(40.0 * z))
+        .px(px(8.0 * z))
+        .border_b_1()
+        .border_color(ui.hairline)
+        .text_size(px(FONT * z))
+        .children(fold)
         .child(
             div()
                 .id("git-panel-title")
+                .flex_1()
+                .min_w(px(0.0))
+                .px(px(4.0 * z))
                 .truncate()
                 .text_color(ui.title)
                 .child(p.title())
                 .test_support(),
         )
-        .child(div().flex_1())
-        .when(!matches!(p.source, Source::Blame { .. }), |el| {
+        // How the diff shows: only while there is one.
+        .when(
+            !p.is_empty() && !matches!(p.source, Source::Blame { .. }),
+            |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .p(px(2.0 * z))
+                        .gap(px(2.0 * z))
+                        .rounded(px(7.0 * z))
+                        .bg(ui.card)
+                        .child(
+                            toggle("git-unified", IconName::Rows2, "Unified", !p.split, ui, z)
+                                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
+                                    ws.set_split(false, cx)
+                                }))
+                                .test_support(),
+                        )
+                        .child(
+                            toggle("git-split", IconName::Columns2, "Split", p.split, ui, z)
+                                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
+                                    ws.set_split(true, cx)
+                                }))
+                                .test_support(),
+                        ),
+                )
+            },
+        )
+        // On, it stays: the changes it hides could be all there are.
+        .when(!p.is_empty() || p.ignore_ws, |el| {
             el.child(
-                small("git-unified", "Unified", ui, z)
-                    .when(!p.split, |el| el.bg(ui.card))
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.set_split(false, cx)))
-                    .test_support(),
-            )
-            .child(
-                small("git-split", "Split", ui, z)
-                    .when(p.split, |el| el.bg(ui.card))
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.set_split(true, cx)))
-                    .test_support(),
-            )
-        })
-        .child(
-            small("git-ignore-ws", "Ignore whitespace", ui, z)
-                .when(p.ignore_ws, |el| el.bg(ui.card))
+                toggle(
+                    "git-ignore-ws",
+                    IconName::Space,
+                    "Ignore whitespace",
+                    p.ignore_ws,
+                    ui,
+                    z,
+                )
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                     ws.toggle_ignore_whitespace(window, cx)
                 }))
                 .test_support(),
-        )
-        .child(
-            small("git-expand-all", "Expand all", ui, z)
+            )
+        })
+        .when(!p.is_empty(), |el| {
+            el.child(
+                toggle(
+                    "git-expand-all",
+                    IconName::ChevronsUpDown,
+                    "Expand all",
+                    false,
+                    ui,
+                    z,
+                )
                 .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.fold_all(false, cx)))
                 .test_support(),
-        )
-        .child(
-            small("git-collapse-all", "Collapse all", ui, z)
+            )
+            .child(
+                toggle(
+                    "git-collapse-all",
+                    IconName::ChevronsDownUp,
+                    "Collapse all",
+                    false,
+                    ui,
+                    z,
+                )
                 .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.fold_all(true, cx)))
                 .test_support(),
-        );
+            )
+        })
+        // The keys act on the Changes tab alone.
+        .when(p.working(), |el| {
+            el.child(
+                toggle("git-keys", IconName::Keyboard, KEYS, false, ui, z)
+                    .cursor_default()
+                    .test_support(),
+            )
+        });
     let body: AnyElement = if p.is_empty() {
         centered(ui, z)
             .flex_1()
@@ -512,18 +624,6 @@ pub(crate) fn panel(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspac
             .child(list)
             .into_any_element()
     };
-    // The keys act on the Changes tab alone.
-    let keys = p.working().then(|| {
-        bar(ui, z)
-            .id("git-keys")
-            .text_size(px(11.0 * z))
-            .child(if cfg!(target_os = "macos") {
-                "↑↓ file · [ ] hunk · s stage · u unstage · d discard · ⏎ open · c message · ⌘⏎ commit"
-            } else {
-                "↑↓ file · [ ] hunk · s stage · u unstage · d discard · ⏎ open · c message · Ctrl+⏎ commit"
-            })
-            .test_support()
-    });
     div()
         .id("git-diff")
         .flex_1()
@@ -532,7 +632,6 @@ pub(crate) fn panel(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspac
         .flex_col()
         .child(header)
         .child(body)
-        .children(keys)
         .on_mouse_up(
             MouseButton::Left,
             cx.listener(move |ws, _: &MouseUpEvent, _, cx| ws.diff_release(cx)),

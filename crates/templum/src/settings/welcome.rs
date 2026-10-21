@@ -9,6 +9,7 @@ use gpui_kit::{
 
 use super::agents::agent_row;
 use super::edits::{program_text, set_shell};
+use super::general::autostart_row;
 use super::row::Row;
 use super::sections::{rows, set_theme};
 use super::{Section, card};
@@ -169,7 +170,20 @@ pub(crate) fn welcome_groups(
         Page::Ready => {
             let mut rows = pick(Section::Terminal, &["terminal.notifications"], window, cx);
             rows.extend(pick(Section::Updates, &["updates.check"], window, cx));
-            vec![group(ui, "Notifications and updates", None, card(ui, rows))]
+            // Chosen here, applied when the welcome closes (on, by default, in a first run).
+            let on = ws
+                .welcome
+                .as_ref()
+                .is_some_and(|w| w.autostart_shown(&ws.autostart));
+            rows.push(autostart_row(ws, entity, on, |ws, on, _, cx| {
+                ws.choose_autostart(on, cx)
+            }));
+            vec![group(
+                ui,
+                "Notifications, updates and startup",
+                None,
+                card(ui, rows),
+            )]
         }
     }
 }

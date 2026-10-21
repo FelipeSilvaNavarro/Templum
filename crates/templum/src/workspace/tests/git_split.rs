@@ -117,4 +117,42 @@ fn a_long_line_never_pushes_the_right_side_out_of_the_panel(cx: &mut TestAppCont
         half <= panel / 2.0,
         "the right side starts at {half}, the panel is {panel} wide"
     );
+    // A popup dragged wider gives each side the room of its wider panel.
+    let wider = 300.0;
+    cx.update_window(handle, |_, _, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.git_size = Some(templum_canvas::Size::new(
+                crate::git_block::SIZE.w + wider,
+                crate::git_block::SIZE.h,
+            ));
+            cx.notify();
+        })
+    })
+    .unwrap();
+    frame(handle, cx);
+    let now = ws.read_with(cx, |ws, _| {
+        let g = ws.space.git().unwrap();
+        let row = g
+            .panel
+            .rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    r,
+                    Row::Pair {
+                        old: Some(_),
+                        new: Some(_),
+                        ..
+                    }
+                )
+            })
+            .expect("the changed pair");
+        let shaped = g.panel.shaped.borrow();
+        f32::from(shaped[&(row, true)].left - shaped[&(row, false)].left)
+    });
+    let cap = (panel + wider) / 2.0;
+    assert!(
+        now > panel / 2.0 && now <= cap,
+        "the right side starts at {now}, the wider panel's half is {cap}"
+    );
 }

@@ -109,6 +109,9 @@ pub(crate) struct AgentConfig {
     pub generate: Option<String>,
     /// Its models for commit messages, the recommended one first.
     pub models: Option<Vec<String>>,
+    /// The label of the shell it opens in (docs/specs/shells.md, A shell for each agent);
+    /// missing: the default shell.
+    pub shell: Option<String>,
     /// An account: the agent it is another folder of (docs/specs/accounts.md).
     pub of: Option<String>,
     /// An account's folder; missing: `<data>/accounts/<id>`.

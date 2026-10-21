@@ -367,6 +367,72 @@ fn a_rectangle_held_near_the_edge_moves_the_camera_to_blocks_beyond_it(cx: &mut 
 }
 
 #[gpui_kit::test]
+fn a_selection_held_near_the_edge_moves_the_canvas_and_every_block_with_it(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let vp = cx
+        .update_window(handle, |_, window, cx| ws.read(cx).viewport(window))
+        .unwrap();
+    let (from, to) = (at(&ws, cx, (20.0, 20.0)), at(&ws, cx, (330.0, 100.0)));
+    let title = at(&ws, cx, (150.0, 40.0 + chrome::TITLE_H / 2.0));
+    // Held by a selected title, the pointer at the bottom edge.
+    let edge = at(&ws, cx, (150.0, vp.h - 2.0));
+    cx.update_window(handle, |_, window, cx| {
+        press_with(window, cx, MouseButton::Left, SHIFT, from, to);
+        window.render_frame(cx);
+        let event = |p: (f32, f32)| point(px(p.0), px(p.1));
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: event(title),
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: event(edge),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    let screen = |ws: &Workspace, id| {
+        let r = ws.space.canvas.get(id).unwrap().rect;
+        ws.space.canvas.camera.to_screen(Point::new(r.x, r.y))
+    };
+    let held = ws.read_with(cx, |ws, _| [kanban, note].map(|id| screen(ws, id)));
+    let still = ws.read_with(cx, |ws, _| ws.space.canvas.get(terminal).unwrap().rect);
+    // Two frames, the pointer still: the second one moves the canvas.
+    let t = std::time::Instant::now();
+    ws.update(cx, |ws, _| {
+        assert!(ws.drag_edge(vp, t));
+        assert!(ws.drag_edge(vp, t + std::time::Duration::from_millis(40)));
+    });
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            ws.space.canvas.camera.origin.y > 0.0,
+            "the canvas moved down"
+        );
+        assert_eq!(ws.space.canvas.camera.origin.x, 0.0);
+        for (id, was) in [kanban, note].into_iter().zip(held) {
+            let now = screen(ws, id);
+            assert!(
+                (now.x - was.x).abs() < 0.01 && (now.y - was.y).abs() < 0.01,
+                "{id:?} stays under the pointer"
+            );
+        }
+        assert_eq!(ws.space.canvas.get(terminal).unwrap().rect, still);
+    });
+}
+
+#[gpui_kit::test]
 fn a_shift_press_near_the_edge_leaves_the_camera_still(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     three_blocks(handle, &ws, cx);

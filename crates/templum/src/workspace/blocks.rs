@@ -8,7 +8,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, SharedString, Window};
 use templum_canvas::{Block, BlockId, Point, Rect, chrome};
-use templum_terminal::{SpawnOptions, Terminal};
+use templum_terminal::{ShellOption, SpawnOptions, Terminal};
 
 use crate::agents::AgentEntry;
 use crate::alert::{self, Alert};
@@ -20,8 +20,8 @@ use crate::prompt;
 
 use super::history::{Change, Then};
 use super::{
-    AGENT_COLS, AGENT_ROWS, BOARD_UNDO, Body, DEFAULT_COLS, DEFAULT_ROWS, Ghost, Pane, Workspace,
-    remember, show_notification,
+    AGENT_COLS, AGENT_ROWS, BOARD_UNDO, Body, DEFAULT_COLS, DEFAULT_ROWS, Ghost, Pane, Space,
+    Workspace, remember, show_notification,
 };
 
 impl Workspace {
@@ -287,13 +287,13 @@ impl Workspace {
         }
     }
 
-    /// A kanban block at the viewport's center, showing the board list.
+    /// A kanban block at the viewport's center, showing no board.
     pub(crate) fn new_kanban(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let at = self.room_in_view(kanban::SIZE, window, cx).origin();
         self.add_kanban_at(at, window, cx);
     }
 
-    /// A kanban block showing the board list, its top-left corner at `at` (world units).
+    /// A kanban block showing no board, its top-left corner at `at` (world units).
     pub(crate) fn add_kanban_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
         self.space.pristine = false;
         let rect = Rect::new(at.x, at.y, kanban::SIZE.w, kanban::SIZE.h);
@@ -302,16 +302,46 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A terminal of the default size, its top-left corner at `at` (world units).
-    pub(crate) fn add_terminal_at(
+    /// A terminal running `shell` (None: the default) in the start folder, its top-left corner at
+    /// `at` (world units) with the default size, else where a new terminal goes. The block keeps
+    /// the shell (docs/specs/shells.md, The block keeps its shell).
+    pub(crate) fn open_shell(
         &mut self,
-        at: Point,
+        shell: Option<ShellOption>,
+        at: Option<Point>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.space.pristine = false;
-        let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
-        self.open(Rect::new(at.x, at.y, size.w, size.h), window, cx);
+        let rect = match at {
+            Some(at) => {
+                self.space.pristine = false;
+                let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
+                Rect::new(at.x, at.y, size.w, size.h)
+            }
+            None => self.new_terminal_rect(window, cx),
+        };
+        let folder = self.start_dir(window, cx);
+        self.spawn_block_with(rect, folder, Vec::new(), shell, window, cx);
+    }
+
+    /// What **Default** names in the shells' menus, the shell Ctrl+Shift+T opens: with a program
+    /// set in Settings, the label of the shell found with that program and those arguments, else
+    /// the program's file name (a path may hold spaces: the stem, not `program_name`); without
+    /// one, the system's default.
+    pub(crate) fn default_shell_name(&self) -> String {
+        let shell = &self.config.shell;
+        let Some(program) = &shell.program else {
+            return self.default_shell.clone();
+        };
+        self.shells
+            .iter()
+            .find(|s| s.program == *program && s.args == shell.args)
+            .map(|s| s.label.clone())
+            .unwrap_or_else(|| {
+                Path::new(program)
+                    .file_stem()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+            })
     }
 
     /// A terminal in `folder`, its top-left corner at `at`, with the agent `agent`'s command (an
@@ -341,6 +371,70 @@ impl Workspace {
         Some(id)
     }
 
+    /// The shell the agent `entry` opens in (docs/specs/shells.md, A shell for each agent): the
+    /// one its `shell` label names among the shells found here. None for no label, a label not
+    /// found (another computer's file, a shell uninstalled), and WSL for an account, which would
+    /// lose its folder there: the default shell opens. Prints nothing: Settings asks every frame.
+    pub(crate) fn agent_shell(&self, entry: &AgentEntry) -> Option<&ShellOption> {
+        let label = entry.shell.as_deref()?;
+        self.shells
+            .iter()
+            .find(|s| s.label == label)
+            .filter(|s| entry.account.is_none() || !templum_terminal::is_shell(&s.program, "wsl"))
+    }
+
+    /// Whether the agent `entry` runs in WSL (docs/specs/shells.md, Installed): its shell is WSL,
+    /// or it has none and Settings ▸ Shell is. The system's default never is, so this never scans
+    /// the disk (Settings asks every frame).
+    pub(crate) fn in_wsl(&self, entry: &AgentEntry) -> bool {
+        self.agent_shell(entry)
+            .map(|s| &s.program)
+            .or(self.config.shell.program.as_ref())
+            .is_some_and(|program| templum_terminal::is_shell(program, "wsl"))
+    }
+
+    /// Whether the menus, Settings and the welcome list the agent `entry` as installed: WSL is
+    /// another system, whose programs aren't on Windows' PATH, so what runs there is trusted.
+    pub(crate) fn agent_installed(&self, entry: &AgentEntry) -> bool {
+        self.in_wsl(entry) || templum_terminal::installed(entry.program())
+    }
+
+    /// Why `spawn_agent` and the Templum Agent can't open the agent `entry`: it runs in WSL,
+    /// where Templum can't see it start nor type its prompt, or it isn't installed here.
+    pub(crate) fn spawn_problem(&self, entry: &AgentEntry) -> Option<String> {
+        if self.in_wsl(entry) {
+            Some(format!(
+                "{} runs in WSL, where Templum can't see it start nor type its prompt: open it from the canvas.",
+                entry.title
+            ))
+        } else if !templum_terminal::installed(entry.program()) {
+            Some(format!(
+                "{} isn't installed on this computer ({} wasn't found).",
+                entry.title,
+                entry.program()
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// `agent_shell`'s shell, for an agent about to open (the list read again if it was early): a
+    /// label that finds none says so on stderr, as a restored terminal's does (no notification;
+    /// the label stays in the file).
+    fn shell_for(&mut self, entry: &AgentEntry) -> Option<ShellOption> {
+        self.reload_early_shells();
+        let shell = self.agent_shell(entry).cloned();
+        if shell.is_none()
+            && let Some(label) = &entry.shell
+        {
+            eprintln!(
+                "templum: no shell {label:?} for {}: the default one opens",
+                entry.title
+            );
+        }
+        shell
+    }
+
     /// A terminal at `rect` in `folder` with `command` (None: the agent `entry`'s start command)
     /// typed into its shell, `args` after it (`launch_args`: a model and an effort) and before
     /// what Templum adds. It is focused on the canvas; the keyboard stays
@@ -359,15 +453,27 @@ impl Workspace {
         if let Some(entry) = entry {
             self.prepare_account(entry, window, cx);
         }
-        let vars = self.agent_vars(entry, &super::usage::in_env);
-        let id = self.spawn_block_with(rect, Some(folder.to_path_buf()), vars, window, cx)?;
+        let shell = entry.and_then(|a| self.shell_for(a));
+        let program = shell.as_ref().map(|s| s.program.as_str());
+        let vars = self.agent_vars(entry, program, &super::usage::in_env);
+        let id = self.spawn_block_with(
+            rect,
+            Some(folder.to_path_buf()),
+            vars,
+            shell.clone(),
+            window,
+            cx,
+        )?;
         let command = command
             .map(str::to_string)
             .or_else(|| entry.map(|a| a.start_command(&uuid::Uuid::new_v4().to_string())))
             .unwrap_or_default()
             + args;
         // The shell reads it once it is ready.
-        let line = format!("{}\r", self.typed(entry, &command));
+        let line = format!(
+            "{}\r",
+            self.typed_in(shell.as_ref().map(|s| s.program.as_str()), entry, &command)
+        );
         // Known at once (Shift+Enter, closing), not at the next snapshot.
         let agent = entry.map(|a| a.id.clone());
         let title = entry.map_or_else(
@@ -400,9 +506,11 @@ impl Workspace {
             .cloned()?;
         let kind = entry.account.as_ref()?.kind;
         self.prepare_account(&entry, window, cx);
-        let vars = self.agent_vars(Some(&entry), &super::usage::in_env);
+        let shell = self.shell_for(&entry);
+        let program = shell.as_ref().map(|s| s.program.as_str());
+        let vars = self.agent_vars(Some(&entry), program, &super::usage::in_env);
         let rect = self.new_terminal_rect(window, cx);
-        let block = self.spawn_block_with(rect, std::env::home_dir(), vars, window, cx)?;
+        let block = self.spawn_block_with(rect, std::env::home_dir(), vars, shell, window, cx)?;
         let pane = self.space.terminal_mut(block)?;
         // The shell reads it once it is ready.
         pane.term
@@ -504,20 +612,19 @@ impl Workspace {
     /// The kanban block `block` shows `board`.
     pub(crate) fn show_board(&mut self, block: BlockId, board: u64, cx: &mut Context<Self>) {
         if let Some(k) = self.space.kanban_mut(block) {
-            *k = Kanban {
-                board: Some(board),
-                picking: false,
-            };
+            *k = Kanban { board: Some(board) };
             cx.notify();
         }
     }
 
-    /// The kanban block `block` shows the board list.
-    pub(crate) fn pick_board(&mut self, block: BlockId, cx: &mut Context<Self>) {
-        if let Some(k) = self.space.kanban_mut(block) {
-            k.picking = !k.picking;
-            cx.notify();
-        }
+    /// The first workspace with a kanban block showing board `id`, the active one first.
+    pub(crate) fn board_open_at(&self, id: u64) -> Option<&Space> {
+        self.spaces().find(|space| {
+            space
+                .blocks
+                .values()
+                .any(|body| body.kanban().is_some_and(|k| k.board == Some(id)))
+        })
     }
 
     /// A new board, shown in `block`.
@@ -526,7 +633,7 @@ impl Workspace {
         self.show_board(block, board, cx);
     }
 
-    /// Deletes a board and its cards; the blocks that showed it show the board list.
+    /// Deletes a board and its cards; the blocks that showed it show none.
     pub(crate) fn delete_board(&mut self, board: u64, cx: &mut Context<Self>) {
         self.edit_boards(|b| b.remove_board(board));
         cx.notify();
@@ -547,26 +654,33 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
-        self.spawn_block_with(rect, folder, Vec::new(), window, cx)
+        self.spawn_block_with(rect, folder, Vec::new(), None, window, cx)
     }
 
-    /// `spawn_block`, with `vars` in its shell's environment (`agent_vars`).
+    /// `spawn_block`, with `vars` in its shell's environment (`agent_vars`), running `shell` (None:
+    /// the workspace's command in the tests, else the `[shell]` of config.toml, else the default).
+    /// The block keeps `shell`.
     pub(super) fn spawn_block_with(
         &mut self,
         rect: Rect,
         folder: Option<PathBuf>,
         vars: Vec<(String, String)>,
+        shell: Option<ShellOption>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
         let (cols, rows) = chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
-        let command = self.command.clone().or_else(|| {
-            let shell = &self.config.shell;
-            shell
-                .program
-                .clone()
-                .map(|program| (program, shell.args.clone()))
-        });
+        let command = shell
+            .as_ref()
+            .map(|s| (s.program.clone(), s.args.clone()))
+            .or_else(|| self.command.clone())
+            .or_else(|| {
+                let shell = &self.config.shell;
+                shell
+                    .program
+                    .clone()
+                    .map(|program| (program, shell.args.clone()))
+            });
         let opts = SpawnOptions {
             cols,
             rows,
@@ -586,8 +700,9 @@ impl Workspace {
                     // terminals: an empty one names none.
                     _ => vec![("TEMPLUM_BUS".to_string(), String::new())],
                 };
-                // For a `claude` or `codex` typed there, always (empty: not that Templum's either).
-                env.extend(self.agent_env());
+                // For a `claude` or `codex` typed there, always (empty: not that Templum's either),
+                // by the terminal's own shell.
+                env.extend(self.agent_env(shell.as_ref().map(|s| s.program.as_str())));
                 env.extend(vars);
                 env
             },
@@ -633,6 +748,7 @@ impl Workspace {
                         account: None,
                         role: None,
                         quit: None,
+                        shell,
                     })),
                 );
                 self.added(id);
@@ -981,8 +1097,7 @@ impl Workspace {
     }
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rect = self.new_terminal_rect(window, cx);
-        self.open(rect, window, cx);
+        self.open_shell(None, None, window, cx);
     }
 
     /// Where a new terminal goes: the view's center, or beside the blocks there, shown.

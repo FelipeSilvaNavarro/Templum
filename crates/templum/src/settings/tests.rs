@@ -133,13 +133,88 @@ fn an_agent_not_installed_says_how_to_install_it() {
     let (claude, mine) = (of("claude"), of("mine"));
     let install = claude.install.unwrap();
     assert_eq!(
-        super::agents::description(claude, false),
+        super::agents::description(claude, false, true),
         format!("Not installed · {install}")
     );
-    assert_eq!(super::agents::description(claude, true), claude.command);
     assert_eq!(
-        super::agents::description(mine, false),
+        super::agents::description(claude, true, true),
+        claude.command
+    );
+    assert_eq!(
+        super::agents::description(mine, false, true),
         "Yours · not found · mine --go"
     );
-    assert_eq!(super::agents::description(mine, true), "Yours · mine --go");
+    assert_eq!(
+        super::agents::description(mine, true, true),
+        "Yours · mine --go"
+    );
+}
+
+#[test]
+fn the_shell_list_is_default_then_every_shell_found() {
+    use super::agents::shell_choices;
+    use gpui_kit::SharedString;
+    use templum_terminal::ShellOption;
+    let shell = |label: &str, program: &str| ShellOption {
+        label: label.into(),
+        program: program.into(),
+        args: vec![],
+    };
+    let shells = [
+        shell("zsh", "/bin/zsh"),
+        shell("WSL", "C:/Windows/System32/wsl.exe"),
+    ];
+    let pairs = |list: Vec<(SharedString, SharedString)>| -> Vec<(String, String)> {
+        list.into_iter()
+            .map(|(v, l)| (v.to_string(), l.to_string()))
+            .collect()
+    };
+    let pair = |v: &str, l: &str| (v.to_string(), l.to_string());
+    assert_eq!(
+        pairs(shell_choices("zsh", &shells, false, None)),
+        [
+            pair("", "Default (zsh)"),
+            pair("zsh", "zsh"),
+            pair("WSL", "WSL")
+        ]
+    );
+    assert_eq!(
+        pairs(shell_choices("zsh", &shells, true, None)),
+        [pair("", "Default (zsh)"), pair("zsh", "zsh")],
+        "an account's leaves WSL out"
+    );
+    let gone = pairs(shell_choices("zsh", &shells, false, Some("fish")));
+    assert_eq!(gone.last(), Some(&pair("fish", "fish (not available)")));
+    let account = pairs(shell_choices("zsh", &shells, true, Some("WSL")));
+    assert_eq!(account.last(), Some(&pair("WSL", "WSL (not available)")));
+    let found = pairs(shell_choices("zsh", &shells, false, Some("zsh")));
+    assert_eq!(found.len(), 3, "a shell found isn't listed twice");
+}
+
+#[test]
+fn a_rows_description_says_its_shell() {
+    let agents = crate::agents::effective(
+        &crate::config::parse(
+            "[agents]\nclaude = { shell = \"PowerShell 7\" }\n\
+             mine = { name = \"Mine\", command = \"mine --go\", shell = \"WSL\" }\n",
+        )
+        .unwrap()
+        .agents,
+        &[],
+        None,
+    );
+    let of = |id: &str| agents.iter().find(|a| a.id == id).unwrap();
+    let (claude, mine) = (of("claude"), of("mine"));
+    assert_eq!(
+        super::agents::description(claude, true, true),
+        "claude · in PowerShell 7"
+    );
+    assert_eq!(
+        super::agents::description(claude, true, false),
+        "claude · in PowerShell 7 (not available)"
+    );
+    assert_eq!(
+        super::agents::description(mine, true, true),
+        "Yours · mine --go · in WSL"
+    );
 }

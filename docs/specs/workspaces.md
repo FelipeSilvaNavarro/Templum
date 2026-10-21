@@ -94,14 +94,20 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
       { "id": "w2", "name": "Side project" }
     ],
     "active": 1,
-    "sidebar": true
+    "sidebar": true,
+    "git_size": { "w": 820, "h": 600 }
   }
   ```
+
+  `git_size` is the [Git popup's](git.md#1-layout-and-navigation) size the person dragged it to, in pixels; it is
+  left out until they do, and a value that isn't two positive numbers is as if left out (a number too large for JSON, only a hand edit
+  writes one, sets the whole index aside as any other unreadable index).
 
 - **Without an index,** as on a first run or after the previous version, there is one workspace, `default`,
   named "Main". It opens the canvas in `default.json` if there is one.
 - **When files are written:**
-  - the index is written at once whenever it changes: create, rename, delete, switch, or collapsing the sidebar;
+  - the index is written at once whenever it changes: create, rename, delete, switch, collapsing the sidebar, or
+    letting go of the Git popup's edge after resizing it;
   - the canvases are written by the snapshot every 5 seconds and on quit, as before, each only when it changed.
 - **Errors:**
   - an index that doesn't parse, or has a newer version, is renamed to `index.json.bak`, and Templum starts as

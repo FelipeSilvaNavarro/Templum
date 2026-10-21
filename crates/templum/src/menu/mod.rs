@@ -16,6 +16,7 @@ use gpui_kit::{
 };
 use templum_canvas::{BlockId, Point, Wire};
 use templum_git::{Branch, Commit, Entry};
+use templum_terminal::ShellOption;
 
 use crate::git_block;
 use crate::workspace::{Body, Workspace};
@@ -33,11 +34,8 @@ pub(crate) enum Target {
     },
     /// The AI agents alone (the toolbar): the chosen one opens at this world point.
     Agents(Point),
-    /// A row of a kanban block's board list.
-    Board {
-        block: BlockId,
-        board: u64,
-    },
+    /// The shells alone (the toolbar's Terminal): the chosen one opens where a new terminal goes.
+    Shells,
     Column {
         board: u64,
         column: u64,
@@ -118,6 +116,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.reload_early_shells();
         let ws = cx.entity();
         // Esc or a choice gives the keyboard back to what had it.
         let back = window
@@ -144,12 +143,44 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Block `id`'s menu at `at`: the right-click's, and the header's ⋯. The block is focused
+    /// first so its menu acts on it (copy, paste); the selection it is in goes along (Fullscreen
+    /// takes it), read before focusing drops it.
+    pub(crate) fn open_block_menu(
+        &mut self,
+        id: BlockId,
+        at: PixelPoint<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let group = if self.space.selected.contains(&id) {
+            self.space.selected.clone()
+        } else {
+            Vec::new()
+        };
+        self.focus_block(id, window, cx);
+        self.open_menu(Target::Block { id, group }, at, window, cx);
+    }
+
+    /// The shells the menus list (docs/specs/shells.md, The menus): Default's name, and the
+    /// others, without the one that name is already.
+    fn shells_for_menu(&self) -> Shells {
+        let default = self.default_shell_name();
+        let others = self
+            .shells
+            .iter()
+            .filter(|s| s.label != default)
+            .cloned()
+            .collect();
+        Shells { default, others }
+    }
+
     /// The agents the menus list, and whether each one's program was found.
-    fn agents_for_menu(&self) -> Vec<(AgentEntry, bool)> {
+    pub(super) fn agents_for_menu(&self) -> Vec<(AgentEntry, bool)> {
         self.agents
             .iter()
             .filter(|a| a.show)
-            .map(|a| (a.clone(), templum_terminal::installed(a.program())))
+            .map(|a| (a.clone(), self.agent_installed(a)))
             .collect()
     }
 
@@ -183,6 +214,7 @@ impl Workspace {
                     grid.area.y + grid.area.h / 2.0,
                 )),
                 agents: self.agents_for_menu(),
+                shells: self.shells_for_menu(),
                 flip: grid.tiles.ids().len() > 1 && grid.homes.contains_key(&block),
                 others: self
                     .space
@@ -215,7 +247,9 @@ impl Workspace {
             Target::Canvas(at) => Items::Canvas {
                 at,
                 agents: self.agents_for_menu(),
+                shells: self.shells_for_menu(),
             },
+            Target::Shells => Items::Shells(self.shells_for_menu()),
             Target::Agents(at) => Items::Agents {
                 at,
                 agents: self.agents_for_menu(),
@@ -228,11 +262,14 @@ impl Workspace {
                     },
                     Body::Kanban(k) => Items::Kanban {
                         block,
-                        listing: k.shown(self).is_none() && k.board.is_some(),
+                        board: k
+                            .shown(self)
+                            .map(|b| (b.id, b.name.clone(), b.card_count())),
                     },
                     Body::Note(n) => Items::Note {
                         block,
                         color: n.tab().map(|t| self.notes.get(t.id).and_then(|e| e.color)),
+                        rename: n.tab().map(|t| (t.id, self.notes.name(t.id).to_string())),
                         send: self.send_to_menu(n.to_send(cx)),
                     },
                     Body::Checklist(_) => Items::Checklist { block },
@@ -272,15 +309,6 @@ impl Workspace {
                     },
                 }
             }
-            Target::Board { block, board } => Items::Board {
-                block,
-                board,
-                name: self
-                    .boards
-                    .board(board)
-                    .map_or_else(String::new, |b| b.name.clone()),
-                cards: self.boards.board(board).map_or(0, |b| b.card_count()),
-            },
             Target::Column { board, column } => {
                 let found = self
                     .boards
@@ -304,9 +332,14 @@ impl Workspace {
             },
             Target::Ink(index) => Items::Ink { index },
             Target::Wire(wire) => Items::Wire { wire },
-            Target::GitCommitMenu => Items::GitCommitMenu {
-                label: self.space.git()?.commit_label(),
-            },
+            Target::GitCommitMenu => {
+                let git = self.space.git()?;
+                Items::GitCommitMenu {
+                    label: git.commit_label(),
+                    can: git.can_commit(cx),
+                    amend: git.amend,
+                }
+            }
             Target::GitGenerateMenu => {
                 self.space.git()?.repo()?;
                 let agent = self.commit_agent.as_ref()?;
@@ -504,7 +537,15 @@ enum Tail {
         others: Vec<(BlockId, SharedString)>,
         at: Point,
         agents: Vec<(AgentEntry, bool)>,
+        shells: Shells,
     },
+}
+
+/// What the shells' menus list: **Default (*name*)**, then the shells found other than it.
+#[derive(Clone)]
+struct Shells {
+    default: String,
+    others: Vec<ShellOption>,
 }
 
 /// A target's menu, with what it shows read from the workspace.
@@ -529,7 +570,9 @@ enum Items {
         at: Point,
         /// Each agent the menu lists, and whether its program was found.
         agents: Vec<(AgentEntry, bool)>,
+        shells: Shells,
     },
+    Shells(Shells),
     Agents {
         at: Point,
         agents: Vec<(AgentEntry, bool)>,
@@ -539,13 +582,15 @@ enum Items {
     },
     Kanban {
         block: BlockId,
-        /// The board list shows over a board the block has.
-        listing: bool,
+        /// The board it shows: its id, its name and how many cards it has.
+        board: Option<(u64, String, usize)>,
     },
     Note {
         block: BlockId,
         /// The color of the note on screen; None without one.
         color: Option<Option<crate::board::Label>>,
+        /// The note on screen's id and name; None without one.
+        rename: Option<(u64, String)>,
         send: SendTo,
     },
     Checklist {
@@ -577,6 +622,10 @@ enum Items {
     GitCommitMenu {
         /// "Commit", or "Commit all changes (5 files)".
         label: String,
+        /// Commit is possible (`Git::can_commit`).
+        can: bool,
+        /// Amend is on.
+        amend: bool,
     },
     GitGenerateMenu {
         /// The agent's models, the recommended one first, and the one in use.
@@ -621,12 +670,6 @@ enum Items {
         hunk_text: String,
         /// The selection, else the hunk.
         send: SendTo,
-    },
-    Board {
-        block: BlockId,
-        board: u64,
-        name: String,
-        cards: usize,
     },
     Column {
         board: u64,

@@ -29,6 +29,7 @@ pub(super) fn rows(
     cx: &mut App,
 ) -> Vec<Row> {
     match section {
+        Section::General => super::general::rows(ws, entity),
         Section::Appearance => {
             let names: Vec<SharedString> = ws
                 .themes

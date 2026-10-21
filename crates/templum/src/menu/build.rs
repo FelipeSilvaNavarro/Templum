@@ -11,7 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, ClipboardItem, Context, Entity, SharedString, Window, px};
 use templum_canvas::{BlockId, Point, Wire};
 
-use super::{Items, SendTo, Tail};
+use super::{Items, SendTo, Shells, Tail};
 use crate::board::Label;
 use crate::git_block;
 use crate::kanban;
@@ -32,13 +32,14 @@ fn item(
         .on_click(move |_, window, cx| ws.update(cx, |ws, cx| act(ws, window, cx)))
 }
 
-/// Adding blocks, the canvas menu's and a tile's: AI agent ▸ and Add ▸ (Terminal, Kanban board,
+/// Adding blocks, the canvas menu's and a tile's: AI agent ▸ and Add ▸ (Terminal ▸, Kanban board,
 /// Note, Checklist, Editor), their top-left corner at `at` on the canvas. In grid mode they take half of
 /// the focused tile.
 fn adding(
     ws: &Entity<Workspace>,
     menu: PopupMenu,
     agents: Vec<(AgentEntry, bool)>,
+    shells: Shells,
     at: Point,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
@@ -56,14 +57,17 @@ fn adding(
         "Add",
         window,
         cx,
-        move |menu, _, _| {
+        move |menu, window, cx| {
             let ws = &add;
-            menu.item(item(
-                ws,
+            let shells = shells.clone();
+            let terminal = ws.clone();
+            menu.submenu_with_icon(
+                Some(Icon::new(IconName::SquareTerminal)),
                 "Terminal",
-                Some(IconName::SquareTerminal),
-                move |ws, window, cx| ws.add_terminal_at(at, window, cx),
-            ))
+                window,
+                cx,
+                move |menu, _, _| shell_items(&terminal, menu, shells.clone(), Some(at)),
+            )
             .item(item(
                 ws,
                 "Kanban board",
@@ -90,6 +94,33 @@ fn adding(
             ))
         },
     )
+}
+
+/// **Default (*name*)**, then each other shell found by its label (docs/specs/shells.md, The
+/// menus): the chosen one opens a terminal at `at` (None: where a new terminal goes).
+fn shell_items(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    shells: Shells,
+    at: Option<Point>,
+) -> PopupMenu {
+    let Shells { default, others } = shells;
+    // Macs list eight shells.
+    let menu = menu.scrollable(true).max_h(px(420.0)).item(item(
+        ws,
+        format!("Default ({default})"),
+        Some(IconName::SquareTerminal),
+        move |ws, window, cx| ws.open_shell(None, at, window, cx),
+    ));
+    if others.is_empty() {
+        return menu;
+    }
+    others.into_iter().fold(menu.separator(), |menu, shell| {
+        let label = SharedString::from(shell.label.clone());
+        menu.item(item(ws, label, None, move |ws, window, cx| {
+            ws.open_shell(Some(shell.clone()), at, window, cx)
+        }))
+    })
 }
 
 /// The agents, installed first; the others are greyed out (Settings ▸ Agents says how to install
@@ -302,10 +333,11 @@ impl Items {
                         others,
                         at,
                         agents,
+                        shells,
                     } => {
                         let bring = ws.clone();
                         // New blocks take half of this tile: it has the focus.
-                        adding(ws, menu, agents, at, window, cx)
+                        adding(ws, menu, agents, shells, at, window, cx)
                             .when(!others.is_empty(), |menu| {
                                 menu.submenu("From the canvas", window, cx, move |menu, _, _| {
                                     others.iter().fold(menu, |menu, (id, title)| {
@@ -367,7 +399,7 @@ impl Items {
                     move |ws, window, cx| ws.close(block, window, cx),
                 ))
             }
-            Items::Canvas { at, agents } => {
+            Items::Canvas { at, agents, shells } => {
                 let notes = item(
                     ws,
                     "Notes…",
@@ -380,7 +412,7 @@ impl Items {
                     Some(IconName::ListChecks),
                     |_, window, cx| crate::checklist::open_checklists(None, window, cx),
                 );
-                adding(ws, menu, agents, at, window, cx)
+                adding(ws, menu, agents, shells, at, window, cx)
                     .item(notes)
                     .item(checklists)
             }
@@ -398,17 +430,47 @@ impl Items {
                     .disabled(!selection),
                 )
                 .item(item(ws, "Paste", None, |ws, _, cx| ws.paste_clipboard(cx))),
-            Items::Kanban { block, listing } => menu.item(item(
-                ws,
-                if listing {
-                    "Back to the board"
-                } else {
-                    "Board list"
-                },
-                Some(IconName::ChevronsUpDown),
-                move |ws, _, cx| ws.pick_board(block, cx),
-            )),
+            Items::Kanban { block, board } => {
+                let menu = menu.item(item(
+                    ws,
+                    "All boards…",
+                    Some(IconName::LayoutDashboard),
+                    move |_, window, cx| crate::kanban::open_boards(block, window, cx),
+                ));
+                let Some((board, name, n)) = board else {
+                    return menu;
+                };
+                let rename_name = name.clone();
+                menu.item(item(ws, "Rename board…", None, move |_, window, cx| {
+                    let ws = cx.entity();
+                    prompt::ask_text(
+                        "Rename board",
+                        "Rename",
+                        rename_name.clone(),
+                        move |text, _, cx| rename_board(&ws, board, &text, cx),
+                        window,
+                        cx,
+                    )
+                }))
+                .item(item(
+                    ws,
+                    "Delete board…",
+                    Some(IconName::Delete),
+                    move |_, window, cx| {
+                        let ws = cx.entity();
+                        prompt::confirm(
+                            format!("Delete {name}?"),
+                            cards(n),
+                            "Delete",
+                            move |_, cx| ws.update(cx, |ws, cx| ws.delete_board(board, cx)),
+                            window,
+                            cx,
+                        )
+                    },
+                ))
+            }
             Items::Agents { at, agents } => agent_items(ws, menu, agents, at),
+            Items::Shells(shells) => shell_items(ws, menu, shells, None),
             Items::Tree {
                 block,
                 folder,
@@ -617,16 +679,29 @@ impl Items {
                     },
                 ))
             }),
-            Items::GitCommitMenu { label } => menu
-                .item(item(ws, label.clone(), None, move |ws, window, cx| {
-                    ws.git_commit(false, window, cx)
-                }))
-                .item(item(
-                    ws,
-                    format!("{label} & Push"),
-                    Some(IconName::Upload),
-                    move |ws, window, cx| ws.git_commit(true, window, cx),
-                )),
+            Items::GitCommitMenu { label, can, amend } => menu
+                .item(
+                    item(ws, label.clone(), None, move |ws, window, cx| {
+                        ws.git_commit(false, window, cx)
+                    })
+                    .disabled(!can),
+                )
+                .item(
+                    item(
+                        ws,
+                        format!("{label} & Push"),
+                        Some(IconName::Upload),
+                        move |ws, window, cx| ws.git_commit(true, window, cx),
+                    )
+                    .disabled(!can),
+                )
+                .separator()
+                .item(
+                    item(ws, "Amend the last commit", None, move |ws, window, cx| {
+                        ws.set_amend(!amend, window, cx)
+                    })
+                    .checked(amend),
+                ),
             Items::GitGenerateMenu { models, model } => {
                 let listed = !models.is_empty();
                 let menu = models.into_iter().fold(menu, |menu, m| {
@@ -822,7 +897,13 @@ impl Items {
                     ws,
                     "New branch here…",
                     Some(IconName::GitBranchPlus),
-                    move |ws, window, cx| ws.branch_from(Some(branch.clone()), window, cx),
+                    move |ws, window, cx| {
+                        ws.open_branch_dialog(
+                            git_block::switcher::Opened::Commit(branch.clone()),
+                            window,
+                            cx,
+                        )
+                    },
                 ))
                 .item(item(
                     ws,
@@ -1074,13 +1155,34 @@ impl Items {
                         ws.disconnect(wire, cx);
                     },
                 )),
-            Items::Note { block, color, send } => menu
+            Items::Note {
+                block,
+                color,
+                rename,
+                send,
+            } => menu
                 .item(item(
                     ws,
                     "All notes…",
                     Some(IconName::NotebookText),
                     move |_, window, cx| crate::note::open_notes(Some(block), window, cx),
                 ))
+                .when_some(rename, |menu, (note, name)| {
+                    menu.item(item(ws, "Rename…", None, move |_, window, cx| {
+                        let ws = cx.entity();
+                        prompt::ask_text(
+                            "Rename note",
+                            "Rename",
+                            name.clone(),
+                            move |text, _, cx| {
+                                ws.update(cx, |ws, cx| ws.rename_note(note, &text, cx));
+                                true
+                            },
+                            window,
+                            cx,
+                        )
+                    }))
+                })
                 .item(
                     item(ws, "Copy all", Some(IconName::Copy), move |ws, _, cx| {
                         if let Some(note) = ws.space.blocks.get(&block).and_then(|b| b.note()) {
@@ -1116,44 +1218,6 @@ impl Items {
                         },
                     )
                 }),
-            Items::Board {
-                block,
-                board,
-                name,
-                cards: n,
-            } => {
-                let rename_name = name.clone();
-                menu.item(item(ws, "Open", None, move |ws, _, cx| {
-                    ws.show_board(block, board, cx)
-                }))
-                .item(item(ws, "Rename…", None, move |_, window, cx| {
-                    let ws = cx.entity();
-                    prompt::ask_text(
-                        "Rename board",
-                        "Rename",
-                        rename_name.clone(),
-                        move |text, _, cx| rename_board(&ws, board, &text, cx),
-                        window,
-                        cx,
-                    )
-                }))
-                .item(item(
-                    ws,
-                    "Delete…",
-                    Some(IconName::Delete),
-                    move |_, window, cx| {
-                        let ws = cx.entity();
-                        prompt::confirm(
-                            format!("Delete {name}?"),
-                            cards(n),
-                            "Delete",
-                            move |_, cx| ws.update(cx, |ws, cx| ws.delete_board(board, cx)),
-                            window,
-                            cx,
-                        )
-                    },
-                ))
-            }
             Items::Column {
                 board,
                 column,

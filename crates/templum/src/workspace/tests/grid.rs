@@ -161,6 +161,29 @@ fn the_camera_stays_put_in_grid_mode(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_tile_scrolls_with_the_wheel_even_when_not_selected(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    press(handle, TOGGLE, cx);
+    ws.update(cx, |ws, _| ws.space.focused = None);
+    let tile = rect_of(&ws, cx, id);
+    let at = at(&ws, cx, (tile.x + tile.w / 2.0, tile.y + tile.h / 2.0));
+    cx.update_window(handle, |_, window, cx| {
+        wheel(
+            window,
+            cx,
+            at,
+            ScrollDelta::Pixels(point(px(0.), px(60.))),
+            false,
+        )
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(id).unwrap().scrolled.get());
+    });
+}
+
+#[gpui_kit::test]
 fn a_snapshot_in_grid_mode_keeps_the_canvas(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
@@ -579,7 +602,7 @@ fn a_blocks_menu_goes_in_flips_adds_leaves_and_comes_back(cx: &mut TestAppContex
         rect_of(&ws, cx, terminal),
         Rect::new(40.0, 400.0, 400.0, 300.0)
     );
-    // Board list, —, AI agent ▸, Add ▸, From the canvas ▸, —, Flip the split, Leave the grid,
+    // All boards…, —, AI agent ▸, Add ▸, From the canvas ▸, —, Flip the split, Leave the grid,
     // Back to the canvas…
     pick(handle, cx, kanban, 8, None);
     assert_eq!(tiles(cx), None, "the canvas again");
@@ -737,9 +760,14 @@ fn the_grids_menus_add_blocks(cx: &mut TestAppContext) {
     press(handle, TOGGLE, cx);
     let half = rect_of(&ws, cx, kanban);
     let count = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len());
-    // Board list, —, AI agent ▸, Add ▸: Terminal.
+    // All boards…, —, AI agent ▸, Add ▸: Terminal ▸ Default.
     let before = count(cx);
     pick(handle, cx, kanban, 3, Some(0));
+    cx.update_window(handle, |_, window, cx| {
+        click_innermost_menu_item(window, cx, 0);
+        window.render_frame(cx);
+    })
+    .unwrap();
     let terminal = added_since(&ws, cx, before)[0];
     let r = rect_of(&ws, cx, terminal);
     assert!(

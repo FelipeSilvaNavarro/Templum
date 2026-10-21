@@ -391,6 +391,22 @@ mod tests {
                 self.start.path().display().to_string()
             }
 
+            /// The folder of the account `claudinho` in this home, with a space in its path.
+            fn account_folder(&self) -> String {
+                let folder = self.dir.path().join("Templum Data/accounts/claudinho");
+                folder.display().to_string()
+            }
+
+            /// What Templum gives a terminal for its accounts (`TEMPLUM_ACCOUNTS`): a line per
+            /// account, tab-separated (id, program, variable, folder), whose folder it makes.
+            fn accounts(&self) -> String {
+                std::fs::create_dir_all(self.account_folder()).unwrap();
+                format!(
+                    "claudinho\tclaude\tCLAUDE_CONFIG_DIR\t{}",
+                    self.account_folder()
+                )
+            }
+
             /// `program` started as Templum starts it, with HOME (and the config folder) here.
             fn spawn(&self, program: &str, a: &[&str]) -> Option<Terminal> {
                 self.spawn_with(program, a, &[])
@@ -426,6 +442,7 @@ mod tests {
                     "TEMPLUM_QWEN_ARGS",
                     "TEMPLUM_QWEN_SETTINGS",
                     "TEMPLUM_PI_ARGS",
+                    "TEMPLUM_ACCOUNTS",
                 ] {
                     if !env.iter().any(|(k, _)| *k == key) {
                         command.push(format!("{key}="));
@@ -518,17 +535,20 @@ mod tests {
         const PI_WORDS: &str = "-e\n/tmp/Templum Data/pi/templum.ts";
 
         /// The agents that take something of Templum's from a variable of their environment.
-        const AGENT_VARS: [(&str, &str); 3] = [
+        const AGENT_VARS: [(&str, &str); 4] = [
             ("opencode", "OPENCODE_CONFIG_CONTENT"),
             ("kilo", "KILO_CONFIG_CONTENT"),
             ("qwen", "QWEN_CODE_SYSTEM_SETTINGS_PATH"),
+            // An account's folder: the one `TEMPLUM_ACCOUNTS` names.
+            ("claude", "CLAUDE_CONFIG_DIR"),
         ];
 
         /// The environment of a shell whose agents are `fake_agents`' on `path`, with Templum's
         /// words for each.
-        fn with_agents(path: &str) -> [(&str, &str); 9] {
+        fn with_agents<'a>(path: &'a str, accounts: &'a str) -> [(&'a str, &'a str); 10] {
             [
                 ("PATH", path),
+                ("TEMPLUM_ACCOUNTS", accounts),
                 ("TEMPLUM_CLAUDE_ARGS", CLAUDE_WORDS),
                 ("TEMPLUM_CODEX_ARGS", CODEX_WORDS),
                 ("TEMPLUM_COPILOT_ARGS", COPILOT_WORDS),
@@ -665,6 +685,40 @@ mod tests {
             wait_pressing(term, "the first line to run", Some(b"\r"), |_| {
                 file.exists()
             });
+        }
+
+        /// An account's command (`claudinho`) typed at the prompt of a shell started `with_agents`,
+        /// before anything else: its agent runs with Templum's words, then the person's, and the
+        /// account's folder in its variable; the shell doesn't keep the variable, so a `claude`
+        /// typed next has none (docs/specs/accounts.md, Typed in a terminal).
+        fn typed_account(term: &Terminal, home: &Home) {
+            let claude: Vec<&str> = CLAUDE_WORDS.lines().collect();
+            type_first(term, home, "claudinho hi", "claude");
+            wait_var(
+                term,
+                home,
+                "claude",
+                &home.account_folder(),
+                &[&claude[..], &["hi"]].concat(),
+            );
+            term.write(&b"claude\r"[..]);
+            wait_var(term, home, "claude", "unset", &claude);
+        }
+
+        /// After `typed_account`: the account is deleted (its folder is gone) while this terminal
+        /// stays open, and `claudinho` typed now doesn't run its agent: that would make the folder
+        /// again, with a login no row manages. With `status`, the command is waited for.
+        fn typed_deleted_account(term: &Terminal, home: &Home, status: bool) {
+            std::fs::remove_dir_all(home.account_folder()).unwrap();
+            let finished = term.status().finished;
+            term.write(&b"claudinho hi\r"[..]);
+            if status {
+                wait(term, "claudinho to end", |t| t.status().finished > finished);
+            } else {
+                std::thread::sleep(Duration::from_millis(800));
+            }
+            let file = home.dir.path().join("claude.args");
+            assert!(!file.exists(), "a deleted account's agent was run");
         }
 
         /// A `claude` and a `codex` typed at the prompt of a shell started `with_agents`: Templum's
@@ -959,7 +1013,10 @@ mod tests {
             let home = Home::new();
             home.write(".bashrc", format!("cd '{}'\n", home.start()));
             let path = home.fake_agents();
-            if let Some(term) = home.spawn_with("bash", &[], &with_agents(&path)) {
+            let accounts = home.accounts();
+            if let Some(term) = home.spawn_with("bash", &[], &with_agents(&path, &accounts)) {
+                typed_account(&term, &home);
+                typed_deleted_account(&term, &home, bash_has_ps0());
                 typed_agents(&term, &home, "unset TEMPLUM_CLAUDE_ARGS", bash_has_ps0());
                 typed_copilot(&term, &home, "unset TEMPLUM_COPILOT_ARGS", bash_has_ps0());
                 if bash_has_ps0() {
@@ -968,6 +1025,27 @@ mod tests {
                 typed_qwen(&term, &home, &POSIX);
                 typed_pi(&term, &home, "unset TEMPLUM_PI_ARGS");
             }
+        }
+
+        /// The person's own function of an account's name, read before Templum defines its own,
+        /// runs instead (bash; the others check for one the same way).
+        #[test]
+        fn bash_keeps_the_persons_account_function() {
+            let home = Home::new();
+            home.write(
+                ".bashrc",
+                format!(
+                    "claudinho() {{ command claude own; }}\ncd '{}'\n",
+                    home.start()
+                ),
+            );
+            let path = home.fake_agents();
+            let accounts = home.accounts();
+            let Some(term) = home.spawn_with("bash", &[], &with_agents(&path, &accounts)) else {
+                return;
+            };
+            type_first(&term, &home, "claudinho hi", "claude");
+            wait_args(&term, &home, "claude", &["own"]);
         }
 
         /// `claude` is installed after a command made zsh read its folder (npm's with nvm, its
@@ -982,7 +1060,8 @@ mod tests {
             std::fs::remove_file(bin.join("claude")).unwrap();
             // No other `claude` further on, which zsh would run instead.
             let path = format!("{}:/usr/bin:/bin", bin.display());
-            let Some(term) = home.spawn_with("zsh", &[], &with_agents(&path)) else {
+            let accounts = home.accounts();
+            let Some(term) = home.spawn_with("zsh", &[], &with_agents(&path, &accounts)) else {
                 return;
             };
             wait(&term, "the startup file's folder", |t| {
@@ -991,11 +1070,34 @@ mod tests {
             term.write(&b"ls\r"[..]);
             wait(&term, "ls to end", |t| t.status().finished == 1);
             home.fake_agents();
+            typed_account(&term, &home);
+            typed_deleted_account(&term, &home, true);
             typed_agents(&term, &home, "unset TEMPLUM_CLAUDE_ARGS", true);
             typed_copilot(&term, &home, "unset TEMPLUM_COPILOT_ARGS", true);
             typed_with_variable(&term, &home, &POSIX);
             typed_qwen(&term, &home, &POSIX);
             typed_pi(&term, &home, "unset TEMPLUM_PI_ARGS");
+        }
+
+        /// A `}` is only a brace in command position when the person's .zshenv sets
+        /// `ignore_close_braces` or `ignore_braces`: ours has none outside it, so the whole file
+        /// still parses and the account is a command.
+        #[test]
+        fn zsh_with_ignore_braces_still_has_the_accounts() {
+            for option in ["ignore_close_braces", "ignore_braces"] {
+                let home = Home::new();
+                home.write(".zshrc", format!("cd '{}'\n", home.start()));
+                let modules = std::env::var("MODULE_PATH")
+                    .map(|m| format!("module_path=('{m}')\n"))
+                    .unwrap_or_default();
+                home.write(".zshenv", format!("{modules}setopt {option}\n"));
+                let path = home.fake_agents();
+                let accounts = home.accounts();
+                let Some(term) = home.spawn_with("zsh", &[], &with_agents(&path, &accounts)) else {
+                    return;
+                };
+                typed_account(&term, &home);
+            }
         }
 
         /// The person's alias and function, read before Templum defines its own (bash) or after
@@ -1015,7 +1117,7 @@ mod tests {
                 zsh_modules(&home);
             }
             let path = home.fake_agents();
-            let Some(term) = home.spawn_with(program, &[], &with_agents(&path)) else {
+            let Some(term) = home.spawn_with(program, &[], &with_agents(&path, "")) else {
                 return;
             };
             type_first(&term, &home, "claude hi", "claude");
@@ -1049,7 +1151,7 @@ mod tests {
                 format!("set -e\nexport FAKE_EXIT=0\ncd '{}'\n", home.start()),
             );
             let path = home.fake_agents();
-            let Some(term) = home.spawn_with("bash", &[], &with_agents(&path)) else {
+            let Some(term) = home.spawn_with("bash", &[], &with_agents(&path, "")) else {
                 return;
             };
             type_first(&term, &home, "claude hi", "claude");
@@ -1165,7 +1267,10 @@ mod tests {
                 format!("cd '{}'\n", home.start()),
             );
             let path = home.fake_agents();
-            if let Some(term) = home.spawn_with("fish", &[], &with_agents(&path)) {
+            let accounts = home.accounts();
+            if let Some(term) = home.spawn_with("fish", &[], &with_agents(&path, &accounts)) {
+                typed_account(&term, &home);
+                typed_deleted_account(&term, &home, true);
                 typed_agents(&term, &home, "set -e TEMPLUM_CLAUDE_ARGS", true);
                 typed_copilot(&term, &home, "set -e TEMPLUM_COPILOT_ARGS", true);
                 typed_with_variable(&term, &home, &FISH);
@@ -1188,7 +1293,7 @@ mod tests {
                 ),
             );
             let path = home.fake_agents();
-            let Some(term) = home.spawn_with("fish", &[], &with_agents(&path)) else {
+            let Some(term) = home.spawn_with("fish", &[], &with_agents(&path, "")) else {
                 return;
             };
             type_first(&term, &home, "codex hi", "codex");
@@ -1207,9 +1312,13 @@ mod tests {
                 format!("Set-Location '{}'\n", home.start()),
             );
             let path = home.fake_agents();
-            let Some(term) = home.spawn_with("pwsh", &["-NoLogo"], &with_agents(&path)) else {
+            let accounts = home.accounts();
+            let Some(term) = home.spawn_with("pwsh", &["-NoLogo"], &with_agents(&path, &accounts))
+            else {
                 return;
             };
+            typed_account(&term, &home);
+            typed_deleted_account(&term, &home, true);
             typed_agents(&term, &home, "Remove-Item Env:TEMPLUM_CLAUDE_ARGS", true);
             typed_copilot(&term, &home, "Remove-Item Env:TEMPLUM_COPILOT_ARGS", true);
             typed_with_variable(&term, &home, &PWSH);
@@ -1252,7 +1361,7 @@ mod tests {
                 ),
             );
             let path = home.fake_agents();
-            let Some(term) = home.spawn_with("pwsh", &["-NoLogo"], &with_agents(&path)) else {
+            let Some(term) = home.spawn_with("pwsh", &["-NoLogo"], &with_agents(&path, "")) else {
                 return;
             };
             type_first(&term, &home, "codex hi", "codex");

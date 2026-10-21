@@ -12,6 +12,13 @@ use crate::board::Label;
 use crate::grid::hsla;
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
+const WHITE: Rgb = Rgb {
+    r: 255,
+    g: 255,
+    b: 255,
+};
+/// The contrast text needs (WCAG AA).
+const READABLE: f32 = 4.5;
 const ANSI_NAMES: [&str; 8] = [
     "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
 ];
@@ -102,14 +109,56 @@ impl gpui_kit::base::animation::Lerp for Ui {
     }
 }
 
-/// How much of its label's color a colored note's card takes.
-const NOTE_TINT: f32 = 0.18;
+/// A colored note's card has its label's hue, this share of its saturation and this share of the
+/// way from the theme's background to its lightness.
+const NOTE_CHROMA: f32 = 0.4;
+const NOTE_TINT: f32 = 0.10;
 
 impl Theme {
-    /// A colored note's card: the theme's background with a little of the label's color, so
-    /// the text on it stays readable.
+    /// A colored note's card: the theme's background, tinted with the label's hue, so the text
+    /// on it stays readable.
     pub fn note_bg(&self, label: Label) -> Hsla {
         hsla(note_tint(&self.palette, label), 1.0)
+    }
+
+    /// The text on a fill of the accent (a selected row, a menu item under the pointer, a ghost
+    /// button under it). Light: the theme's background or text color, whichever reads better; white
+    /// or black when neither reads on this accent. Dark: of those four, the ones that read on the
+    /// accent, the one that reads best on the hover below.
+    pub fn on_accent(&self) -> Hsla {
+        let accent = rgb(self.ui.accent);
+        let (background, foreground) = (self.palette.background, self.palette.foreground);
+        let best_on = |under: Rgb, from: &[Rgb]| {
+            let reads = |a: &Rgb, b: &Rgb| contrast(*a, under).total_cmp(&contrast(*b, under));
+            from.iter().copied().max_by(reads).unwrap_or(WHITE)
+        };
+        let best = if self.is_dark {
+            let candidates = [background, foreground, WHITE, BLACK];
+            let on_accent: Vec<Rgb> = (candidates.into_iter())
+                .filter(|c| contrast(*c, accent) >= READABLE)
+                .collect();
+            best_on(self.ghost_hover(), &on_accent)
+        } else {
+            let themed = best_on(accent, &[background, foreground]);
+            if contrast(themed, accent) >= READABLE {
+                themed
+            } else {
+                best_on(accent, &[WHITE, BLACK])
+            }
+        };
+        hsla(best, 1.0)
+    }
+
+    /// What a ghost button (the X of a dialog or a notification) is filled with under the pointer,
+    /// text on `on_accent`: in dark mode gpui-kit draws the accent at half over what is behind,
+    /// the theme's background; in light mode the accent itself.
+    fn ghost_hover(&self) -> Rgb {
+        let accent = rgb(self.ui.accent);
+        if self.is_dark {
+            mix(self.palette.background, accent, 0.5)
+        } else {
+            accent
+        }
     }
 
     pub fn new(name: &str, palette: Palette, cursor: Option<Rgb>, selection: Option<Rgb>) -> Self {
@@ -288,8 +337,23 @@ fn luminance(c: Rgb) -> f32 {
     0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
 }
 
+/// WCAG contrast ratio, 1 to 21.
+fn contrast(a: Rgb, b: Rgb) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
 fn note_tint(palette: &Palette, label: Label) -> Rgb {
-    mix(palette.background, palette.ansi[label.ansi()], NOTE_TINT)
+    let (bg, color) = (
+        hsla(palette.background, 1.0),
+        hsla(palette.ansi[label.ansi()], 1.0),
+    );
+    rgb(Hsla {
+        h: color.h,
+        s: color.s * NOTE_CHROMA,
+        l: bg.l + (color.l - bg.l) * NOTE_TINT,
+        a: 1.0,
+    })
 }
 
 /// Linear blend in sRGB: `t = 0` is `a`, `t = 1` is `b`.
@@ -585,6 +649,7 @@ pub(crate) fn apply_to_kit(theme: &Theme, cx: &mut App) {
         kit.window_border = ui.hairline;
         kit.muted_foreground = ui.title_dim;
         kit.accent = ui.accent;
+        kit.accent_foreground = theme.on_accent();
         kit.ring = ui.accent;
         kit.selection = ui.selection;
         // The code editor's background, line-number gutter and current line come from
@@ -605,6 +670,9 @@ pub(crate) fn apply_to_kit(theme: &Theme, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WCAG AA for large text and icons: what a ghost button's X needs under the pointer.
+    const GHOST: f32 = 3.0;
 
     const MOCHA: &str = include_str!("../themes/catppuccin-mocha.toml");
     const LATTE: &str = include_str!("../themes/catppuccin-latte.toml");
@@ -871,10 +939,6 @@ white = "#aaaaaa"
 
     #[test]
     fn note_tints_keep_text_readable() {
-        let contrast = |a: Rgb, b: Rgb| {
-            let (la, lb) = (luminance(a), luminance(b));
-            (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
-        };
         for builtin in BUILTIN {
             let theme = parse(builtin.name, builtin.toml).unwrap();
             for label in Label::ALL {
@@ -882,6 +946,42 @@ white = "#aaaaaa"
                 let ratio = contrast(theme.palette.foreground, tint);
                 assert!(ratio >= 4.5, "{} {}: {ratio}", builtin.name, label.name());
             }
+        }
+    }
+
+    #[test]
+    fn text_on_the_accent_stays_readable() {
+        // The kit draws a ghost button (the X of a dialog or a notification) under the pointer in
+        // dark mode as the accent at half over the background: its text needs 3:1 there too, where
+        // one of the colors that read on the accent can give it. Whether that was possible:
+        let check = |name: &str, theme: &Theme| {
+            let (on, accent) = (super::rgb(theme.on_accent()), super::rgb(theme.ui.accent));
+            let ratio = contrast(on, accent);
+            assert!(ratio >= READABLE, "{name}: {ratio}");
+            let hover = theme.ghost_hover();
+            let palette = &theme.palette;
+            let mut reads = [palette.background, palette.foreground, WHITE, BLACK]
+                .into_iter()
+                .filter(|c| contrast(*c, accent) >= READABLE);
+            let reachable = reads.any(|c| contrast(c, hover) >= GHOST);
+            if reachable {
+                let ratio = contrast(on, hover);
+                assert!(ratio >= GHOST, "{name} under the pointer: {ratio}");
+            }
+            reachable
+        };
+        let unreachable: Vec<&str> = BUILTIN
+            .iter()
+            .filter(|b| !check(b.name, &parse(b.name, b.toml).unwrap()))
+            .map(|b| b.name)
+            .collect();
+        // Apple Dark's blue is too bright for the dark text its selected rows need and too dark for
+        // the light text its hover needs: docs/minors.md.
+        assert_eq!(unreachable, ["Apple Dark"]);
+        // An accent the file sets, however awkward (mid grey reads neither dark nor light).
+        for accent in ["#808080", "#ff8800", "#ffffff", "#000000"] {
+            let set = format!("{MINIMAL}\n[templum]\naccent = \"{accent}\"\n");
+            check(accent, &parse("x", &set).unwrap());
         }
     }
 

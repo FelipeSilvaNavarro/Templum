@@ -223,6 +223,9 @@ the table above carries the corrections.
 - **Hooks for one Qwen Code session without a variable:** it has no `--settings`; and none at all when its own system
   settings file exists, which Templum's would hide.
 
+After card 69, every agent answers a task the same way: with `reply`, from Templum's tools or from its shell
+(`templum reply -`); [agent-protocol.md](agent-protocol.md#per-agent-after-phase-1) says what each agent gets.
+
 ## What doesn't need fixing
 
 - **The tools.** None of the 26 is tied to an agent: once an agent has the server, `ask_user` v2, the kanban, the

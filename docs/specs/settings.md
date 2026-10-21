@@ -90,6 +90,12 @@ Under these rows, a card for the theme in use: **Duplicate…** for a built-in o
 its colors as swatches with color pickers for one of yours, written to its file ([themes.md](themes.md#making-a-theme),
 [the color editor](themes.md#the-color-editor)).
 
+**General**
+
+| Field | Control | Option |
+|---|---|---|
+| Start Templum when you log in | Switch, off until someone turns it on; see [Start at login](#start-at-login) | — (the system's own entry, not `config.toml`) |
+
 **Canvas**
 
 | Field | Control | Option |
@@ -158,6 +164,51 @@ another login of an agent on its own folder, and what it shares with the others
   - A notification says which command has it.
   - "Reset All" decides its resets together, so two commands that traded keys both get their defaults back.
 
+## Start at login
+
+Templum can start when the person logs in to the computer. The system's own entry for it is the only record: there
+is no setting in `config.toml` that could drift from it, so removing the entry with the system's tools shows the
+switch off.
+
+- **Off for everyone who already uses Templum.** Nothing writes the entry on its own. The welcome
+  ([welcome.md](welcome.md#pages)) offers it on a first run, on by default (but not over an entry the system's tools
+  switched off, nor for `--dev`) and applied when the person has seen the option and the welcome closes;
+  Settings ▸ General turns it on or off at any time.
+- **Read** when the panel or the welcome opens (off the UI thread, since Windows reads the registry with a
+  program), and set by each change, which is also written off the UI thread: the switch shows the new state at once
+  and is disabled until the change's answer, and a failure puts the switch back to what the system has. A reading
+  never lands over a change that started after it, nor while one runs: the change's own answer is the reading. The
+  entry is written for the executable running: the AppImage file, not where it is mounted
+  (`templum_update::Install`).
+- **Where the entry is**, per system (`autostart.rs`):
+
+| System | Entry | It starts |
+|---|---|---|
+| Linux | `$XDG_CONFIG_HOME/autostart/templum.desktop` (`~/.config` when unset or relative), with the name, comment and icon of the apps menu's `templum.desktop` | `Exec="<executable>"`, quoted as the Desktop Entry spec asks, and `TryExec=<executable>` so the desktop skips the entry when the file is gone |
+| macOS | `~/Library/LaunchAgents/io.github.kingdaswinx.templum.plist` | `ProgramArguments` = the executable inside the bundle, `AssociatedBundleIdentifiers` = Templum's, so System Settings ▸ Login Items lists the item under Templum, `RunAtLoad`, only in a desktop session (`Aqua`) |
+| Windows | the `Templum` value of `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, written with `reg.exe` from `%SystemRoot%\System32` (no console window) | the executable in quotes |
+
+- **Plain tiling sessions don't run it.** The Linux entry is an XDG autostart file: GNOME, KDE, Xfce and the like
+  run it, but Hyprland, sway and niri on their own don't (uwsm or `dex -a` does). On Linux the row says so, and
+  there Templum is started from the compositor's own config (`exec-once = templum` in Hyprland).
+- **Switched off by the system's tools:** a Linux file with `Hidden=true` or `X-GNOME-Autostart-enabled=false`,
+  and a Windows entry that Task Manager or Settings ▸ Apps ▸ Startup switched off (its `StartupApproved` value),
+  read as off. Turning it on writes the entry again and clears that value.
+- **Run from the disk image** (macOS, or the copy macOS runs a downloaded app in): turning it on is refused with
+  "Move Templum to Applications first", since the file the entry names would vanish. Turning it off still works.
+- **`--dev`** (beside an installed Templum) has an entry of its own (`templum-dev.desktop`, `….templum.dev.plist`,
+  `Templum (dev)`) that starts `templum --dev`, so it never overwrites or removes the installed one's.
+- **Moved or reinstalled.** At startup, an entry that is on but whose executable no longer exists is written again
+  for this one, off the UI thread. An entry that names a file that still exists is another Templum's (a build
+  from Cargo beside the installed one, a portable copy, a test AppImage) and stays, so two never take it from each
+  other. An entry that is off or switched off, one whose program can't be told, and a line a person added to it by
+  hand, stay as they are. A second Templum open (it keeps nothing) never refreshes.
+- **The bench** (`--bench…`) has no entry: it never touches the person's login items.
+- **No entry** (no home folder, or the running executable can't be told): the row says "Templum can't add itself to
+  this system's startup apps" and has no switch.
+- **It fails** (a read-only folder, `reg.exe` refusing): the row's description says why, a notification shows
+  the same, and the switch shows what the system has. Nothing crashes.
+
 ## How a change applies and is saved
 
 1. **Edit:** a field change becomes an **edit**: "set `table.key` to a value", or "remove `table.key`" for "reset to
@@ -186,6 +237,7 @@ another login of an agent on its own folder, and what it shares with the others
 | A number beyond its limits | The number field doesn't go past them (6–72; 0–100000). |
 | Arguments with an unclosed quote | The field shows "Unclosed quote" and doesn't apply until it is fixed. |
 | Recording a taken shortcut | The row says whose it is and keeps recording. |
+| The login entry can't be written (read-only folder, `reg.exe` fails) | The General row's description says why and a notification shows it; the switch shows what the system has. |
 
 ## Architecture
 
@@ -196,6 +248,9 @@ another login of an agent on its own folder, and what it shares with the others
 | `settings.rs` (new) | Builds the `Settings` pages and fields from the active `Config`. Each field reads through the workspace entity and edits through it. Also has the monospaced-font list, `split_args` (quotes) and the shortcut row. |
 | `workspace.rs` | The panel's open state, slide-in and focus handle. Edits are applied on the next frame (`pending`), saved 0.3 s after the last one (a replaced timer task) and flushed on close and on app quit. Also holds the save-error line and the recording state, which sees keys before shortcuts and terminals. |
 | `title_bar.rs` | The ⚙ button. |
+| `autostart.rs` (new) | The system's entry for starting at login: where it is per system, its text (`.desktop`, `.plist`, the `reg.exe` arguments), reading, writing and refreshing it. `State` is what the toggle shows. |
+| `workspace/autostart.rs` (new) | Reading it when the panel or the welcome opens, setting it, refreshing it at startup. |
+| `settings/general.rs` (new) | Settings ▸ General, and the row the welcome shares. |
 
 No new dependency.
 
@@ -230,6 +285,28 @@ Tests are written first, as always. Everything runs in CI on Linux, macOS and Wi
   - Esc cancels;
   - Backspace leaves the command with no shortcut.
 - With the panel open, clicking a terminal and typing reaches the terminal.
+
+**Start at login** (`autostart.rs` unit tests, `settings_panel.rs`, and `workspace/tests/welcome.rs`):
+
+- the `.desktop` and `.plist` texts (`TryExec=`, `AssociatedBundleIdentifiers`), the `Exec=` quoting, the `reg.exe`
+  program (System32's) and arguments and the parsing of its output, as pure functions;
+- where each system keeps the entry, with and without `XDG_CONFIG_HOME` or a home;
+- on, off, off again and read back in a temporary home (never the real one, nor the registry); removing the file
+  by hand reads off; `Hidden=true` reads off and turning it on writes it again; an unwritable folder is an error;
+- the status tells no entry from one the system switched off; a Templum run from the macOS disk image refuses to
+  turn it on; the welcome's default (`State::offered`) is on only with no entry at all, and not for `--dev` or the
+  disk image;
+- the `--dev` entry doesn't touch the installed one's;
+- the program an entry names is read back whatever it holds (spaces, quotes, `$`, backslashes, `%`, `&`, `<`), and
+  one written with an escape the parsers don't decode (`\s`, `\n`, `\t`, `\r` in a `.desktop` file, `&#38;` in a
+  LaunchAgent) can't be told, so startup leaves it alone;
+- startup rewrites an entry that is on for an executable that is gone, and leaves alone one that names a file that
+  exists, one that is off, switched off or edited by hand, and anything a second Templum finds;
+- a reading never lands over a change: Settings opened from the welcome's last page shows what the welcome applied
+  (on and off), and a reading fired just before a click doesn't undo it;
+- headless: the General tab finds an entry made outside, turns it on and off (the switch follows at once, the system
+  is written off the UI thread and the switch is disabled meanwhile), and says why it failed; the welcome's cases are in
+  [welcome.md](welcome.md#testing).
 
 **Manual (Hyprland):**
 

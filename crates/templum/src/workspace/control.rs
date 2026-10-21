@@ -196,7 +196,8 @@ impl Workspace {
             ControlCall::Block(Call::SendToTerminal { block, text, enter }) => {
                 return match self.find_block(&block) {
                     Some((space, id)) => {
-                        let typed = self.type_text((&space, id), &block, &text, enter, cx);
+                        let asker = templum_agent::ASKER;
+                        let typed = self.type_text(asker, (&space, id), &block, &text, enter, cx);
                         let target = Target {
                             workspace: Some(space),
                             block: Some(block),
@@ -606,12 +607,8 @@ impl Workspace {
         if let Err(why) = entry.launch_args_with(model, effort, None) {
             return refuse(why);
         }
-        if !templum_terminal::installed(entry.program()) {
-            return refuse(format!(
-                "{} isn't installed on this computer ({} wasn't found).",
-                entry.title,
-                entry.program()
-            ));
+        if let Some(problem) = self.spawn_problem(&entry) {
+            return refuse(problem);
         }
         let space = match self.space_of(&opening.workspace, false) {
             Ok(space) => space,

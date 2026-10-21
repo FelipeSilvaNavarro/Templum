@@ -98,7 +98,11 @@ What doesn't come back: the text that was on screen, and programs other than the
   it finds is saved.
 - **Accounts** ([accounts.md](accounts.md#its-block)): a terminal's item also keeps the account its shell
   was opened for (`"account"`), whose variable its shell gets back.
-- **Safety:** the file stores only the agent's name and its session's id, never a command. A `"agent"` value other
+- **Shells** ([shells.md](shells.md#the-block-keeps-its-shell)): a terminal opened with a shell chosen in a menu keeps
+  its label in `"shell"` (`"fish"`, `"PowerShell 7"`); it is started again when the label is among the shells found
+  on this computer, else the default opens and the block forgets it. One opened any other way saves nothing.
+- **Safety:** the file stores only the agent's name and its session's id, and a shell's label, never a command. A
+  `"shell"` is looked up among the shells found, never run as a program or arguments. A `"agent"` value other
   than `"claude"` or `"codex"` is ignored, and a `"session"` is typed only when it is letters, digits and `-`, so an
   edited file can't make Templum type anything else.
 

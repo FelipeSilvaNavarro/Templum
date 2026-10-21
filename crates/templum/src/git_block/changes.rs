@@ -12,8 +12,9 @@ use templum_git::{Change, Entry};
 
 use super::commit_form::commit_form;
 use super::diff_view;
-use super::widgets::{badge, check_box, field, icon_button, small};
+use super::widgets::{badge, check_box, field, icon_button};
 use super::{Check, FONT, Git, LISTS_W, List, ROW_H, row_id, words};
+use crate::grid::hsla;
 use crate::menu::Target;
 use crate::workspace::Workspace;
 
@@ -66,23 +67,13 @@ pub(super) fn changes(
     let body = if git.lists_folded {
         body
     } else {
-        let top = div()
-            .flex()
-            .items_center()
-            .gap(px(6.0 * z))
-            .p(px(6.0 * z))
-            .border_b_1()
-            .border_color(ui.hairline)
-            .when(git.filtering(), |el| {
-                el.child(field(&git.files_filter, z).flex_1())
-            })
-            .when(!git.filtering(), |el| el.child(div().flex_1()))
-            .child(
-                icon_button("git-fold-lists", IconName::PanelLeftClose, ui, z)
-                    .tooltip(|window, cx| Tooltip::new("Fold the lists").build(window, cx))
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(cx)))
-                    .test_support(),
-            );
+        // Filter files, past FILTER_PAST of them.
+        let filter = git.filtering().then(|| {
+            div()
+                .p(px(8.0 * z))
+                .pb(px(0.0))
+                .child(field(&git.files_filter, z).w_full())
+        });
         body.child(
             div()
                 .w(px(LISTS_W * z))
@@ -92,8 +83,8 @@ pub(super) fn changes(
                 .flex_col()
                 .border_r_1()
                 .border_color(ui.hairline)
-                .child(top)
-                .child(lists)
+                .children(filter)
+                .child(lists.pt(px(4.0 * z)))
                 .child(commit_form(ws, git, z, cx)),
         )
     };
@@ -130,10 +121,11 @@ fn header(
         .w_full()
         .flex()
         .items_center()
-        .gap(px(6.0 * z))
+        .gap(px(8.0 * z))
         .h(px(ROW_H * z))
-        .px(px(10.0 * z))
+        .px(px(16.0 * z))
         .text_size(px(11.0 * z))
+        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
         .text_color(ui.title_dim)
         .when(which == List::Files && !paths.is_empty(), |el| {
             let tip = if all == Check::Checked {
@@ -154,16 +146,24 @@ fn header(
             })
         })
         .child(match which {
-            List::Conflicts => format!("Conflicts · {}", entries.len()),
-            List::Files => format!("Changes · {}", entries.len()),
+            List::Conflicts => "CONFLICTS",
+            List::Files => "CHANGES",
         })
+        .child(
+            div()
+                .font_weight(gpui_kit::FontWeight::NORMAL)
+                .child(entries.len().to_string()),
+        )
         .child(div().flex_1())
         .when(
             !disabled && which == List::Files && !unstaged.is_empty(),
             |el| {
                 el.child(
-                    small("git-discard-all", "Discard all…", ui, z)
-                        .tooltip(|window, cx| Tooltip::new(words::tip("Discard")).build(window, cx))
+                    icon_button("git-discard-all", IconName::Undo2, ui, z)
+                        .tooltip(|window, cx| {
+                            Tooltip::new(format!("Discard all… {}", words::tip("Discard")))
+                                .build(window, cx)
+                        })
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.discard(unstaged.clone(), window, cx)
                         }))
@@ -296,20 +296,27 @@ fn row(
             .test_support()
         }
     });
-    div()
+    let row = div()
         .id(row_id(which.name(), i))
         .group("git-row")
         .w_full()
         .flex()
         .items_center()
-        .gap(px(6.0 * z))
+        .gap(px(8.0 * z))
         .h(px(ROW_H * z))
         .px(px(10.0 * z))
+        .rounded(px(6.0 * z))
         .text_size(px(FONT * z))
-        .text_color(ui.title)
-        .when(selected, |el| el.bg(ui.card))
+        .text_color(hsla(ws.theme.palette.foreground, 0.9))
+        .when(selected, |el| el.bg(ui.accent.opacity(0.12)))
         .cursor_pointer()
-        .hover(move |st| st.bg(ui.hover))
+        .hover(move |st| {
+            st.bg(if selected {
+                ui.accent.opacity(0.16)
+            } else {
+                ui.hover
+            })
+        })
         .children(check)
         .child(badge(ws, change, z))
         .child(div().truncate().child(e.name().to_string()))
@@ -318,6 +325,7 @@ fn row(
                 .flex_1()
                 .min_w(px(0.0))
                 .truncate()
+                .text_size(px(11.0 * z))
                 .text_color(ui.title_dim)
                 .child(e.folder().to_string()),
         )
@@ -340,6 +348,7 @@ fn row(
                 cx.stop_propagation();
             }),
         )
-        .test_support()
-        .into_any_element()
+        .test_support();
+    // Inset, so the selection's rounded corners show.
+    div().px(px(6.0 * z)).child(row).into_any_element()
 }

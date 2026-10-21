@@ -204,10 +204,10 @@ fn a_pasted_copy_of_a_wired_block_comes_without_wires(cx: &mut TestAppContext) {
 fn a_blocks_menu_connects_and_disconnects_it(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (kanban, note, _) = three_blocks(handle, &ws, cx);
-    // Board list, —, Fullscreen, Connect to ▸ (the terminal, the note: back to front).
+    // All boards…, —, Fullscreen, Connect to ▸ (the terminal, the note: back to front).
     pick(handle, cx, kanban, 3, 1);
     assert_eq!(wires(&ws, cx), [Wire::new(kanban, note).unwrap()]);
-    // Board list, —, Fullscreen, Connect to ▸ (the terminal), Disconnect from ▸ (the note).
+    // All boards…, —, Fullscreen, Connect to ▸ (the terminal), Disconnect from ▸ (the note).
     pick(handle, cx, kanban, 4, 0);
     assert!(wires(&ws, cx).is_empty());
     // Both were steps: Ctrl+Z wires them again.

@@ -1,7 +1,7 @@
 //! The Git block's words for people: each Git word's one-sentence tooltip, and the sentences
 //! that say where a branch stands. See docs/specs/git.md, Words.
 
-use templum_git::{Operation, Status};
+use templum_git::{Change, Entry, Operation, Status};
 
 /// The tooltip of a Git word, as the spec's Words table gives it ("" for a word it hasn't).
 pub(crate) fn tip(word: &str) -> &'static str {
@@ -133,6 +133,36 @@ pub(crate) fn synced(got: u32, sent: u32) -> String {
     }
 }
 
+/// The message a commit of the one file `entry` gets when none is typed: "Add a.rs", "Delete
+/// a.rs", "Rename a.rs to b.rs" ("Move a.rs to dir/" when only its folder changed), else
+/// "Update a.rs", by the change in the index (`staged`) or in the working tree. None when the entry
+/// has no such change.
+pub(crate) fn generic_summary(entry: &Entry, staged: bool) -> Option<String> {
+    let change = if staged { entry.staged } else { entry.unstaged }?;
+    let name = entry.name();
+    Some(match (change, &entry.from) {
+        (Change::Added | Change::Untracked, _) => format!("Add {name}"),
+        (Change::Deleted, _) => format!("Delete {name}"),
+        (Change::Renamed, Some(from)) => {
+            let old = from.rsplit('/').next().unwrap_or(from);
+            match (old == name, entry.folder()) {
+                (false, _) => format!("Rename {old} to {name}"),
+                (true, "") => format!("Move {name} to the root"),
+                (true, dir) => format!("Move {name} to {dir}/"),
+            }
+        }
+        _ => format!("Update {name}"),
+    })
+}
+
+/// `generic_summary` of the one file the index holds in `status`: None with no file or several.
+pub(crate) fn staged_summary(status: &Status) -> Option<String> {
+    match status.staged().as_slice() {
+        [entry] => generic_summary(entry, true),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +263,57 @@ mod tests {
         assert_eq!(synced(1, 0), "Got 1 commit");
         assert_eq!(synced(0, 2), "Sent 2 commits");
         assert_eq!(changed_files(3), "3 changed files");
+    }
+
+    fn entry(path: &str, staged: Option<Change>, unstaged: Option<Change>) -> Entry {
+        Entry {
+            path: path.into(),
+            from: None,
+            staged,
+            unstaged,
+        }
+    }
+
+    #[test]
+    fn a_single_file_commit_is_named_after_its_file_and_change() {
+        let m = Some(Change::Modified);
+        assert_eq!(
+            generic_summary(&entry("src/lib.rs", m, None), true).as_deref(),
+            Some("Update lib.rs")
+        );
+        assert_eq!(
+            generic_summary(&entry("new.txt", Some(Change::Added), None), true).as_deref(),
+            Some("Add new.txt")
+        );
+        assert_eq!(
+            generic_summary(&entry("new.txt", None, Some(Change::Untracked)), false).as_deref(),
+            Some("Add new.txt")
+        );
+        assert_eq!(
+            generic_summary(&entry("a/gone.txt", Some(Change::Deleted), None), true).as_deref(),
+            Some("Delete gone.txt")
+        );
+        let mut renamed = entry("b/new.rs", Some(Change::Renamed), None);
+        renamed.from = Some("a/old.rs".into());
+        assert_eq!(
+            generic_summary(&renamed, true).as_deref(),
+            Some("Rename old.rs to new.rs")
+        );
+        // Only the folder changed: the name would read "Rename lib.rs to lib.rs".
+        let mut moved = entry("core/lib.rs", Some(Change::Renamed), None);
+        moved.from = Some("src/lib.rs".into());
+        assert_eq!(
+            generic_summary(&moved, true).as_deref(),
+            Some("Move lib.rs to core/")
+        );
+        let mut to_root = entry("lib.rs", Some(Change::Renamed), None);
+        to_root.from = Some("src/lib.rs".into());
+        assert_eq!(
+            generic_summary(&to_root, true).as_deref(),
+            Some("Move lib.rs to the root")
+        );
+        // The index's change when the commit takes the index, the tree's when it takes all.
+        assert_eq!(generic_summary(&entry("a", m, None), false), None);
+        assert_eq!(generic_summary(&entry("a", None, m), true), None);
     }
 }

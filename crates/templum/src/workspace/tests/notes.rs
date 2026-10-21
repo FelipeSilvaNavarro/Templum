@@ -82,11 +82,15 @@ fn a_new_note_takes_the_keyboard_and_keeps_every_key_in_the_notes(cx: &mut TestA
     .unwrap();
     cx.simulate_input(handle, "  Groceries\nmilk");
     assert_eq!(text_of(&ws, cx, note).as_deref(), Some("  Groceries\nmilk"));
-    ws.read_with(cx, |ws, cx| {
+    ws.read_with(cx, |ws, _| {
         assert_eq!(
-            ws.space.blocks[&id].note().unwrap().title(cx).as_ref(),
-            "Groceries",
-            "the first line with text"
+            ws.space.blocks[&id]
+                .note()
+                .unwrap()
+                .title(&ws.notes)
+                .as_ref(),
+            "Untitled",
+            "typing never names a note"
         );
     });
 }
@@ -113,10 +117,14 @@ fn a_note_is_plain_text(cx: &mut TestAppContext) {
         edit.read_with(cx, |e, _| e.value().to_string()),
         "# Plan\n- a\n"
     );
-    ws.read_with(cx, |ws, cx| {
+    ws.read_with(cx, |ws, _| {
         assert_eq!(
-            ws.space.blocks[&id].note().unwrap().title(cx).as_ref(),
-            "# Plan"
+            ws.space.blocks[&id]
+                .note()
+                .unwrap()
+                .title(&ws.notes)
+                .as_ref(),
+            "Untitled"
         );
     });
 }
@@ -211,7 +219,9 @@ fn tabs_hold_several_notes_and_closing_one_keeps_it(cx: &mut TestAppContext) {
     })
     .unwrap();
     assert_eq!(shown(&ws, cx, id), first);
+    // The × of a tab that isn't on screen shows while the pointer is on the tab.
     cx.update_window(handle, |_, window, cx| {
+        window.hover(tab(1), cx);
         window.click(close(1), cx);
         window.render_frame(cx);
     })
@@ -384,6 +394,7 @@ fn an_older_note_block_moves_its_text_into_the_notes(cx: &mut TestAppContext) {
         let id = note.tab().unwrap().id;
         let entry = ws.notes.get(id).unwrap();
         assert_eq!(entry.color, Some(crate::board::Label::Yellow));
+        assert_eq!(entry.name, "# Old", "called what it was: its first line");
         id
     });
     ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
@@ -425,8 +436,8 @@ fn send_to_types_a_notes_selection_into_the_chosen_terminal(cx: &mut TestAppCont
         window.render_frame(cx);
         window.right_click(("title", note.0 as usize), cx);
         window.render_frame(cx);
-        // All notes…, Copy all, Send to ▸, Color ▸, —, Close.
-        window.within("popup-menu").click(2usize, cx);
+        // All notes…, Rename…, Copy all, Send to ▸, Color ▸, —, Close.
+        window.within("popup-menu").click(3usize, cx);
         window.render_frame(cx);
         window
             .within("submenu")
@@ -472,8 +483,8 @@ fn the_note_menu_colors_the_note_on_screen(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.right_click(("title", block.0 as usize), cx);
         window.render_frame(cx);
-        // All notes…, Copy all, Color ▸ (an empty note has nothing to send), —, Close.
-        window.within("popup-menu").click(2usize, cx);
+        // All notes…, Rename…, Copy all, Color ▸ (an empty note has nothing to send), —, Close.
+        window.within("popup-menu").click(3usize, cx);
         window.render_frame(cx);
         // None, Red, Yellow…
         window
@@ -489,4 +500,221 @@ fn the_note_menu_colors_the_note_on_screen(cx: &mut TestAppContext) {
             Some(crate::board::Label::Yellow)
         );
     });
+}
+
+/// Double-clicks tab `index` of note block `block`.
+fn double_click_tab(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    block: BlockId,
+    index: usize,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let tab = gpui_kit::ElementId::Name(format!("note-tab-{}-{index}", block.0).into());
+        let at = window.find(tab).bounds().center();
+        click(window, cx, (f32::from(at.x), f32::from(at.y)), 2);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+/// The name of note `note`, and whether `block` is renaming one.
+fn name_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, note: u64) -> String {
+    ws.read_with(cx, |ws, _| ws.notes.name(note).to_string())
+}
+
+fn renaming(ws: &Entity<Workspace>, cx: &mut TestAppContext, block: BlockId) -> bool {
+    ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&block].note().unwrap().renaming.is_some()
+    })
+}
+
+/// A new note is called Untitled whatever is typed in it; a double click on its tab selects the
+/// name in place; Enter keeps what is typed and gives the keyboard back to the note, Esc leaves
+/// the name as it was, and a blank name is Untitled again.
+#[gpui_kit::test]
+fn a_double_click_on_a_tab_renames_its_note_in_place(cx: &mut TestAppContext) {
+    use gpui_kit::Focusable as _;
+    let (handle, ws) = open(cx);
+    let id = new_note(handle, &ws, cx);
+    let note = shown(&ws, cx, id);
+    let edit = editor(&ws, cx, id);
+    cx.simulate_input(handle, "milk");
+    assert_eq!(name_of(&ws, cx, note), "Untitled");
+    double_click_tab(handle, cx, id, 0);
+    assert!(renaming(&ws, cx, id));
+    let input = ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&id]
+            .note()
+            .unwrap()
+            .renaming
+            .as_ref()
+            .unwrap()
+            .input
+            .clone()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        assert!(input.read(cx).focus_handle(cx).is_focused(window));
+        assert_eq!(
+            input.read(cx).value().as_ref(),
+            "Untitled",
+            "the name, selected"
+        );
+    })
+    .unwrap();
+    // Typed over the selected name.
+    cx.simulate_input(handle, "Groceries");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        assert!(
+            edit.read(cx).focus_handle(cx).is_focused(window),
+            "the note has the keyboard again"
+        );
+    })
+    .unwrap();
+    assert!(!renaming(&ws, cx, id));
+    assert_eq!(name_of(&ws, cx, note), "Groceries");
+    assert_eq!(
+        text_of(&ws, cx, note).as_deref(),
+        Some("milk"),
+        "its text is its own"
+    );
+    ws.read_with(cx, |ws, cx| {
+        let title = crate::block::title(ws, &ws.space.blocks[&id], cx);
+        assert_eq!(title.as_ref(), "Groceries", "the block's title follows");
+    });
+    // Esc: as it was.
+    double_click_tab(handle, cx, id, 0);
+    cx.simulate_input(handle, "Other");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!renaming(&ws, cx, id));
+    assert_eq!(name_of(&ws, cx, note), "Groceries");
+    // Blank: Untitled.
+    double_click_tab(handle, cx, id, 0);
+    cx.update_window(handle, |_, window, cx| {
+        window.press("backspace", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(name_of(&ws, cx, note), "Untitled");
+}
+
+/// The keyboard leaving the field (a click on the note) keeps the name typed, as Enter does.
+#[gpui_kit::test]
+fn the_keyboard_leaving_the_tabs_field_keeps_its_name(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    // Focus listeners (a field's blur) only hear an active window.
+    super::terminals::set_active(handle, true, cx);
+    let id = new_note(handle, &ws, cx);
+    let note = shown(&ws, cx, id);
+    let edit = editor(&ws, cx, id);
+    double_click_tab(handle, cx, id, 0);
+    cx.simulate_input(handle, "Plan");
+    cx.update_window(handle, |_, window, cx| {
+        edit.update(cx, |e, cx| e.focus(window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!renaming(&ws, cx, id));
+    assert_eq!(name_of(&ws, cx, note), "Plan");
+}
+
+/// A note the person named stays in the Notes dialog when its tab closes though it has no text;
+/// one never named and blank goes, as before.
+#[gpui_kit::test]
+fn a_named_note_without_text_is_kept_when_closed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = new_note(handle, &ws, cx);
+    let named = shown(&ws, cx, id);
+    ws.update(cx, |ws, _| ws.notes.rename(named, "Ideas"));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close(id, window, cx))
+    })
+    .unwrap();
+    assert_eq!(text_of(&ws, cx, named).as_deref(), Some(""), "kept");
+    assert_eq!(name_of(&ws, cx, named), "Ideas");
+}
+
+/// The Notes dialog lists a note by its name and finds it by the name too.
+#[gpui_kit::test]
+fn the_notes_dialog_shows_and_finds_notes_by_name(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let milk = ws.update(cx, |ws, _| ws.notes.add("milk\neggs".into(), None, 1));
+    ws.update(cx, |ws, _| ws.notes.rename(milk, "Groceries"));
+    let row = gpui_kit::ElementId::Name(format!("note-row-{milk}").into());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |_, cx| crate::note::open_notes(None, window, cx));
+        window.render_frame(cx);
+        window.find(row.clone());
+    })
+    .unwrap();
+    cx.simulate_input(handle, "grocer");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(row);
+    })
+    .unwrap();
+}
+
+/// Names are kept with the notes: after a restart a note is called what it was, and a file from
+/// before names calls each note by its first line.
+#[gpui_kit::test]
+fn a_notes_name_comes_back_after_a_restart(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    let id = new_note(handle, &ws, cx);
+    let note = shown(&ws, cx, id);
+    cx.simulate_input(handle, "text");
+    ws.update(cx, |ws, _| ws.notes.rename(note, "Mine"));
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    let (_, again) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    again.read_with(cx, |ws, _| assert_eq!(ws.notes.name(note), "Mine"));
+}
+
+/// The block's menu (right click, or its ⋯ button) has Rename…, which asks for the name in a
+/// dialog, its field holding the current one.
+#[gpui_kit::test]
+fn the_note_menu_renames_the_note_on_screen(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let block = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.add_note_at(Point::new(900.0, 40.0), window, cx);
+                ws.space.appearing.clear();
+                ws.space.canvas.top().unwrap()
+            })
+        })
+        .unwrap();
+    let note = shown(&ws, cx, block);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("title", block.0 as usize), cx);
+        window.render_frame(cx);
+        // All notes…, Rename…, Copy all, Color ▸, —, Close.
+        window.within("popup-menu").click(1usize, cx);
+        window.render_frame(cx);
+        // The dialog slides in for 0.25 s first: presses meanwhile are lost.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    // The current name is selected: typing replaces it.
+    cx.simulate_input(handle, "Plan");
+    cx.update_window(handle, |_, window, cx| {
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(name_of(&ws, cx, note), "Plan");
 }

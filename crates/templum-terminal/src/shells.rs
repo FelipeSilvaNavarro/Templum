@@ -23,7 +23,8 @@ impl ShellOption {
     }
 }
 
-/// The shells found here, the preferred first.
+/// The shells found here, the preferred first. On Linux and macOS: `/etc/shells`'s, then the known
+/// shells on the PATH, with `-l` on macOS.
 pub fn available_shells() -> Vec<ShellOption> {
     if cfg!(windows) {
         let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
@@ -43,7 +44,12 @@ pub fn available_shells() -> Vec<ShellOption> {
         )
     } else {
         let listed = std::fs::read_to_string("/etc/shells").unwrap_or_default();
-        unix_shells(&listed, |path| Path::new(path).is_file())
+        unix_shells(
+            &listed,
+            |path| Path::new(path).is_file(),
+            |name| crate::agent::locate(name).map(|p| p.display().to_string()),
+            cfg!(target_os = "macos"),
+        )
     }
 }
 
@@ -71,6 +77,14 @@ pub fn default_shell_label() -> String {
             })
             .unwrap_or_else(|| "sh".to_string()),
     }
+}
+
+/// Whether `program`, a path or a name, runs the shell called `name`: its file stem, in any case
+/// (`C:/Windows/System32/wsl.exe` is `wsl`, `PowerShell.exe` is `powershell`).
+pub fn is_shell(program: &str, name: &str) -> bool {
+    Path::new(program)
+        .file_stem()
+        .is_some_and(|s| s.eq_ignore_ascii_case(name))
 }
 
 /// Where Windows keeps programs, from its environment.
@@ -133,8 +147,17 @@ fn windows_default(found: &[ShellOption]) -> ShellOption {
         .unwrap_or_else(|| ShellOption::new("Windows PowerShell", "powershell", &["-NoLogo"]))
 }
 
-/// The login shells `/etc/shells` lists that exist, once each by name, in its order.
-fn unix_shells(listed: &str, exists: impl Fn(&str) -> bool) -> Vec<ShellOption> {
+/// The login shells `/etc/shells` lists that exist, once each by name, in its order, then the
+/// known shells it didn't name that `which` finds (Homebrew's fish and zsh, Nushell from cargo:
+/// none is in `/etc/shells` until someone runs `chsh`). With `login`, every one starts as a login
+/// shell (`-l`): on macOS the default is one, and a shell started from Finder's Templum otherwise
+/// misses `/etc/zprofile` and the `brew shellenv` of `~/.zprofile`.
+fn unix_shells(
+    listed: &str,
+    exists: impl Fn(&str) -> bool,
+    which: impl Fn(&str) -> Option<String>,
+    login: bool,
+) -> Vec<ShellOption> {
     let mut shells: Vec<ShellOption> = Vec::new();
     for path in listed.lines().map(str::trim).filter(|l| l.starts_with('/')) {
         let name = path.rsplit('/').next().unwrap_or(path);
@@ -155,6 +178,18 @@ fn unix_shells(listed: &str, exists: impl Fn(&str) -> bool) -> Vec<ShellOption> 
         }
         shells.push(ShellOption::new(name, path, &[]));
     }
+    for name in ["bash", "zsh", "fish", "nu", "pwsh"] {
+        if shells.iter().all(|s| s.label != name)
+            && let Some(path) = which(name)
+        {
+            shells.push(ShellOption::new(name, path, &[]));
+        }
+    }
+    if login {
+        for shell in &mut shells {
+            shell.args = vec!["-l".to_string()];
+        }
+    }
     shells
 }
 
@@ -173,6 +208,14 @@ mod tests {
 
     fn labels(shells: &[ShellOption]) -> Vec<&str> {
         shells.iter().map(|s| s.label.as_str()).collect()
+    }
+
+    #[test]
+    fn is_shell_names_a_program_by_its_file_stem() {
+        assert!(is_shell("C:/Windows/System32/wsl.exe", "wsl"));
+        assert!(is_shell("PowerShell.exe", "powershell"));
+        assert!(is_shell("/opt/My Shells/fish", "fish"));
+        assert!(!is_shell("/usr/bin/wslu", "wsl"));
     }
 
     #[test]
@@ -230,8 +273,29 @@ mod tests {
         let listed = "# /etc/shells\n/bin/sh\n/bin/bash\n/usr/bin/bash\n/usr/bin/zsh\n\
                       /usr/bin/git-shell\n/usr/bin/nologin\n/usr/bin/fish\n/opt/gone/ksh\n\
                       /usr/bin/systemd-home-fallback-shell\n";
-        let shells = unix_shells(listed, |p| p != "/opt/gone/ksh");
+        let shells = unix_shells(listed, |p| p != "/opt/gone/ksh", |_| None, false);
         assert_eq!(labels(&shells), ["sh", "bash", "zsh", "fish"]);
         assert_eq!(shells[1].program, "/bin/bash", "the first listed");
+    }
+
+    #[test]
+    fn unix_shells_add_known_shells_on_the_path_and_log_in_on_macos() {
+        let listed = "/bin/sh\n/bin/bash\n/usr/bin/zsh\n";
+        let which = |name: &str| match name {
+            "zsh" => Some("/opt/homebrew/bin/zsh".to_string()),
+            "fish" => Some("/opt/homebrew/bin/fish".to_string()),
+            "nu" => Some("/home/u/.cargo/bin/nu".to_string()),
+            _ => None,
+        };
+        let shells = unix_shells(listed, |_| true, which, false);
+        assert_eq!(labels(&shells), ["sh", "bash", "zsh", "fish", "nu"]);
+        assert_eq!(
+            shells[2].program, "/usr/bin/zsh",
+            "the one /etc/shells lists"
+        );
+        assert_eq!(shells[3].program, "/opt/homebrew/bin/fish");
+        assert!(shells.iter().all(|s| s.args.is_empty()));
+        let login = unix_shells(listed, |_| true, which, true);
+        assert!(login.iter().all(|s| s.args == ["-l"]), "{login:?}");
     }
 }

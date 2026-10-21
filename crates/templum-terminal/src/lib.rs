@@ -13,7 +13,10 @@ mod terminal;
 
 #[cfg(unix)]
 pub use agent::read_shell_path;
-pub use agent::{Agent, Detect, agent_of, installed, locate, path_var, program_name};
+pub use agent::{
+    Agent, Detect, agent_of, installed, locate, on_path, path_var, program_name, shell_path_dirs,
+    shell_path_pending,
+};
 pub use alacritty_terminal::index::Side;
 pub use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
 pub use find::{Find, Toward};
@@ -23,7 +26,7 @@ pub use input::{
 pub use integration::install;
 pub use link::{Target, resolve};
 pub use palette::Palette;
-pub use shells::{ShellOption, available_shells, default_shell, default_shell_label};
+pub use shells::{ShellOption, available_shells, default_shell, default_shell_label, is_shell};
 pub use snapshot::{Bar, Cursor, Row, Run, Snapshot, Span};
 pub use tap::{Mark, Outcome, Pattern, Status};
 #[cfg(windows)]

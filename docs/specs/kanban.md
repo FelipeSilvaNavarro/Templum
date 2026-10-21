@@ -2,7 +2,9 @@
 
 - **Date:** 2026-10-10
 - **Status:** Implemented; [version 2](#version-2-kanban-card-40) (who a card is for, priority, a checklist, the
-  card's id, scrolling while dragging, the open card redone) implemented
+  card's id, scrolling while dragging, the open card redone) implemented; agents
+  [edit and delete their own comments](#editing-and-deleting-a-comment-kanban-card-77) (card 77) and a long column
+  has [a scrollbar](#a-scrollbar-in-a-column-kanban-card-78) (card 78)
 - **Builds on:** [workspaces.md](workspaces.md) and [persistence.md](persistence.md)
 
 ## Goal
@@ -31,22 +33,33 @@ same board stay in sync.
   (Ctrl+Shift+K, Cmd+Shift+K on macOS). It opens at the viewport's center, 900 × 540, and pops in like a terminal.
 - **The card around it** is a terminal's: the header with the title, ✕ and the resize grip, moving, resizing,
   focus, hover lift and the pop-in and fade-out. It can't be smaller than 420 × 280.
-- **Its title** is the board's name. The title stays the handle for moving the block; a ⇅ button at the left of
-  the header shows the board list in the block (and goes back to the board).
+- **Its title** is the board's name ("Boards" while it shows none). The title stays the handle for moving the
+  block; a button at the left of the header (gpui-kit's dashboard icon, tooltip "All boards") opens the
+  [Boards dialog](#the-boards-dialog) for the block.
 - **Everything inside scales with the zoom**, like a terminal's text.
 - **Undo:** with a kanban block focused, Ctrl+Z (Cmd+Z on macOS) undoes the last change to the boards (a card or a
   column added, moved, renamed or deleted, a label, a board added or deleted), up to 50. Typing in a card's dialog
-  is undone in its fields. Delete card in a card's menu asks first. A comment added, an assignee freed, and an agent's
-  change ([connections.md](connections.md#tools)) are steps of this Ctrl+Z too.
+  is undone in its fields. Delete card in a card's menu asks first. A comment added, an assignee freed, a comment the
+  person edits or deletes in the card's dialog ([below](#the-person-edits-and-deletes-a-comment-kanban-card-83), whose Undo row
+  is one more step), and an agent's change ([connections.md](connections.md#tools); a comment edited or deleted by its
+  author among them) are steps of this Ctrl+Z too.
 
-### The board list
+### No board
 
-Shown by a new block, by the ⇅ button, and when its board was deleted.
+A new block, and a block whose board was deleted, say "No board open here" with **New board** (it creates "Board
+*n*" with three columns, To do, Doing and Done, and shows it) and **Open a board…** (the dialog, for the block).
 
-- One row per board: the name, and how many cards it has. Clicking a row shows that board in the block.
-- **+ New board** creates "Board *n*" with three columns, To do, Doing and Done, and shows it.
-- **Right-click a row:** Rename… and Delete…. Deleting asks first, saying how many cards go with it. Blocks showing
-  a deleted board show the list.
+### The Boards dialog
+
+The Notes and Checklists dialog ([checklist.md](checklist.md)), for boards: a field that finds a board by its name
+or a card's title, in any case; one row per board, in their order, with how many cards it has and where it is shown
+("12 cards · Open", "Open in Workspace 2"); **New board**.
+
+- A click on a row, or New board, shows that board in the block the dialog was opened for. Any number of blocks
+  can show one board.
+- **Its trash** deletes a board on a second click ("Click again to delete"); the blocks that showed it show none.
+- **The block's menu** (right-click its header) has All boards…, and for the board it shows Rename board… and
+  Delete board…, which asks first, saying how many cards go with it.
 
 ### The board
 
@@ -55,7 +68,8 @@ Shown by a new block, by the ⇅ button, and when its board was deleted.
   - **Right-click a column's title:** Rename…, Add a card and Delete. Deleting a column with cards asks first.
     Every menu is listed in [context-menus.md](context-menus.md).
   - **Dragging a column's title** onto another column moves it to that column's place.
-- **Cards** stack in their column, which scrolls when they don't fit.
+- **Cards** stack in their column, which scrolls when they don't fit, and shows a
+  [scrollbar](#a-scrollbar-in-a-column-kanban-card-78) then.
   - A card shows its labels as small colored bars, its title, a line icon when it has a description, how many
     comments it has ("2 comments"), and its assignee's block title at the right. (Version 2 adds its id, priority
     and checklist: [its face](#a-cards-face).)
@@ -106,14 +120,14 @@ Every change applies as it is typed or clicked, so every block showing the board
   }
   ```
 
-  - Ids are unique across boards, columns and cards, and never reused (`next_id`). A file edited by hand keeps them
-    so: an id given twice gets a new one after its first, and `next_id` passes them all.
+  - Ids are unique across boards, columns, cards, checklist items and comments, and never reused (`next_id`). A file
+    edited by hand keeps them so: an id given twice gets a new one after its first, and `next_id` passes them all.
   - Missing `description`, `labels` and `comments` mean empty, a missing `assignee` none; a card with no assignee
     or comments writes neither key. An unknown label color is dropped.
   - `assignee` is the block id of the agent that claimed the card. A comment's `by` is an agent's block id, or
     `"you"` for the person; `at` is in Unix seconds.
 - **A canvas file** gets a second kind of item: `{ "kind": "kanban", "rect": {…}, "board": 1 }`. `board` is
-  missing for a block showing the board list. A Templum from before this spec sets such a file aside
+  missing for a block showing none. A Templum from before this spec sets such a file aside
   ([persistence.md](persistence.md#the-file)), as designed.
 - **Saving:** `boards.json` is written by the 5-second snapshot when the boards changed, and on quit, through the
   same temporary file and rename. A file Templum can't read is kept as `boards.json.bak` and the boards start empty.
@@ -123,7 +137,7 @@ Every change applies as it is typed or clicked, so every block showing the board
 | File | Change |
 |---|---|
 | `board.rs` (new) | The model (`Boards`, `Board`, `Column`, `Card`, `Label`) and every edit: add, rename, remove, move. Serde, as `session.rs` does. Pure and unit-tested. |
-| `kanban.rs` (new) | The kanban block's body (board list, columns, cards, drag and drop) and the card dialog. |
+| `kanban.rs` (new) | The kanban block's body (columns, cards, drag and drop, or no board), the Boards dialog and the card dialog. |
 | `prompt.rs` (new) | The text-field and confirmation dialogs, shared with the sidebar. |
 | `block.rs` | The card around any block; the terminal's body moves to its own function. |
 | `session.rs` | `Item::Kanban`; the layout and snapshot of kanban blocks; reading and writing `boards.json`. |
@@ -151,10 +165,11 @@ Tests are written first, as always.
 
 **Headless UI:**
 
-- the board button opens a kanban block showing the board list;
-- **+ New board** creates a board and shows it in the block;
+- the board button opens a kanban block showing no board, and its **New board** creates a board and shows it;
+- the Boards dialog finds a board by a card's title, shows it in the block, and deletes it on a second click;
+- the block's menu deletes the board it shows;
 - two blocks showing the same board both show a card added through one of them;
-- deleting a board sends its blocks back to the list;
+- deleting a board leaves its blocks with none;
 - kanban blocks and boards come back after a restart.
 
 **Manual (Hyprland):** drag cards and columns at zoom 0.5, 1 and 2; open, edit and delete a card; scroll a long
@@ -170,7 +185,8 @@ column.
 
 - **Drag and drop on a zoomed canvas:** the dragged card is drawn at the canvas's zoom, and drop targets come from
   the element tree, so they follow the zoom by themselves.
-- **Wheel events** over a kanban block stay in it, as over a terminal: a vertical wheel scrolls a column's cards,
+- **Wheel events** over a selected kanban block stay in it, as over a terminal (over any other block the wheel moves
+  the canvas: [navigation.md](navigation.md#the-wheel-over-blocks)): a vertical wheel scrolls a column's cards,
   a sideways one the row of columns, and Ctrl+wheel zooms the canvas. GPUI measures a scroll container's range
   from its own children, so the columns are the row's children, with no wrapper in between.
 
@@ -330,46 +346,54 @@ World units, each × the zoom `z` (as now: padding 10 × 8, gap 6, radius 8, the
 
 ### The open card
 
-A dialog at the window's scale (z = 1), **560 wide** (was 520), its body scrolling past the window's height (gpui-kit
-does: the header and the footer stay). Sizes in pixels.
+A dialog at the window's scale (z = 1), **600 wide**, in the Git popup's language: a block's own color (`ui.surface`) under
+hairlines, rounded 8, the theme's accent for what is lit. Its body scrolls past the window's height (gpui-kit does: the
+header and the footer stay). Sizes in pixels; every color comes from the theme.
 
-- **Header:** the dialog's title "Card #40"; its description "In {column} on {board}" (gpui-kit's muted line), read
-  each frame, so an agent's move shows.
-- **Body**, a column with a gap of 16 between these blocks:
-  1. **Title:** the single-line field (`card-title`), gpui-kit's default size. Enter closes the dialog (as now).
-  2. **Properties:** a column with a gap of 8; each row items centered, a gap of 12, at least 28 high, a label 84 wide
-     (text 12, `title_dim`), then its control:
+- **Header** (20 at the sides, a hairline under it): the card's number as a faint accent badge (`card-number`: the
+  kanban icon and "Card #40", 12 semibold, `ui.accent` on `ui.accent` at 16%, rounded 6), then "In {column} on {board}"
+  (12, `ui.title`, truncated), read each frame, so an agent's move shows.
+- **Body**, a column with a gap of 22 between these blocks:
+  1. **Title:** the single-line field (`card-title`), 15 high text in a 38 high field. Enter closes the dialog.
+  2. **Properties** (`card-properties`): a faint panel (`ui.card`, rounded 8, 12 sideways, 6 up and down); each row at
+     least 32 high, an icon (14, `title_dim`) and a label (12, `ui.title`) in 92, then its control:
      - **Assignee:** the dropdown button (gpui-kit `Button`, small, outline, with a caret; `card-assignee`) and, when
-       set, the ✕: 24 × 24, rounded 6, gpui-kit's close icon at 12 in `title_dim`, `ui.hover` under the pointer
-       (`unassign`).
-     - **Priority:** four chips with a gap of 6 (`priority-none`, `-low`, `-medium`, `-high`): 26 high, padding 10
-       sideways, rounded 6, text 12, a gap of 4 between the icon (12, in its color; None has none) and the word. The
-       current one: `ui.hover` fill, `ui.accent` border, text `ui.title`; the others: `ui.hairline` border, text
-       `ui.title_dim`, `ui.hover` fill under the pointer.
-     - **Labels:** the six toggles as now (40 × 22, rounded 6, gap 6, `label-{name}`).
-  3. **Description:** the section label (text 12, medium weight, `title_dim`), a gap of 6, the multi-line field
-     (5 rows), as now.
-  4. **Checklist:** a header row, the section label "Checklist" at the left and, with items, "2/5" at the right (text
-     12, `title_dim`); a gap of 6; with items, a progress bar 4 high, rounded, `ui.hover` behind and `ui.accent` for the
-     done part; then the item rows (each padding 4 up and down, gap 8, items at the top): the check box as a checklist
-     block draws it (14, rounded 3, a `title_dim` border; done: filled with `ui.accent` and a check at 10 in
-     `ui.surface`; `card-item-box-{item}`), the text at 13 (done: `title_dim`, struck through), and at the right a 16
-     × 16 ✕ (close icon 10, `title_dim`, rounded 4, `ui.hover` under the pointer, `card-item-delete-{item}`) shown
-     while the pointer is over its row; last, the single-line field with the placeholder "Add an item"
+       set, the ✕ (the Git popup's 24 × 24 icon button, tooltip "Give it to anyone", `unassign`).
+     - **Priority:** one strip (hairline border, rounded 8, 2 inside) of four segments (`priority-none`, `-low`,
+       `-medium`, `-high`): 24 high, padding 10, rounded 6, text 12, a gap of 5 between the icon (12, in its color;
+       None has none) and the word. The current one: `ui.accent` at 16% fill, `ui.accent` text, medium weight; the
+       others: `ui.title` text, `ui.hover` fill under the pointer.
+     - **Labels:** the six as round swatches (22, gap 8, `label-{name}`): a 2 ring of the label's ANSI color; the
+       card's own are filled with it and checked (the terminal's background color for the check). A tooltip says
+       "Toggle the red label".
+  3. **Description:** a section header (below), 8, the multi-line field (4 rows, placeholder "Add a description").
+  4. **Checklist:** the section header with "2/5" at the right when it has items; 8; a progress bar 4 high, rounded,
+     `ui.hover` behind and `ui.accent` for the done part; the item rows (padding 6 sideways and 5 up and down, rounded
+     6, `ui.hover` under the pointer, gap 10, items at the top): the Git popup's round box (16, filled with `ui.accent`
+     and a check in `ui.surface` when done; `card-item-box-{item}`), the text at 13 (done: `title_dim`, struck
+     through), and at the right an 18 × 18 ✕ (tooltip "Remove the item", `card-item-delete-{item}`) shown while the
+     pointer is over its row; last, the Git popup's one-line field with a `plus` before the placeholder "Add an item"
      (`card-item-field`).
-  5. **Comments:** a header row, "Comments" at the left and their number at the right when there are any; a gap of 6;
-     each comment, oldest first, a gap of 10 between them: its author and age (text 11, `title_dim`: "You · 3m ago"),
-     a gap of 2, its text at 13; then the comment field (2 rows, `comment-field`); a gap of 8; at the right, the small
-     gpui-kit button **Add comment** (`add-comment`).
-- **Footer** (gpui-kit's, under the body), one row spread across: at the left **Delete card** (`delete-card`), a
-  ghost button: no fill or border, gpui-kit's `trash` icon at 14 and the words at 13, both in the theme's red (ANSI 1),
-  28 high, padding 10, rounded 6, `ui.hover` under the pointer; it deletes the card and closes the dialog, as before
-  (Ctrl+Z brings it back). At the right **Done** (`card-done`), gpui-kit's primary button, which closes it. Esc closes
-  it too.
+  5. **Comments:** the section header with their number at the right; a gap of 10; the thread; the comment field.
+     - **The thread**, oldest first, a gap of 14: each comment is its author's round mark (26: the initial on the
+       theme's accent at 16% for the person's own, on ANSI magenta at 16% for an agent's or a block's), then the author
+       (12.5 semibold) and its age (11) over the text in a bubble (13, line height 1.5, rounded 8, 12 and 8 inside;
+       `ui.card`, and the accent at 10% for the person's own). With none: a dashed hairline box with "No comments
+       yet". While the pointer is over a comment, two small icon buttons show at the right end of its first line:
+       edit (`pencil`) on the person's own and delete (`trash`) on any ([below](#the-person-edits-and-deletes-a-comment-kanban-card-83)).
+     - **The comment field** (`comment-field` is its text): a box (hairline border, `ui.card`, rounded 8) holding the
+       2-row field (placeholder "Write a comment") and, at the bottom right, **Comment** (`add-comment`, `arrow-up`
+       icon, 26 high): the solid accent once something is typed, a faint `ui.hover` while the field is empty.
+  The **section header** is an icon (13, `title_dim`), the name (12, medium, `ui.title`) and what the section holds.
+- **Footer** (a hairline over it, 20 at the sides, 12 up and down), one row spread across: at the left **Delete card**
+  (`delete-card`), a ghost button: no fill, gpui-kit's `trash` icon at 14 and the words at 12.5, both in the theme's
+  red (ANSI 1), 30 high, rounded 8, red at 12% under the pointer; it deletes the card and closes the dialog, as before
+  (Ctrl+Z brings it back). At the right **Done** (`card-done`), the Git popup's solid accent button (30 high, rounded
+  8, `ui.surface` text), which closes it. Esc closes it too.
 
-**The button in the wrong place** was Delete card: a red word in the body, right-aligned just above Done, so it read as
-a second footer button stacked on the first. It moves to the footer's other end, away from Done. Add comment, a bare
-word under the comment field, becomes a real button.
+Version 2 first drew the dialog in gpui-kit's own colors (the canvas's color, a white primary button, a row of dim
+bare swatches, comments as bare lines under a bare field). The redesign changes no behavior: the same ids, the same
+undo steps.
 
 ### Agents' tools
 
@@ -475,3 +499,152 @@ menu with two Claude Code blocks and a Codex one, one of them in another workspa
   dialog. The field's wrapper takes the dialog's `Confirm` action so Enter only adds; a test holds it.
 - **Scrolling and drop targets:** GPUI highlights drop targets from the last frame's hit boxes; scrolling moves them
   every frame, so the highlight may trail by a frame. Harmless.
+
+## Editing and deleting a comment (kanban card 77)
+
+The card, as the person wrote it: *"Permita MCP editar/excluir comentário nos cards do kanban."* An agent could add a
+comment (`comment_card`) but not fix a wrong one.
+
+- **Tools:** `edit_comment` (`card`, `comment`, `text`) and `delete_comment` (`card`, `comment`)
+  ([connections.md](connections.md#tools)); the command line has `templum kanban edit-comment` and `delete-comment`.
+- **A comment is named by its number**, an id from the boards' `next_id` (unique across boards, columns, cards,
+  checklist items and comments, never reused), like a checklist item's. A number rather than a place in the thread
+  because the thread changes: the person or another agent deleting the third comment would make "comment 4" mean
+  another one. `list_cards` with `card` shows it (`comment 51 by …`) and `comment_card` says the number of the one it
+  just added.
+- **Saved** as `"comments": [{ "id": 51, "by": "b7k2m", "text": "On it.", "at": 1760000000, "edited": true }]`. A
+  comment with no `id` (every file from before) gets a new one when the file loads, in the file's order; `edited`
+  is missing for a comment its author never changed, and nothing else in the file changes, so an older Templum reads it
+  and a file from before loads unchanged.
+- **Whose to change:** an agent changes only a comment whose `by` is its own block id. The person's (`"you"`) and
+  other agents' are refused, saying whose they are. The person's own changes, in the card's dialog, are
+  [card 83's](#the-person-edits-and-deletes-a-comment-kanban-card-83).
+- **A step of Ctrl+Z each:** the kanban's, like a comment added.
+- **The open card** shows the change at once: it reads the card each frame. An edited comment keeps its author,
+  its place in the thread and its time, and its age reads "3 min ago · edited" so the person can tell that what they
+  read is not what was first said.
+
+### Calls made for card 77
+
+1. **Two tools, not one:** `edit_comment` and `delete_comment` follow `edit_item` and `delete_item`; one tool with an
+   optional `text` would delete a comment on an empty text.
+2. **An id, not a number in the thread:** see above; the saved file gains one key per comment.
+3. **Only the author:** a wrong comment of the person's or of another agent's is for the person to fix; the answer
+   says whose it is.
+4. **"edited" is shown,** because it is one word in the age and an agent rewriting what was said should not pass
+   unseen.
+5. **Not in the Templum Agent's tools,** which have no `edit_item` and `delete_item` either.
+
+### Testing
+
+**Unit (`board`):** comments get ids; editing changes the text in place, marks it edited, and leaves author and time;
+the same text is no edit; deleting; a file from before gives its comments ids that clash with nothing and writes no
+`edited`. **Unit (`templum-mcp`):** the two tools parse `comment` as a number or a string and name what is missing; the
+command line's verbs build them. **Headless UI:** an agent edits and deletes its own comment, is refused the person's
+and another agent's (nothing changes, no Ctrl+Z step), the open card shows each change at once, and Ctrl+Z undoes the
+delete, then the edit.
+
+## A scrollbar in a column (kanban card 78)
+
+The card, as the person wrote it: *"Kanban scroll: nas colunas do kanban, quando os itens passarem da tela, crie uma
+barra de scroll para facilitar a movimentação."* A column's cards already scrolled (wheel, and a card dragged near
+the edge), but nothing showed that there were more, or let the pointer take hold of them.
+
+- **The scrollbar** is gpui-component's, the one the notes' editors and the menus draw, over the right edge of a
+  column's list of cards (the header and "+ Add a card" stay out of it). It appears as the theme says (on hover over
+  the track, or while scrolling, following the system) and only once the cards overflow. Dragging its thumb scrolls the
+  column; a press on the track jumps there.
+- **It scales with the zoom,** like everything in the block: its track (16 units at zoom 1) and thumb (6, 8 under the
+  pointer) are multiplied by the zoom, so at 0.25 it is as thin, against the column, as at 2. Unscaled, its track would
+  take a quarter of a 260-wide column at 0.25. Zoom changes no layout.
+- **It sits over the list, not in it:** the list scrolls inside a box of its own and the scrollbar is drawn over that
+  box, so it doesn't scroll away with the cards and takes no room from them. While it shows, a press in its track (the
+  right 16 units of the list) belongs to it and not to the card under it. Only the left button, though: a right-click
+  on a card there still opens the card's menu and a middle drag still pans the canvas, and any press in the list picks
+  its block (with "Focus follows the pointer" off, a scrolled kanban would otherwise stay unpicked and the wheel would
+  pan the canvas). The scrollbar takes every press in the bubble phase and stops it, so the list picks the block, and
+  pans for the middle button, in the capture phase, and a card opens its menu there too.
+- **The wheel is unchanged:** over a column of a picked block a vertical wheel scrolls its cards, over any other block
+  it moves the canvas like over every block ([navigation.md](navigation.md#the-wheel-over-blocks), `route_wheel`).
+  The card asked for the scrollbar; a kanban that took the wheel without being picked would be the one block that
+  does.
+- **Dragging a card** is as before: the scrollbar draws no hit box that blocks the cards under it, and a drag near a
+  column's top or bottom scrolls it, scrolled or not, with the pointer over the strip or not.
+
+### Testing
+
+**Headless UI:** a column with 30 cards has a scrollbar over exactly its list, and a press on its track near the
+bottom scrolls the cards; at zoom 0.5 the track is 8 pixels, so a press 3 pixels inside the edge scrolls and one 12 pixels
+inside (a card) doesn't; a card held at the strip of a column scrolled to its end scrolls it back up; a right-click on
+a card at the strip opens its menu, a middle drag from there pans the canvas, a press there picks an unpicked block
+(focus following the pointer off), and the wheel scrolls the cards over the list and over the strip. **Not testable
+headlessly:** dropping a card (no `on_drop` fires in the harness, [minors.md](../minors.md)), so a drop on the strip is
+checked by hand. **Bench:** `--bench-mixed` still draws its kanban blocks with the scrollbar, and costs no more than without it
+(release, on the dev machine with the person's Templum running: p95 31.4 ms with the scrollbar, 32.5 ms without, p50 19.1
+and 18.3, so both over the 16.7 bar there: the machine's, not the scrollbar's).
+
+**Manual (Hyprland):** a long column at zoom 0.5, 1 and 2: the scrollbar's thumb follows the wheel and is dragged; a
+card dropped on a long column's right edge lands in it.
+
+## The person edits and deletes a comment (kanban card 83)
+
+The card, as the person wrote it: *"Permitir usuário excluir/editar um comentário no card do kanban."* Agents already
+fix and remove their own comments ([card 77](#editing-and-deleting-a-comment-kanban-card-77)); the person could only
+add one.
+
+- **Which comments:** the person **deletes any** comment (the board is theirs, as the cards are, and Undo brings it
+  back) and **edits only their own** ("You"): an agent's words changed by someone else would still wear its name; to
+  correct one, delete it and write another.
+- **The buttons** show at the right end of a comment's first line while the pointer is over the comment: `pencil`
+  (`comment-edit-{id}`, tooltip "Edit the comment") on the person's own and `trash` (`comment-delete-{id}`, "Delete
+  the comment") on every one: 22 × 22, rounded 5, the icon 12 in `title_dim`, `ui.hover` under the pointer, as the
+  checklist item's ✕. They are laid over the line's end, so showing them moves nothing.
+- **Delete** is at once, with no question, as an item's ✕ and **Delete card** are in this dialog; it is a step of the
+  kanban's Ctrl+Z (taken once the dialog is closed: with it open, Ctrl+Z goes to the field that has the keyboard, and
+  afterwards it would undo every later change of the boards with it). So a row stands **in the comment's place** until
+  the dialog closes: a dashed hairline box, `trash`, "Comment deleted", "·" and **Undo** (`comment-deleted-{id}`,
+  `comment-undo-{id}`; the accent, semibold). Undo puts the same comment back (its number, author, text, time and
+  edited flag, `Boards::restore_comment`) at its place in the thread, or at the end when the thread is shorter now, as
+  one more step of Ctrl+Z (which takes it away again). Several deletes leave several rows, each at its own place; a
+  comment that is in the thread again (Ctrl+Z, an agent) drops its row, and closing the dialog drops them all.
+- **Edit** is in place: the comment's bubble becomes a box (a hairline in the accent at 60%, `ui.card`, rounded 8) with
+  its text in a field (`comment-edit-field-{id}`, 2 rows growing to 8, the caret after the last word) and, at the
+  bottom right, **Cancel** (a ghost button, `comment-cancel-{id}`) and **Save** (`comment-save-{id}`, the accent with
+  a `check`; a faint `ui.hover` fill while the text is empty, as Comment is). **Enter** saves (Shift+Enter adds a line)
+  and **Escape** or Cancel ends the edit and changes nothing; Escape ends only the edit, not the dialog, and Enter only
+  saves, not confirms it (the field's wrapper takes the dialog's cancel and confirm). One comment is edited at a
+  time: starting another, or closing the dialog (Done, Enter in the title), **saves the draft** of the first if it
+  holds text, and drops an empty one; a comment gone meanwhile (an agent, Ctrl+Z) ends its edit. When it ends, the
+  keyboard goes to the comment field.
+- **A comment needs text:** Save does nothing while the field is empty (the trash is how to remove one). The text is
+  trimmed at both ends, as a new comment's is. Saving the same words changes nothing: no "edited", no step of Ctrl+Z.
+- **The model is card 77's:** `Boards::edit_comment` and `remove_comment`; an edited comment keeps its author, its
+  place and its time and reads "3 min ago · edited" ("edited" for the person's too: what was first said is gone),
+  and each save and each delete is one `edit_boards` step.
+
+### Calls made for card 83
+
+1. **Delete any, edit only your own,** the card's own suggestion: a board's person may remove what an agent said
+   there, but changing its words would misattribute them.
+2. **No question before a delete, but an Undo row:** the dialog's other deletes (an item, the card) have no question
+   and a question in a dialog is a dialog in a dialog; yet the trash is 22 px, hover-only and 2 px from the pencil, and
+   Ctrl+Z with the dialog open goes to the field that has the keyboard (and, once closed, undoes everything after the
+   delete too: an agent's moves and comments, the person's typing). The row is the way back that touches nothing else.
+3. **The same field as the new comment's,** a `Textarea`, not a single line: a comment may hold several lines, which
+   Shift+Enter writes.
+4. **Escape through the dialog's cancel:** GPUI runs key bindings before key-down listeners, so a listener on the
+   field can't stop the Escape that closes the dialog; the field hands it on as the dialog's `Cancel` action, which
+   its wrapper takes.
+
+### Testing
+
+**Headless UI:** the person's comment has Edit and Delete and an agent's only Delete; deleting the agent's takes it
+out of the open card at once and one Ctrl+Z brings it back; a deleted comment leaves a row with Undo where it was
+(above the next comment), Undo restores it whole and once, one Ctrl+Z takes the restore away, and the row is gone
+when the dialog is closed and opened again; editing the person's makes the text a field with Save and
+Cancel, typing and Save change the text, mark it edited and keep its author and time, and one Ctrl+Z undoes it;
+Escape and Cancel change nothing and Escape leaves the dialog open; Enter saves and leaves it open; saving the same
+words takes no step (one Ctrl+Z undoes the edit before); an empty field can't be saved; the text is trimmed at both
+ends and Shift+Enter adds a line; another comment's pencil, and Done, save a draft with text and drop an empty one;
+a dialog closed in the middle of an edit lets go of the edit's field; a comment removed meanwhile
+ends its edit. **Not seen in a window:** the buttons' look on hover and the editor's box ([minors.md](../minors.md)).

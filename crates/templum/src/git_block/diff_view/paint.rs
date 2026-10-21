@@ -754,13 +754,13 @@ fn pair_row(
     let git = ws.space.git();
     let half = git.map_or(0, |g| g.diff().half);
     let cw = ws.cell.size.w * FONT / ws.cell.font_size * z;
-    // The panel's width: the popup's, less the left column while it shows.
+    // The panel's width: the popup's as drawn, less the left column while it shows.
     let lists = if git.is_some_and(|g| g.lists_folded) {
         0.0
     } else {
         LISTS_W
     };
-    let panel_w = (crate::git_block::SIZE.w - lists) * z;
+    let panel_w = (ws.git_popup_size().w - lists) * z;
     // ponytail: a side is at most half the panel, so the added side is always in view; a line
     // longer than that is cut at its side (Unified shows it whole). Scroll each side alone if
     // people need the end of long lines side by side.

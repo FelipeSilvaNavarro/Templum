@@ -3,6 +3,7 @@
 mod activity;
 mod agent;
 mod approvals;
+mod autostart;
 mod blocks;
 mod bus;
 mod checklist_blocks;
@@ -51,7 +52,7 @@ pub(crate) use git_message::TryIt;
 pub(crate) use waits::{Wait, Waiting};
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -66,14 +67,15 @@ use gpui_kit::{
     Point as PixelPoint, SharedString, Subscription, Task, Window, WindowAppearance, px,
 };
 use templum_canvas::{
-    Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, Point, Rect,
-    ShapeKind, Size, Tile, Wire, chrome, free_spot, room_at,
+    Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Edges, Gesture, Guide, Point,
+    Rect, ShapeKind, Size, Tile, Wire, chrome, free_spot, room_at,
 };
 use templum_git::GitError;
 use templum_terminal::{Notify, Snapshot, Terminal};
 
 use crate::agents::{self, AgentEntry};
 use crate::alert::Alert;
+use crate::autostart::Autostart;
 use crate::board::Boards;
 use crate::checklist::{self, Checklist};
 use crate::checklists::{Checklists, List};
@@ -157,6 +159,9 @@ pub(crate) struct Handed {
     /// Claude Code queued it behind the turn under way (`Submitted` at its Enter while it worked):
     /// that turn's end isn't its answer, unless a tool's end takes it into the turn first.
     pub behind: bool,
+    /// Its master was told its agent went quiet (a still screen, no answer): once per task; a
+    /// change from the master starts it over (docs/specs/agent-protocol.md, 5).
+    pub quiet: bool,
     /// Its agent's usage when it was handed over: what its end says it spent counts from it.
     pub usage: Option<templum_usage::Session>,
 }
@@ -172,6 +177,7 @@ impl Handed {
             until: since + timeout,
             taken: false,
             behind: false,
+            quiet: false,
             usage: None,
         }
     }
@@ -266,6 +272,9 @@ pub(crate) struct Pane {
     /// ends what it left (docs/specs/agent-tools.md#stop_agent), until the person types into it
     /// or a snapshot finds another agent there.
     pub quit: Option<(u64, Instant)>,
+    /// The shell chosen for it in a menu (docs/specs/shells.md, The block keeps its shell); none:
+    /// it runs the default, and follows it.
+    pub shell: Option<templum_terminal::ShellOption>,
 }
 
 impl Pane {
@@ -289,6 +298,8 @@ impl Pane {
             effort: self.effort.clone(),
             account: self.account.clone(),
             role: self.role.clone(),
+            // The label: the file never holds a program to run (persistence.md, Safety).
+            shell: self.shell.as_ref().map(|s| s.label.clone()),
         }
     }
 
@@ -481,12 +492,19 @@ impl Body {
     /// The keyboard is inside the block.
     pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
         match self {
-            Body::Note(note) => note.tabs.iter().any(|t| {
-                t.editor
-                    .read(cx)
-                    .focus_handle(cx)
-                    .contains_focused(window, cx)
-            }),
+            Body::Note(note) => {
+                note.tabs.iter().any(|t| {
+                    t.editor
+                        .read(cx)
+                        .focus_handle(cx)
+                        .contains_focused(window, cx)
+                }) || note.renaming.as_ref().is_some_and(|r| {
+                    r.input
+                        .read(cx)
+                        .focus_handle(cx)
+                        .contains_focused(window, cx)
+                })
+            }
             Body::Editor(e) => e.has_focus(window, cx),
             Body::Terminal(pane) => pane.find.as_ref().is_some_and(|b| b.has_focus(window, cx)),
             Body::Checklist(c) => c.has_focus(window, cx),
@@ -497,6 +515,15 @@ impl Body {
 
 enum Drag {
     Canvas(Gesture),
+    /// A block, or every selected block, held by its title (`gesture` is a `Move` or `MoveGroup`):
+    /// pressed at `from`, the pointer now at `pointer` (canvas points). Near the canvas's edge,
+    /// once it is past a click, the camera moves, since when the last frame moved it (`scrolled`).
+    Held {
+        gesture: Gesture,
+        from: Point,
+        pointer: Point,
+        scrolled: Option<Instant>,
+    },
     /// Selecting text in a block's terminal.
     Select(BlockId),
     /// A press the program in a terminal heard (it asked for the mouse): its moves, at another
@@ -544,6 +571,25 @@ enum Drag {
         from: BlockId,
         to: Point,
     },
+    /// The Git popup's top or right edge (a corner is both) pressed at `from` (canvas points)
+    /// while the popup was drawn at `start`; the others rest against the sidebar and the window.
+    GitResize {
+        edges: Edges,
+        from: Point,
+        start: Size,
+    },
+}
+
+impl Drag {
+    /// A title pressed at the canvas point `at`.
+    fn held(gesture: Gesture, at: Point) -> Self {
+        Drag::Held {
+            gesture,
+            from: at,
+            pointer: at,
+            scrolled: None,
+        }
+    }
 }
 
 /// A workspace in grid mode (docs/specs/grid.md): some of its blocks tiled over its area, at
@@ -857,6 +903,22 @@ impl Space {
         let mut gone = Vec::new();
         for (id, mut seen) in found {
             if let Some(pane) = self.terminal_mut(id) {
+                // An agent found on a folder is that folder's account, typed by hand or not; an
+                // environment that couldn't be read keeps what the block had. Another agent run in
+                // an account's block (codex in a claude2 block) is on its own folder: the block
+                // keeps its account, whose shell still has the variable.
+                if let (Some(agent), Some(var)) = (seen.agent.as_deref(), &seen.folder_var) {
+                    let found = var
+                        .as_deref()
+                        .and_then(|folder| agents::account_of(agent, folder, homes));
+                    let current = pane
+                        .account
+                        .as_deref()
+                        .and_then(|a| homes.iter().find(|h| h.id == a));
+                    if found.is_some() || current.is_none_or(|home| home.agent == agent) {
+                        pane.account = found;
+                    }
+                }
                 let home = pane
                     .account
                     .as_deref()
@@ -1034,6 +1096,12 @@ pub struct Workspace {
     index_frozen: bool,
     /// The sidebar is shown.
     pub(crate) sidebar: bool,
+    /// The Git popup's size the person dragged it to (none: `git_block::SIZE`), kept as dragged
+    /// and written in the index; what is drawn is `git_popup_size`.
+    pub(crate) git_size: Option<Size>,
+    /// What the window leaves the Git popup, as the last frame measured it (infinite before the
+    /// first): the drag and the diff panel read it without a window.
+    git_room: Size,
     pub(crate) cell: CellMetrics,
     /// IME pre-edit text, drawn at the cursor until committed.
     pub(crate) marked: Option<String>,
@@ -1126,6 +1194,8 @@ pub struct Workspace {
     pub(crate) keymap: Keymap,
     /// The AI agents in effect: Templum's, with the config's changes, and the user's.
     pub(crate) agents: Vec<AgentEntry>,
+    /// Each account's command: the file that runs it, or why it has none.
+    pub(crate) commands: BTreeMap<String, Result<PathBuf, String>>,
     /// The agent Generate ✨ runs, and whether it is ready; read when the config changes, not
     /// each frame (finding a program looks in many folders).
     // ponytail: an agent installed while Templum runs shows its ✨ after the next config change
@@ -1155,9 +1225,14 @@ pub struct Workspace {
     _flush: Vec<Subscription>,
     /// Installed monospaced families, measured when the settings panel opens.
     pub(crate) fonts: Vec<SharedString>,
-    /// The shells found on this computer, and the default's name, read when the panel opens.
+    /// The shells found on this computer, and the default's name, read at start and when the
+    /// panel or the welcome opens.
     pub(crate) shells: Vec<templum_terminal::ShellOption>,
     pub(crate) default_shell: String,
+    /// `shells` was read before the login shell's PATH arrived (`read_shell_path` is a thread
+    /// started with Templum): it may lack a shell only that PATH has, outside the usual install
+    /// folders. Read again by the first menu opened after it arrives.
+    pub(crate) shells_early: bool,
     /// What the user typed in the panel's text fields that can't apply yet (an unclosed quote),
     /// by the config key it is for.
     pub(crate) drafts: HashMap<&'static str, String>,
@@ -1205,6 +1280,9 @@ pub struct Workspace {
     /// `git --version` with the configured program, read when the settings panel opens: Ok is
     /// the version, Err why it can't run. None while it is being read.
     pub(crate) git_version: Option<Result<String, String>>,
+    /// The system's entry that starts Templum at login, and what the toggle shows of it
+    /// (docs/specs/settings.md, Start at login).
+    pub(crate) autostart: crate::autostart::State,
     /// Settings ▸ Git ▸ Try it, running or done.
     pub(crate) message_try: Option<TryIt>,
     /// Settings ▸ Connections ▸ Gemini CLI: Install or Remove running, or what went wrong.
@@ -1225,6 +1303,10 @@ pub struct Workspace {
     pub(crate) last_chime: Option<std::time::Instant>,
     /// The last task's id.
     pub(crate) next_task: u64,
+    /// The MCP connections of the agents' Templum servers (`templum mcp`, which said `initialize`
+    /// while connections were on), by connection: the terminal each one is in. A terminal in it
+    /// has Templum's tools (docs/specs/agent-protocol.md, 8).
+    pub(crate) tool_conns: HashMap<u64, String>,
     /// What tasks' agents did, waiting to be typed into the agents that handed them over, oldest
     /// first (`delegate.rs`).
     pub(crate) notices: Vec<delegate::Notice>,
@@ -1246,20 +1328,23 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// `config_dir`: where the settings file and themes are; `data_dir`: where the canvas is kept
-    /// (None: it isn't, as for `--bench`).
+    /// `autostart`: the system's entry that starts Templum at login (None: it has none, as for
+    /// `--bench`); `config_dir`: where the settings file and themes are; `data_dir`: where the
+    /// canvas is kept (None: it isn't, as for `--bench`).
     pub fn new(
+        autostart: Option<Autostart>,
         config_dir: Option<PathBuf>,
         data_dir: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::with(None, config_dir, data_dir, window, cx)
+        Self::with(None, autostart, config_dir, data_dir, window, cx)
     }
 
     /// `command`: program for new terminals instead of the login shell (tests).
     pub fn with(
         command: Option<(String, Vec<String>)>,
+        autostart: Option<Autostart>,
         config_dir: Option<PathBuf>,
         data_dir: Option<PathBuf>,
         window: &mut Window,
@@ -1477,6 +1562,8 @@ impl Workspace {
             notes_frozen: false,
             index_frozen: false,
             sidebar: true,
+            git_size: None,
+            git_room: Size::new(f32::INFINITY, f32::INFINITY),
             cell,
             marked: None,
             ime_cursor: None,
@@ -1536,8 +1623,12 @@ impl Workspace {
             save_error: None,
             _flush: flush,
             fonts: Vec::new(),
-            shells: Vec::new(),
-            default_shell: String::new(),
+            // Read before `start_space` restores the canvas: its terminals look their shells up.
+            // Whether the login PATH is pending is asked first: one that arrives meanwhile only
+            // costs a second read.
+            shells_early: templum_terminal::shell_path_pending(),
+            shells: templum_terminal::available_shells(),
+            default_shell: templum_terminal::default_shell_label(),
             drafts: HashMap::new(),
             quit_armed: None,
             settings: None,
@@ -1562,12 +1653,17 @@ impl Workspace {
             _files: files,
             _git: git,
             git_version: None,
+            autostart: crate::autostart::State {
+                entry: autostart,
+                ..Default::default()
+            },
             message_try: None,
             gemini_job: None,
             gemini_told: Default::default(),
             config,
             keymap,
             agents: effective_agents,
+            commands: BTreeMap::new(),
             commit_agent,
             bus,
             bus_env,
@@ -1576,6 +1672,7 @@ impl Workspace {
             next_wait: 0,
             last_chime: None,
             next_task: 0,
+            tool_conns: HashMap::new(),
             templum_agent: Default::default(),
             notices: Vec::new(),
             schedules: Vec::new(),
@@ -1601,6 +1698,10 @@ impl Workspace {
                 })
                 .detach();
         }
+        for failure in ws.sync_commands() {
+            preferences::tell_commands(Some(failure), window, cx);
+        }
+        ws.refresh_autostart(cx);
         ws.load_spaces(window, cx);
         ws.restore_conversation();
         ws

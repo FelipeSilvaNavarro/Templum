@@ -11,8 +11,8 @@ use std::time::Duration;
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, ElementId, Entity, EntityId, FocusHandle, ScrollHandle, Subscription,
-    UniformListScrollHandle, Window,
+    App, Context, ElementId, Entity, EntityId, FocusHandle, ScrollHandle, SharedString,
+    Subscription, UniformListScrollHandle, Window,
 };
 use templum_canvas::Size;
 use templum_git::{Branch, Commit, CommitFile, Entry, GitError, Operation, Repo, Stash, Status};
@@ -32,16 +32,31 @@ mod view;
 pub(crate) mod widgets;
 pub(crate) mod words;
 
-pub(crate) use view::popup;
+pub(crate) use view::{popup, resize_zones};
 pub(crate) use widgets::field;
 
-/// The Git popup's size, pixels; a smaller window gets a smaller one.
+/// The Git popup's size, pixels, until the person drags it to another; a smaller window gets a
+/// smaller one.
 pub(crate) const SIZE: Size = Size { w: 760.0, h: 540.0 };
+/// The smallest the person can drag the popup to: the header's actions, a list column and a
+/// diff beside it still fit. A window with less room than this gets the room.
+pub(crate) const MIN: Size = Size { w: 600.0, h: 420.0 };
+
+/// The size the popup is drawn at: the one the person set (`SIZE` while none), at least `MIN`,
+/// at most `room`, which wins when it is smaller than `MIN`. Only what is drawn is clamped: the
+/// size set is kept, so a window that grows back gives it back.
+pub(crate) fn fit(set: Option<Size>, room: Size) -> Size {
+    let wanted = set.unwrap_or(SIZE);
+    Size::new(
+        wanted.w.max(MIN.w).min(room.w),
+        wanted.h.max(MIN.h).min(room.h),
+    )
+}
 /// Past this many changed files, a Filter files field shows above the lists.
 pub(crate) const FILTER_PAST: usize = 15;
 /// The lists' column width and the rows' height, world units.
 pub(crate) const LISTS_W: f32 = 300.0;
-pub(crate) const ROW_H: f32 = 24.0;
+pub(crate) const ROW_H: f32 = 28.0;
 /// The text's size at zoom 1, world units.
 pub(crate) const FONT: f32 = 12.0;
 
@@ -55,6 +70,8 @@ pub(crate) const PAGE: usize = 200;
 pub(crate) const MAX_LANES: usize = 6;
 /// A lane's width, world units.
 pub(crate) const LANE_W: f32 = 12.0;
+/// The summary field's placeholder while no message is generated.
+const COMMIT_MESSAGE: &str = "Commit message";
 /// Past this many characters a summary is longer than `git log --oneline` shows well.
 pub(crate) const SUMMARY_MAX: usize = 72;
 
@@ -248,6 +265,9 @@ pub(crate) struct Git {
     /// The row whose diff is shown.
     pub selected: Option<(List, String)>,
     pub summary: Entity<InputState>,
+    /// The summary's placeholder as last set (the field can't be asked): "Commit message", or the
+    /// message an empty summary commits as.
+    pub placeholder: SharedString,
     pub description: Entity<TextareaState>,
     /// Commit replaces the last commit; the fields were filled with its message.
     pub amend: bool,
@@ -311,9 +331,18 @@ pub(crate) struct Git {
     _search: Subscription,
 }
 
+/// The summary, then a blank line and the description when there is one.
+pub(crate) fn join_message(summary: &str, description: &str) -> String {
+    if description.is_empty() {
+        summary.to_string()
+    } else {
+        format!("{summary}\n\n{description}")
+    }
+}
+
 impl Git {
     pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut Context<Workspace>) -> Git {
-        let summary = cx.new(|cx| InputState::new(window, cx).placeholder("Summary"));
+        let summary = cx.new(|cx| InputState::new(window, cx).placeholder(COMMIT_MESSAGE));
         let description = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .rows(3)
@@ -399,6 +428,7 @@ impl Git {
                 .with_hint("Click a stash to see its changes"),
             selected: None,
             summary,
+            placeholder: COMMIT_MESSAGE.into(),
             description,
             amend: false,
             _enter,
@@ -436,14 +466,45 @@ impl Git {
         }
     }
 
-    /// The summary, then a blank line and the description when there is one.
-    pub fn message(&self, cx: &App) -> String {
-        let summary = self.summary.read(cx).value().trim().to_string();
-        let description = self.description.read(cx).value().trim().to_string();
-        if description.is_empty() {
-            summary
+    /// What a commit of exactly one file says when the summary is left empty ("Update a.rs"; see
+    /// `words::generic_summary`). None with no files or two or more (the file `commit_label`
+    /// counts), on an Amend, whose files aren't listed, and during a merge, rebase, cherry-pick or
+    /// revert, which prepare the message themselves.
+    pub fn generic_summary(&self) -> Option<String> {
+        if self.amend || self.operation.is_some() {
+            return None;
+        }
+        let staged = !self.commit_all();
+        let entries = if staged {
+            self.status.staged()
         } else {
-            format!("{summary}\n\n{description}")
+            self.status.unstaged()
+        };
+        match entries.as_slice() {
+            [entry] => words::generic_summary(entry, staged),
+            _ => None,
+        }
+    }
+
+    /// The summary as the commit will carry it: what was typed, else the generic one.
+    fn summary_text(&self, cx: &App) -> String {
+        let typed = self.summary.read(cx).value().trim().to_string();
+        if typed.is_empty() {
+            self.generic_summary().unwrap_or_default()
+        } else {
+            typed
+        }
+    }
+
+    /// The summary field's placeholder says what an empty summary will commit as.
+    pub fn point_placeholder(&mut self, window: &mut Window, cx: &mut App) {
+        let text: SharedString = self
+            .generic_summary()
+            .map_or(COMMIT_MESSAGE.into(), Into::into);
+        if text != self.placeholder {
+            self.placeholder = text.clone();
+            self.summary
+                .update(cx, |summary, cx| summary.set_placeholder(text, window, cx));
         }
     }
 
@@ -522,11 +583,12 @@ impl Git {
         self.summary_len(cx) > SUMMARY_MAX
     }
 
-    /// Commit is possible: something staged (or every change, see `commit_all`), a summary, an
-    /// author, nothing running. With Amend, nothing staged is fine (the message alone changes).
+    /// Commit is possible: something staged (or every change, see `commit_all`), a summary (one
+    /// file needs none, see `generic_summary`), an author, nothing running. With Amend, nothing
+    /// staged is fine (the message alone changes).
     pub fn can_commit(&self, cx: &App) -> bool {
         (self.amend || !self.status.staged().is_empty() || self.commit_all())
-            && !self.summary.read(cx).value().trim().is_empty()
+            && !self.summary_text(cx).is_empty()
             && self.author.is_some()
             && self.acting == 0
     }
@@ -676,5 +738,30 @@ mod tests {
             Check::of(&entry(None, Some(Change::Untracked))),
             Check::Unchecked
         );
+    }
+
+    #[test]
+    fn the_popup_is_drawn_at_the_size_set_inside_the_minimum_and_the_room() {
+        let big = Size::new(2000.0, 1500.0);
+        // Nothing set: today's size, or the room when the window has less.
+        assert_eq!(fit(None, big), SIZE);
+        assert_eq!(fit(None, Size::new(700.0, 500.0)), Size::new(700.0, 500.0));
+        // A set size is drawn as it is while it fits.
+        assert_eq!(
+            fit(Some(Size::new(900.0, 650.0)), big),
+            Size::new(900.0, 650.0)
+        );
+        // Too small a set size is lifted to the minimum; too large, cut to the room.
+        assert_eq!(fit(Some(Size::new(10.0, 10.0)), big), MIN);
+        let room = Size::new(1000.0, 600.0);
+        assert_eq!(fit(Some(Size::new(2000.0, 2000.0)), room), room);
+        // A window with less room than the minimum wins over it.
+        let tiny = Size::new(400.0, 300.0);
+        assert_eq!(fit(Some(Size::new(900.0, 650.0)), tiny), tiny);
+        // The size set isn't changed by drawing it smaller: the same set size fits again in a
+        // window that grew back.
+        let set = Some(Size::new(1400.0, 900.0));
+        assert_eq!(fit(set, Size::new(800.0, 500.0)), Size::new(800.0, 500.0));
+        assert_eq!(fit(set, big), Size::new(1400.0, 900.0));
     }
 }

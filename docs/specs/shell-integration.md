@@ -76,6 +76,9 @@ Each script changes nothing but this:
   `TEMPLUM_CODEX_ARGS` set, a function `claude` or `codex` that puts Templum's arguments before the person's, unless
   the person has a function of that name. In PowerShell the prompt reports the agent's exit code, which `$?` after a
   function doesn't tell, and the prompt it wraps sees `$?` false when it isn't 0.
+- All four ([accounts.md](accounts.md#typed-in-a-terminal)): a function per line of `TEMPLUM_ACCOUNTS`, named by the
+  account's id (`claudinho`), unless the person has a function of that name. It runs the account's agent by its
+  name, so the `claude` function above applies, with the account's variable set to its folder for that command only.
 
 Prompts themselves (`PS1` and the like) aren't changed: A is sent just before the shell draws one.
 

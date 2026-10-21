@@ -120,7 +120,9 @@ fn open_welcomed(
                 ..Default::default()
             },
             cx,
-            |window, cx| cx.new(|cx| Workspace::with(command, config_dir, data_dir, window, cx)),
+            |window, cx| {
+                cx.new(|cx| Workspace::with(command, None, config_dir, data_dir, window, cx))
+            },
         )
         .expect("open window")
     });
@@ -176,6 +178,28 @@ fn right_click(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32)) {
         }),
         cx,
     );
+}
+
+/// Clicks item `index` of the innermost open menu. A submenu inside a submenu has the ids of the
+/// one above it (`submenu`, `popup-menu`), which `within` can't tell apart; the registered
+/// elements can: the innermost menu is the one under the most `popup-menu`s.
+fn click_innermost_menu_item(window: &mut Window, cx: &mut gpui_kit::App, index: usize) {
+    use gpui_kit::ElementId;
+    let menu = ElementId::from("popup-menu");
+    let shots = gpui_kit::base::test_support::snapshots(window);
+    let depth = |path: &[ElementId]| path.iter().filter(|id| **id == menu).count();
+    let deepest = shots
+        .iter()
+        .map(|s| s.path())
+        .max_by_key(|p| depth(p))
+        .unwrap();
+    let scope = &deepest[..=deepest.iter().rposition(|id| *id == menu).unwrap()];
+    let item = shots
+        .iter()
+        .find(|s| s.path().starts_with(scope) && s.path().last() == Some(&ElementId::from(index)))
+        .unwrap_or_else(|| panic!("no item {index} in the innermost menu {scope:?}"));
+    let center = item.bounds().center();
+    click(window, cx, (f32::from(center.x), f32::from(center.y)), 1);
 }
 
 /// Holds or lets go of the hand key (Alt).
@@ -360,6 +384,18 @@ fn panel_open(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> bool {
 fn settle_slide(handle: AnyWindowHandle, cx: &mut TestAppContext) {
     std::thread::sleep(crate::motion::SLIDE + std::time::Duration::from_millis(50));
     frame(handle, cx);
+}
+
+/// Gives the workspace a start-at-login entry in `home`, a temporary folder standing for the
+/// person's home: tests never reach the system's own.
+fn with_autostart(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    home: &std::path::Path,
+) -> crate::autostart::Autostart {
+    let entry = crate::autostart::Autostart::in_dir("linux", home, "/opt/templum", false);
+    ws.update(cx, |ws, _| ws.autostart.entry = Some(entry.clone()));
+    entry
 }
 
 fn write_canvas(dir: &std::path::Path, text: &str) {
@@ -660,6 +696,7 @@ pub(super) fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32))
     (f32::from(o.x) + p.0, f32::from(o.y) + p.1)
 }
 
+mod accounts;
 mod agents;
 mod block_ids;
 mod blocks;

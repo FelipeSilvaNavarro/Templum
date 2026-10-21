@@ -73,16 +73,21 @@ impl Workspace {
         })
     }
 
-    /// `command` as typed to start `agent` in a terminal (docs/specs/connections.md, What Templum
-    /// types into each agent): the Claude Code Templum opens gets its settings file (the status
-    /// line of the plan's limits, and the hooks) and its MCP server; Codex gets the server and
-    /// its hooks (those only with `templum` on the terminal's PATH), unless the shell is cmd (they
-    /// go in single quotes) or Windows PowerShell 5.1 (it strips the `"` inside them; pwsh 7
-    /// doesn't). Nothing under WSL, where Templum's paths
-    /// aren't the shell's, nor without a data folder.
-    pub(super) fn typed(&self, agent: Option<&AgentEntry>, command: &str) -> String {
+    /// `command` as typed to start `agent` in a terminal running `shell` (a program; None: the
+    /// default shell; docs/specs/connections.md, What Templum types into each agent): the Claude
+    /// Code Templum opens gets its settings file (the status line of the plan's limits, and the
+    /// hooks) and its MCP server; Codex gets the server and its hooks (those only with `templum`
+    /// on the terminal's PATH), unless the shell is cmd (they go in single quotes) or Windows
+    /// PowerShell 5.1 (it strips the `"` inside them; pwsh 7 doesn't). Nothing under WSL, where
+    /// Templum's paths aren't the shell's, nor without a data folder.
+    pub(super) fn typed_in(
+        &self,
+        shell: Option<&str>,
+        agent: Option<&AgentEntry>,
+        command: &str,
+    ) -> String {
         let builtin = agent.and_then(|a| a.builtin);
-        let Some(gives) = self.gives() else {
+        let Some(gives) = self.gives(shell) else {
             return command.to_string();
         };
         let windows = cfg!(windows);
@@ -117,14 +122,14 @@ impl Workspace {
         line
     }
 
-    /// What every new terminal's environment gets for the agents a person types there
+    /// What a new terminal's environment gets for the agents a person types there
     /// (docs/specs/connections.md, Agents typed in a terminal; Typed by hand: the shells): the
-    /// words `typed` would append after each, unquoted, one per line. Each always, empty when
-    /// there is nothing to give, so a Templum started from another's terminal doesn't pass that
-    /// one's on.
-    pub(super) fn agent_env(&self) -> Vec<(String, String)> {
+    /// words `typed_in` would append after each, unquoted, one per line, for the terminal's own
+    /// `shell` (a program; None: the default). Each always, empty when there is nothing to give,
+    /// so a Templum started from another's terminal doesn't pass that one's on.
+    pub(super) fn agent_env(&self, shell: Option<&str>) -> Vec<(String, String)> {
         let windows = cfg!(windows);
-        let gives = self.gives();
+        let gives = self.gives(shell);
         let claude = gives.as_ref().map(|g| {
             let limits = self.config.usage.claude_limits;
             claude_args(&g.data, &g.exe, windows, limits, g.connected)
@@ -164,6 +169,8 @@ impl Workspace {
                 "TEMPLUM_PI_ARGS",
                 words(data.and_then(|d| templum_usage::pi::args(d, windows))),
             ),
+            // A function per account in the shell, always set: empty with none.
+            ("TEMPLUM_ACCOUNTS", agents::accounts_env(&self.agents)),
             // An OpenCode or a Pi run here reports for its block, and sets it for what it starts.
             ("TEMPLUM_HOOKED", String::new()),
         ]
@@ -175,11 +182,13 @@ impl Workspace {
     /// The variables the shell of a block Templum opens for `agent` gets: an account's folder
     /// first, whatever Templum's environment has (docs/specs/accounts.md); then
     /// (docs/specs/connections.md, OpenCode and Kilo Code) its server and plugin, for an agent
-    /// that takes them only from its environment, as `typed` says, none where `set(name)` says
-    /// the person's environment already has a non-empty one, which wins.
+    /// that takes them only from its environment, as `typed_in` says, none where `set(name)` says
+    /// the person's environment already has a non-empty one, which wins. `shell`: the program the
+    /// block runs, as `typed_in`'s (None: the default shell); none of the server's under WSL.
     pub(super) fn agent_vars(
         &self,
         agent: Option<&AgentEntry>,
+        shell: Option<&str>,
         set: &dyn Fn(&str) -> bool,
     ) -> Vec<(String, String)> {
         let account = agent
@@ -187,7 +196,7 @@ impl Workspace {
             .map(|(name, folder)| (name.to_string(), folder.to_string_lossy().into_owned()));
         account
             .into_iter()
-            .chain(self.server_vars(agent, set))
+            .chain(self.server_vars(agent, shell, set))
             .collect()
     }
 
@@ -195,6 +204,7 @@ impl Workspace {
     fn server_vars(
         &self,
         agent: Option<&AgentEntry>,
+        shell: Option<&str>,
         set: &dyn Fn(&str) -> bool,
     ) -> Vec<(String, String)> {
         let builtin = agent.and_then(|a| a.builtin);
@@ -204,7 +214,7 @@ impl Workspace {
             Some(Agent::QWEN) => "QWEN_CODE_SYSTEM_SETTINGS_PATH",
             _ => return Vec::new(),
         };
-        let Some(gives) = self.gives().filter(|g| g.connected && g.on_path) else {
+        let Some(gives) = self.gives(shell).filter(|g| g.connected && g.on_path) else {
             return Vec::new();
         };
         if set(name) {
@@ -220,10 +230,12 @@ impl Workspace {
             .unwrap_or_default()
     }
 
-    /// What Templum gives the agents it opens or a person types, as `typed` says; None without a
-    /// data folder or a program, or under WSL, where Templum's paths aren't the shell's.
-    fn gives(&self) -> Option<Gives> {
-        let (Some(data), Some(exe), false) = (&self.data_dir, program(), self.shell_is("wsl"))
+    /// What Templum gives the agents it opens or a person types in a terminal running `shell`
+    /// (None: the default), as `typed_in` says; None without a data folder or a program, or under
+    /// WSL, where Templum's paths aren't the shell's.
+    fn gives(&self, shell: Option<&str>) -> Option<Gives> {
+        let (Some(data), Some(exe), false) =
+            (&self.data_dir, program(), self.shell_is(shell, "wsl"))
         else {
             return None;
         };
@@ -232,26 +244,24 @@ impl Workspace {
             data: data.clone(),
             exe,
             connected,
-            codex: connected && !self.shell_is("cmd") && !self.shell_is("powershell"),
+            codex: connected && !self.shell_is(shell, "cmd") && !self.shell_is(shell, "powershell"),
             // `terminal_env` puts `<data>/bin`, where `templum` is, first on it.
             on_path: self.bus_env.iter().any(|(k, _)| k == "PATH"),
         })
     }
 
-    /// New terminals run the shell named `name` (its program's file name, in any case:
-    /// `PowerShell.exe` is `powershell`): the configured one, else the system's default.
-    fn shell_is(&self, name: &str) -> bool {
-        let program = self
-            .config
-            .shell
-            .program
-            .clone()
-            .or_else(|| templum_terminal::default_shell().map(|s| s.program));
-        program.is_some_and(|p| {
-            std::path::Path::new(&p)
-                .file_stem()
-                .is_some_and(|s| s.eq_ignore_ascii_case(name))
-        })
+    /// A terminal running `shell` (a program; None: new terminals' default) runs the shell named
+    /// `name` (its program's file name, in any case: `PowerShell.exe` is `powershell`): the
+    /// terminal's own, else the configured one, else the system's default.
+    pub(super) fn shell_is(&self, shell: Option<&str>, name: &str) -> bool {
+        let program = shell.map(str::to_string).or_else(|| {
+            self.config
+                .shell
+                .program
+                .clone()
+                .or_else(|| templum_terminal::default_shell().map(|s| s.program))
+        });
+        program.is_some_and(|p| templum_terminal::is_shell(&p, name))
     }
 
     /// Reads, in the background, what the agents in every workspace's terminals wrote, from the
@@ -271,14 +281,12 @@ impl Workspace {
             }
         }
         let homes = agents::usage_homes(&self.agents);
+        let dirs = agents::dirs(&data);
         // The next read replaces this one: a slow disk never piles reads up.
         self._usage = cx.spawn_in(window, async move |ws, cx| {
             let read = cx
                 .background_executor()
-                .spawn(async move {
-                    let dirs = templum_usage::Dirs::of(&data);
-                    templum_usage::read(&procs, &dirs, &homes, notes::now())
-                })
+                .spawn(async move { templum_usage::read(&procs, &dirs, &homes, notes::now()) })
                 .await;
             ws.update_in(cx, |ws, window, cx| ws.usage_done(keys, read, window, cx))
                 .ok();
@@ -518,7 +526,7 @@ impl Workspace {
         let Some(entry) = entry.filter(|e| e.builtin == Some(Agent::GEMINI)) else {
             return;
         };
-        if self.gemini_told.contains(&entry.id) || !self.gives().is_some_and(|g| g.connected) {
+        if self.gemini_told.contains(&entry.id) || !self.gives(None).is_some_and(|g| g.connected) {
             return;
         }
         let Some(data) = &self.data_dir else {
@@ -527,7 +535,7 @@ impl Workspace {
         // An account's extensions are its folder's, or the folder it shares them with.
         let dir = match &entry.account {
             Some(a) => Some(a.kind.state_dir(&a.folder)),
-            None => templum_usage::Dirs::of(data).gemini,
+            None => agents::dirs(data).gemini,
         };
         if dir.is_some_and(|dir| templum_usage::gemini::installed(&dir)) {
             return;

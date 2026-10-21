@@ -16,8 +16,8 @@ pub(crate) const VERSION: u32 = 1;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Boards {
     pub version: u32,
-    /// The last id given out: ids are unique across boards, columns, cards and checklist items,
-    /// never reused.
+    /// The last id given out: ids are unique across boards, columns, cards, checklist items and
+    /// comments, never reused.
     #[serde(default)]
     pub next_id: u64,
     #[serde(default)]
@@ -146,9 +146,16 @@ fn known_priority<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Priority>, D
 /// A comment on a card: by an agent's block id, or `"you"` for the person; `at` in Unix seconds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Comment {
+    /// How agents name it (`edit_comment`, `delete_comment`). 0 in a file from before: loading
+    /// gives it a new one.
+    #[serde(default)]
+    pub id: u64,
     pub by: String,
     pub text: String,
     pub at: u64,
+    /// Its author changed the text after writing it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub edited: bool,
 }
 
 impl Card {
@@ -299,6 +306,24 @@ impl Boards {
         self.boards.retain(|b| b.id != id);
     }
 
+    /// The boards whose name or a card's title holds `query`, in any case; all of them for a
+    /// blank one. In their order.
+    pub fn find(&self, query: &str) -> Vec<&Board> {
+        let query = query.trim().to_lowercase();
+        let holds = |text: &str| text.to_lowercase().contains(&query);
+        self.boards
+            .iter()
+            .filter(|b| {
+                query.is_empty()
+                    || holds(&b.name)
+                    || b.columns
+                        .iter()
+                        .flat_map(|c| &c.cards)
+                        .any(|c| holds(&c.title))
+            })
+            .collect()
+    }
+
     /// "New column" after the last one; returns its id.
     pub fn add_column(&mut self, board: u64) -> Option<u64> {
         let id = self.next();
@@ -441,6 +466,65 @@ impl Boards {
         self.edit_card(board, card, |c| c.checklist.retain(|i| i.id != item));
     }
 
+    /// Adds a comment by `by` at the end of the card's thread; returns its id (None when the card
+    /// is gone).
+    pub fn add_comment(
+        &mut self,
+        board: u64,
+        card: u64,
+        by: &str,
+        text: &str,
+        at: u64,
+    ) -> Option<u64> {
+        self.card(board, card)?;
+        let comment = Comment {
+            id: self.next(),
+            by: by.to_string(),
+            text: text.to_string(),
+            at,
+            edited: false,
+        };
+        let id = comment.id;
+        self.edit_card(board, card, |c| c.comments.push(comment));
+        Some(id)
+    }
+
+    /// Changes a comment's text, which then reads as edited; its author and time stay.
+    pub fn edit_comment(&mut self, board: u64, card: u64, comment: u64, text: &str) {
+        self.edit_card(board, card, |c| {
+            if let Some(c) = c.comments.iter_mut().find(|c| c.id == comment)
+                && c.text != text
+            {
+                c.text = text.to_string();
+                c.edited = true;
+            }
+        });
+    }
+
+    pub fn remove_comment(&mut self, board: u64, card: u64, comment: u64) {
+        self.edit_card(board, card, |c| c.comments.retain(|c| c.id != comment));
+    }
+
+    /// Puts a deleted `comment` back, as it was (its id, author, text, time and edited flag), at
+    /// `index` of the card's thread, or at its end when the thread is shorter now. False, and
+    /// nothing changes, when the card is gone or already has a comment with its id.
+    pub fn restore_comment(
+        &mut self,
+        board: u64,
+        card: u64,
+        index: usize,
+        comment: Comment,
+    ) -> bool {
+        let mut restored = false;
+        self.edit_card(board, card, |c| {
+            if c.comments.iter().all(|x| x.id != comment.id) {
+                c.comments.insert(index.min(c.comments.len()), comment);
+                restored = true;
+            }
+        });
+        restored
+    }
+
     pub fn toggle_label(&mut self, board: u64, card: u64, label: Label) {
         self.edit_card(board, card, |card| {
             if let Some(i) = card.labels.iter().position(|l| *l == label) {
@@ -490,7 +574,9 @@ pub(crate) fn load(dir: &Path) -> Loaded<Boards> {
             let ids = boards.boards.iter_mut().flat_map(|b| {
                 std::iter::once(&mut b.id).chain(b.columns.iter_mut().flat_map(|c| {
                     std::iter::once(&mut c.id).chain(c.cards.iter_mut().flat_map(|x| {
-                        std::iter::once(&mut x.id).chain(x.checklist.iter_mut().map(|i| &mut i.id))
+                        std::iter::once(&mut x.id)
+                            .chain(x.checklist.iter_mut().map(|i| &mut i.id))
+                            .chain(x.comments.iter_mut().map(|c| &mut c.id))
                     }))
                 }))
             });
@@ -553,6 +639,18 @@ mod tests {
             "Board 3",
             "Board 2 is taken"
         );
+    }
+
+    #[test]
+    fn find_takes_the_name_and_the_cards_titles_in_any_case() {
+        let (mut boards, abc, ..) = abc();
+        let other = boards.add_board();
+        boards.rename_board(other, "Release");
+        let ids = |found: Vec<&Board>| found.iter().map(|b| b.id).collect::<Vec<_>>();
+        assert_eq!(ids(boards.find("  ")), [abc, other], "all, in their order");
+        assert_eq!(ids(boards.find("RELEASE")), [other], "by the name");
+        assert_eq!(ids(boards.find("c")), [abc], "by a card's title");
+        assert!(boards.find("nothing").is_empty());
     }
 
     #[test]
@@ -691,17 +789,15 @@ mod tests {
         let (mut boards, board, _, cards) = abc();
         boards.edit_card(board, cards[0], |c| {
             c.assignee = Some(Assignee::Block("b7k2m".into()));
-            c.comments.push(Comment {
-                by: "b7k2m".into(),
-                text: "On it.\nTwo lines.".into(),
-                at: 1_760_000_000,
-            });
-            c.comments.push(Comment {
-                by: "you".into(),
-                text: "Thanks".into(),
-                at: 1_760_000_100,
-            });
         });
+        boards.add_comment(
+            board,
+            cards[0],
+            "b7k2m",
+            "On it.\nTwo lines.",
+            1_760_000_000,
+        );
+        boards.add_comment(board, cards[0], "you", "Thanks", 1_760_000_100);
         let d = tempfile::tempdir().unwrap();
         save(d.path(), &boards, 1).unwrap();
         assert_eq!(load(d.path()), Loaded::Saved(boards));
@@ -792,6 +888,125 @@ mod tests {
             !again.contains("priority")
                 && !again.contains("checklist")
                 && !again.contains("assignee"),
+            "{again}"
+        );
+    }
+
+    #[test]
+    fn comments_get_ids_are_edited_in_place_and_go() {
+        let (mut boards, board, _, [card, ..]) = abc();
+        let first = boards
+            .add_comment(board, card, "b7k2m", "On it.", 10)
+            .unwrap();
+        let second = boards
+            .add_comment(board, card, "you", "Thanks", 20)
+            .unwrap();
+        assert!(first != second && second == boards.next_id);
+        assert_eq!(boards.add_comment(board, 9_999, "you", "lost", 0), None);
+        let thread = |boards: &Boards| {
+            boards
+                .card(board, card)
+                .unwrap()
+                .comments
+                .iter()
+                .map(|c| (c.id, c.text.clone(), c.edited))
+                .collect::<Vec<_>>()
+        };
+        // Its text changes; its place, author and time stay, and it reads as edited.
+        boards.edit_comment(board, card, first, "Done.");
+        let c = &boards.card(board, card).unwrap().comments[0];
+        assert_eq!(
+            (c.by.as_str(), c.at, c.text.as_str(), c.edited),
+            ("b7k2m", 10, "Done.", true)
+        );
+        // The same text is no edit; an unknown id changes nothing.
+        boards.edit_comment(board, card, second, "Thanks");
+        boards.edit_comment(board, card, 9_999, "x");
+        assert_eq!(
+            thread(&boards),
+            [
+                (first, "Done.".into(), true),
+                (second, "Thanks".into(), false)
+            ]
+        );
+        let gone = boards.card(board, card).unwrap().comments[0].clone();
+        boards.remove_comment(board, card, first);
+        assert_eq!(thread(&boards), [(second, "Thanks".into(), false)]);
+        // A deleted comment comes back whole at its place, once; a shorter thread takes it at the end.
+        assert!(boards.restore_comment(board, card, 0, gone.clone()));
+        assert!(
+            !boards.restore_comment(board, card, 0, gone.clone()),
+            "it is there"
+        );
+        assert_eq!(boards.card(board, card).unwrap().comments[0], gone);
+        assert_eq!(
+            thread(&boards),
+            [
+                (first, "Done.".into(), true),
+                (second, "Thanks".into(), false)
+            ]
+        );
+        boards.remove_comment(board, card, first);
+        assert!(boards.restore_comment(board, card, 7, gone));
+        assert_eq!(
+            thread(&boards),
+            [
+                (second, "Thanks".into(), false),
+                (first, "Done.".into(), true)
+            ]
+        );
+        boards.remove_comment(board, card, first);
+        assert!(
+            !boards.restore_comment(
+                board,
+                999,
+                0,
+                Comment {
+                    id: first,
+                    by: "you".into(),
+                    text: "x".into(),
+                    at: 1,
+                    edited: false
+                }
+            ),
+            "a card that is gone takes none"
+        );
+        // Its id is never given again.
+        let third = boards.add_comment(board, card, "you", "More", 30).unwrap();
+        assert!(third > second);
+    }
+
+    #[test]
+    fn a_file_from_before_gives_its_comments_ids_and_keeps_them_apart_from_others() {
+        let d = tempfile::tempdir().unwrap();
+        // Comments with no id (written before they had one), beside a card, an item and a comment
+        // that repeats the card's id.
+        let text = r#"{"version":1,"next_id":4,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T",
+            "cards":[{"id":3,"title":"x","checklist":[{"id":4,"text":"i"}],
+            "comments":[{"by":"you","text":"a","at":1},{"by":"b7k2m","text":"b","at":2},
+                        {"id":3,"by":"you","text":"c","at":3}]}]}]}]}"#;
+        std::fs::write(path(d.path()), text).unwrap();
+        let Loaded::Saved(read) = load(d.path()) else {
+            panic!("not read")
+        };
+        let comments = &read.boards[0].columns[0].cards[0].comments;
+        let ids: Vec<u64> = comments.iter().map(|c| c.id).collect();
+        assert_eq!(
+            ids,
+            [5, 6, 7],
+            "new ones, in the file's order; text and authors kept"
+        );
+        assert_eq!(
+            comments.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
+            ["a", "b", "c"]
+        );
+        assert!(comments.iter().all(|c| !c.edited));
+        assert_eq!(read.next_id, 7);
+        // A comment that was never edited writes no `edited`.
+        save(d.path(), &read, 1).unwrap();
+        let again = std::fs::read_to_string(path(d.path())).unwrap();
+        assert!(
+            again.contains("\"id\": 5") && !again.contains("edited"),
             "{again}"
         );
     }

@@ -27,6 +27,7 @@ pub(crate) mod connections;
 mod edits;
 mod fields;
 mod fonts;
+mod general;
 mod git;
 mod row;
 mod sections;
@@ -58,6 +59,7 @@ const WIDTH: f32 = 480.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Section {
     Appearance,
+    General,
     Canvas,
     Font,
     Terminal,
@@ -73,8 +75,9 @@ pub(crate) enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 13] = [
+    pub const ALL: [Section; 14] = [
         Section::Appearance,
+        Section::General,
         Section::Canvas,
         Section::Font,
         Section::Terminal,
@@ -91,6 +94,7 @@ impl Section {
 
     fn title(self) -> &'static str {
         match self {
+            Section::General => "General",
             Section::Appearance => "Appearance",
             Section::Canvas => "Canvas",
             Section::Font => "Font",
@@ -110,6 +114,7 @@ impl Section {
     /// Its tab's element id.
     fn tab_id(self) -> &'static str {
         match self {
+            Section::General => "settings-tab-general",
             Section::Appearance => "settings-tab-appearance",
             Section::Canvas => "settings-tab-canvas",
             Section::Font => "settings-tab-font",

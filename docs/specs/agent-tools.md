@@ -179,8 +179,8 @@ person sees.
 - **Where:** beside the caller where it covers no block nor drawing, toward the blocks wired to it, as `spawn_agent`
   places an agent ([connections.md](connections.md#spawning)); wired to the caller. The keyboard, the selection and the
   camera stay where they were; in grid mode it takes half of the caller's tile. One Ctrl+Z closes it and its wire.
-- **A note:** a new note (`notes.json`) with `text`, shown in a new note block. A blank text gives an empty note, which
-  stays while its block shows it.
+- **A note:** a new note (`notes.json`) with `text`, shown in a new note block, named by its first line with text
+  (Untitled when blank; the person renames it). A blank text gives an empty note, which stays while its block shows it.
 - **A checklist:** a new checklist (`checklists.json`) named `name` ("Checklist" when blank) with its items, shown in
   a new checklist block.
 - **A terminal:** a new terminal of the default size in `folder`, with the shell's environment every terminal gets;
@@ -312,20 +312,24 @@ conversation.
 - **The dialog** is `ask_user`'s balloon ([ask-user.md](ask-user.md#the-dialog)) holding a plan instead of questions:
 
   ```
-  ● Waiting for your answer                                         1 of 2
-   Plan  Move the bus to tokio
+  (?) Waiting for your answer  Plan to approve                              1 of 2
+  ─────────────────────────────────────────────────────────────────────────────
+   [Plan]  Move the bus to tokio
    ┌─────────────────────────────────────────────────────────────────────┐
    │ ## Steps                                                            │
    │ 1. Replace the reader threads…                                      │
    │ …                                                                   │
    └─────────────────────────────────────────────────────────────────────┘
    Comment [ optional                                                   ]
-   Reject                                                          Approve
+  ─────────────────────────────────────────────────────────────────────────────
+   Reject                                                          [✓ Approve]
   ```
+
+  in the frame of ask_user's dialog since card 81: the header and the foot stay, the body between them scrolls
 
   the header chip "Plan" and the title (or "A plan" when none); the plan rendered as Markdown by `markdown::preview`
   (headings, lists, code, scaled with the zoom like a photo), in a frame on the canvas color that scrolls on its own,
-  at most 60% of the balloon's height; then the Comment field (the note of `ask_user`); then **Reject** on the left and
+  at most 60% of the body's height (the balloon less its header and foot); the wheel over it scrolls it when it overflows, not the body; then the Comment field (the note of `ask_user`); then **Reject** on the left and
   **Approve** on the right. Its keys are `ask_user`'s: ↓ and Tab move through Comment, Reject and Approve, Enter on
   Approve or Reject presses it, Esc gives the keyboard back; presses within 0.5 s of it showing are ignored. The sound,
   the notification ("Asks you to approve a plan: *title*"), the alert, "1 of 3", the deadline, a cancel typed back,

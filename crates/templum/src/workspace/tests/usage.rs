@@ -22,7 +22,7 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
         };
         let (settings, mcp) = (typed("claude-statusline.json"), typed("mcp.json"));
         assert_eq!(
-            ws.typed(claude.as_ref(), "claude --continue"),
+            ws.typed_in(None, claude.as_ref(), "claude --continue"),
             format!("claude --continue --settings {settings} --mcp-config {mcp}")
         );
         let written = std::fs::read_to_string(data.path().join("claude-statusline.json")).unwrap();
@@ -39,28 +39,28 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
         );
         #[cfg(unix)]
         assert!(
-            ws.typed(codex.as_ref(), "codex resume 0d5e")
+            ws.typed_in(None, codex.as_ref(), "codex resume 0d5e")
                 .starts_with("codex resume 0d5e -c 'mcp_servers.templum.command="),
             "{}",
-            ws.typed(codex.as_ref(), "codex resume 0d5e")
+            ws.typed_in(None, codex.as_ref(), "codex resume 0d5e")
         );
         #[cfg(unix)]
         {
-            let line = ws.typed(codex.as_ref(), "codex");
+            let line = ws.typed_in(None, codex.as_ref(), "codex");
             let stop = r#"-c 'hooks.Stop=[{hooks=[{type="command",command="templum hook codex",timeout=5}]}]'"#;
             assert!(line.contains(stop) && !line.contains("notify"), "{line}");
             // No `<data>/bin` on the terminal's PATH: the server, not hooks running a `templum`
             // it can't find.
             let env = ws.bus_env.clone();
             ws.bus_env.retain(|(k, _)| k != "PATH");
-            let line = ws.typed(codex.as_ref(), "codex");
+            let line = ws.typed_in(None, codex.as_ref(), "codex");
             assert!(
                 line.contains("mcp_servers.templum") && !line.contains("hooks."),
                 "{line}"
             );
             ws.bus_env = env;
         }
-        assert_eq!(ws.typed(None, "claude"), "claude");
+        assert_eq!(ws.typed_in(None, None, "claude"), "claude");
         // Copilot CLI: its server, its instructions and its plugin of hooks, in every shell.
         let words = templum_usage::copilot::args(data.path(), cfg!(windows))
             .unwrap()
@@ -69,75 +69,80 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
             .collect::<Vec<_>>()
             .join(" ");
         assert!(words.contains("--plugin-dir="), "{words}");
+        // `(` is typed in double quotes in every shell.
+        assert!(
+            words.contains(" \"--allow-tool=templum(reply)\" "),
+            "{words}"
+        );
         assert_eq!(
-            ws.typed(copilot.as_ref(), "copilot --session-id 0d5e"),
+            ws.typed_in(None, copilot.as_ref(), "copilot --session-id 0d5e"),
             format!("copilot --session-id 0d5e {words}")
         );
         // Qwen Code: its server, its one `--mcp-config` last.
         let qwen_words = templum_usage::qwen::args(data.path(), cfg!(windows)).unwrap();
         let qwen_mcp = templum_usage::claude::typed_path(&qwen_words[0], cfg!(windows)).unwrap();
         assert_eq!(
-            ws.typed(qwen.as_ref(), "qwen --resume 0d5e"),
+            ws.typed_in(None, qwen.as_ref(), "qwen --resume 0d5e"),
             format!("qwen --resume 0d5e {qwen_mcp}")
         );
         // Pi: its extension, `-e` and the file.
         let pi_words = templum_usage::pi::args(data.path(), cfg!(windows)).unwrap();
         let file = templum_usage::claude::typed_path(&pi_words[1], cfg!(windows)).unwrap();
         assert_eq!(
-            ws.typed(pi.as_ref(), "pi --session-id 0d5e"),
+            ws.typed_in(None, pi.as_ref(), "pi --session-id 0d5e"),
             format!("pi --session-id 0d5e -e {file}")
         );
         // Without `<data>/bin` on the terminal's PATH, the files' program can't be found.
         let env = ws.bus_env.clone();
         ws.bus_env.retain(|(k, _)| k != "PATH");
-        assert_eq!(ws.typed(pi.as_ref(), "pi"), "pi");
-        assert_eq!(ws.typed(copilot.as_ref(), "copilot"), "copilot");
-        assert_eq!(ws.typed(qwen.as_ref(), "qwen"), "qwen");
+        assert_eq!(ws.typed_in(None, pi.as_ref(), "pi"), "pi");
+        assert_eq!(ws.typed_in(None, copilot.as_ref(), "copilot"), "copilot");
+        assert_eq!(ws.typed_in(None, qwen.as_ref(), "qwen"), "qwen");
         ws.bus_env = env;
         // Windows PowerShell 5.1 passes `args=["mcp"]` on as `args=[mcp]`; pwsh 7 doesn't.
         let shell = ws.config.shell.program.clone();
         ws.config.shell.program = Some("powershell".into());
-        assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
+        assert_eq!(ws.typed_in(None, codex.as_ref(), "codex"), "codex");
         // Windows names its programs in any case.
         for program in ["PowerShell.exe", "CMD.EXE"] {
             ws.config.shell.program = Some(program.into());
-            assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex", "{program}");
+            assert_eq!(ws.typed_in(None, codex.as_ref(), "codex"), "codex", "{program}");
         }
         ws.config.shell.program = Some("WSL.exe".into());
-        assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
-        assert_eq!(ws.typed(copilot.as_ref(), "copilot"), "copilot");
+        assert_eq!(ws.typed_in(None, claude.as_ref(), "claude"), "claude");
+        assert_eq!(ws.typed_in(None, copilot.as_ref(), "copilot"), "copilot");
         ws.config.shell.program = Some("powershell".into());
-        assert!(ws.typed(copilot.as_ref(), "copilot").contains("--plugin-dir="));
+        assert!(ws.typed_in(None, copilot.as_ref(), "copilot").contains("--plugin-dir="));
         ws.config.shell.program = Some("pwsh".into());
         assert!(
-            ws.typed(codex.as_ref(), "codex")
+            ws.typed_in(None, codex.as_ref(), "codex")
                 .contains("mcp_servers.templum")
         );
         ws.config.shell.program = shell;
         // Connections off: the status line only, and nothing for Codex.
         ws.config.connections.enabled = false;
         assert_eq!(
-            ws.typed(claude.as_ref(), "claude"),
+            ws.typed_in(None, claude.as_ref(), "claude"),
             format!("claude --settings {settings}")
         );
-        assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
-        assert_eq!(ws.typed(copilot.as_ref(), "copilot"), "copilot");
-        assert_eq!(ws.typed(qwen.as_ref(), "qwen"), "qwen");
+        assert_eq!(ws.typed_in(None, codex.as_ref(), "codex"), "codex");
+        assert_eq!(ws.typed_in(None, copilot.as_ref(), "copilot"), "copilot");
+        assert_eq!(ws.typed_in(None, qwen.as_ref(), "qwen"), "qwen");
         ws.config.usage.claude_limits = false;
-        assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+        assert_eq!(ws.typed_in(None, claude.as_ref(), "claude"), "claude");
         // Connections without the status line: the hooks still need the settings file.
         ws.config.connections.enabled = true;
         assert_eq!(
-            ws.typed(claude.as_ref(), "claude"),
+            ws.typed_in(None, claude.as_ref(), "claude"),
             format!("claude --settings {settings} --mcp-config {mcp}")
         );
         // A bus that couldn't start: no server, no hooks.
         let bus = ws.bus.take();
-        assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+        assert_eq!(ws.typed_in(None, claude.as_ref(), "claude"), "claude");
         ws.bus = bus;
         // Without a data folder, nothing would read what the relay writes.
         ws.data_dir = None;
-        assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+        assert_eq!(ws.typed_in(None, claude.as_ref(), "claude"), "claude");
     });
 }
 
@@ -152,7 +157,7 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
     let (_, ws) = open_in(cx, None, Some(data.clone()));
     ws.update(cx, |ws, _| {
         let word = |ws: &Workspace, key: &str| {
-            let env = ws.agent_env();
+            let env = ws.agent_env(None);
             env.into_iter().find(|(k, _)| k == key).unwrap().1
         };
         let p = |name: &str| {
@@ -179,6 +184,11 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
             .unwrap()
             .join("\n");
         assert!(copilot.ends_with(&p("copilot/plugin")), "{copilot}");
+        // The bare word, one per line: no quotes in the variable.
+        assert!(
+            copilot.lines().any(|w| w == "--allow-tool=templum(reply)"),
+            "{copilot}"
+        );
         assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), copilot);
         let opencode = templum_usage::opencode::config(&data, cfg!(windows)).unwrap();
         assert_eq!(word(ws, "TEMPLUM_OPENCODE_CONFIG"), opencode);
@@ -230,7 +240,7 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
     let (_, bare) = open_in(cx, None, None);
     bare.update(cx, |ws, _| {
         assert_eq!(
-            ws.agent_env(),
+            ws.agent_env(None),
             [
                 ("TEMPLUM_CLAUDE_ARGS".to_string(), String::new()),
                 ("TEMPLUM_CODEX_ARGS".to_string(), String::new()),
@@ -240,8 +250,33 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
                 ("TEMPLUM_QWEN_ARGS".to_string(), String::new()),
                 ("TEMPLUM_QWEN_SETTINGS".to_string(), String::new()),
                 ("TEMPLUM_PI_ARGS".to_string(), String::new()),
+                ("TEMPLUM_ACCOUNTS".to_string(), String::new()),
                 ("TEMPLUM_HOOKED".to_string(), String::new()),
             ]
+        );
+    });
+}
+
+/// Every new terminal carries its accounts, for the shell to define a function each
+/// (docs/specs/accounts.md, Typed in a terminal); empty with none.
+#[gpui_kit::test]
+fn a_new_terminal_gets_the_accounts(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let accounts = |ws: &Workspace| {
+        let env = ws.agent_env(None);
+        env.into_iter()
+            .find(|(k, _)| k == "TEMPLUM_ACCOUNTS")
+            .unwrap()
+            .1
+    };
+    ws.read_with(cx, |ws, _| assert_eq!(accounts(ws), ""));
+    super::agents::with_agents(&ws, cx, "[agents]\nclaudinho = { of = \"claude\" }\n");
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            accounts(ws).starts_with("claudinho\tclaude\t"),
+            "{}",
+            accounts(ws)
         );
     });
 }
@@ -285,7 +320,7 @@ fn an_untypeable_data_folder_gives_no_connections(cx: &mut TestAppContext) {
     let (_, ws) = open_in(cx, None, Some(data));
     ws.update(cx, |ws, _| {
         let claude = ws.agents.iter().find(|a| a.id == "claude").cloned();
-        assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+        assert_eq!(ws.typed_in(None, claude.as_ref(), "claude"), "claude");
     });
 }
 
@@ -614,8 +649,6 @@ fn a_gemini_cli_without_the_extension_is_told_once(cx: &mut TestAppContext) {
     let data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
     let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
-    let installed = std::env::home_dir()
-        .is_some_and(|home| templum_usage::gemini::installed(&home.join(".gemini")));
     let open = |id: &str, cx: &mut TestAppContext| {
         cx.update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
@@ -649,10 +682,9 @@ fn a_gemini_cli_without_the_extension_is_told_once(cx: &mut TestAppContext) {
     assert_eq!(notification_count(handle, cx), before, "off");
     ws.update(cx, |ws, _| ws.config.connections.enabled = true);
     open("gemini", cx);
-    let told = usize::from(!installed);
-    assert_eq!(notification_count(handle, cx), before + told, "once");
+    assert_eq!(notification_count(handle, cx), before + 1, "once");
     open("gemini", cx);
-    assert_eq!(notification_count(handle, cx), before + told, "not twice");
+    assert_eq!(notification_count(handle, cx), before + 1, "not twice");
 }
 
 /// The OpenCode and Kilo Code Templum opens get their variable in their shell's environment,
@@ -667,14 +699,20 @@ fn blocks_templum_opens_get_their_agents_variable(cx: &mut TestAppContext) {
         let unset = |_: &str| false;
         let config = templum_usage::opencode::config(data.path(), cfg!(windows)).unwrap();
         assert_eq!(
-            ws.agent_vars(opencode.as_ref(), &unset),
+            ws.agent_vars(opencode.as_ref(), None, &unset),
             [("OPENCODE_CONFIG_CONTENT".to_string(), config.clone())]
         );
+        let wsl = Some("C:/Windows/System32/wsl.exe");
         assert_eq!(
-            ws.agent_vars(kilo.as_ref(), &unset),
+            ws.agent_vars(opencode.as_ref(), wsl, &unset),
+            [],
+            "nothing crosses into WSL"
+        );
+        assert_eq!(
+            ws.agent_vars(kilo.as_ref(), None, &unset),
             [("KILO_CONFIG_CONTENT".to_string(), config)]
         );
-        assert_eq!(ws.agent_vars(claude.as_ref(), &unset), []);
+        assert_eq!(ws.agent_vars(claude.as_ref(), None, &unset), []);
         // Qwen Code: its system settings file moved to Templum's, unless its own exists.
         let qwen = agent("qwen");
         let system = templum_usage::qwen::system_file();
@@ -686,27 +724,57 @@ fn blocks_templum_opens_get_their_agents_variable(cx: &mut TestAppContext) {
                 })
                 .into_iter()
                 .collect();
-        assert_eq!(ws.agent_vars(qwen.as_ref(), &unset), want);
+        assert_eq!(ws.agent_vars(qwen.as_ref(), None, &unset), want);
         let theirs = |name: &str| name == "QWEN_CODE_SYSTEM_SETTINGS_PATH";
-        assert_eq!(ws.agent_vars(qwen.as_ref(), &theirs), []);
-        assert_eq!(ws.agent_vars(None, &unset), []);
+        assert_eq!(ws.agent_vars(qwen.as_ref(), None, &theirs), []);
+        assert_eq!(ws.agent_vars(None, None, &unset), []);
         // The person's own wins.
         let theirs = |name: &str| name == "OPENCODE_CONFIG_CONTENT";
-        assert_eq!(ws.agent_vars(opencode.as_ref(), &theirs), []);
-        assert_eq!(ws.agent_vars(kilo.as_ref(), &theirs).len(), 1);
+        assert_eq!(ws.agent_vars(opencode.as_ref(), None, &theirs), []);
+        assert_eq!(ws.agent_vars(kilo.as_ref(), None, &theirs).len(), 1);
         // Without `<data>/bin` on the terminal's PATH, the plugin's program can't be found.
         let env = ws.bus_env.clone();
         ws.bus_env.retain(|(k, _)| k != "PATH");
-        assert_eq!(ws.agent_vars(opencode.as_ref(), &unset), []);
+        assert_eq!(ws.agent_vars(opencode.as_ref(), None, &unset), []);
         ws.bus_env = env;
         ws.config.connections.enabled = false;
-        assert_eq!(ws.agent_vars(opencode.as_ref(), &unset), []);
+        assert_eq!(ws.agent_vars(opencode.as_ref(), None, &unset), []);
         // Every terminal gets an empty `TEMPLUM_HOOKED`: not a Templum's it was started from.
         let hooked = ws
-            .agent_env()
+            .agent_env(None)
             .into_iter()
             .find(|(k, _)| k == "TEMPLUM_HOOKED");
         assert_eq!(hooked, Some(("TEMPLUM_HOOKED".to_string(), String::new())));
+    });
+}
+
+/// The words for agents typed in a terminal follow its own shell, not the default
+/// (docs/specs/shells.md, Agents typed in a chosen shell).
+#[gpui_kit::test]
+fn a_terminals_agent_words_follow_its_own_shell(cx: &mut TestAppContext) {
+    let parent = tempfile::tempdir().unwrap();
+    let data = parent.path().join("Templum Data");
+    std::fs::create_dir(&data).unwrap();
+    let (_, ws) = open_in(cx, None, Some(data));
+    ws.update(cx, |ws, _| {
+        let word = |ws: &Workspace, shell: Option<&str>, key: &str| {
+            ws.agent_env(shell)
+                .into_iter()
+                .find(|(k, _)| k == key)
+                .unwrap()
+                .1
+        };
+        ws.config.shell.program = None;
+        assert_ne!(word(ws, None, "TEMPLUM_CLAUDE_ARGS"), "");
+        // Forward slashes: a file name on every OS.
+        let wsl = "C:/Windows/System32/wsl.exe";
+        assert_eq!(word(ws, Some(wsl), "TEMPLUM_CLAUDE_ARGS"), "");
+        #[cfg(unix)]
+        {
+            ws.config.shell.program = Some("powershell".into());
+            assert_eq!(word(ws, None, "TEMPLUM_CODEX_ARGS"), "");
+            assert_ne!(word(ws, Some("/bin/bash"), "TEMPLUM_CODEX_ARGS"), "");
+        }
     });
 }
 

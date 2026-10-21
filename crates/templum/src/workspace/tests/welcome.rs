@@ -340,3 +340,250 @@ fn the_theme_picker_over_the_welcome_has_its_keys(cx: &mut TestAppContext) {
     });
     assert!(up(&ws, cx), "and only the popover");
 }
+
+type Dirs = [tempfile::TempDir; 3];
+
+/// A first run on its first page, with a start-at-login entry in a temporary home.
+fn first_with_entry(
+    cx: &mut TestAppContext,
+) -> (
+    AnyWindowHandle,
+    Entity<Workspace>,
+    crate::autostart::Autostart,
+    Dirs,
+) {
+    let (handle, ws, config, data) = first_run(cx);
+    let home = tempfile::tempdir().unwrap();
+    let entry = with_autostart(&ws, cx, home.path());
+    (handle, ws, entry, [config, data, home])
+}
+
+/// `first_with_entry`, on the last page.
+fn ready(
+    cx: &mut TestAppContext,
+) -> (
+    AnyWindowHandle,
+    Entity<Workspace>,
+    crate::autostart::Autostart,
+    Dirs,
+) {
+    let (handle, ws, entry, dirs) = first_with_entry(cx);
+    go(handle, &ws, Page::Ready, cx);
+    (handle, ws, entry, dirs)
+}
+
+fn click_autostart(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        to_bottom(window, cx);
+        window.click("field-general.autostart", cx);
+    })
+    .unwrap();
+}
+
+/// What the welcome's start-at-login switch shows.
+fn shown(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> bool {
+    ws.read_with(cx, |ws, _| {
+        ws.welcome.as_ref().unwrap().autostart_shown(&ws.autostart)
+    })
+}
+
+/// The workspace reads the system's entry again, as when the welcome opens.
+fn read_system(ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    ws.update(cx, |ws, cx| ws.load_autostart(cx));
+    cx.run_until_parked();
+}
+
+/// Presses Start using Templum (the last page's button) and lets the change reach the system.
+fn start_using(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| window.click("welcome-next", cx))
+        .unwrap();
+    assert!(!up(ws, cx));
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn a_first_run_offers_start_at_login_on_and_applies_it_when_finished(cx: &mut TestAppContext) {
+    let (handle, ws, entry, _dirs) = ready(cx);
+    cx.update_window(handle, |_, window, _| {
+        assert!(window.try_find("field-general.autostart").is_some());
+    })
+    .unwrap();
+    assert!(shown(&ws, cx));
+    assert!(!entry.is_on(), "shown on, but nothing is written yet");
+    start_using(handle, &ws, cx);
+    assert!(entry.is_on(), "Start using Templum applies the default");
+    assert!(ws.read_with(cx, |ws, _| ws.autostart.on()));
+}
+
+#[gpui_kit::test]
+fn skipping_before_the_option_is_shown_never_starts_templum_at_login(cx: &mut TestAppContext) {
+    let (handle, ws, entry, _dirs) = first_with_entry(cx);
+    go(handle, &ws, Page::Look, cx);
+    cx.update_window(handle, |_, window, cx| window.click("welcome-skip", cx))
+        .unwrap();
+    assert!(!up(&ws, cx));
+    cx.run_until_parked();
+    assert!(!entry.is_on(), "the person never saw the option");
+    // Esc on the first page is the same.
+    let (handle, ws, entry, _dirs) = first_with_entry(cx);
+    cx.update_window(handle, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    assert!(!up(&ws, cx));
+    cx.run_until_parked();
+    assert!(!entry.is_on());
+}
+
+#[gpui_kit::test]
+fn leaving_the_last_page_by_esc_applies_what_it_shows(cx: &mut TestAppContext) {
+    let (handle, ws, entry, _dirs) = ready(cx);
+    assert!(shown(&ws, cx));
+    cx.update_window(handle, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    assert!(!up(&ws, cx));
+    cx.run_until_parked();
+    assert!(entry.is_on(), "it showed on, so on it is");
+    // Having seen it, going back to an earlier page and skipping from there is the same.
+    let (handle, ws, entry, _dirs) = ready(cx);
+    go(handle, &ws, Page::Look, cx);
+    cx.update_window(handle, |_, window, cx| window.click("welcome-skip", cx))
+        .unwrap();
+    assert!(!up(&ws, cx));
+    cx.run_until_parked();
+    assert!(entry.is_on());
+}
+
+#[gpui_kit::test]
+fn switching_it_off_in_the_welcome_keeps_it_off(cx: &mut TestAppContext) {
+    let (handle, ws, entry, _dirs) = ready(cx);
+    click_autostart(handle, cx);
+    assert!(!shown(&ws, cx));
+    assert!(!entry.is_on(), "applied when it closes");
+    start_using(handle, &ws, cx);
+    assert!(!entry.is_on());
+}
+
+#[gpui_kit::test]
+fn a_choice_made_in_the_welcome_applies_even_when_it_is_skipped(cx: &mut TestAppContext) {
+    let (handle, ws, entry, _dirs) = first_with_entry(cx);
+    // Chosen, then skipped from an earlier page: an explicit choice, so it applies.
+    go(handle, &ws, Page::Ready, cx);
+    click_autostart(handle, cx);
+    click_autostart(handle, cx);
+    go(handle, &ws, Page::Look, cx);
+    cx.update_window(handle, |_, window, cx| window.click("welcome-skip", cx))
+        .unwrap();
+    assert!(!up(&ws, cx));
+    cx.run_until_parked();
+    assert!(entry.is_on());
+}
+
+#[gpui_kit::test]
+fn a_dev_build_is_not_offered_to_start_at_login(cx: &mut TestAppContext) {
+    let (handle, ws, _entry, _dirs) = ready(cx);
+    let home = tempfile::tempdir().unwrap();
+    let dev = crate::autostart::Autostart::in_dir("linux", home.path(), "/src/templum", true);
+    ws.update(cx, |ws, _| ws.autostart.entry = Some(dev.clone()));
+    assert!(!shown(&ws, cx), "its entry is a build's, off by default");
+    start_using(handle, &ws, cx);
+    assert!(!dev.is_on());
+    // Still the person's to switch on.
+    let (handle, ws, _entry, _dirs) = ready(cx);
+    ws.update(cx, |ws, _| ws.autostart.entry = Some(dev.clone()));
+    click_autostart(handle, cx);
+    assert!(shown(&ws, cx));
+    start_using(handle, &ws, cx);
+    assert!(dev.is_on());
+}
+
+#[gpui_kit::test]
+fn a_first_run_leaves_an_entry_the_system_switched_off_as_it_is(cx: &mut TestAppContext) {
+    let (handle, ws, entry, dirs) = ready(cx);
+    entry.set(true).unwrap();
+    let path = dirs[2].path().join(".config/autostart/templum.desktop");
+    let off = format!("{}Hidden=true\n", std::fs::read_to_string(&path).unwrap());
+    std::fs::write(&path, &off).unwrap();
+    read_system(&ws, cx);
+    assert!(!shown(&ws, cx), "switched off with the system's tools");
+    start_using(handle, &ws, cx);
+    assert!(!entry.is_on());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), off);
+    // One that is on shows on.
+    let (_handle, ws, entry, _dirs) = ready(cx);
+    entry.set(true).unwrap();
+    read_system(&ws, cx);
+    assert!(shown(&ws, cx));
+}
+
+#[gpui_kit::test]
+fn the_welcome_opened_again_shows_the_system_and_changes_only_what_was_chosen(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let home = tempfile::tempdir().unwrap();
+    let entry = with_autostart(&ws, cx, home.path());
+    entry.set(true).unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_welcome(false, window, cx))
+    })
+    .unwrap();
+    cx.run_until_parked();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.autostart.on(), "read from the system");
+        assert!(ws.welcome.as_ref().unwrap().autostart_shown(&ws.autostart));
+    });
+    // Finishing without touching it leaves the system's entry as it is.
+    go(handle, &ws, Page::Ready, cx);
+    start_using(handle, &ws, cx);
+    assert!(entry.is_on());
+    // Opened again and switched off: that is applied.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_welcome(false, window, cx))
+    })
+    .unwrap();
+    cx.run_until_parked();
+    go(handle, &ws, Page::Ready, cx);
+    click_autostart(handle, cx);
+    start_using(handle, &ws, cx);
+    assert!(!entry.is_on());
+    // Not a first run, and no entry: no default.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_welcome(false, window, cx))
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(!shown(&ws, cx));
+}
+
+/// Opens the settings panel from the welcome (the shortcut) and lets the entry's change and the
+/// panel's reading reach the system and the workspace.
+fn open_settings(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.toggle_settings(window, cx))
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn settings_opened_from_the_last_page_shows_the_default_the_welcome_turned_on(
+    cx: &mut TestAppContext,
+) {
+    // Written as the welcome closes, and that is what the switch shows, not what was there before.
+    let (handle, ws, entry, _dirs) = ready(cx);
+    open_settings(handle, &ws, cx);
+    assert!(entry.is_on());
+    assert!(ws.read_with(cx, |ws, _| ws.autostart.on()));
+}
+
+#[gpui_kit::test]
+fn settings_opened_from_the_last_page_shows_an_entry_the_welcome_turned_off(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, entry, _dirs) = ready(cx);
+    entry.set(true).unwrap();
+    read_system(&ws, cx);
+    click_autostart(handle, cx);
+    open_settings(handle, &ws, cx);
+    assert!(!entry.is_on());
+    assert!(!ws.read_with(cx, |ws, _| ws.autostart.on()));
+}

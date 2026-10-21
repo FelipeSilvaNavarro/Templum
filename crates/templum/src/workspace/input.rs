@@ -10,10 +10,12 @@ use gpui_kit::{
     ScrollWheelEvent, UTF16Selection, Window, px,
 };
 use templum_canvas::{
-    BlockId, Direction, Drawing, Edges, Gesture, Point, Rect, STRING_PX, chrome, constrain,
+    BlockId, Direction, Drawing, Edges, Gesture, Point, Rect, STRING_PX, Size, chrome, constrain,
+    edge_scroll,
 };
 use templum_terminal::{Button, KeyInput, MouseInput, MouseKind, SelectionKind, Side, Target};
 
+use crate::git_block;
 use crate::keys::{self, Command};
 use crate::menu;
 
@@ -133,7 +135,7 @@ impl Workspace {
             return;
         }
         let p = self.local(pos);
-        self.drag = Gesture::move_block(&self.space.canvas, id, p).map(Drag::Canvas);
+        self.drag = Gesture::move_block(&self.space.canvas, id, p).map(|g| Drag::held(g, p));
         self.placing(&[id]);
     }
 
@@ -152,10 +154,15 @@ impl Workspace {
     /// to trade places.
     pub(crate) fn moving(&self, id: BlockId) -> bool {
         match &self.drag {
-            Some(Drag::Canvas(Gesture::Move { id: moved, .. }) | Drag::Swap { id: moved, .. }) => {
-                *moved == id
-            }
-            Some(Drag::Canvas(Gesture::MoveGroup { ids, .. })) => ids.contains(&id),
+            Some(Drag::Held {
+                gesture: Gesture::Move { id: moved, .. },
+                ..
+            }) => *moved == id,
+            Some(Drag::Swap { id: moved, .. }) => *moved == id,
+            Some(Drag::Held {
+                gesture: Gesture::MoveGroup { ids, .. },
+                ..
+            }) => ids.contains(&id),
             _ => false,
         }
     }
@@ -171,6 +178,37 @@ impl Workspace {
             });
         self.drag = Gesture::resize_block(&self.space.canvas, id, edges, p, min).map(Drag::Canvas);
         self.placing(&[id]);
+    }
+
+    /// The Git popup's size as drawn: the one the person set, kept inside the room the window
+    /// leaves it (`git_block::fit`).
+    pub(crate) fn git_popup_size(&self) -> Size {
+        git_block::fit(self.git_size, self.git_room)
+    }
+
+    /// Pressed on the popup's right edge, top edge or the corner between them (`edges`).
+    pub(crate) fn begin_git_resize(&mut self, edges: Edges, pos: PixelPoint<Pixels>) {
+        self.drag = Some(Drag::GitResize {
+            edges,
+            from: self.local(pos),
+            start: self.git_popup_size(),
+        });
+    }
+
+    /// The popup's edge let go (or its button seen up): the size dragged to is written in the
+    /// index. False when no such drag was on.
+    pub(super) fn release_git_resize(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !matches!(self.drag, Some(Drag::GitResize { .. })) {
+            return false;
+        }
+        self.end_drag();
+        self.write_index(window, cx);
+        cx.notify();
+        true
     }
 
     /// A terminal block's grid follows its rect.
@@ -190,6 +228,12 @@ impl Workspace {
                 if let Some((id, rect)) = update.resized {
                     self.fit_terminal(id, rect);
                 }
+            }
+            Some(Drag::Held {
+                gesture, pointer, ..
+            }) => {
+                *pointer = p;
+                self.space.guides = gesture.update(&mut self.space.canvas, p).guides;
             }
             Some(Drag::Select(id)) => {
                 let id = *id;
@@ -277,9 +321,78 @@ impl Workspace {
                 }
             }
             Some(Drag::Wire { to, .. }) => *to = self.space.canvas.camera.to_world(p),
+            // The popup sits at the bottom-left: its right edge grows it to the right, its top
+            // edge upward, so the pointer's way is the size's. Kept inside the room as dragged,
+            // so the popup never trails a pointer that went past the window. A side not dragged
+            // keeps what was set, not what a smaller window draws.
+            Some(Drag::GitResize { edges, from, start }) => {
+                let wanted = Size::new(
+                    start.w + if edges.right { p.x - from.x } else { 0.0 },
+                    start.h + if edges.top { from.y - p.y } else { 0.0 },
+                );
+                let fitted = git_block::fit(Some(wanted), self.git_room);
+                let kept = self.git_size.unwrap_or(git_block::SIZE);
+                self.git_size = Some(Size::new(
+                    if edges.right { fitted.w } else { kept.w },
+                    if edges.top { fitted.h } else { kept.h },
+                ));
+            }
             None => return,
         }
         cx.notify();
+    }
+
+    /// Every frame of a rectangle or a held block being dragged: with the pointer near the
+    /// canvas's edge, the camera goes that way (`edge_scroll`) and the drag follows it (the
+    /// rectangle grows, the block stays under the pointer). True while it goes: the next frame is
+    /// asked for.
+    pub(super) fn drag_edge(&mut self, viewport: Size, now: Instant) -> bool {
+        let zoom = self.space.canvas.camera.zoom();
+        let (pointer, dragged, scrolled) = match &mut self.drag {
+            Some(Drag::Marquee {
+                from,
+                to,
+                pointer,
+                scrolled,
+                ..
+            }) => (
+                *pointer,
+                (to.x - from.x).abs().max((to.y - from.y).abs()) * zoom,
+                scrolled,
+            ),
+            Some(Drag::Held {
+                from,
+                pointer,
+                scrolled,
+                ..
+            }) => (
+                *pointer,
+                (pointer.x - from.x).abs().max((pointer.y - from.y).abs()),
+                scrolled,
+            ),
+            _ => return false,
+        };
+        let v = edge_scroll(pointer, viewport);
+        // A press near the edge isn't a drag yet.
+        if v == Point::default() || dragged < CLICK_SLOP {
+            *scrolled = None;
+            return false;
+        }
+        // From the last frame that moved it; a stalled frame doesn't jump.
+        let dt = scrolled.map_or(0.0, |at| now.duration_since(at).as_secs_f32().min(0.05));
+        *scrolled = Some(now);
+        self.space.pristine = false;
+        self.space
+            .canvas
+            .camera
+            .pan_by(Point::new(-v.x * dt, -v.y * dt));
+        match &mut self.drag {
+            Some(Drag::Held { gesture, .. }) => {
+                self.space.guides = gesture.update(&mut self.space.canvas, pointer).guides;
+            }
+            _ => self.marquee_to(pointer),
+        }
+        true
     }
 
     /// The terminal cell under a window position: (row, col, side), clamped by the terminal.
@@ -887,6 +1000,30 @@ impl Workspace {
         self.press = Some((p, wire));
     }
 
+    /// The wheel over a block, with the Select tool: only a selected block, or the one with the
+    /// keyboard, scrolls its own content. Over any other block it moves the canvas as it does
+    /// over empty space, so a block that comes under a still pointer while the canvas is panned
+    /// doesn't take the wheel. The layer over the blocks asks this before their handlers do.
+    /// Grid mode's tiles always scroll: no camera moves there.
+    pub(super) fn route_wheel(
+        &mut self,
+        e: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.space.grid.is_some() {
+            return;
+        }
+        let Some(id) = self.block_under(e.position) else {
+            return;
+        };
+        if self.space.focused == Some(id) || self.space.selected.contains(&id) {
+            return;
+        }
+        self.on_background_scroll(e, window, cx);
+        cx.stop_propagation();
+    }
+
     pub(super) fn on_background_scroll(
         &mut self,
         e: &ScrollWheelEvent,
@@ -900,12 +1037,7 @@ impl Workspace {
         self.space.pristine = false;
         // A block held by its title: the wheel moves the canvas under it, a mouse's too, and the
         // block stays under the pointer.
-        if matches!(
-            self.drag,
-            Some(Drag::Canvas(
-                Gesture::Move { .. } | Gesture::MoveGroup { .. }
-            ))
-        ) {
+        if matches!(self.drag, Some(Drag::Held { .. })) {
             let d = e.delta.pixel_delta(px(self.cell.size.h));
             self.pan_by(Point::new(f32::from(d.x), f32::from(d.y)));
             self.drag_to(e.position, e.modifiers.shift, cx);

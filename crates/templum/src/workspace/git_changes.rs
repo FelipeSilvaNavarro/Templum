@@ -6,7 +6,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
 use templum_git::{GitError, Repo};
 
-use crate::git_block;
+use crate::git_block::{self, words};
 use crate::prompt;
 
 use super::git_discard::REFUSED;
@@ -35,7 +35,9 @@ impl Workspace {
         if !git.can_commit(cx) {
             return;
         }
-        let (message, amend, all) = (git.message(cx), git.amend, git.commit_all());
+        let (amend, all) = (git.amend, git.commit_all());
+        let typed = git.summary.read(cx).value().trim().to_string();
+        let description = git.description.read(cx).value().trim().to_string();
         let Some(repo) = git.repo().cloned() else {
             return;
         };
@@ -46,16 +48,37 @@ impl Workspace {
                 if all {
                     repo.stage_all()?;
                 }
+                // No summary typed: the sentence for the one file (`can_commit` saw one), by what
+                // is staged now, not by the status the form read up to 2 s ago, which a file
+                // written since is missing from. Else the commit waits for a message.
+                let summary = if typed.is_empty() {
+                    match words::staged_summary(&repo.status()?) {
+                        Some(summary) => summary,
+                        None => return Ok::<_, GitError>(None),
+                    }
+                } else {
+                    typed
+                };
                 // An Amend's Undo goes back to the commit it replaces: read it before.
                 let replaced = if amend { Some(repo.head()?) } else { None };
-                Ok::<_, GitError>((repo.commit(&message, amend)?, replaced))
+                let message = git_block::join_message(&summary, &description);
+                Ok(Some((repo.commit(&message, amend)?, replaced)))
             },
             move |ws, at, result, window, cx| {
                 let entity = cx.entity();
                 // Only a commit that happened is pushed.
                 let mut pushed = false;
                 match result {
-                    Ok((short, replaced)) => {
+                    Ok(None) => {
+                        let why = "The files to commit changed since you last looked: write a message for them.";
+                        show_notification(window, cx, Notification::warning(why));
+                        // Only where the person still is: `show_git` would take them back to a
+                        // workspace or a popup they left while the commit ran.
+                        if ws.space.id == at.space && ws.git_open && ws.git_at(&at).is_some() {
+                            ws.focus_summary(window, cx);
+                        }
+                    }
+                    Ok(Some((short, replaced))) => {
                         if let Some(git) = ws.git_at(&at) {
                             git.amend = false;
                             let (summary, description) =
@@ -126,6 +149,7 @@ impl Workspace {
             return;
         };
         git.amend = on;
+        git.point_placeholder(window, cx);
         cx.notify();
         let (summary, description) = (git.summary.clone(), git.description.clone());
         if !on {

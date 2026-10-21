@@ -119,6 +119,37 @@ fn spawn_agent_opens_a_wired_agent_beside_the_caller(cx: &mut TestAppContext) {
     assert!(failed && text.contains("isn't a folder"), "{text}");
 }
 
+/// Templum never sees an agent in WSL start, so it could not type its prompt: the Templum Agent's
+/// open shares the refusal (`Workspace::spawn_problem`).
+#[gpui_kit::test]
+fn spawn_agent_refuses_an_agent_that_runs_in_wsl(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    super::agents::agent_shells(&ws, cx);
+    ws.update(cx, |ws, _| {
+        let claude = ws.agents.iter_mut().find(|a| a.id == "claude").unwrap();
+        claude.shell = Some("WSL".into());
+    });
+    let blocks = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.blocks.len())
+    };
+    let before = blocks(&ws, cx);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "spawn_agent",
+        json!({ "agent": "claude" }),
+    );
+    assert!(failed, "{text}");
+    assert_eq!(
+        text,
+        "Claude Code runs in WSL, where Templum can't see it start nor type its prompt: open it from the canvas."
+    );
+    assert_eq!(blocks(&ws, cx), before, "no block opened");
+}
+
 /// The model and the effort go right after the agent's command (`cat` here), before what Templum
 /// adds; anything it can't type safely opens nothing, a worktree included.
 #[gpui_kit::test]
@@ -300,6 +331,12 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
                 "its session is its task's"
             );
         });
+        // The prompt ends with how to answer it.
+        ws.read_with(cx, |ws, _| {
+            let prompt = ws.space.terminal(new).unwrap().prompt.as_ref().unwrap();
+            let how = crate::workspace::delegate::answer_how(conn);
+            assert!(prompt.text.ends_with(&how), "{agent}: {}", prompt.text);
+        });
         in_front(&ws, cx, new, true);
         found(&ws, cx, new);
         let (theirs, uid) = me(&ws, cx, new);
@@ -332,7 +369,9 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
             &ws,
             cx,
             new,
-            &format!(", task t{conn}] Your task is in the pasted text: do it."),
+            &format!(
+                ", task t{conn}] Your task is in the pasted text: do it, then answer it with reply."
+            ),
         );
         screen_with(&ws, cx, new, "say hi");
         enter(cx);
@@ -1032,6 +1071,7 @@ fn stop_agent_ends_what_an_agent_that_quit_left_running(cx: &mut TestAppContext)
         id: "codex".into(),
         names: vec!["sh".into(), "cat".into()],
         packages: Vec::new(),
+        var: None,
     };
     let seen = templum_terminal::inspect(&[p], &[cat]).pop().unwrap();
     assert!(seen.started.is_some(), "{seen:?}");
@@ -1500,6 +1540,7 @@ fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
         Some(2)
     );
     press_balloon(handle, cx, mine, "q0-option-0");
+    press_balloon(handle, cx, mine, "send");
     assert_eq!(answer_soon(cx, &question), (false, "Yes".into()));
     let line = ws.read_with(cx, |ws, cx| {
         ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)

@@ -59,8 +59,9 @@ pub enum Call {
         wait: bool,
         timeout: u64,
     },
+    /// Without a `block`, the task the caller is on is answered.
     ReplyTo {
-        block: String,
+        block: Option<String>,
         text: String,
     },
     WaitForIdle {
@@ -93,6 +94,17 @@ pub enum Call {
     CommentCard {
         card: u64,
         text: String,
+    },
+    /// The caller's own comment on a card gets a new text.
+    EditComment {
+        card: u64,
+        comment: u64,
+        text: String,
+    },
+    /// The caller's own comment on a card goes.
+    DeleteComment {
+        card: u64,
+        comment: u64,
     },
     ClaimCard {
         card: u64,
@@ -500,6 +512,30 @@ pub fn list() -> Value {
             "required": ["block", "item"],
         },
     });
+    let comment = json!({
+        "type": "integer",
+        "description": "A comment's number, as list_cards with card shows it or comment_card says it.",
+    });
+    let edit_comment = json!({
+        "name": "edit_comment",
+        "description": "Changes the text of a comment you wrote on a card (to fix it); the card shows it \
+                        as edited. Not the person's or another agent's. One step of the person's Ctrl+Z.",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "card": card, "comment": comment, "text": { "type": "string" } },
+            "required": ["card", "comment", "text"],
+        },
+    });
+    let delete_comment = json!({
+        "name": "delete_comment",
+        "description": "Deletes a comment you wrote on a card. Not the person's or another agent's. One \
+                        step of the person's Ctrl+Z.",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "card": card, "comment": comment },
+            "required": ["card", "comment"],
+        },
+    });
     let schedule = json!({
         "name": "schedule",
         "description": "Delivers a text later: to an agent connected to you as a task (its end comes back to \
@@ -661,8 +697,8 @@ pub fn list() -> Value {
         {
             "name": "delegate",
             "description": "Hands a task to an agent connected to you: Templum types it into its terminal, after \
-                            a line saying it is from you and its id (t7), and sends it. Its answer is its last \
-                            message when it finishes its turn, or what it sends you with reply. With wait, waits \
+                            a line saying it is from you and its id (t7), and sends it. Its answer is what it \
+                            sends with reply (Templum asks it to), else its last message when its turn ends. With wait, waits \
                             for that answer (it may take minutes); without, says its id at once, and its end comes \
                             back typed into your terminal as [task t7 …] with its time, what it spent and its \
                             transcript, as does a dialog it waits on. To the agent on your task, it is a change to \
@@ -682,13 +718,20 @@ pub fn list() -> Value {
         },
         {
             "name": "reply",
-            "description": "Answers the task an agent connected to you handed you (it began with [from <title> \
-                            (<id>), task t7]): the agent waiting for it gets your text now. When it isn't waiting, the \
-                            text is typed into its terminal after a line saying it is from you.",
+            "description": "Answers the task you are on (it began [from <title> (<id>), task t7]): call it once, \
+                            when you are done, with your whole answer as text. It ends the task, and the agent that \
+                            handed it gets your text now. With block, writes to that connected agent instead: typed \
+                            into its terminal after a line saying it is from you.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "block": block, "text": { "type": "string" } },
-                "required": ["block", "text"],
+                "properties": {
+                    "block": {
+                        "type": "string",
+                        "description": "The agent to write to; leave it out to answer the task you are on.",
+                    },
+                    "text": { "type": "string" },
+                },
+                "required": ["text"],
             },
         },
         {
@@ -745,7 +788,7 @@ pub fn list() -> Value {
                 "properties": {
                     "agent": {
                         "type": "string",
-                        "description": "Which agent: claude, codex, gemini, … or an account, like claude2 (an id of Settings ▸ Agents). Left out with fork.",
+                        "description": "Which agent: claude, codex, gemini, … or an account's name (Settings ▸ Agents ▸ Accounts). Left out with fork.",
                     },
                     "role": {
                         "type": "string",
@@ -843,6 +886,8 @@ pub fn list() -> Value {
                 "required": ["card", "text"],
             },
         },
+        edit_comment,
+        delete_comment,
         {
             "name": "claim_card",
             "description": "Makes you the card's assignee. Refused when another block holds it, or when it is \
@@ -1021,6 +1066,10 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
     };
     let card =
         || id("card", "list_cards")?.ok_or_else(|| format!("{name} needs \"card\", a card's id"));
+    let comment = || {
+        id("comment", "list_cards with card")?
+            .ok_or_else(|| format!("{name} needs \"comment\", a comment's number"))
+    };
     let priority = || match optional("priority")? {
         Some(p) => {
             let p = p.trim().to_lowercase();
@@ -1085,7 +1134,7 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             timeout: seconds(TASK_WAIT)?,
         },
         "reply" => Call::ReplyTo {
-            block: text("block")?,
+            block: optional("block")?,
             text: text("text")?,
         },
         "wait_for_idle" => Call::WaitForIdle {
@@ -1249,6 +1298,15 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         "comment_card" => Call::CommentCard {
             card: card()?,
             text: text("text")?,
+        },
+        "edit_comment" => Call::EditComment {
+            card: card()?,
+            comment: comment()?,
+            text: text("text")?,
+        },
+        "delete_comment" => Call::DeleteComment {
+            card: card()?,
+            comment: comment()?,
         },
         "claim_card" => Call::ClaimCard { card: card()? },
         "read_note" => Call::ReadNote {
@@ -1508,6 +1566,11 @@ mod tests {
             ),
             ("move_card", json!({ "card": 12, "column": "Doing" })),
             ("comment_card", json!({ "card": 12, "text": "On it." })),
+            (
+                "edit_comment",
+                json!({ "card": 12, "comment": 41, "text": "Fixed the parser." }),
+            ),
+            ("delete_comment", json!({ "card": 12, "comment": "41" })),
             ("claim_card", json!({ "card": "12" })),
             ("read_note", json!({ "block": "4qm2a" })),
             (
@@ -1600,6 +1663,31 @@ mod tests {
                 enter: false
             })
         );
+    }
+
+    /// `reply` without a block answers the task its caller is on.
+    #[test]
+    fn reply_needs_only_its_text() {
+        assert_eq!(
+            parse("reply", &json!({ "text": "Line 42." })),
+            Ok(Call::ReplyTo {
+                block: None,
+                text: "Line 42.".into()
+            })
+        );
+        assert_eq!(
+            parse("reply", &json!({ "block": "k9x1d", "text": "Line 42." })),
+            Ok(Call::ReplyTo {
+                block: Some("k9x1d".into()),
+                text: "Line 42.".into()
+            })
+        );
+        let tools = list();
+        let reply = tools["tools"]
+            .as_array()
+            .and_then(|t| t.iter().find(|t| t["name"] == "reply"))
+            .expect("reply is listed");
+        assert_eq!(reply["inputSchema"]["required"], json!(["text"]));
     }
 
     #[test]
@@ -1881,6 +1969,43 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_comment_is_edited_and_deleted_by_its_number() {
+        assert_eq!(
+            parse(
+                "edit_comment",
+                &json!({ "card": "12", "comment": 41, "text": "Fixed." })
+            ),
+            Ok(Call::EditComment {
+                card: 12,
+                comment: 41,
+                text: "Fixed.".into()
+            })
+        );
+        assert_eq!(
+            parse("delete_comment", &json!({ "card": 12, "comment": " 41 " })),
+            Ok(Call::DeleteComment {
+                card: 12,
+                comment: 41
+            })
+        );
+        for (tool, bad) in [
+            ("edit_comment", json!({ "card": 12, "text": "x" })),
+            ("edit_comment", json!({ "card": 12, "comment": 41 })),
+            ("edit_comment", json!({ "comment": 41, "text": "x" })),
+            (
+                "edit_comment",
+                json!({ "card": 12, "comment": "last", "text": "x" }),
+            ),
+            ("delete_comment", json!({ "card": 12 })),
+            ("delete_comment", json!({ "card": 12, "comment": -1 })),
+        ] {
+            assert!(parse(tool, &bad).is_err(), "{tool} {bad}");
+        }
+        let err = parse("delete_comment", &json!({ "card": 12 })).unwrap_err();
+        assert!(err.contains("\"comment\""), "{err}");
     }
 
     #[test]

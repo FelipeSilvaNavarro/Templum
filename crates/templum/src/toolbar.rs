@@ -96,7 +96,10 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
             false,
             ui,
         )
-        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.new_terminal(window, cx)))
+        .on_click(cx.listener(|ws, e: &ClickEvent, window, cx| {
+            // The shells to pick from; Ctrl+Shift+T opens the default without a menu.
+            ws.open_menu(Target::Shells, e.position(), window, cx)
+        }))
         .test_support()
         .into_any_element(),
         button(

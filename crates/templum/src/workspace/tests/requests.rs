@@ -40,6 +40,14 @@ fn pick(
     .unwrap();
 }
 
+/// The person presses Send on the question `key`, drawn (`shown`) before.
+fn send(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext, key: u64) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.send_question(key, window, cx))
+    })
+    .unwrap();
+}
+
 /// The balloons drawn, and long enough ago for presses to count (`TOO_SOON`).
 fn shown(handle: AnyWindowHandle, cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
@@ -91,12 +99,21 @@ fn click_part(handle: AnyWindowHandle, cx: &mut TestAppContext, n: usize, what: 
     .unwrap();
 }
 
-/// Scrolls the balloon of block `n` until its element `what` shows: it scrolls past 80% of its
-/// terminal's height.
+/// Scrolls the body of the balloon of block `n` until its element `what` shows: the body scrolls
+/// past 80% of its terminal's height, between the header and the foot, which stay.
 fn scroll_to(window: &mut Window, cx: &mut gpui_kit::App, n: usize, what: &str) {
     window.render_frame(cx);
     let target = window.find(crate::balloon::part(n, what)).bounds();
-    let balloon = window.find(("balloon", n)).bounds();
+    let balloon = window.find(crate::balloon::part(n, "body")).bounds();
+    // In the header or the foot, which stay in the balloon: nothing to scroll. In the body, a
+    // part out of view lies past the balloon's edge.
+    let frame = window.find(("balloon", n)).bounds();
+    if frame.contains(&target.origin)
+        && frame.contains(&target.bottom_right())
+        && (target.top() >= balloon.bottom() || target.bottom() <= balloon.top())
+    {
+        return;
+    }
     let by = if target.bottom() > balloon.bottom() {
         balloon.bottom() - target.bottom() - px(8.0)
     } else if target.top() < balloon.top() {
@@ -104,6 +121,9 @@ fn scroll_to(window: &mut Window, cx: &mut gpui_kit::App, n: usize, what: &str) 
     } else {
         return;
     };
+    // The pointer comes onto the balloon first, so its block has the keyboard: only a selected
+    // block's content takes the wheel.
+    window.hover(("balloon", n), cx);
     // At its left edge: a preview pane, on the right, keeps its own wheel.
     let at = (
         f32::from(balloon.left()) + 4.0,
@@ -126,6 +146,19 @@ fn drawn(handle: AnyWindowHandle, cx: &mut TestAppContext, n: usize, what: &str)
         window.try_find(crate::balloon::part(n, what)).is_some()
     })
     .unwrap()
+}
+
+/// Block `id` tall enough for a dialog of a question or two to show whole, as these tests click
+/// its parts without scrolling the body: it scrolls past 80% of the terminal's height, between a
+/// header and a foot that stay, which a 300-high block leaves little room for. The camera brings
+/// the block to the window's top, where it fits.
+fn roomy(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
+    ws.update(cx, |ws, _| {
+        let rect = &mut ws.space.canvas.get_mut(id).unwrap().rect;
+        rect.h = 560.0;
+        let at = Point::new(rect.x, rect.y);
+        ws.space.canvas.camera = Camera::at(at, 1.0);
+    });
 }
 
 /// The spec's call: two questions, the second a multiSelect.
@@ -201,6 +234,8 @@ fn ask_user_waits_for_the_persons_answer(cx: &mut TestAppContext) {
     );
     let key = last_wait(&ws, cx);
     pick(handle, &ws, cx, key, 0, 0);
+    assert!(answers.try_recv().is_err(), "a pick is not an answer");
+    send(handle, &ws, cx, key);
     assert_eq!(answered(&answers), (false, "Yes".to_string()));
     ws.read_with(cx, |ws, _| assert!(ws.waits.is_empty()));
     assert_eq!(dot_text(&ws, cx, first), None);
@@ -252,6 +287,7 @@ fn an_answer_and_its_timeout_answer_once(cx: &mut TestAppContext) {
     let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
     let key = last_wait(&ws, cx);
     pick(handle, &ws, cx, key, 0, 0);
+    send(handle, &ws, cx, key);
     after(cx, 2000);
     assert_eq!(answered(&answers), (false, "Yes".to_string()));
     assert!(answers.try_recv().is_err(), "answered once");
@@ -290,6 +326,7 @@ fn a_cancelled_question_stays_and_its_answer_is_typed_back(cx: &mut TestAppConte
     let (handle, ws) = open(cx);
     let (_, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
+    roomy(&ws, cx, mine);
     agent_without_notices(&ws, cx, mine);
     let n = mine.0 as usize;
     let question = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
@@ -313,6 +350,7 @@ fn a_cancelled_question_stays_and_its_answer_is_typed_back(cx: &mut TestAppConte
     assert!(drawn(handle, cx, n, "stopped"), "the dialog says so");
     assert_eq!(first.try_recv(), Err(TryRecvError::Empty));
     click_part(handle, cx, n, "q0-option-0");
+    click_part(handle, cx, n, "send");
     assert_eq!(
         notices(&ws, cx),
         [(
@@ -928,6 +966,7 @@ fn the_balloons_buttons_answer_a_question_then_a_request(cx: &mut TestAppContext
     let (handle, ws) = open(cx);
     let (kanban, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
+    roomy(&ws, cx, mine);
     let k = ws.read_with(cx, |ws, _| ws.space.uids[&kanban].clone());
     let n = mine.0 as usize;
     let part = crate::balloon::part;
@@ -947,8 +986,16 @@ fn the_balloons_buttons_answer_a_question_then_a_request(cx: &mut TestAppContext
         window.render_frame(cx);
         assert!(window.try_find(part(n, "count")).is_some(), "1 of 2");
         window.click(part(n, "q0-option-1"), cx);
+        window.render_frame(cx);
     })
     .unwrap();
+    assert_eq!(
+        question.try_recv(),
+        Err(TryRecvError::Empty),
+        "Send answers"
+    );
+    cx.update_window(handle, |_, window, cx| window.click(part(n, "send"), cx))
+        .unwrap();
     assert_eq!(answered(&question), (false, "Not yet".to_string()));
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
@@ -1017,6 +1064,79 @@ fn a_press_on_the_balloon_stays_in_it_and_a_middle_drag_pans(cx: &mut TestAppCon
     });
 }
 
+/// A question of thirty options in the block `mine`, so the dialog's body overflows and has a
+/// scrollbar; the point on the middle of its strip, where the pointer is shown first.
+fn strip_of_a_long_dialog(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    mine: BlockId,
+) -> (f32, f32) {
+    let (terminal, _) = me(ws, cx, mine);
+    let options: Vec<Value> = (0..30).map(|i| json!(format!("Option {i}"))).collect();
+    let asked = json!({ "question": "Which?", "options": options });
+    let _asked = call_later(handle, ws, cx, &terminal, 1, "ask_user", asked);
+    shown(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = window
+            .find(crate::balloon::part(mine.0 as usize, "body"))
+            .bounds();
+        let at = (f32::from(body.right()) - 5.0, f32::from(body.center().y));
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: point(px(at.0), px(at.1)),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        at
+    })
+    .unwrap()
+}
+
+/// The dialog's scrollbar takes the presses on its strip, but a press there still gives its block
+/// the keyboard (with "Focus follows the pointer" off) and a middle drag from it pans the canvas,
+/// as over the rest of the balloon.
+#[gpui_kit::test]
+fn the_dialogs_scrollbar_strip_picks_its_block_and_lets_a_middle_drag_pan(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    ws.update(cx, |ws, _| ws.config.canvas.focus_follows_pointer = false);
+    let at = strip_of_a_long_dialog(handle, &ws, cx, mine);
+    focus_dialog(handle, &ws, cx, kanban);
+    assert_eq!(ws.read_with(cx, |ws, _| ws.space.focused), Some(kanban));
+    let before = ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    cx.update_window(handle, |_, window, cx| {
+        press_with(window, cx, MouseButton::Left, Modifiers::default(), at, at);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.focused),
+        Some(mine),
+        "the press on the strip picked its block"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        let to = (at.0 - 50.0, at.1);
+        press_with(
+            window,
+            cx,
+            MouseButton::Middle,
+            Modifiers::default(),
+            at,
+            to,
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_ne!(ws.space.canvas.camera, before, "a middle drag pans");
+        assert!(ws.drag.is_none());
+    });
+}
+
 /// A double click answers one request: once the question is answered, the next request's buttons
 /// are drawn under the pointer, and the second click mustn't choose for the person.
 #[gpui_kit::test]
@@ -1046,6 +1166,9 @@ fn a_double_click_answers_one_request(cx: &mut TestAppContext) {
         window.render_frame(cx);
         let yes = at(window, "q0-option-0");
         click(window, cx, yes, 1);
+        window.render_frame(cx);
+        let send = at(window, "send");
+        click(window, cx, send, 1);
         window.render_frame(cx);
         let allow = at(window, "allow");
         click(window, cx, allow, 2);
@@ -1116,6 +1239,10 @@ fn a_press_on_a_withdrawn_requests_button_answers_no_other(cx: &mut TestAppConte
     })
     .unwrap();
     assert_eq!(next.try_recv(), Err(TryRecvError::Empty), "it waits");
+    ws.read_with(cx, |ws, _| match &ws.waits[0].what {
+        Waiting::Question { form, .. } => assert!(!form.picked(0, 0), "nothing picked"),
+        _ => panic!("a question"),
+    });
 }
 
 /// Ctrl+L and Enter typed in the balloon's field while the asking terminal is focused: the field
@@ -1225,13 +1352,15 @@ fn todays_call_draws_todays_dialog(cx: &mut TestAppContext) {
     let n = mine.0 as usize;
     let asked = json!({ "question": "Ship it?", "options": ["Yes", "Not yet"] });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
-    for part in ["q0-option-0", "q0-option-1", "dismiss"] {
+    for part in ["q0-option-0", "q0-option-1", "dismiss", "send"] {
         assert!(drawn(handle, cx, n, part), "{part}");
     }
-    for part in ["q0-other", "note", "send"] {
+    for part in ["q0-other", "note"] {
         assert!(!drawn(handle, cx, n, part), "{part}");
     }
     click_part(handle, cx, n, "q0-option-1");
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "Send answers");
+    click_part(handle, cx, n, "send");
     assert_eq!(answered(&answers), (false, "Not yet".to_string()));
     let answers = call_later(
         handle,
@@ -1257,8 +1386,10 @@ fn todays_call_draws_todays_dialog(cx: &mut TestAppContext) {
     assert_eq!(answered(&answers), (false, "Friday".to_string()));
 }
 
+/// A click on an option, even of the only single-select question, only picks it: Send answers
+/// (an accidental click mustn't).
 #[gpui_kit::test]
-fn one_single_select_question_answers_on_a_click(cx: &mut TestAppContext) {
+fn a_click_on_an_option_only_picks_it_and_send_answers(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (_, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
@@ -1267,7 +1398,16 @@ fn one_single_select_question_answers_on_a_click(cx: &mut TestAppContext) {
     let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
     let key = last_wait(&ws, cx);
     type_into(handle, &ws, cx, key, None, "after lunch");
+    click_part(handle, cx, n, "send");
+    assert_eq!(
+        answers.try_recv(),
+        Err(TryRecvError::Empty),
+        "nothing to send"
+    );
+    click_part(handle, cx, n, "q0-option-0");
     click_part(handle, cx, n, "q0-option-1");
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "picked only");
+    click_part(handle, cx, n, "send");
     let (failed, text) = answered(&answers);
     assert!(!failed, "{text}");
     assert_eq!(
@@ -1495,6 +1635,427 @@ fn a_long_preview_scrolls_in_its_pane(cx: &mut TestAppContext) {
     }
 }
 
+/// The scroll of the newest wait's body, pixels.
+fn body_scroll(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> f32 {
+    ws.read_with(cx, |ws, _| {
+        f32::from(ws.waits.last().unwrap().body.handle.offset().y)
+    })
+}
+
+/// A question of thousands of words and thirty options keeps its header and its foot in
+/// the balloon, which is no taller than 80% of its terminal's area, and scrolls its body between
+/// them: an option far down is reached, picked and sent, the header and the foot where they were.
+#[gpui_kit::test]
+fn a_huge_dialog_scrolls_its_body_between_a_header_and_a_foot_that_stay(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let part = crate::balloon::part;
+    let words = "A question that goes on about the database. ".repeat(120);
+    let options: Vec<Value> = (0..30)
+        .map(|i| {
+            json!({
+                "label": format!("Option {i} {}", "with a long label ".repeat(2)),
+                "description": "and a description that says more. ".repeat(2),
+            })
+        })
+        .collect();
+    let asked = json!({ "questions": [{
+        "question": words, "header": "Database", "options": options
+    }] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    shown(handle, cx);
+    let frames = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let at = |id: gpui_kit::ElementId| window.find(id).bounds();
+            [
+                at(("balloon", n).into()),
+                at(part(n, "waiting")),
+                at(part(n, "body")),
+                at(part(n, "send")),
+            ]
+        })
+        .unwrap()
+    };
+    let before = frames(cx);
+    let [balloon, head, body, send] = before;
+    let area = 300.0 - chrome::TITLE_H;
+    assert!(
+        f32::from(balloon.size.height) <= area * 0.8 + 1.0,
+        "{balloon:?}"
+    );
+    assert!(head.top() >= balloon.top() && head.bottom() <= body.top() + px(1.0));
+    assert!(send.top() >= body.bottom() - px(1.0) && send.bottom() <= balloon.bottom());
+    assert!(body.size.height > px(20.0), "the body keeps some room");
+    // Far below the fold, in the body.
+    assert!(
+        !window_shows(handle, cx, n, "q0-option-29"),
+        "the last option starts hidden"
+    );
+    click_part(handle, cx, n, "q0-option-29");
+    assert!(body_scroll(&ws, cx) < -100.0, "the body scrolled");
+    assert_eq!(frames(cx), before, "the header and the foot stay");
+    click_part(handle, cx, n, "send");
+    let (failed, text) = answered(&answers);
+    assert!(!failed, "{text}");
+    let answer = json_of(&text)["answers"][&words]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(answer.starts_with("Option 29 "), "{answer}");
+}
+
+/// A dialog in a short or a narrow block stays usable: where its terminal's area holds a header,
+/// a foot and a body of 90 it keeps that body (the balloon takes the whole area before it gives
+/// the body up); where even that is too short the whole frame scrolls. Send is never cut at the
+/// side, and every size reaches an option and Send with the mouse.
+#[gpui_kit::test]
+fn a_dialog_in_a_small_block_keeps_its_body_and_reaches_send(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let min = ws.read_with(cx, |ws, _| chrome::min_block_size(ws.cell.size));
+    // (width, height, whether the area holds the header, the foot and a body of 90)
+    let sizes = [
+        (min.w, min.h, false),
+        (min.w, 150.0, false),
+        (min.w, 220.0, false),
+        (min.w, 300.0, false),
+        (400.0, min.h, false),
+        (400.0, 150.0, false),
+        (400.0, 180.0, false),
+        (400.0, 220.0, false),
+        (400.0, 230.0, true),
+        (400.0, 260.0, true),
+        (400.0, 300.0, true),
+    ];
+    for (conn, (w, h, holds)) in sizes.into_iter().enumerate() {
+        ws.update(cx, |ws, _| {
+            let rect = &mut ws.space.canvas.get_mut(mine).unwrap().rect;
+            (rect.w, rect.h) = (w, h);
+            let at = Point::new(rect.x, rect.y);
+            ws.space.canvas.camera = Camera::at(at, 1.0);
+        });
+        let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
+        let answers = call_later(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            conn as u64 + 1,
+            "ask_user",
+            asked,
+        );
+        shown(handle, cx);
+        let [balloon, body, send] = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                let at = |id: gpui_kit::ElementId| window.find(id).bounds();
+                [
+                    at(("balloon", n).into()),
+                    at(crate::balloon::part(n, "body")),
+                    at(crate::balloon::part(n, "send")),
+                ]
+            })
+            .unwrap();
+        let size = format!("{w} x {h}: {balloon:?} {body:?} {send:?}");
+        assert!(
+            f32::from(balloon.size.height) <= h - chrome::TITLE_H + 1.0,
+            "the balloon fits its terminal, {size}"
+        );
+        assert!(
+            send.left() >= balloon.left() && send.right() <= balloon.right(),
+            "Send is cut at the side, {size}"
+        );
+        assert!(body.size.height > px(0.0), "{size}");
+        if holds {
+            assert!(body.size.height >= px(89.0), "the body keeps room, {size}");
+            assert!(send.bottom() <= balloon.bottom(), "Send is cut, {size}");
+        }
+        click_part(handle, cx, n, "q0-option-1");
+        click_part(handle, cx, n, "send");
+        let (failed, text) = answered(&answers);
+        assert!(!failed && text == "No", "{text}: {size}");
+    }
+}
+
+/// The header, the foot and the stopped line are as tall as the balloon's fit assumes: where they
+/// grow past it, the block that "holds" a body of 90 would cut it.
+#[gpui_kit::test]
+fn the_balloons_fixed_parts_are_as_tall_as_its_fit_assumes(cx: &mut TestAppContext) {
+    use crate::balloon::{FOOT, FOOT_WRAPPED, HEAD, ONE_LINE, notice};
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    roomy(&ws, cx, mine);
+    agent_without_notices(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let question = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 3, "ask_user", question);
+    let cancel = json!({ "requestId": 3, "reason": "The person pressed Esc" });
+    bus_note(handle, &ws, cx, 3, "notifications/cancelled", cancel);
+    let key = last_wait(&ws, cx);
+    let heights = |cx: &mut TestAppContext, w: f32| {
+        ws.update(cx, |ws, _| {
+            ws.space.canvas.get_mut(mine).unwrap().rect.w = w
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let at = |id: gpui_kit::ElementId| f32::from(window.find(id).bounds().size.height);
+            [
+                at(crate::balloon::part(n, "waiting")),
+                at(("balloon-foot", key).into()),
+                at(crate::balloon::part(n, "stopped")),
+            ]
+        })
+        .unwrap()
+    };
+    // A dialog just wide enough for the foot on one line, and wider ones: the stopped line wraps
+    // on fewer lines (its margin, 12, is not in its height).
+    for w in [ONE_LINE / 0.8, 400.0, 500.0, 900.0] {
+        let [head, foot, stopped] = heights(cx, w);
+        assert!((head, foot) == (HEAD, FOOT), "{w}: {head} {foot}");
+        assert!(
+            (stopped + 12.0 - notice(w * 0.8)).abs() < 1.0,
+            "{w}: {stopped}"
+        );
+    }
+    // And one narrower, which wraps the foot.
+    let [_, wrapped, _] = heights(cx, 180.0);
+    assert_eq!(wrapped, FOOT_WRAPPED);
+}
+
+/// Whether the balloon's element `what` is inside its body's viewport.
+fn window_shows(handle: AnyWindowHandle, cx: &mut TestAppContext, n: usize, what: &str) -> bool {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = window.find(crate::balloon::part(n, "body")).bounds();
+        let target = window.find(crate::balloon::part(n, what)).bounds();
+        target.top() >= body.top() && target.bottom() <= body.bottom()
+    })
+    .unwrap()
+}
+
+/// Words with no space in them (a path, a hash) wrap by letters in the dialog's width: its
+/// content never grows past the body, and the long option takes the lines it needs.
+#[gpui_kit::test]
+fn a_word_longer_than_the_dialog_wraps_inside_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let asked = json!({ "questions": [{
+        "question": format!("Where is {}?", "a".repeat(400)),
+        "header": "Path",
+        "options": [
+            { "label": "b".repeat(300), "description": "c".repeat(300) },
+            { "label": "Short" },
+        ],
+    }] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    let key = last_wait(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = |id: gpui_kit::ElementId| window.find(id).bounds();
+        let (body, content) = (
+            at(crate::balloon::part(n, "body")),
+            at(("balloon-wait", key).into()),
+        );
+        assert!(
+            content.left() >= body.left() && content.right() <= body.right(),
+            "{content:?} in {body:?}"
+        );
+        let (long, short) = (
+            at(crate::balloon::part(n, "q0-option-0")),
+            at(crate::balloon::part(n, "q0-option-1")),
+        );
+        assert!(long.right() <= content.right(), "{long:?} in {content:?}");
+        assert!(
+            long.size.height > short.size.height * 4.0,
+            "wrapped on many lines: {long:?} {short:?}"
+        );
+    })
+    .unwrap();
+}
+
+/// A preview lies beside the options in a wide dialog and under them in a narrow one (a block
+/// 400 wide gives a dialog of 320, too narrow for two columns).
+#[gpui_kit::test]
+fn a_preview_goes_under_the_options_of_a_narrow_dialog(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    roomy(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    let places = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let at = |what: &str| window.find(crate::balloon::part(n, what)).bounds();
+            (at("q0-option-1"), at("q0-preview"))
+        })
+        .unwrap()
+    };
+    let (option, preview) = places(cx);
+    assert!(
+        preview.top() >= option.bottom(),
+        "under: {preview:?} {option:?}"
+    );
+    assert!(preview.left() <= option.left() + px(20.0), "{preview:?}");
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(mine).unwrap().rect.w = 900.0
+    });
+    let (option, preview) = places(cx);
+    assert!(
+        preview.left() >= option.right(),
+        "beside: {preview:?} {option:?}"
+    );
+}
+
+/// The foot says how many of the questions have an answer, when there are several.
+#[gpui_kit::test]
+fn the_foot_counts_the_answers_of_several_questions(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    roomy(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    assert!(drawn(handle, cx, n, "progress"));
+    let _one = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "ask_user",
+        json!({ "questions": [{ "question": "Ship it?", "options": ["Yes"] }] }),
+    );
+    let key = last_wait(&ws, cx);
+    ws.update(cx, |ws, _| ws.waits.retain(|w| w.key == key));
+    assert!(!drawn(handle, cx, n, "progress"), "one question needs none");
+}
+
+/// The body's scroll follows the zoom: the same words stay in view when the canvas zooms.
+#[gpui_kit::test]
+fn the_dialogs_scroll_follows_the_zoom(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let words = "A question that goes on about the database. ".repeat(120);
+    let asked = json!({ "questions": [{ "question": words, "options": ["Yes", "No"] }] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    let at = |cx: &mut TestAppContext, zoom: f32| {
+        ws.update(cx, |ws, _| {
+            ws.space.canvas.camera = Camera::at(Point::new(40.0, 400.0), zoom)
+        });
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    };
+    at(cx, 1.0);
+    cx.update_window(handle, |_, window, cx| {
+        window.hover(("balloon", n), cx);
+        let body = window.find(crate::balloon::part(n, "body")).bounds();
+        let to = (f32::from(body.left()) + 4.0, f32::from(body.center().y));
+        wheel(
+            window,
+            cx,
+            to,
+            ScrollDelta::Pixels(point(px(0.0), px(-60.0))),
+            false,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(body_scroll(&ws, cx), -60.0);
+    at(cx, 2.0);
+    assert_eq!(body_scroll(&ws, cx), -120.0);
+}
+
+/// The wheel over the preview of the newest question's first question, the pointer on the
+/// balloon first (its block takes the wheel then), and how far the dialog's body scrolled.
+fn wheel_over_preview(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    n: usize,
+) -> f32 {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover(("balloon", n), cx);
+        let preview = window.find(crate::balloon::part(n, "q0-preview")).bounds();
+        let at = (f32::from(preview.center().x), f32::from(preview.center().y));
+        wheel(
+            window,
+            cx,
+            at,
+            ScrollDelta::Pixels(point(px(0.0), px(-40.0))),
+            false,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    body_scroll(ws, cx)
+}
+
+/// The wheel over a preview of a few lines scrolls the dialog's body (the preview has nothing to
+/// scroll up and down); over a tall one it scrolls the preview and leaves the body alone.
+#[gpui_kit::test]
+fn the_wheel_scrolls_the_dialog_over_a_short_preview_and_the_preview_over_a_tall_one(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    roomy(&ws, cx, mine);
+    // Wide enough to lay the preview beside the options.
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(mine).unwrap().rect.w = 900.0
+    });
+    let with = |preview: String| {
+        let options: Vec<Value> = (0..12)
+            .map(|i| json!({ "label": format!("Option {i}"), "preview": preview }))
+            .collect();
+        json!({ "questions": [{ "question": "Which?", "options": options }] })
+    };
+    let _short = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "ask_user",
+        with("two\nlines".into()),
+    );
+    assert!(
+        wheel_over_preview(handle, &ws, cx, n) < 0.0,
+        "the body scrolled"
+    );
+    let tall: Vec<String> = (0..300).map(|i| format!("line {i}")).collect();
+    let _tall = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "ask_user",
+        with(tall.join("\n")),
+    );
+    ws.update(cx, |ws, _| {
+        ws.waits.remove(0);
+    });
+    assert_eq!(
+        wheel_over_preview(handle, &ws, cx, n),
+        0.0,
+        "the preview did"
+    );
+}
+
 /// The asking block takes the keyboard, its dialog is drawn, and long enough ago for keys to
 /// count.
 fn focus_dialog(
@@ -1559,8 +2120,98 @@ fn the_keys_answer_a_question(cx: &mut TestAppContext) {
     let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
     focus_dialog(handle, &ws, cx, mine);
+    // Enter picks No and puts the highlight on Send; the next Enter sends.
     press(handle, cx, &["down", "down", "enter"]);
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "picked only");
+    assert_eq!(highlight(&ws, cx), Some(templum_mcp::ask::Row::Send));
+    press(handle, cx, &["enter"]);
     assert_eq!(answered(&answers), (false, "No".to_string()));
+}
+
+/// The keys' highlight (↓ ↑ Tab) goes down a long list and back up with the row always in view:
+/// the body scrolls to show it, once, and a wheel that scrolls it away after isn't fought.
+#[gpui_kit::test]
+fn the_keys_scroll_the_body_to_the_highlighted_row(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let options: Vec<Value> = (0..30)
+        .map(|i| json!({ "label": format!("Option {i}"), "description": "More words." }))
+        .collect();
+    let asked = json!({ "questions": [{ "question": "Which?", "options": options }] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    focus_dialog(handle, &ws, cx, mine);
+    let frames = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+        })
+        .unwrap()
+    };
+    assert!(
+        !window_shows(handle, cx, n, "q0-option-29"),
+        "it starts below"
+    );
+    for i in 0..30 {
+        press(handle, cx, &["down"]);
+        frames(cx);
+        assert!(
+            window_shows(handle, cx, n, &format!("q0-option-{i}")),
+            "option {i} is highlighted and out of view"
+        );
+    }
+    // Other, below the last option.
+    press(handle, cx, &["tab"]);
+    frames(cx);
+    assert!(
+        window_shows(handle, cx, n, "q0-other"),
+        "Other is out of view"
+    );
+    // Back up.
+    for i in (0..30).rev() {
+        press(handle, cx, &["up"]);
+        frames(cx);
+        if i == 29 {
+            continue;
+        }
+        assert!(
+            window_shows(handle, cx, n, &format!("q0-option-{i}")),
+            "going up, option {i} is out of view"
+        );
+    }
+    // A wheel that scrolls the highlighted row away stays scrolled.
+    let before = body_scroll(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.hover(("balloon", n), cx);
+        let body = window.find(crate::balloon::part(n, "body")).bounds();
+        let at = (f32::from(body.left()) + 4.0, f32::from(body.center().y));
+        wheel(
+            window,
+            cx,
+            at,
+            ScrollDelta::Pixels(point(px(0.0), px(-300.0))),
+            false,
+        );
+    })
+    .unwrap();
+    frames(cx);
+    assert!(body_scroll(&ws, cx) < before - 100.0, "the wheel scrolled");
+}
+
+/// Space picks without sending; Enter on the option already picked sends.
+#[gpui_kit::test]
+fn space_picks_and_enter_on_the_picked_option_sends(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    focus_dialog(handle, &ws, cx, mine);
+    press(handle, cx, &["down", "space"]);
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "picked only");
+    press(handle, cx, &["enter"]);
+    assert_eq!(answered(&answers), (false, "Yes".to_string()));
 }
 
 /// No row is highlighted as the dialog opens: Space and Enter meant for the terminal answer
@@ -1691,7 +2342,7 @@ fn esc_gives_the_keyboard_back(cx: &mut TestAppContext) {
         window.render_frame(cx);
     })
     .unwrap();
-    press(handle, cx, &["down", "enter"]);
+    press(handle, cx, &["down", "enter", "enter"]);
     assert_eq!(answered(&answers), (false, "Yes".to_string()));
 }
 
@@ -1720,7 +2371,7 @@ fn keys_and_clicks_too_soon_do_nothing(cx: &mut TestAppContext) {
         highlight(&ws, cx),
         Some(templum_mcp::ask::Row::Option(0, 0))
     );
-    press(handle, cx, &["enter"]);
+    press(handle, cx, &["enter", "enter"]);
     assert_eq!(answered(&answers), (false, "Yes".to_string()));
 }
 
@@ -1840,6 +2491,7 @@ fn a_click_on_the_dialog_brings_its_block(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (kanban, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
+    roomy(&ws, cx, mine);
     ws.update(cx, |ws, _| ws.config.canvas.focus_follows_pointer = false);
     let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", singles(2));
     focus_dialog(handle, &ws, cx, kanban);
@@ -1859,6 +2511,7 @@ fn a_click_in_the_dialogs_field_keeps_the_keyboard_there(cx: &mut TestAppContext
     let (handle, ws) = open(cx);
     let (kanban, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
+    roomy(&ws, cx, mine);
     super::terminals::set_active(handle, true, cx);
     ws.update(cx, |ws, _| ws.config.canvas.focus_follows_pointer = false);
     let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", singles(1));
@@ -1950,6 +2603,7 @@ fn a_plan_a_question_and_a_request_wait_in_turn(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (kanban, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
+    roomy(&ws, cx, mine);
     let k = ws.read_with(cx, |ws, _| ws.space.uids[&kanban].clone());
     let n = mine.0 as usize;
     let part = crate::balloon::part;
@@ -1990,8 +2644,16 @@ fn a_plan_a_question_and_a_request_wait_in_turn(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert!(window.try_find(part(n, "plan-approve")).is_none());
         window.click(part(n, "q0-option-1"), cx);
+        window.render_frame(cx);
     })
     .unwrap();
+    assert_eq!(
+        question.try_recv(),
+        Err(TryRecvError::Empty),
+        "Send answers"
+    );
+    cx.update_window(handle, |_, window, cx| window.click(part(n, "send"), cx))
+        .unwrap();
     assert_eq!(answered(&question), (false, "Not yet".to_string()));
     shown(handle, cx);
     cx.update_window(handle, |_, window, cx| {
@@ -2002,7 +2664,7 @@ fn a_plan_a_question_and_a_request_wait_in_turn(cx: &mut TestAppContext) {
     assert_eq!(answered(&request), (false, format!("Connected to {k}.")));
 }
 
-/// A long plan scrolls in its frame, which takes at most 60% of the balloon's height.
+/// A long plan scrolls in its frame, which takes at most 60% of the body's height.
 #[gpui_kit::test]
 fn a_long_plan_scrolls_in_its_frame(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
@@ -2036,6 +2698,62 @@ fn a_long_plan_scrolls_in_its_frame(cx: &mut TestAppContext) {
         );
     })
     .unwrap();
+}
+
+/// The wheel over a long plan scrolls the plan and leaves the dialog's body alone, even where
+/// the body overflows too (a block this short): the plan's frame is sized from the body, not from
+/// the whole balloon.
+#[gpui_kit::test]
+fn the_wheel_over_a_long_plan_scrolls_the_plan_not_the_body(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let long: String = (1..=150).map(|i| format!("{i}. Step {i}\n")).collect();
+    let _plan = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        3,
+        "propose_plan",
+        json!({ "plan": long }),
+    );
+    shown(handle, cx);
+    let key = last_wait(&ws, cx);
+    let plan_scroll = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| match &ws.waits.last().unwrap().what {
+            Waiting::Question { scroll, .. } => f32::from(scroll.handle.offset().y),
+            _ => panic!("a plan"),
+        })
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = window.find(crate::balloon::part(n, "body")).bounds();
+        let content = window.find(("balloon-wait", key)).bounds();
+        let frame = window.find(crate::balloon::part(n, "plan-body")).bounds();
+        assert!(
+            content.size.height > body.size.height,
+            "the body overflows too"
+        );
+        assert!(
+            frame.size.height <= body.size.height * 0.6 + px(1.0),
+            "{frame:?} in {body:?}"
+        );
+        window.hover(("balloon", n), cx);
+        let at = (f32::from(frame.center().x), f32::from(frame.center().y));
+        wheel(
+            window,
+            cx,
+            at,
+            ScrollDelta::Pixels(point(px(0.0), px(-40.0))),
+            false,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(plan_scroll(cx) < 0.0, "the plan scrolled");
+    assert_eq!(body_scroll(&ws, cx), 0.0, "the body did not");
 }
 
 /// A plan off screen is a notification that says so: "Asks you to approve a plan: …".

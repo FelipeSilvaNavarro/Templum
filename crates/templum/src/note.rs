@@ -6,7 +6,7 @@ use std::cell::RefCell;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
-use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::input::{Editor, EditorState, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, Entity, ScrollWheelEvent, SharedString,
@@ -17,9 +17,9 @@ use templum_canvas::{BlockId, Level, Size, chrome};
 use crate::block::BORDER;
 use crate::grid::{BAR_OPACITY, hsla};
 use crate::list_dialog;
-use crate::notes;
+use crate::notes::{self, Notes};
 use crate::silhouette::{self, Far};
-use crate::tab_strip::{TABS_H, tab_strip};
+use crate::tab_strip::{LABELS_IN, TABS_H, tab_strip};
 use crate::workspace::Workspace;
 
 /// A new note's size, and the smallest one (world units).
@@ -32,15 +32,32 @@ pub(crate) const FONT: f32 = 13.0;
 /// in a code editor, 10 right, 8 top and bottom) and, inside it, left of the text, the line
 /// numbers' margin (6) and the fold icons (18), and right of it a margin its wrap width leaves
 /// out (10) (gpui-base-0.7.3 src/input/base/element.rs:50-53, 1102-1124, 2562).
-pub(crate) const FIXED_LEFT: f32 = 6.0 + 6.0 + 18.0;
+const FIXED_LEFT: f32 = 6.0 + 6.0 + 18.0;
 const FIXED_RIGHT: f32 = 10.0 + 10.0;
 pub(crate) const FIXED_TOP: f32 = 8.0;
 const FIXED_BOTTOM: f32 = 8.0;
+/// Where the text starts from the left of the area under the tabs, world units: in line with the
+/// tabs' labels.
+pub(crate) const TEXT_LEFT: f32 = LABELS_IN;
+/// An empty block shows its icon when the area under the tabs is `ROOMY` tall (world units) and
+/// its words from `TIGHT`; the smallest block's keeps to the two buttons.
+const ROOMY: f32 = 170.0;
+const TIGHT: f32 = 110.0;
 
 /// A note block: the notes it shows as tabs, and the one on screen.
+#[derive(Default)]
 pub(crate) struct Note {
     pub tabs: Vec<NoteTab>,
     pub active: usize,
+    /// The tab whose name is being typed over, in place.
+    pub renaming: Option<Renaming>,
+}
+
+/// A tab's name being edited in its place: kept on Enter or when the keyboard leaves, dropped on
+/// Esc.
+pub(crate) struct Renaming {
+    pub id: u64,
+    pub input: Entity<InputState>,
 }
 
 /// A note open in a block: its id in `Workspace::notes`, and its editor, whose every change is
@@ -55,6 +72,19 @@ pub(crate) struct NoteTab {
 impl Note {
     pub fn tab(&self) -> Option<&NoteTab> {
         self.tabs.get(self.active)
+    }
+
+    /// Takes tab `index` out; the tab on screen stays the same one where it can. A rename of it
+    /// ends.
+    pub fn remove_tab(&mut self, index: usize) -> NoteTab {
+        let tab = self.tabs.remove(index);
+        if self.active > index || self.active >= self.tabs.len() {
+            self.active = self.active.saturating_sub(1);
+        }
+        if self.renaming.as_ref().is_some_and(|r| r.id == tab.id) {
+            self.renaming = None;
+        }
+        tab
     }
 
     /// The notes it shows, in tab order.
@@ -82,10 +112,10 @@ impl Note {
         }
     }
 
-    /// The note on screen's title; "Notes" without one.
-    pub fn title(&self, cx: &App) -> SharedString {
+    /// The note on screen's name; "Notes" without one.
+    pub fn title(&self, notes: &Notes) -> SharedString {
         match self.tab() {
-            Some(_) => notes::title(&self.text(cx)).into(),
+            Some(tab) => notes.name(tab.id).to_string().into(),
             None => "Notes".into(),
         }
     }
@@ -134,16 +164,24 @@ pub(crate) fn body(
         let titles = note
             .tabs
             .iter()
-            .map(|t| notes::title(&t.editor.read(cx).value()).into())
+            .map(|t| ws.notes.name(t.id).to_string().into())
             .collect();
+        let renaming = note.renaming.as_ref().and_then(|r| {
+            let at = note.tabs.iter().position(|t| t.id == r.id)?;
+            Some((at, &r.input))
+        });
         tab_strip(
             ws,
             id,
             titles,
             note.active,
+            renaming,
             z,
-            Workspace::show_note_tab,
-            Workspace::close_note_tab,
+            [
+                Workspace::show_note_tab,
+                Workspace::close_note_tab,
+                Workspace::rename_note_tab,
+            ],
             Workspace::new_note_tab,
             cx,
         )
@@ -151,7 +189,7 @@ pub(crate) fn body(
         div().h(px(TABS_H * z)).into_any_element()
     };
     let inner = match note.tab() {
-        None if level == Level::Full => empty(ws, id, z, cx),
+        None if level == Level::Full => empty(ws, id, area, z, cx),
         None => div().into_any_element(),
         Some(tab) => {
             // What its word map is of.
@@ -208,6 +246,29 @@ pub(crate) fn button(
     ws: &Workspace,
     z: f32,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
+    styled(id, icon, label, false, ws, z)
+}
+
+/// `button`, in the accent's tint: the one thing a block asks for first.
+fn lit_button(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    label: &'static str,
+    ws: &Workspace,
+    z: f32,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    styled(id, icon, label, true, ws, z)
+}
+
+/// Both buttons: `lit` tints it with the accent, else it is outlined by a hairline.
+fn styled(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    label: &'static str,
+    lit: bool,
+    ws: &Workspace,
+    z: f32,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     let ui = ws.ui;
     div()
         .id(id)
@@ -218,19 +279,62 @@ pub(crate) fn button(
         .py(px(8.0 * z))
         .rounded(px(8.0 * z))
         .border_1()
-        .border_color(ui.hairline)
         .text_size(px(13.0 * z))
-        .text_color(ui.title)
         .cursor_pointer()
-        .hover(move |s| s.bg(ui.hover))
-        .active(move |s| s.bg(ui.pressed))
+        .map(|el| {
+            if lit {
+                el.border_color(gpui_kit::transparent_black())
+                    .bg(ui.accent.opacity(0.16))
+                    .text_color(ui.accent)
+                    .hover(move |s| s.bg(ui.accent.opacity(0.24)))
+                    .active(move |s| s.bg(ui.accent.opacity(0.30)))
+            } else {
+                el.border_color(ui.hairline)
+                    .text_color(ui.title)
+                    .hover(move |s| s.bg(ui.hover))
+                    .active(move |s| s.bg(ui.pressed))
+            }
+        })
         .child(Icon::new(icon).size(px(14.0 * z)))
         .child(label)
 }
 
-/// A block with no note open: a new one, or one of those there are.
-fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
+/// A block with no note open: a new one, or one of those there are. Roomy enough, an icon tops
+/// it; the new note is the tinted button.
+fn empty(
+    ws: &Workspace,
+    block: BlockId,
+    area: Size,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
     let n = block.0 as usize;
+    let ui = ws.ui;
+    let (roomy, tight) = (area.h >= ROOMY, area.h < TIGHT);
+    let wide = |button: gpui_kit::Stateful<gpui_kit::Div>| {
+        button
+            .w(px(148.0 * z))
+            .justify_center()
+            .when(tight, |el| el.py(px(5.0 * z)))
+    };
+    let new = wide(lit_button(
+        ("note-new-here", n),
+        IconName::Plus,
+        "New note",
+        ws,
+        z,
+    ))
+    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.new_note_tab(block, window, cx)))
+    .test_support();
+    let open = wide(button(
+        ("note-open-here", n),
+        IconName::NotebookText,
+        "Open a note…",
+        ws,
+        z,
+    ))
+    .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| open_notes(Some(block), window, cx)))
+    .test_support();
     div()
         .id(("note-empty", n))
         .size_full()
@@ -238,34 +342,42 @@ fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) ->
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(8.0 * z))
+        .gap(px(6.0 * z))
+        .when(roomy, |el| {
+            el.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(36.0 * z))
+                    .mb(px(4.0 * z))
+                    .rounded(px(10.0 * z))
+                    .bg(ui.accent.opacity(0.14))
+                    .child(
+                        Icon::new(IconName::NotebookText)
+                            .size(px(18.0 * z))
+                            .text_color(ui.accent),
+                    ),
+            )
+        })
+        .when(!tight, |el| {
+            el.child(
+                div()
+                    .text_size(px(13.0 * z))
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                    .text_color(ui.title)
+                    .child("No note open here"),
+            )
+        })
         .child(
             div()
-                .text_size(px(13.0 * z))
-                .text_color(ws.ui.title_dim)
-                .child("No note open here"),
-        )
-        .child(
-            button(("note-new-here", n), IconName::Plus, "New note", ws, z)
-                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.new_note_tab(block, window, cx)
-                }))
-                .test_support(),
-        )
-        .child(
-            button(
-                ("note-open-here", n),
-                IconName::NotebookText,
-                "Open a note…",
-                ws,
-                z,
-            )
-            .on_click(
-                cx.listener(move |_, _: &ClickEvent, window, cx| {
-                    open_notes(Some(block), window, cx)
-                }),
-            )
-            .test_support(),
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(8.0 * z))
+                .when(!tight, |el| el.mt(px(8.0 * z)))
+                .child(new)
+                .child(open),
         )
         .test_support()
         .into_any_element()
@@ -274,8 +386,9 @@ fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) ->
 /// The note's editor as Full draws it, at zoom `z`, in the text's `area`. Its fixed parts would
 /// make the text start further in, wrap at other words and show fewer lines the further the
 /// canvas is zoomed out: the editor is as much larger (or smaller) and moved by its fixed left
-/// and top parts' share, so the text starts, wraps and fits as if they zoomed too. Its lines
-/// change only when the block is resized. At zoom 1, exactly the text's area.
+/// and top parts' share, so the text starts (`TEXT_LEFT` in), wraps and fits as if they zoomed
+/// too. Its lines change only when the block is resized. At zoom 1, the editor ends where the
+/// text's area does.
 fn editor_box(
     ws: &Workspace,
     n: usize,
@@ -285,6 +398,7 @@ fn editor_box(
     cx: &mut App,
 ) -> AnyElement {
     let (across, down) = (FIXED_LEFT + FIXED_RIGHT, FIXED_TOP + FIXED_BOTTOM);
+    let wrap = area.w - 2.0 * BORDER - TEXT_LEFT - FIXED_RIGHT;
     crate::editor::keep_rows(editor, FONT, z, cx);
     div()
         .id(("note-editor", n))
@@ -294,9 +408,9 @@ fn editor_box(
             div()
                 .id(("note-text", n))
                 .relative()
-                .left(px(-FIXED_LEFT * (1.0 - z)))
+                .left(px(TEXT_LEFT * z - FIXED_LEFT))
                 .top(px(-FIXED_TOP * (1.0 - z)))
-                .w(px(((area.w - 2.0 * BORDER - across) * z + across).max(0.0)))
+                .w(px((wrap * z + across).max(0.0)))
                 .h(px(((area.h - down) * z + down).max(0.0)))
                 .child(
                     // On the editor itself: it sets the theme's code size on itself, over a
@@ -348,12 +462,13 @@ fn note_rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
         .into_iter()
         .map(|note| {
             let at = list_dialog::open_at(ws, ws.note_open_at(note.id).map(|(space, _)| space));
+            // The first line the name doesn't already say.
             let line = note
                 .text
                 .lines()
                 .map(str::trim)
                 .filter(|l| !l.is_empty())
-                .nth(1)
+                .find(|l| notes::title(l) != note.name)
                 .map(str::to_string);
             let detail: Vec<String> = [Some(notes::ago(note.changed, now)), at, line]
                 .into_iter()
@@ -361,7 +476,7 @@ fn note_rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
                 .collect();
             list_dialog::Row {
                 id: note.id,
-                title: notes::title(&note.text),
+                title: note.name.clone(),
                 detail: detail.join(" · "),
                 dot: note
                     .color

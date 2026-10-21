@@ -12,7 +12,7 @@ fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
 }
 
 #[gpui_kit::test]
-fn the_board_button_opens_a_block_with_the_board_list(cx: &mut TestAppContext) {
+fn the_board_button_opens_a_block_with_no_board_and_new_board_fills_it(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
@@ -25,8 +25,8 @@ fn the_board_button_opens_a_block_with_the_board_list(cx: &mut TestAppContext) {
     let block = top_kanban(&ws, cx);
     let n = block.0 as usize;
     cx.update_window(handle, |_, window, cx| {
-        assert!(window.try_find(("board-list", n)).is_some());
-        window.click(("new-board", n), cx);
+        assert!(window.try_find(("kanban-empty", n)).is_some());
+        window.click(("board-new-here", n), cx);
         window.render_frame(cx);
         assert!(
             window.try_find(("columns", n)).is_some(),
@@ -77,11 +77,127 @@ fn two_blocks_on_one_board_show_the_same_cards(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         for block in [a, b] {
-            let list = ("board-list", block.0 as usize);
-            assert!(window.try_find(list).is_some(), "back to the list");
+            let empty = ("kanban-empty", block.0 as usize);
+            assert!(window.try_find(empty).is_some(), "no board left there");
         }
     })
     .unwrap();
+}
+
+fn board_row(id: u64) -> gpui_kit::ElementId {
+    gpui_kit::ElementId::Name(format!("board-row-{id}").into())
+}
+
+fn board_trash(id: u64) -> gpui_kit::ElementId {
+    gpui_kit::ElementId::Name(format!("board-delete-{id}").into())
+}
+
+/// The header's All boards: the dialog finds a board by a card's title, a click shows it in the
+/// block, and its trash deletes it on a second click.
+#[gpui_kit::test]
+fn the_boards_dialog_finds_shows_and_deletes_a_board(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (block, a, b) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_kanban(window, cx);
+                let block = ws.space.canvas.top().unwrap();
+                let a = ws.boards.add_board();
+                let b = ws.boards.add_board();
+                let todo = ws.boards.board(b).unwrap().columns[0].id;
+                let card = ws.boards.add_card(b, todo).unwrap();
+                ws.boards
+                    .edit_card(b, card, |c| c.title = "Ship the release".into());
+                ws.space.appearing.clear();
+                ws.space.flight = None;
+                (block, a, b)
+            })
+        })
+        .unwrap();
+    let n = block.0 as usize;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("boards", n), cx);
+        window.render_frame(cx);
+        window.find(board_row(a));
+        window.find(board_row(b));
+    })
+    .unwrap();
+    cx.simulate_input(handle, "RELEASE");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(board_row(a)).is_none(),
+            "the search leaves it out"
+        );
+        window.click(board_row(b), cx);
+        window.render_frame(cx);
+        assert!(window.try_find(board_row(b)).is_none(), "the dialog closed");
+    })
+    .unwrap();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.kanban(block).unwrap().board),
+        Some(b),
+        "the block shows it"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("boards", n), cx);
+        window.render_frame(cx);
+        window.click(board_trash(b), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        ws.read_with(cx, |ws, _| ws.boards.board(b).is_some()),
+        "one click asks"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.click(board_trash(b), cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("kanban-empty", n)).is_some(),
+            "the block shows none"
+        );
+    })
+    .unwrap();
+    assert!(
+        ws.read_with(cx, |ws, _| ws.boards.board(b).is_none()),
+        "deleted"
+    );
+}
+
+/// A kanban block's menu: All boards…, then Rename board… and Delete board… for the board it
+/// shows.
+#[gpui_kit::test]
+fn the_blocks_menu_deletes_the_board_it_shows(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (block, board) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_kanban(window, cx);
+                let block = ws.space.canvas.top().unwrap();
+                ws.new_board(block, cx);
+                ws.space.appearing.clear();
+                ws.space.flight = None;
+                (block, ws.space.kanban(block).unwrap().board.unwrap())
+            })
+        })
+        .unwrap();
+    let n = block.0 as usize;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("title", n), cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(2usize, cx);
+        window.render_frame(cx);
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+        assert!(window.try_find(("kanban-empty", n)).is_some());
+    })
+    .unwrap();
+    assert!(ws.read_with(cx, |ws, _| ws.boards.board(board).is_none()));
 }
 
 #[gpui_kit::test]
@@ -383,12 +499,8 @@ fn a_card_shows_its_assignee_and_how_many_comments(cx: &mut TestAppContext) {
         ws.edit_boards(|b| {
             b.edit_card(board, card, |c| {
                 c.assignee = Some(crate::board::Assignee::Block(uid.clone()));
-                c.comments.push(crate::board::Comment {
-                    by: "you".into(),
-                    text: "hi".into(),
-                    at: 0,
-                });
-            })
+            });
+            b.add_comment(board, card, "you", "hi", 0)
         })
     });
     assert!(shown(cx, "assignee") && shown(cx, "comments"));
@@ -453,6 +565,450 @@ fn the_open_card_adds_a_comment_and_frees_its_assignee(cx: &mut TestAppContext) 
             .clone()),
         Some(crate::board::Assignee::Block("zzzzz".into()))
     );
+}
+
+/// A card with two comments, the person's and an agent's, open in its dialog: the comments'
+/// numbers, person's first.
+fn card_open_with_two_comments(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (u64, u64, u64, u64) {
+    no_motion(cx);
+    let (_, board, card) = board_with_a_card(handle, ws, cx);
+    let (person, agent) = ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| {
+            (
+                b.add_comment(board, card, "you", "Please check", 1)
+                    .unwrap(),
+                b.add_comment(board, card, "zzzzz", "Seen", 2).unwrap(),
+            )
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        ws.update(cx, |ws, cx| {
+            let current = ws.boards.card(board, card).cloned().unwrap();
+            crate::kanban::open_card(board, current, false, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    // The dialog slides in for 0.25 s first: presses meanwhile are lost.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    (board, card, person, agent)
+}
+
+/// Whether the open card draws the element `what`-`comment`.
+fn comment_part(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    what: &str,
+    comment: u64,
+) -> bool {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let id = gpui_kit::ElementId::Name(format!("comment-{what}-{comment}").into());
+        window.try_find(id).is_some()
+    })
+    .unwrap()
+}
+
+/// Clicks the open card's `comment-{what}-{comment}` and draws the result: the comments are at
+/// the end of a dialog that scrolls in a window this short, so its body is scrolled down first,
+/// and the pointer brought onto the comment, which shows its buttons.
+fn click_comment(handle: AnyWindowHandle, cx: &mut TestAppContext, what: &str, comment: u64) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // The wheel at the middle of the dialog's body, under its footer's Done.
+        let done = window.find("card-done").bounds().center();
+        let at = (
+            f32::from(done.x),
+            f32::from(window.viewport_size().height) / 2.0,
+        );
+        wheel(
+            window,
+            cx,
+            at,
+            ScrollDelta::Pixels(point(px(0.0), px(-3000.0))),
+            false,
+        );
+        window.render_frame(cx);
+        // Its buttons show under the pointer only.
+        window.hover(
+            gpui_kit::ElementId::Name(format!("comment-{comment}").into()),
+            cx,
+        );
+        window.render_frame(cx);
+        window.click(
+            gpui_kit::ElementId::Name(format!("comment-{what}-{comment}").into()),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+/// The card's comments: number, author, text, edited, time.
+fn thread(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    board: u64,
+    card: u64,
+) -> Vec<(u64, String, String, bool, u64)> {
+    ws.read_with(cx, |ws, _| {
+        let c = ws.boards.card(board, card).unwrap();
+        c.comments
+            .iter()
+            .map(|c| (c.id, c.by.clone(), c.text.clone(), c.edited, c.at))
+            .collect()
+    })
+}
+
+/// The person deletes any comment (the board is theirs; Ctrl+Z brings it back) but edits only their
+/// own: an agent's words changed by someone else would still wear its name. Each change is one
+/// step of the kanban's Ctrl+Z, and an edit keeps the comment's author, place and time.
+#[gpui_kit::test]
+fn the_person_deletes_any_comment_and_edits_only_their_own(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, agent) = card_open_with_two_comments(handle, &ws, cx);
+    let whole = thread(&ws, cx, board, card);
+    assert!(comment_part(handle, cx, "edit", person));
+    assert!(comment_part(handle, cx, "delete", person));
+    assert!(comment_part(handle, cx, "delete", agent));
+    assert!(
+        !comment_part(handle, cx, "edit", agent),
+        "an agent's comment has no edit button"
+    );
+    // Delete the agent's.
+    click_comment(handle, cx, "delete", agent);
+    assert_eq!(thread(&ws, cx, board, card), whole[..1]);
+    assert!(
+        !comment_part(handle, cx, "delete", agent),
+        "the open card shows it"
+    );
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(
+        thread(&ws, cx, board, card),
+        whole,
+        "one Ctrl+Z step brings it back"
+    );
+    // Edit the person's: the text becomes a field with Save and Cancel, the caret after the last word.
+    click_comment(handle, cx, "edit", person);
+    for what in ["edit-field", "save", "cancel"] {
+        assert!(comment_part(handle, cx, what, person), "{what}");
+    }
+    assert!(
+        !comment_part(handle, cx, "edit", person),
+        "its buttons give way to Save and Cancel"
+    );
+    cx.simulate_input(handle, " (fixed)");
+    click_comment(handle, cx, "save", person);
+    let edited = thread(&ws, cx, board, card);
+    assert_eq!(
+        edited[0],
+        (
+            person,
+            "you".to_string(),
+            "Please check (fixed)".to_string(),
+            true,
+            1
+        ),
+        "author and time stay, and it reads as edited"
+    );
+    assert_eq!(edited[1], whole[1], "the other comment is as it was");
+    assert!(
+        !comment_part(handle, cx, "edit-field", person),
+        "the field is gone"
+    );
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(thread(&ws, cx, board, card), whole, "one Ctrl+Z step");
+}
+
+/// A comment the person deletes by mistake is easy to get back: a row "Comment deleted · Undo"
+/// stands where it was until the dialog closes, and Undo puts the same comment (its number,
+/// author, text, time and edited flag) back at its place, as one more step of Ctrl+Z.
+#[gpui_kit::test]
+fn a_deleted_comment_leaves_a_row_with_undo_until_the_dialog_closes(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, agent) = card_open_with_two_comments(handle, &ws, cx);
+    // An edited comment: the flag must come back too.
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| b.edit_comment(board, card, person, "Please check again"))
+    });
+    let whole = thread(&ws, cx, board, card);
+    assert!(whole[0].3, "edited");
+    let place = |cx: &mut TestAppContext, what: &str, comment: u64| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let id = gpui_kit::ElementId::Name(format!("comment-{what}-{comment}").into());
+            window.try_find(id).map(|found| found.bounds())
+        })
+        .unwrap()
+    };
+    let click_undo = |cx: &mut TestAppContext, comment: u64| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let done = window.find("card-done").bounds().center();
+            let at = (
+                f32::from(done.x),
+                f32::from(window.viewport_size().height) / 2.0,
+            );
+            wheel(
+                window,
+                cx,
+                at,
+                ScrollDelta::Pixels(point(px(0.0), px(-3000.0))),
+                false,
+            );
+            window.render_frame(cx);
+            window.click(
+                gpui_kit::ElementId::Name(format!("comment-undo-{comment}").into()),
+                cx,
+            );
+            window.render_frame(cx);
+        })
+        .unwrap()
+    };
+    // Delete the first of two: a row stands in its place, above the other comment.
+    click_comment(handle, cx, "delete", person);
+    assert_eq!(thread(&ws, cx, board, card), whole[1..]);
+    let row = place(cx, "deleted", person).expect("a row where it was");
+    assert!(place(cx, "undo", person).is_some(), "with Undo");
+    let other = cx
+        .update_window(handle, |_, window, _| {
+            window
+                .find(gpui_kit::ElementId::Name(format!("comment-{agent}").into()))
+                .bounds()
+        })
+        .unwrap();
+    assert!(row.bottom() <= other.top(), "above the next comment");
+    // Undo: the same comment at the same place, once.
+    click_undo(cx, person);
+    assert_eq!(thread(&ws, cx, board, card), whole, "whole, at its place");
+    assert!(place(cx, "deleted", person).is_none(), "the row is gone");
+    // One more step of Ctrl+Z: it takes the restore back (and the row does not return).
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(thread(&ws, cx, board, card), whole[1..]);
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(
+        thread(&ws, cx, board, card),
+        whole,
+        "and the delete before it"
+    );
+    assert!(place(cx, "deleted", person).is_none());
+    // The row lasts until the dialog closes.
+    click_comment(handle, cx, "delete", agent);
+    assert!(place(cx, "deleted", agent).is_some());
+    cx.update_window(handle, |_, window, cx| {
+        window.close_dialog(cx);
+        window.render_frame(cx);
+        ws.update(cx, |ws, cx| {
+            let current = ws.boards.card(board, card).cloned().unwrap();
+            crate::kanban::open_card(board, current, false, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        place(cx, "deleted", agent).is_none(),
+        "gone with the dialog"
+    );
+}
+
+/// Starts an edit of the person's comment and types over all of it: `text` is the whole draft.
+fn draft(handle: AnyWindowHandle, cx: &mut TestAppContext, comment: u64, text: &str) {
+    click_comment(handle, cx, "edit", comment);
+    retype(handle, cx, text);
+}
+
+/// Types over all of the text of the field being edited.
+fn retype(handle: AnyWindowHandle, cx: &mut TestAppContext, text: &str) {
+    cx.update_window(handle, |_, window, cx| {
+        #[cfg(target_os = "macos")]
+        window.press("cmd-a", cx);
+        #[cfg(not(target_os = "macos"))]
+        window.press("ctrl-a", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, text);
+}
+
+/// An edit trims both ends, as a new comment does, and Shift+Enter adds a line (Enter saves).
+#[gpui_kit::test]
+fn an_edit_trims_both_ends_and_shift_enter_adds_a_line(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, _) = card_open_with_two_comments(handle, &ws, cx);
+    draft(handle, cx, person, "  padded on both sides \n ");
+    click_comment(handle, cx, "save", person);
+    assert_eq!(
+        thread(&ws, cx, board, card)[0].2,
+        "padded on both sides",
+        "trimmed at the start too"
+    );
+    draft(handle, cx, person, "first");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("shift-enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, "second");
+    assert!(
+        comment_part(handle, cx, "edit-field", person),
+        "Shift+Enter saves nothing"
+    );
+    click_comment(handle, cx, "save", person);
+    assert_eq!(thread(&ws, cx, board, card)[0].2, "first\nsecond");
+}
+
+/// What was typed in an edit isn't lost when the person presses another comment's pencil or Done:
+/// a draft with text is saved then, an empty one is dropped.
+#[gpui_kit::test]
+fn a_draft_is_saved_when_another_pencil_or_done_is_pressed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, agent) = card_open_with_two_comments(handle, &ws, cx);
+    let second = ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| b.add_comment(board, card, "you", "Second", 3).unwrap())
+    });
+    // Another pencil: the first draft is saved, the second comment is being edited.
+    draft(handle, cx, person, "first, changed");
+    click_comment(handle, cx, "edit", second);
+    let saved = thread(&ws, cx, board, card);
+    assert_eq!(saved[0].2, "first, changed");
+    assert!(saved[0].3, "it reads edited");
+    assert!(!comment_part(handle, cx, "edit-field", person));
+    assert!(comment_part(handle, cx, "edit-field", second));
+    // An empty draft is dropped, not saved.
+    cx.update_window(handle, |_, window, cx| {
+        #[cfg(target_os = "macos")]
+        window.press("cmd-a", cx);
+        #[cfg(not(target_os = "macos"))]
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    click_comment(handle, cx, "edit", person);
+    assert_eq!(thread(&ws, cx, board, card), saved, "nothing to save");
+    assert!(comment_part(handle, cx, "edit-field", person));
+    // Done saves the draft in the field and closes the dialog.
+    cx.simulate_input(handle, " and more");
+    cx.update_window(handle, |_, window, cx| {
+        window.click("card-done", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(thread(&ws, cx, board, card)[0].2, "first, changed and more");
+    assert_eq!(thread(&ws, cx, board, card)[1].0, agent);
+    cx.update_window(handle, |_, window, _| {
+        assert!(window.try_find("card-done").is_none(), "the dialog closed")
+    })
+    .unwrap();
+}
+
+/// A dialog that closes in the middle of an edit lets go of the edit's field: the field's
+/// subscription holds the edit weakly.
+#[gpui_kit::test]
+fn closing_the_dialog_in_an_edit_releases_its_field(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, person, _) = {
+        let (board, card, person, agent) = card_open_with_two_comments(handle, &ws, cx);
+        (board, card, person, agent)
+    };
+    click_comment(handle, cx, "edit", person);
+    let field = cx
+        .update_window(handle, |_, window, cx| {
+            window.focused(cx).map(|f| f.downgrade())
+        })
+        .unwrap()
+        .expect("the field has the keyboard");
+    cx.update_window(handle, |_, window, cx| {
+        window.close_dialog(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(field.upgrade().is_none(), "the field outlived the dialog");
+}
+
+/// Escape and Cancel end an edit and change nothing (Escape doesn't close the card's dialog); Enter
+/// saves; the same words are no edit and no step of Ctrl+Z; an empty text can't be saved.
+#[gpui_kit::test]
+fn escape_and_cancel_end_an_edit_enter_saves_and_nothing_is_saved_for_nothing(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, _) = card_open_with_two_comments(handle, &ws, cx);
+    let whole = thread(&ws, cx, board, card);
+    let open = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("card-done").is_some()
+        })
+        .unwrap()
+    };
+    // Escape.
+    click_comment(handle, cx, "edit", person);
+    cx.simulate_input(handle, " more");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(open(cx), "Escape ends the edit, not the dialog");
+    assert!(!comment_part(handle, cx, "edit-field", person));
+    assert_eq!(thread(&ws, cx, board, card), whole);
+    // Cancel.
+    click_comment(handle, cx, "edit", person);
+    cx.simulate_input(handle, " more");
+    click_comment(handle, cx, "cancel", person);
+    assert!(!comment_part(handle, cx, "edit-field", person));
+    assert_eq!(thread(&ws, cx, board, card), whole);
+    // Enter saves, and the dialog stays.
+    click_comment(handle, cx, "edit", person);
+    cx.simulate_input(handle, " ok");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(open(cx), "Enter saves, it doesn't confirm the dialog");
+    let saved = thread(&ws, cx, board, card);
+    assert_eq!(saved[0].2, "Please check ok");
+    // Saving it as it is: no edit, no step.
+    click_comment(handle, cx, "edit", person);
+    click_comment(handle, cx, "save", person);
+    assert_eq!(thread(&ws, cx, board, card), saved);
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(
+        thread(&ws, cx, board, card),
+        whole,
+        "the one step is the edit before: the same words made none"
+    );
+    // An empty text isn't saved: the trash takes a comment away.
+    click_comment(handle, cx, "edit", person);
+    cx.update_window(handle, |_, window, cx| {
+        #[cfg(target_os = "macos")]
+        window.press("cmd-a", cx);
+        #[cfg(not(target_os = "macos"))]
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    click_comment(handle, cx, "save", person);
+    assert!(
+        comment_part(handle, cx, "edit-field", person),
+        "still editing"
+    );
+    assert_eq!(thread(&ws, cx, board, card), whole);
+    // Its comment gone meanwhile (Ctrl+Z, an agent, another block) ends the edit.
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| b.remove_comment(board, card, person))
+    });
+    assert!(!comment_part(handle, cx, "edit-field", person));
+    assert!(open(cx));
 }
 
 #[gpui_kit::test]
@@ -566,15 +1122,10 @@ fn a_long_open_card_keeps_its_footer_on_screen(cx: &mut TestAppContext) {
     let (_, board, card) = board_with_a_card(handle, &ws, cx);
     ws.update(cx, |ws, _| {
         ws.edit_boards(|b| {
-            b.edit_card(board, card, |c| {
-                for i in 0..30 {
-                    c.comments.push(crate::board::Comment {
-                        by: "you".into(),
-                        text: format!("Comment {i}\nwith a second line"),
-                        at: 0,
-                    });
-                }
-            })
+            for i in 0..30 {
+                let text = format!("Comment {i}\nwith a second line");
+                b.add_comment(board, card, "you", &text, 0);
+            }
         })
     });
     cx.update_window(handle, |_, window, cx| {
@@ -863,6 +1414,350 @@ fn dragging_a_card_near_a_long_columns_bottom_scrolls_its_cards(cx: &mut TestApp
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
     assert_eq!(now(cx, cards[3]), before, "scrolling stopped with the drag");
+}
+
+/// A board with a To do column of 30 cards, the canvas `steps` zoom steps from 100% (instant):
+/// the pointer goes to `from_right` pixels inside the right edge of that column's list, near its
+/// bottom, and presses there. Returns how far the first card moved up, in pixels.
+fn press_inside_the_lists_right_edge(
+    cx: &mut TestAppContext,
+    steps: i32,
+    from_right: f32,
+) -> (f32, f32) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (block, board, first) = board_with_a_card(handle, &ws, cx);
+    let n = block.0;
+    let todo = ws.update(cx, |ws, _| {
+        let todo = ws.boards.board(board).unwrap().columns[0].id;
+        for _ in 0..29 {
+            ws.edit_boards(|b| b.add_card(board, todo)).unwrap();
+        }
+        todo
+    });
+    let el = |what: &str, id: u64| gpui_kit::ElementId::Name(format!("{what}-{n}-{id}").into());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let card = window.find(el("card", first)).bounds().center();
+        ws.update(cx, |ws, cx| {
+            ws.zoom_to(steps, Point::new(f32::from(card.x), f32::from(card.y)), cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    // The camera glides to its zoom; the bounds are read once it landed.
+    std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
+    let list = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(el("cards", todo)).bounds()
+        })
+        .unwrap();
+    ws.read_with(cx, |ws, _| assert!(ws.space.flight.is_none(), "landed"));
+    let top = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(el("card", first)).bounds().top()
+        })
+        .unwrap()
+    };
+    let (z, before) = (ws.read_with(cx, |ws, _| ws.space.view.zoom()), top(cx));
+    // The scrollbar covers the list, and the cards overflow it.
+    let bar = cx
+        .update_window(handle, |_, window, _| {
+            window.find(el("scrollbar", todo)).bounds()
+        })
+        .unwrap();
+    assert_eq!(bar, list, "the scrollbar is over the list");
+    let at = point(list.right() - px(from_right), list.bottom() - px(12.0 * z));
+    press(handle, cx, at);
+    (z, f32::from(before - top(cx)))
+}
+
+/// The pointer moves to `at` and clicks there: over a scrollbar's track, it is shown first.
+fn press(handle: AnyWindowHandle, cx: &mut TestAppContext, at: gpui_kit::Point<gpui_kit::Pixels>) {
+    cx.update_window(handle, |_, window, cx| {
+        let moved = PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+            position: at,
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        });
+        window.dispatch_event(moved, cx);
+        window.render_frame(cx);
+        let down = MouseDownEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        };
+        window.dispatch_event(PlatformInput::MouseDown(down), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    release(handle, cx, at);
+}
+
+/// A column whose cards overflow has a scrollbar over its list, which pressing on scrolls.
+#[gpui_kit::test]
+fn a_long_column_has_a_scrollbar_that_scrolls_its_cards(cx: &mut TestAppContext) {
+    let (z, moved) = press_inside_the_lists_right_edge(cx, 0, 6.0);
+    assert_eq!(z, 1.0);
+    assert!(
+        moved > 100.0,
+        "pressing on the track scrolled the cards: {moved}"
+    );
+}
+
+/// The track scales with the zoom, like everything in the block: at half size it is 8 pixels
+/// wide, so 12 pixels in is a card, not the track, and 3 pixels in is the track.
+#[gpui_kit::test]
+fn the_scrollbar_scales_with_the_zoom(cx: &mut TestAppContext) {
+    let (z, moved) = press_inside_the_lists_right_edge(cx, -4, 3.0);
+    assert_eq!(z, 0.5);
+    assert!(moved > 50.0, "on the half-size track: {moved}");
+    let (_, moved) = press_inside_the_lists_right_edge(cx, -4, 12.0);
+    assert_eq!(moved, 0.0, "past the half-size track, over a card");
+}
+
+/// A card dragged over another long column's scrollbar, near the top of that column scrolled to
+/// its end, scrolls the cards back up: the scrollbar over the list takes no part in a drag.
+#[gpui_kit::test]
+fn a_card_dragged_over_a_scrolled_columns_scrollbar_scrolls_it_back_up(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (block, board, first) = board_with_a_card(handle, &ws, cx);
+    let n = block.0;
+    let (doing, cards) = ws.update(cx, |ws, _| {
+        let doing = ws.boards.board(board).unwrap().columns[1].id;
+        let cards: Vec<u64> = (0..30)
+            .map(|_| ws.edit_boards(|b| b.add_card(board, doing)).unwrap())
+            .collect();
+        (doing, cards)
+    });
+    let el = |what: &str, id: u64| gpui_kit::ElementId::Name(format!("{what}-{n}-{id}").into());
+    let bounds = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(el("cards", doing)).bounds()
+        })
+        .unwrap();
+    let top = |cx: &mut TestAppContext, card: u64| {
+        cx.update_window(handle, |_, window, _| {
+            window.find(el("card", card)).bounds().top()
+        })
+        .unwrap()
+    };
+    // Doing is scrolled to its end by a press on its track, near the bottom.
+    press(
+        handle,
+        cx,
+        point(bounds.right() - px(6.0), bounds.bottom() - px(12.0)),
+    );
+    let scrolled = top(cx, cards[0]);
+    assert!(
+        scrolled < bounds.top() - px(100.0),
+        "the cards of Doing scrolled up"
+    );
+    // The first card of To do is held at the track's strip, at the top of Doing.
+    let from = cx
+        .update_window(handle, |_, window, _| {
+            window.find(el("card", first)).bounds().center()
+        })
+        .unwrap();
+    let to = point(bounds.right() - px(6.0), bounds.top() + px(8.0));
+    hold_drag(handle, cx, from, to);
+    assert!(
+        top(cx, cards[0]) > scrolled,
+        "dragging at the top scrolled Doing back up"
+    );
+    release(handle, cx, to);
+}
+
+/// A kanban block with a To do column of 30 cards, whose list has a scrollbar.
+struct LongTodo {
+    handle: AnyWindowHandle,
+    ws: Entity<Workspace>,
+    block: BlockId,
+    board: u64,
+    todo: u64,
+    first: u64,
+}
+
+impl LongTodo {
+    fn new(cx: &mut TestAppContext) -> Self {
+        no_motion(cx);
+        let (handle, ws) = open(cx);
+        let (block, board, first) = board_with_a_card(handle, &ws, cx);
+        let todo = ws.update(cx, |ws, _| {
+            let todo = ws.boards.board(board).unwrap().columns[0].id;
+            for _ in 0..29 {
+                ws.edit_boards(|b| b.add_card(board, todo)).unwrap();
+            }
+            todo
+        });
+        Self {
+            handle,
+            ws,
+            block,
+            board,
+            todo,
+            first,
+        }
+    }
+
+    fn el(&self, what: &str, id: u64) -> gpui_kit::ElementId {
+        gpui_kit::ElementId::Name(format!("{what}-{}-{id}", self.block.0).into())
+    }
+
+    /// The list's bounds, as drawn now.
+    fn list(&self, cx: &mut TestAppContext) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(self.el("cards", self.todo)).bounds()
+        })
+        .unwrap()
+    }
+
+    /// The first card's top: it moves up as the list scrolls.
+    fn top(&self, cx: &mut TestAppContext) -> f32 {
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            f32::from(window.find(self.el("card", self.first)).bounds().top())
+        })
+        .unwrap()
+    }
+
+    /// Inside the scrollbar's track (16 pixels wide) and the first card (which ends 6 pixels
+    /// short of the list's edge).
+    fn strip_over_the_first_card(&self, cx: &mut TestAppContext) -> (f32, f32) {
+        let list = self.list(cx);
+        let card = cx
+            .update_window(self.handle, |_, window, _| {
+                window.find(self.el("card", self.first)).bounds()
+            })
+            .unwrap();
+        (
+            f32::from(list.right() - px(10.0)),
+            f32::from(card.center().y),
+        )
+    }
+}
+
+/// The pointer moves to `at` and a frame is drawn: a scrollbar over its track is shown.
+fn hover_at(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32)) {
+    window.dispatch_event(
+        PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+            position: point(px(at.0), px(at.1)),
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        }),
+        cx,
+    );
+    window.render_frame(cx);
+}
+
+/// A long column's scrollbar takes the presses on its strip, but a right-click on a card there
+/// still opens the card's menu.
+#[gpui_kit::test]
+fn a_right_click_on_a_long_columns_scrollbar_strip_opens_the_cards_menu(cx: &mut TestAppContext) {
+    let long = LongTodo::new(cx);
+    let at = long.strip_over_the_first_card(cx);
+    cx.update_window(long.handle, |_, window, cx| {
+        hover_at(window, cx, at);
+        press_with(window, cx, MouseButton::Right, Modifiers::default(), at, at);
+        window.render_frame(cx);
+        // Open, Send to ▸, —, Delete card.
+        window.within("popup-menu").click(3usize, cx);
+    })
+    .unwrap();
+    // The menu fades out for a moment: a click meanwhile would land on it.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    cx.update_window(long.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "Delete card asks");
+        window.within("dialog").click("ok", cx);
+    })
+    .unwrap();
+    long.ws.read_with(cx, |ws, _| {
+        assert!(ws.boards.card(long.board, long.first).is_none(), "deleted")
+    });
+}
+
+/// The same strip lets a middle-button drag pan the canvas, as the rest of the block does.
+#[gpui_kit::test]
+fn a_middle_drag_from_a_long_columns_scrollbar_strip_pans_the_canvas(cx: &mut TestAppContext) {
+    let long = LongTodo::new(cx);
+    let at = long.strip_over_the_first_card(cx);
+    let before = long.ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    cx.update_window(long.handle, |_, window, cx| {
+        hover_at(window, cx, at);
+        let to = (at.0 - 50.0, at.1);
+        press_with(
+            window,
+            cx,
+            MouseButton::Middle,
+            Modifiers::default(),
+            at,
+            to,
+        );
+    })
+    .unwrap();
+    long.ws.read_with(cx, |ws, _| {
+        assert_ne!(ws.space.canvas.camera, before, "a middle drag pans");
+        assert!(ws.drag.is_none());
+    });
+}
+
+/// With "Focus follows the pointer" off, pressing a long column's scrollbar picks its block like
+/// any other press in it, so the wheel scrolls its list and not the canvas after.
+#[gpui_kit::test]
+fn pressing_a_long_columns_scrollbar_picks_its_block(cx: &mut TestAppContext) {
+    let long = LongTodo::new(cx);
+    long.ws.update(cx, |ws, _| {
+        ws.config.canvas.focus_follows_pointer = false;
+        ws.space.focused = None;
+    });
+    let at = long.strip_over_the_first_card(cx);
+    cx.update_window(long.handle, |_, window, cx| {
+        hover_at(window, cx, at);
+        press_with(window, cx, MouseButton::Left, Modifiers::default(), at, at);
+    })
+    .unwrap();
+    long.ws
+        .read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(long.block)));
+}
+
+/// The wheel scrolls a long column's cards over the list and over its scrollbar, and never pans
+/// the canvas.
+#[gpui_kit::test]
+fn the_wheel_scrolls_a_long_columns_cards_over_its_list_and_its_scrollbar(cx: &mut TestAppContext) {
+    let long = LongTodo::new(cx);
+    let list = long.list(cx);
+    let camera = long.ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    let (center, strip) = (
+        (f32::from(list.center().x), f32::from(list.center().y)),
+        (
+            f32::from(list.right() - px(6.0)),
+            f32::from(list.center().y),
+        ),
+    );
+    for (what, at) in [("the center", center), ("the scrollbar", strip)] {
+        let before = long.top(cx);
+        cx.update_window(long.handle, |_, window, cx| {
+            hover_at(window, cx, at);
+            let down = ScrollDelta::Pixels(point(px(0.), px(-100.)));
+            wheel(window, cx, at, down, false);
+        })
+        .unwrap();
+        let now = long.top(cx);
+        assert!(
+            now < before - 50.0,
+            "the wheel at {what}: {before} to {now}"
+        );
+    }
+    long.ws
+        .read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera, camera));
 }
 
 #[gpui_kit::test]

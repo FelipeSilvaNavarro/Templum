@@ -14,6 +14,7 @@ use gpui_kit::{
     px,
 };
 
+use crate::autostart;
 use crate::grid::hsla;
 use crate::keys::Command;
 use crate::motion;
@@ -75,10 +76,30 @@ pub(crate) struct Welcome {
     pub first: bool,
     /// The agents found on this computer, by id; looked for once, when it opened.
     pub installed: Vec<String>,
+    /// What the person chose for starting Templum at login; None: nothing yet.
+    pub autostart: Option<bool>,
+    /// The last page, where the start-at-login option is, was shown: the person saw the option.
+    pub seen_autostart: bool,
     pub focus: FocusHandle,
 }
 
 impl Welcome {
+    /// What the start-at-login toggle shows, given what the system has (`system`): the person's
+    /// choice; else the system's state, and in a first run, on when `system` has no entry and
+    /// Templum could keep one (`State::offered`).
+    pub fn autostart_shown(&self, system: &autostart::State) -> bool {
+        self.autostart
+            .unwrap_or(system.on() || self.first && system.offered())
+    }
+
+    /// What closing applies to the system's entry: the person's choice. In a first run, the
+    /// default too (on, as shown), but only once the last page was shown: leaving before it, with
+    /// Skip or Esc, never starts Templum at login for someone who didn't see the option.
+    fn autostart_to_apply(&self, system: &autostart::State) -> Option<bool> {
+        self.autostart
+            .or((self.first && self.seen_autostart && system.offered()).then_some(true))
+    }
+
     /// How much of it is in view at `now`: 0 hidden, 1 all.
     pub fn shown(&self, now: Instant) -> f32 {
         motion::slid(self.since, self.closing, now)
@@ -98,7 +119,7 @@ impl Workspace {
         let installed = self
             .agents
             .iter()
-            .filter(|a| templum_terminal::installed(a.program()))
+            .filter(|a| self.agent_installed(a))
             .map(|a| a.id.clone())
             .collect();
         let focus = cx.focus_handle();
@@ -111,8 +132,11 @@ impl Workspace {
             back: false,
             first,
             installed,
+            autostart: None,
+            seen_autostart: false,
             focus,
         });
+        self.load_autostart(cx);
         cx.notify();
     }
 
@@ -125,7 +149,11 @@ impl Workspace {
         welcome.since = motion::turned(welcome.since, false, Instant::now());
         welcome.closing = true;
         let first = welcome.first;
+        let autostart = welcome.autostart_to_apply(&self.autostart);
         self.apply_and_save(window, cx);
+        if let Some(on) = autostart {
+            self.set_autostart(on, window, cx);
+        }
         window.focus(&self.focus_handle, cx);
         if first {
             self.open_first_terminal(window, cx);
@@ -138,6 +166,7 @@ impl Workspace {
         if let Some(welcome) = &mut self.welcome {
             welcome.back = (to as usize) < (welcome.page as usize);
             welcome.page = to;
+            welcome.seen_autostart |= to == Page::Ready;
             cx.notify();
         }
     }
@@ -181,6 +210,14 @@ impl Workspace {
             }
         }
         cx.stop_propagation();
+    }
+
+    /// The welcome's toggle for starting Templum at login: applied when it closes.
+    pub(crate) fn choose_autostart(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Some(welcome) = &mut self.welcome {
+            welcome.autostart = Some(on);
+            cx.notify();
+        }
     }
 
     /// A first run's welcome is open: nothing is written yet, so quitting from it leaves a first

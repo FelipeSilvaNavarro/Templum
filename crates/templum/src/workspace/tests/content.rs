@@ -33,12 +33,8 @@ fn list_cards_shows_the_wired_board_and_a_card_whole(cx: &mut TestAppContext) {
                 c.title = "Fix\nlogin".into();
                 c.description = "It 500s.\nOn Safari.".into();
                 c.assignee = Some(crate::board::Assignee::Block(uid.clone()));
-                c.comments.push(crate::board::Comment {
-                    by: "you".into(),
-                    text: "Please".into(),
-                    at: 0,
-                });
-            })
+            });
+            b.add_comment(board, card, "you", "Please", 0)
         })
     });
     let (failed, text) = call(handle, &ws, cx, &me, "list_cards", json!({}));
@@ -190,6 +186,157 @@ fn create_move_comment_and_claim_change_the_board(cx: &mut TestAppContext) {
         call(handle, &ws, cx, &me, "create_card", json!({ "title": " " })).0,
         "blank"
     );
+}
+
+/// An agent fixes or removes only the comments it wrote, by the number `list_cards` and
+/// `comment_card` give; each change is a step of the kanban's Ctrl+Z, and the open card shows it.
+#[gpui_kit::test]
+fn an_agent_edits_and_deletes_only_its_own_comments(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (me, uid, _, board, card) = wired_board(handle, &ws, cx);
+    let (failed, said) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "comment_card",
+        json!({ "card": card, "text": "Fixed the parser." }),
+    );
+    assert!(!failed, "{said}");
+    let mine: u64 = said
+        .rsplit(' ')
+        .next()
+        .and_then(|w| w.trim_end_matches(").").parse().ok())
+        .expect("comment_card says the comment's number");
+    let (person, agent) = ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| {
+            (
+                b.add_comment(board, card, "you", "Please check", 1)
+                    .unwrap(),
+                b.add_comment(board, card, "zzzzz", "Seen", 2).unwrap(),
+            )
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let current = ws.boards.card(board, card).cloned().unwrap();
+            crate::kanban::open_card(board, current, false, window, cx)
+        });
+    })
+    .unwrap();
+    let shown = |cx: &mut TestAppContext, comment: u64| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let id = gpui_kit::ElementId::Name(format!("comment-{comment}").into());
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    let thread = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let c = ws.boards.card(board, card).unwrap();
+            c.comments
+                .iter()
+                .map(|c| (c.id, c.by.clone(), c.text.clone(), c.edited))
+                .collect::<Vec<_>>()
+        })
+    };
+    assert!([mine, person, agent].into_iter().all(|c| shown(cx, c)));
+    let (_, other, theirs) = board_with_a_card(handle, &ws, cx);
+    let elsewhere = ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| b.add_comment(other, theirs, &uid, "mine, but unwired", 0))
+    });
+    let before = thread(cx);
+    let steps = ws.read_with(cx, |ws, _| ws.boards_undo.len());
+
+    // The person's, another agent's, a missing one, a blank text and an unwired card: refused,
+    // and nothing changes.
+    let args = |comment: u64| json!({ "card": card, "comment": comment, "text": "Changed" });
+    let (failed, text) = call(handle, &ws, cx, &me, "edit_comment", args(person));
+    assert!(
+        failed && text.contains("the person") && text.contains("your own"),
+        "{text}"
+    );
+    let (failed, text) = call(handle, &ws, cx, &me, "edit_comment", args(agent));
+    assert!(failed && text.contains("zzzzz"), "{text}");
+    for comment in [person, agent] {
+        let (failed, text) = call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "delete_comment",
+            json!({ "card": card, "comment": comment }),
+        );
+        assert!(failed && text.contains("not you"), "{text}");
+    }
+    let (failed, text) = call(handle, &ws, cx, &me, "edit_comment", args(99_999));
+    assert!(failed && text.contains("no comment 99999"), "{text}");
+    let blank = json!({ "card": card, "comment": mine, "text": "  " });
+    let (failed, text) = call(handle, &ws, cx, &me, "edit_comment", blank);
+    assert!(failed && text.contains("delete_comment"), "{text}");
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "delete_comment",
+        json!({ "card": theirs, "comment": elsewhere.unwrap() }),
+    );
+    assert!(failed && text.contains("No kanban connected"), "{text}");
+    assert_eq!(thread(cx), before);
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.boards_undo.len()),
+        steps,
+        "a refusal is no step of Ctrl+Z"
+    );
+
+    // Its own: edited in place, by the same author and at the same time, and marked.
+    let (failed, text) = call(handle, &ws, cx, &me, "edit_comment", args(mine));
+    assert!(!failed, "{text}");
+    let after = thread(cx);
+    assert_eq!(after[0], (mine, uid.clone(), "Changed".to_string(), true));
+    assert_eq!(after[1..], before[1..]);
+    let (_, whole) = call(handle, &ws, cx, &me, "list_cards", json!({ "card": card }));
+    assert!(
+        whole.contains(&format!("comment {mine} by {uid}")) && whole.contains(", edited:"),
+        "its number and that it was edited: {whole}"
+    );
+    assert!(shown(cx, mine), "the open card still shows it");
+
+    // The same text again changes nothing, and says so: no edit, no step of Ctrl+Z.
+    let steps = ws.read_with(cx, |ws, _| ws.boards_undo.len());
+    let (failed, text) = call(handle, &ws, cx, &me, "edit_comment", args(mine));
+    assert!(
+        !failed && text == format!("Comment {mine} already says that."),
+        "{text}"
+    );
+    assert_eq!(thread(cx), after);
+    assert_eq!(ws.read_with(cx, |ws, _| ws.boards_undo.len()), steps);
+
+    // Deleting it takes it off the open card at once.
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "delete_comment",
+        json!({ "card": card, "comment": mine }),
+    );
+    assert!(!failed, "{text}");
+    assert_eq!(thread(cx).len(), 2);
+    assert!(!shown(cx, mine) && shown(cx, person) && shown(cx, agent));
+
+    // Each was a step of Ctrl+Z: the delete first, then the edit.
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(
+        thread(cx)[0],
+        (mine, uid.clone(), "Changed".to_string(), true)
+    );
+    assert!(shown(cx, mine));
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(thread(cx), before);
 }
 
 #[gpui_kit::test]

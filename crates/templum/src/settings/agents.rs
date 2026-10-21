@@ -8,11 +8,12 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, ElementId, Entity, FontWeight, TestSupportExt, Window,
-    div, px,
+    AnyElement, App, ClickEvent, Context, ElementId, Entity, FontWeight, SharedString,
+    TestSupportExt, Window, div, px,
 };
+use templum_terminal::{ShellOption, is_shell};
 
-use super::row::Row;
+use super::row::{Row, menu_button};
 use crate::agents::{AgentEntry, Draft};
 use crate::grid::hsla;
 use crate::theme::Ui;
@@ -23,7 +24,11 @@ use crate::workspace::{Workspace, show_notification};
 pub(super) fn agent_row(ws: &Workspace, entity: &Entity<Workspace>, agent: &AgentEntry) -> Row {
     let ui = ws.ui;
     let id = agent.id.clone();
-    let description = description(agent, templum_terminal::installed(agent.program()));
+    let description = description(
+        agent,
+        ws.agent_installed(agent),
+        ws.agent_shell(agent).is_some(),
+    );
     let show = {
         let (e, agent) = (entity.clone(), agent.clone());
         Switch::new(ElementId::Name(format!("show-agent-{id}").into()))
@@ -75,14 +80,51 @@ pub(super) fn agent_row(ws: &Workspace, entity: &Entity<Workspace>, agent: &Agen
 }
 
 /// What an agent's row says under its title: its command, or how to install it when its program
-/// isn't found (the canvas's menu greys it out).
-pub(super) fn description(agent: &AgentEntry, installed: bool) -> String {
-    match agent.install {
+/// isn't found (the canvas's menu greys it out), then its shell when it has one. `found`: whether
+/// that shell is among the ones found here.
+pub(super) fn description(agent: &AgentEntry, installed: bool, found: bool) -> String {
+    let text = match agent.install {
         Some(install) if !installed => format!("Not installed · {install}"),
         _ if agent.builtin.is_some() => agent.command.clone(),
         _ if !installed => format!("Yours · not found · {}", agent.command),
         _ => format!("Yours · {}", agent.command),
+    };
+    with_shell(text, agent.shell.as_deref(), found)
+}
+
+/// `text` followed by the shell an entry opens in: ` · in zsh`, and ` (not available)` when no
+/// shell of that label is found here.
+pub(super) fn with_shell(text: String, shell: Option<&str>, found: bool) -> String {
+    match shell {
+        Some(label) if found => format!("{text} · in {label}"),
+        Some(label) => format!("{text} · in {label} (not available)"),
+        None => text,
     }
+}
+
+/// The Shell list of an agent's or account's dialog (docs/specs/shells.md, Settings ▸ Agents):
+/// value and label of **Default (*default*)**, which follows Settings ▸ Shell, then every one of
+/// `shells` (an account's leaves WSL out), then `current` as ***current* (not available)** when
+/// it is set and none of them, so Save keeps it. A value is `""` for Default, else a label.
+pub(super) fn shell_choices(
+    default: &str,
+    shells: &[ShellOption],
+    account: bool,
+    current: Option<&str>,
+) -> Vec<(SharedString, SharedString)> {
+    let listed: Vec<&ShellOption> = shells
+        .iter()
+        .filter(|s| !account || !is_shell(&s.program, "wsl"))
+        .collect();
+    let gone = current.filter(|c| !listed.iter().any(|s| s.label == *c));
+    std::iter::once(("".into(), format!("Default ({default})").into()))
+        .chain(
+            listed
+                .iter()
+                .map(|s| (s.label.clone().into(), s.label.clone().into())),
+        )
+        .chain(gone.map(|c| (c.to_string().into(), format!("{c} (not available)").into())))
+        .collect()
 }
 
 /// "Add an agent", under the agents.
@@ -137,6 +179,16 @@ pub(crate) fn agent_dialog(
                 .default_value(text)
         })
     };
+    let shells = ws.shells.clone();
+    let default_shell = ws.default_shell_name();
+    let default_wsl = ws
+        .config
+        .shell
+        .program
+        .as_deref()
+        .is_some_and(|p| is_shell(p, "wsl"));
+    // The Shell list's choice, redrawn with the dialog as it changes.
+    let shell = cx.new(|_| draft.shell.clone());
     let name = field(&draft.name, "What the menu shows", window, cx);
     let command = field(
         &draft.command,
@@ -179,13 +231,14 @@ pub(crate) fn agent_dialog(
         None => "Add an agent".to_string(),
     };
     let save = {
-        let (entity, name, command, resume, generate, models, id) = (
+        let (entity, name, command, resume, generate, models, shell, id) = (
             entity.clone(),
             name.clone(),
             command.clone(),
             resume.clone(),
             generate.clone(),
             models.clone(),
+            shell.clone(),
             id.clone(),
         );
         move |window: &mut Window, cx: &mut App| -> bool {
@@ -196,6 +249,7 @@ pub(crate) fn agent_dialog(
                 show: draft.show,
                 generate: generate.read(cx).value().to_string(),
                 models: models.read(cx).value().to_string(),
+                shell: shell.read(cx).clone(),
             };
             let saved = entity.update(cx, |ws, cx| ws.save_agent(id.as_deref(), &draft, cx));
             match saved {
@@ -208,7 +262,27 @@ pub(crate) fn agent_dialog(
         }
     };
     let first = name.clone();
-    window.open_alert_dialog(cx, move |alert, _, _| {
+    window.open_alert_dialog(cx, move |alert, _, cx| {
+        let current = shell.read(cx).clone();
+        let choices = shell_choices(&default_shell, &shells, false, current.as_deref());
+        // The note while the agent runs in WSL: its own shell is, or it follows Settings ▸ Shell.
+        let in_wsl = match &current {
+            // A label not found opens the default.
+            Some(label) => shells
+                .iter()
+                .find(|s| s.label == *label)
+                .map_or(default_wsl, |s| is_shell(&s.program, "wsl")),
+            None => default_wsl,
+        };
+        let pick = {
+            let (shell, entity) = (shell.clone(), entity.clone());
+            move |value: SharedString, cx: &mut App| {
+                shell.update(cx, |shell, _| {
+                    *shell = Some(value.to_string()).filter(|v| !v.is_empty())
+                });
+                entity.update(cx, |_, cx| cx.notify());
+            }
+        };
         let label = |text: &'static str| {
             div()
                 .mt(px(4.0))
@@ -266,6 +340,26 @@ pub(crate) fn agent_dialog(
                             None => "Templum's: a new session (this agent can't resume by folder)"
                                 .to_string(),
                         }))
+                    })
+                    .child(label("Shell"))
+                    .child(menu_button(
+                        "menu-agent-shell",
+                        choices,
+                        current.clone().unwrap_or_default().into(),
+                        true,
+                        pick,
+                    ))
+                    .when(in_wsl, |el| {
+                        el.child(
+                            div()
+                                .id("agent-shell-wsl")
+                                .child(default(
+                                    "In WSL the agent gets none of Templum's tools, hooks or \
+                                     status line, and isn't resumed after a restart."
+                                        .to_string(),
+                                ))
+                                .test_support(),
+                        )
                     })
                     .child(
                         div()

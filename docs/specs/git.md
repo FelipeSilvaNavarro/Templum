@@ -68,37 +68,70 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
 
 ## 1. Layout and navigation
 
-- **Where it shows:** a popup over the canvas's bottom-left corner, beside the sidebar, 760 × 540 (smaller in a
-  small window), drawn at a fixed scale: it never zooms with the canvas. The Git button (GitBranch icon) at the
+- **Where it shows:** a popup over the canvas's bottom-left corner, beside the sidebar, at the **Size**
+  below, drawn at a fixed scale: it never zooms with the canvas. The Git button (GitBranch icon) at the
   sidebar's foot, apart from the workspaces under a hairline, or Ctrl+Shift+G (Cmd+Shift+G), opens and closes it;
   so do Esc, while the Git has the keyboard and no field does, and its ✕.
+- **Size:** 760 × 540 until the person drags it to another. Its **right edge**, its **top edge** and the corner
+  between them resize it, each showing the matching resize cursor on hover; the left edge rests against the sidebar
+  and the bottom one against the window's, so the popup grows to the right and upward, its bottom-left corner
+  staying where it is. It is never smaller than 600 × 420 and never bigger than the window less the 8 px it keeps
+  from the window's edges and the sidebar (a window with less room than the minimum gets the room). The size is
+  **kept** in `workspaces/index.json` (`git_size`, see [workspaces.md](workspaces.md)), written when the pointer is
+  let go and shared by every workspace's Git, so closing and opening the popup, or restarting Templum, gives it
+  back. Only the size **drawn** is clamped to the window: a smaller window shrinks the popup, and a larger one
+  gives the size set back; a drag keeps what it sets inside the room it was dragged in, so the pointer going back
+  shrinks the popup at once. The Split diff's sides follow the popup's width.
 - **One Git per workspace:** switching workspace shows that workspace's repository. The first time the popup opens
   in a workspace it picks the focused terminal's folder, else another terminal's, else the workspace's folder, else
   the newest recent folder; with none, the folder dialog asks. Its status is read every 2 s only while the popup is
   open, and when a terminal's command ends in the repository while it is open.
-- **Header:** the repository folder's name with ▾. A click opens the **folder menu**: the repositories this
-  workspace's terminals work in, then the workspace's recent folders (each once, the one shown left out), then
-  Choose another folder…, Refresh, Open a terminal here (at the view's center; the popup closes).
+- **Header:** a tile with the repository icon in the theme's accent, then the repository folder's name with ▾. A
+  click on it opens the **folder menu**: the repositories this workspace's terminals work in, then the workspace's
+  recent folders (each once, the one shown left out), then Choose another folder…, Refresh, Open a terminal here
+  (at the view's center; the popup closes). The header's right side has the actions below and ✕.
 - **Saved** in the workspace's file as an optional `git` object (`session::SavedGit`: folder, tab, summary,
   description, the left column folded, Split). An older file's Git block item becomes the workspace's Git (its
   folder, tab and commit message draft) and no block; items of kind `git` are never written again.
-- **Top bar,** left to right:
-  - **the current branch** as a pill. A click opens the **branch switcher**: a search field over the local
-    branches, then the remote ones; Enter switches (with [the switch flow](#switching-branches)); a last row
-    **+ New branch…**.
+- **Under the name,** dimmed, one line:
+  - **the current branch.** A click opens the **branch dialog**, which switches and creates: a search field over
+    the local branches, then the remote ones, each row drawn as in the Branches tab (the name, bold with a check
+    for the current one, and ↑↓ against its upstream; under it the last commit's subject and age; the check is the
+    accent's in the tab and the row's text color in the dialog, whose selected row is filled with the accent, its
+    text the accent text color of [the design system](design-system.md) (`accent_foreground`); the first 50 matches, then one row "N more: keep typing to narrow them"; the branch the text names, a
+    remote's without its `origin/`, is the first of its group, and the Remote group goes first when only its first
+    row is that);
+    Enter or a click switches (with [the switch flow](#switching-branches)). A name no branch has gets a row
+    **Create branch "name"**, which makes the branch at HEAD and switches to it (git's own message when it refuses
+    the name); a name that a remote branch has, without its `origin/`, gets none (switching to that one makes the
+    tracking branch). Opened from the branch name, the row comes last, so Enter right after typing still takes the
+    first match. **+ New branch…** (Branches tab) and **Create a branch here** (the old-version banner) open the same
+    dialog with the row **first**, for any name typed, so Enter right after typing never switches: it makes the name
+    typed even when another branch holds it (`login` while `feature/login` or `origin/login` exists), and git
+    refuses a local name that is taken in its own words, HEAD staying where it is (from a detached HEAD a switch
+    would leave its commits behind). A remote branch's full name (`origin/login`) is refused too, saying so: a
+    local branch of that name would make `origin/login` ambiguous for every comparison and merge. **New branch here…** (a commit's menu)
+    opens it too; from a commit it lists no branches (there is nothing to switch to from there) and creates at that
+    commit.
   - **where it stands with the server:** "↑2 ↓1", "up to date", or "not published", with a tooltip in words
     ("2 commits of yours not pushed yet, 1 on the server you don't have").
+  - the terminals working in the repository, while any: a click lists them.
+- **Header actions,** left to right:
+  - **Compare with `main`** (an icon, named by its tooltip), while the current branch isn't the default one (see
+    [Comparison](#comparison)).
   - **Sync**, the main button: pull then push (see [Sync](#sync)). It is **Publish branch** while the branch has
-    no upstream (see [Sync](#sync) for the remote it goes to). Beside it, **⋯**: Fetch, Pull, Push, Recently
-    discarded…, Clone a repository….
-  - **Compare with `main`**, while the current branch isn't the default one (see [Comparison](#comparison)).
-  - **↻** refresh.
-- **Banner** under the bar during a merge, rebase, cherry-pick or revert, or on a detached HEAD: one sentence on
-  what is happening and its buttons (Abort, Continue; Create a branch here, Back to *default*).
-- **Tabs:** Changes, History, Branches, Stashes.
+    no upstream (see [Sync](#sync) for the remote it goes to). Tinted with the accent while there is something to
+    send or get (not published, ↑ or ↓), quiet when up to date.
+  - **↻** refresh, then **⋯**: Fetch, Pull, Push, Recently discarded…, Clone a repository….
+- **Tabs:** Changes (with the count of changed files), History, Branches, Stashes, each with its icon; the shown
+  one underlined in the accent.
+- **Banner** under the tabs during a merge, rebase, cherry-pick or revert, or on a detached HEAD: a yellow strip,
+  one sentence on what is happening and its buttons (Abort, Continue; Create a branch here, Back to *default*). A
+  failed read shows the same way, in red.
 - **Body:** a left column, 300 world units, with the tab's list and, in Changes, the commit area under it; and the
-  **diff panel** on the right, the same component in every tab. A button at the column's top folds it, so the diff
-  takes the whole width; the block remembers it.
+  **diff panel** on the right, the same component in every tab. A button at the panel header's left folds the
+  column (but in Branches), so the diff takes the whole width, and unfolds it in the same place; the block
+  remembers it.
 - **Keyboard,** while the Git has the focus. It has a focus handle of its own: opening the popup, or a click in
   it, focuses it, its key handler takes the keys below and stops them, and the workspace's shortcuts still work, as
   in an editor block. `copy` copies the diff's selection while the Git has the focus.
@@ -114,9 +147,10 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
 | Ctrl+Enter (Cmd+Enter) | commit |
 | Ctrl+Shift+C (Cmd+C) | copy the diff's selection |
 
-  A line at the diff panel's foot names them. They only act while the Git has the focus and no field does.
+  The keyboard icon in the diff panel's header names them in its tooltip. They only act while the Git has the focus
+  and no field does.
 - **Empty states** say it in words with a useful button: "Nothing changed since the last commit" (History, switch
-  branch), "No stashes", "No other branches" (+ New branch…).
+  branch), "No stashes", "No other branches" (+ New branch…, which opens the branch dialog).
 - **Zoom:** none; the popup keeps its scale whatever the canvas's zoom.
 
 ## 2. The diff panel
@@ -124,9 +158,11 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
 One component shows four sources: the **working changes** (unstaged and staged), **a commit** (against its first
 parent), **a stash**, and **a comparison** of two branches.
 
-- **Panel header:** a title ("Working changes · 4 files · +120 −30", "Commit a1b2c3d · 3 files", "feature vs main ·
-  7 commits · 12 files"); **Unified / Split** (one column, or side by side; remembered by the block); **Ignore
-  whitespace** (`-w`); **Expand all / Collapse all**.
+- **Panel header:** the fold button, a title ("Working changes · 4 files · +120 −30", "Commit a1b2c3d · 3 files",
+  "feature vs main · 7 commits · 12 files"), and icons named by their tooltips, shown while there is a diff:
+  **Unified / Split** (one column, or side by side; remembered by the block), **Ignore whitespace** (`-w`; kept
+  while on, since it can hide every change), **Expand all / Collapse all**, and the keyboard's keys. An icon that
+  is on is tinted with the accent.
 - **Every file in one scroll.** Each starts with a **file row:** a fold arrow, the path (its folder dimmed), the
   status letter in its colored badge, `+n −m`, and its actions (Stage/Unstage, Discard, Open in editor; only the
   ones that apply to the source). A click on the left column's file scrolls the panel there.
@@ -188,12 +224,23 @@ parent), **a stash**, and **a comparison** of two branches.
 - **Discard never loses anything:** before any discard (a hunk, a file, all) the files are copied to the trash
   ([Safe actions](#the-trash)); the notification says "Discarded src/x.rs" with **Undo**.
 - **Commit area** under the lists:
-  - **Summary,** with a quiet counter that warns past 72 characters; **Description**; **Generate ✨**
-    ([section 7](#7-commit-messages-from-an-agent)); **Amend** (fills the fields with the last commit's message, as
-    today).
-  - **Commit** with a menu ▾: **Commit**, **Commit & Push** (a Publish when the branch has no upstream). With
-    nothing staged and something changed, the button is **Commit all changes (5 files)**: it stages everything,
-    new files included (`git add --all`), then commits.
+  - **Summary** ("Commit message"), with a quiet counter that warns past 72 characters; **Generate ✨**
+    ([section 7](#7-commit-messages-from-an-agent)); **Description** under it once there is a summary (or a
+    description, or Amend).
+  - **One file needs no message.** When the commit holds exactly one file (what the button counts) and the summary
+    is empty, Commit works and commits as **"Update a.rs"**, **"Add a.rs"** (a new file) or **"Delete a.rs"**, by the
+    file's name and what happens to it ("Rename a.rs to b.rs" for a rename, "Move a.rs to src/" when only the folder
+    changed). The summary field's placeholder shows that sentence in place of "Commit message", so the person knows
+    what will be used. With no files or two or more, while amending, and during a merge, rebase, cherry-pick or
+    revert (which prepare their own message), a summary is required as before; a summary that is typed always wins.
+    The sentence is made from what is staged when the commit runs (after Commit all changes has staged), not from
+    the status the form last read: if that is no longer exactly one file (an agent wrote another in between), nothing
+    is committed, a notification says the files changed, and the summary gets the keyboard if the person is still in that workspace with the Git popup open.
+  - **Commit,** the whole column's width, filled with the theme's accent once committing is possible, quiet before.
+    Its ▾: **Commit**, **Commit & Push** (a Publish when the branch has no upstream), and **Amend the last commit**
+    (fills the fields with the last commit's message; while on, a strip says "Amending the last commit" with ✕).
+    With nothing staged and something changed, the button is **Commit all changes (5 files)**: it stages
+    everything, new files included (`git add --all`), then commits.
   - After a commit: "Committed a1b2c3d" with **Undo commit** ([Undoing a commit](#undoing-a-commit); only while
     that commit isn't on the upstream). The fields clear; the draft is kept across restarts as today. Undo puts
     the undone commit's message back in the fields, to fix and commit again.
@@ -277,8 +324,9 @@ on it. A clone that wants credentials fails with **Run in a terminal**, as other
 - **Local** first: the current one marked; each with ↑↓ against its upstream and its last commit's subject and
   age (`BRANCH_FORMAT` gains `%(committerdate:unix)`; it has no date today). **Remote** in a folded group. A
   filter field.
-- **Click:** switch, with [the switch flow](#switching-branches). **+ New branch…** from the current one (and, in
-  History, from a chosen commit).
+- **Click:** switch, with [the switch flow](#switching-branches). **+ New branch…** opens the
+  [branch dialog](#1-layout-and-navigation) (and, in History, a commit's **New branch here…** opens it to create
+  at that commit).
 - **Right-click:** **Compare with `main`**, Merge into *current*…, Rename…, Delete…, Publish, Copy name.
 
 ### Worktrees an agent made
@@ -464,11 +512,11 @@ headlessly.
 | File | Holds |
 |---|---|
 | `git_block/diff_view/` | The diff panel: its rows (file, hunk, lines, folded stretch), unified and split layouts, highlighting with the cache, the selection, the sticky title. |
-| `git_block/*.rs` | The tabs reorganized around the left column and the panel; the block's focus handle and key handler; the branch switcher; the banners; the Generate button, its spinner and the first-use confirmation (what `message.rs` runs). |
+| `git_block/*.rs` | The tabs reorganized around the left column and the panel; the block's focus handle and key handler; the branch dialog; the banners; the Generate button, its spinner and the first-use confirmation (what `message.rs` runs). |
 | `config.rs`, `settings/` | `[agents]`'s `generate` and `models`; `[git.commit_message]`; `[git.repositories]` (an owned table name in `Edit`); the Git section and the agents dialog's new part. |
-| `workspace/` | `copy` for the focused Git's selection; `git_ops.rs`: opening, closing and pointing the workspace's Git (`toggle_git`, `open_git`, `close_git`, `set_git_folder`, `git_folders`, `poll_git`); `render.rs` places the popup. |
+| `workspace/` | `copy` for the focused Git's selection; `git_ops.rs`: opening, closing and pointing the workspace's Git (`toggle_git`, `open_git`, `close_git`, `set_git_folder`, `git_folders`, `poll_git`); `render.rs` places the popup; `input.rs` resizes it (`begin_git_resize`, `release_git_resize`, `git_popup_size`). |
 | `sidebar.rs` | The Git button at the sidebar's foot. |
-| `session.rs` | `SavedGit`: the workspace's Git, with `diff` and `lists`. |
+| `session.rs` | `SavedGit`: the workspace's Git, with `diff` and `lists`; `Index.git_size` (`SavedSize`): the popup's size. |
 
 **Data flow:** every git command still goes through the block's queue (`git_job`/`act_job`, one at a time, results
 dropped when the block changed folder); a diff is read in the background, parsed in `templum-git`, and turned into
@@ -511,7 +559,7 @@ date order.
   and copy, Send to;
 - each hunk button, an untracked file's row without them, the trash's Undo and Restore, a discard over the cap
   and one without a data folder, Commit all changes, Commit & Push, Undo commit (its message back in the fields);
-- the branch switcher and the switch question's four answers; the unpushed-commits notification;
+- the branch dialog and the switch question's four answers; the unpushed-commits notification;
 - Sync's fast-forward and diverged cases, Publish to the only remote and the menu with several, Clone;
 - Compare, conflicts region by region with the markers' labels (a merge and a rebase), Mark resolved and
   Continue;
@@ -538,7 +586,7 @@ One plan per batch, each usable on its own:
 |---|---|
 | 1 | The diff panel (Unified) in Changes, with selection, folding, special files, highlighting |
 | 2 | Hunk stage and discard, the trash, the new layout and size, the keyboard, Commit all changes, Commit & Push, Undo commit |
-| 3 | Safe actions: the branch switcher and the switch question, Sync, Publish, Clone, tooltips, the detached-HEAD banner |
+| 3 | Safe actions: the branch dialog and the switch question, Sync, Publish, Clone, tooltips, the detached-HEAD banner |
 | 4 | Branches tab, Compare, conflicts region by region |
 | 5 | History with the graph, search modes, file history, Restore this version, Blame, Split mode |
 | 6 | Commit messages from an agent: Generate, Settings ▸ Git, the agents dialog's Commit messages part |

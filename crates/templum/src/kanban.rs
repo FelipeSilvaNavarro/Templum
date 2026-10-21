@@ -1,5 +1,5 @@
-//! A kanban block's body: the board list, or a board's columns and cards with drag and drop;
-//! and the dialog of an open card. Everything is drawn at the block's zoom `z`, like a
+//! A kanban block's body: a board's columns and cards with drag and drop, or a word that it shows
+//! none; the Boards dialog, and the dialog of an open card. Everything is drawn at the block's zoom `z`, like a
 //! terminal's text. See docs/specs/kanban.md.
 
 use std::cell::{Cell, RefCell};
@@ -7,23 +7,31 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::dialog::Confirm;
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::button::Button;
+use gpui_kit::component::dialog::{Cancel, Confirm};
+use gpui_kit::component::input::{
+    Input, InputEvent, InputState, Position, Textarea, TextareaState,
+};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::scroll::Scrollbar;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, BoxShadow, ClickEvent, ClipboardItem, Context, DragMoveEvent, ElementId,
-    Entity, FontWeight, MouseButton, MouseDownEvent, Render, ScrollHandle, ScrollWheelEvent,
-    SharedString, TestSupportExt, Window, div, point, px, relative,
+    AnyElement, App, BoxShadow, ClickEvent, ClipboardItem, Context, Div, DragMoveEvent, ElementId,
+    Entity, FontWeight, Hsla, MouseButton, MouseDownEvent, Render, ScrollHandle, ScrollWheelEvent,
+    SharedString, Stateful, TestSupportExt, Window, div, point, px, relative,
 };
 use templum_canvas::{BlockId, EDGE_ZONE, Point, Rect, Size, edge_scroll};
 
 use crate::board::{Assignee, Board, Boards, Card, Column, Comment, Label, Priority};
 use crate::checklists;
+use crate::git_block::Check;
+use crate::git_block::widgets::{check_box, field, icon_button};
 use crate::grid::hsla;
+use crate::list_dialog;
 use crate::menu::Target;
+use crate::note;
 use crate::notes;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
@@ -33,19 +41,16 @@ pub(crate) const SIZE: Size = Size { w: 900.0, h: 540.0 };
 pub(crate) const MIN: Size = Size { w: 420.0, h: 280.0 };
 const COLUMN_W: f32 = 260.0;
 
-/// A kanban block: the board it shows, if any, and whether it shows the board list instead.
+/// A kanban block: the board it shows, if any.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Kanban {
     pub board: Option<u64>,
-    pub picking: bool,
 }
 
 impl Kanban {
-    /// The board on screen: none while picking, or when it was deleted.
+    /// The board on screen: none when it was deleted.
     pub fn shown<'a>(&self, ws: &'a Workspace) -> Option<&'a Board> {
-        self.board
-            .filter(|_| !self.picking)
-            .and_then(|id| ws.boards.board(id))
+        self.board.and_then(|id| ws.boards.board(id))
     }
 
     /// The block's title.
@@ -221,7 +226,7 @@ fn name(prefix: &str, n: usize, id: u64) -> ElementId {
     ElementId::Name(format!("{prefix}-{n}-{id}").into())
 }
 
-/// The body below the header: the board, or the board list.
+/// The body below the header: the board, or a word that there is none.
 pub(crate) fn body(
     ws: &Workspace,
     block: BlockId,
@@ -232,7 +237,7 @@ pub(crate) fn body(
 ) -> AnyElement {
     let view = match kanban.shown(ws) {
         Some(board) => board_view(ws, block, board, z, window, cx),
-        None => list_view(ws, block, z, cx),
+        None => empty(ws, block, z, cx),
     };
     // The wheel scrolls what is in the block, and stops there; with Ctrl it zooms the canvas.
     div()
@@ -246,106 +251,92 @@ pub(crate) fn body(
         .into_any_element()
 }
 
-fn list_view(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
-    let ui = ws.ui;
+/// A block with no board: a new one, or one from the dialog.
+fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
     let n = block.0 as usize;
-    let rows: Vec<AnyElement> = ws
-        .boards
-        .boards
-        .iter()
-        .map(|board| {
-            let id = board.id;
-            let cards = board.card_count();
-            let row = div()
-                .id(name("board-row", n, id))
-                .flex()
-                .items_center()
-                .justify_between()
-                .px(px(12.0 * z))
-                .py(px(10.0 * z))
-                .rounded(px(8.0 * z))
-                .border_1()
-                .border_color(ui.hairline)
-                .bg(ui.surface)
-                .cursor_pointer()
-                .hover(move |s| s.bg(ui.hover).border_color(ui.hover_border))
-                .child(
-                    div()
-                        .text_size(px(14.0 * z))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(board.name.clone()),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.0 * z))
-                        .text_color(ui.title_dim)
-                        .child(if cards == 1 {
-                            "1 card".to_string()
-                        } else {
-                            format!("{cards} cards")
-                        }),
-                )
-                .on_click(
-                    cx.listener(move |ws, _: &ClickEvent, _, cx| ws.show_board(block, id, cx)),
-                )
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-                        ws.open_menu(Target::Board { block, board: id }, e.position, window, cx);
-                        cx.stop_propagation();
-                    }),
-                )
-                .test_support();
-            row.into_any_element()
-        })
-        .collect();
-    let new = div()
-        .id(("new-board", n))
-        .flex()
-        .items_center()
-        .gap(px(6.0 * z))
-        .px(px(12.0 * z))
-        .py(px(10.0 * z))
-        .rounded(px(8.0 * z))
-        .border_1()
-        .border_color(ui.hairline)
-        .text_size(px(13.0 * z))
-        .text_color(ui.title)
-        .cursor_pointer()
-        .hover(move |s| s.bg(ui.hover))
-        .active(move |s| s.bg(ui.pressed))
-        .child(Icon::new(IconName::Plus).size(px(14.0 * z)))
-        .child("New board")
-        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.new_board(block, cx)))
-        .test_support();
     div()
-        .id(("board-list", n))
+        .id(("kanban-empty", n))
         .size_full()
-        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(8.0 * z))
         .child(
             div()
-                .flex()
-                .flex_col()
-                .gap(px(8.0 * z))
-                .p(px(12.0 * z))
-                .child(
-                    div()
-                        .text_size(px(18.0 * z))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Boards"),
-                )
-                .child(
-                    div()
-                        .mb(px(6.0 * z))
-                        .text_size(px(12.0 * z))
-                        .text_color(ui.title_dim)
-                        .child("Pick the board this block shows. Every block can show any board."),
-                )
-                .children(rows)
-                .child(new),
+                .text_size(px(13.0 * z))
+                .text_color(ws.ui.title_dim)
+                .child("No board open here"),
+        )
+        .child(
+            note::button(("board-new-here", n), IconName::Plus, "New board", ws, z)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.new_board(block, cx)))
+                .test_support(),
+        )
+        .child(
+            note::button(
+                ("board-open-here", n),
+                IconName::LayoutDashboard,
+                "Open a board…",
+                ws,
+                z,
+            )
+            .on_click(
+                cx.listener(move |_, _: &ClickEvent, window, cx| open_boards(block, window, cx)),
+            )
+            .test_support(),
         )
         .test_support()
         .into_any_element()
+}
+
+/// The Boards dialog: every board, and a field that finds them by their name and their cards'
+/// titles. A click, or New board, shows the board in the block `into`; its trash deletes it on a
+/// second click, and the blocks that showed it show none.
+pub(crate) fn open_boards(into: BlockId, window: &mut Window, cx: &mut Context<Workspace>) {
+    let kind = list_dialog::Kind {
+        title: "Boards",
+        prefix: "board",
+        find: "Find a board",
+        none: "No boards yet.",
+        no_match: "No board holds that.",
+        new: "New board",
+    };
+    list_dialog::open(
+        kind,
+        rows,
+        move |ws, id, _, cx| ws.show_board(into, id, cx),
+        |ws, id, _, cx| ws.delete_board(id, cx),
+        move |ws, _, cx| ws.new_board(into, cx),
+        window,
+        cx,
+    );
+}
+
+/// The Boards dialog's rows for `query`: each board's name, then its cards and where it is open
+/// ("12 cards · Open").
+fn rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
+    ws.boards
+        .find(query)
+        .into_iter()
+        .map(|board| {
+            let cards = match board.card_count() {
+                1 => "1 card".to_string(),
+                n => format!("{n} cards"),
+            };
+            let at = ws.board_open_at(board.id);
+            let detail: Vec<String> = [Some(cards), list_dialog::open_at(ws, at)]
+                .into_iter()
+                .flatten()
+                .collect();
+            list_dialog::Row {
+                id: board.id,
+                title: board.name.clone(),
+                detail: detail.join(" · "),
+                dot: None,
+            }
+        })
+        .collect()
 }
 
 fn board_view(
@@ -405,6 +396,35 @@ fn board_view(
         .on_drag_move(on_edge::<ColumnDrag>(&edge, block, false, z, cx))
         .children(columns)
         .child(add)
+        .test_support()
+        .into_any_element()
+}
+
+/// A scrollbar over a list that scrolls on `handle` (a column's cards, the ask_user dialog's
+/// body): gpui-component's, as the notes' and the menus' are, which the theme shows on hover or
+/// while scrolling and only once the content overflows. Its track and thumb (the widths
+/// gpui-component draws at zoom 1) scale with the zoom `z` like everything in the block:
+/// unscaled, the track would be a quarter of a column at 0.25.
+pub(crate) fn scrollbar_over(handle: &ScrollHandle, id: ElementId, z: f32) -> AnyElement {
+    div()
+        .id(id)
+        .absolute()
+        .inset_0()
+        .child(
+            Scrollbar::vertical(handle)
+                .id("thumb")
+                .viewport_from_layout()
+                .styles(|s| {
+                    s.track(|t| t.width(px(16.0 * z)))
+                        .thumb(|t| {
+                            t.width(px(6.0 * z))
+                                .inset(px(4.0 * z))
+                                .min_length(px(48.0 * z))
+                        })
+                        .thumb_hover(|t| t.width(px(8.0 * z)))
+                        .thumb_active(|t| t.width(px(8.0 * z)))
+                }),
+        )
         .test_support()
         .into_any_element()
 }
@@ -526,24 +546,52 @@ fn column_view(
         })
         .child(header)
         .child(
+            // The scrollbar goes over the list, not in it: in it, it would scroll away.
             div()
-                .id(name("cards", n, col))
+                .relative()
                 .flex_1()
                 .min_h(px(0.0))
-                .overflow_y_scroll()
-                .track_scroll(&edge.read(cx).handle)
-                // A card dragged near the top or bottom of the list scrolls it.
-                .on_drag_move(on_edge::<CardDrag>(&edge, BlockId(n as u64), true, z, cx))
+                .flex()
+                .flex_col()
                 .child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.0 * z))
-                        .px(px(6.0 * z))
-                        .pb(px(6.0 * z))
-                        .children(cards),
+                        .id(name("cards", n, col))
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .overflow_y_scroll()
+                        .track_scroll(&edge.read(cx).handle)
+                        // The scrollbar over the list takes every press on its strip, whatever the
+                        // button, before the card and the block under it: these go ahead of it, in
+                        // the capture phase. The block is picked, and the middle button pans the
+                        // canvas as it does over the rest of the block. A right-click opens the
+                        // card's menu from the card (`card_view`).
+                        .capture_any_mouse_down(cx.listener(
+                            move |ws, e: &MouseDownEvent, window, cx| {
+                                ws.focus_block(BlockId(n as u64), window, cx);
+                                if e.button == MouseButton::Middle {
+                                    ws.begin_pan(e.position);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
+                        // A card dragged near the top or bottom of the list scrolls it.
+                        .on_drag_move(on_edge::<CardDrag>(&edge, BlockId(n as u64), true, z, cx))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.0 * z))
+                                .px(px(6.0 * z))
+                                .pb(px(6.0 * z))
+                                .children(cards),
+                        )
+                        .test_support(),
                 )
-                .test_support(),
+                .child(scrollbar_over(
+                    &edge.read(cx).handle,
+                    name("scrollbar", n, col),
+                    z,
+                )),
         )
         .child(add)
         .test_support()
@@ -716,14 +764,14 @@ fn card_view(
                 open_card(board, current, false, window, cx)
             }
         }))
-        .on_mouse_down(
-            MouseButton::Right,
-            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-                ws.focus_block(BlockId(n as u64), window, cx);
+        // In the capture phase, ahead of a long column's scrollbar (see `column_view`). The list
+        // has picked the block by then.
+        .capture_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+            if e.button == MouseButton::Right {
                 ws.open_menu(Target::Card { board, card: id }, e.position, window, cx);
                 cx.stop_propagation();
-            }),
-        )
+            }
+        }))
         .test_support()
         .into_any_element()
 }
@@ -866,6 +914,308 @@ fn place(boards: &Boards, board: u64, card: u64) -> String {
     format!("In {column} on {}", b.name)
 }
 
+/// The card dialog's width, and the room at the sides of its header, body and footer. It is the
+/// window's dialog: its sizes are pixels at the window's scale, whatever the canvas's zoom.
+const DIALOG_W: f32 = 600.0;
+const SIDE: f32 = 20.0;
+
+/// A section's header in the card's dialog: its icon and name at the left and, at the right, what
+/// it holds.
+fn section(ui: Ui, icon: IconName, label: &'static str, count: Option<String>) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .child(Icon::new(icon).size(px(13.0)).text_color(ui.title_dim))
+        .child(
+            div()
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(ui.title)
+                .child(label),
+        )
+        .when_some(count, |el, count| {
+            el.child(
+                div()
+                    .ml_auto()
+                    .text_size(px(11.0))
+                    .text_color(ui.title)
+                    .child(count),
+            )
+        })
+}
+
+/// A property's row in the card's dialog: its icon and name, then what the caller adds.
+fn property(ui: Ui, icon: IconName, label: &'static str) -> Div {
+    div()
+        .min_h(px(32.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .child(
+            div()
+                .w(px(92.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .text_size(px(12.0))
+                .text_color(ui.title)
+                .child(Icon::new(icon).size(px(14.0)).text_color(ui.title_dim))
+                .child(label),
+        )
+}
+
+/// A button of the dialog's footer and comment field: `label` in `color` on `bg`, with an icon
+/// before it, if any.
+pub(crate) fn pill(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: Option<IconName>,
+    bg: Hsla,
+    color: Hsla,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(30.0))
+        .px(px(14.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0))
+        .rounded(px(8.0))
+        .bg(bg)
+        .text_color(color)
+        .text_size(px(12.5))
+        .font_weight(FontWeight::SEMIBOLD)
+        .cursor_pointer()
+        .hover(|s| s.opacity(0.85))
+        .when_some(icon, |el, icon| {
+            el.child(Icon::new(icon).size(px(14.0)).text_color(color))
+        })
+        .child(label.into())
+}
+
+/// One segment of a strip in a dialog (the card's Priority): lit in the theme's accent while `on`.
+/// The caller adds what it shows.
+pub(crate) fn segment(ui: Ui, id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(24.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .rounded(px(6.0))
+        .text_size(px(12.0))
+        .cursor_pointer()
+        .map(|el| {
+            if on {
+                el.bg(ui.accent.opacity(0.16))
+                    .text_color(ui.accent)
+                    .font_weight(FontWeight::MEDIUM)
+            } else {
+                el.text_color(ui.title).hover(move |s| s.bg(ui.hover))
+            }
+        })
+}
+
+/// The rounded strip that holds a dialog's segments.
+pub(crate) fn strip(ui: Ui) -> Div {
+    div()
+        .flex()
+        .gap(px(2.0))
+        .p(px(2.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(ui.hairline)
+}
+
+/// A dialog's red ghost button with the trash icon (Delete card, Delete account).
+pub(crate) fn danger(id: impl Into<ElementId>, label: &'static str, red: Hsla) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(30.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .rounded(px(8.0))
+        .text_size(px(12.5))
+        .text_color(red)
+        .cursor_pointer()
+        .hover(move |s| s.bg(red.opacity(0.12)))
+        .child(Icon::new(IconName::Trash).size(px(14.0)).text_color(red))
+        .child(label)
+}
+
+/// The comment of an open card being edited in its place, by its number, and its field.
+type Editing = Rc<RefCell<Option<(u64, Entity<TextareaState>)>>>;
+/// Ends that edit: saved (true) or not.
+type Finish = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+/// The comments the person deleted from an open card, each with its place in the thread, in the
+/// order they were deleted: a row stands where each was, with Undo, until the dialog closes.
+type Deleted = Rc<RefCell<Vec<(usize, Comment)>>>;
+
+/// Saves what the person typed in the comment being edited, if it holds text, and ends the edit:
+/// a dialog that closes, or another comment's pencil, mustn't drop it silently. The same words
+/// change nothing.
+fn save_draft(ws: &Entity<Workspace>, editing: &Editing, board: u64, card: u64, cx: &mut App) {
+    let Some((id, input)) = editing.borrow_mut().take() else {
+        return;
+    };
+    let text = input.read(cx).value().trim().to_string();
+    if !text.is_empty() {
+        ws.update(cx, |ws, cx| {
+            ws.edit_boards(|b| b.edit_comment(board, card, id, &text));
+            cx.notify();
+        });
+    }
+}
+
+/// What stands where the person deleted comment `id`: it says so, and Undo (`undo`) puts the
+/// comment back.
+fn removed_comment(
+    id: u64,
+    ui: Ui,
+    undo: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(format!("comment-deleted-{id}").into()))
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .px(px(12.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_dashed()
+        .border_color(ui.hairline)
+        .text_size(px(12.5))
+        .text_color(ui.title)
+        .child(
+            Icon::new(IconName::Trash)
+                .size(px(13.0))
+                .text_color(ui.title_dim),
+        )
+        .child("Comment deleted")
+        .child(div().text_color(ui.title_dim).child("·"))
+        .child(
+            div()
+                .id(ElementId::Name(format!("comment-undo-{id}").into()))
+                .px(px(6.0))
+                .py(px(2.0))
+                .rounded(px(5.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(ui.accent)
+                .cursor_pointer()
+                .hover(move |s| s.bg(ui.accent.opacity(0.12)))
+                .child("Undo")
+                .on_click(undo)
+                .test_support(),
+        )
+}
+
+/// A comment in the thread: its author's round mark, then who and when above what was said (its
+/// `body`: the bubble, or the field it is edited in). `actions`: the buttons that show at the
+/// right of the first line while the pointer is over the comment.
+fn comment_view(
+    ui: Ui,
+    tint: Hsla,
+    who: &str,
+    when: String,
+    actions: Div,
+    body: impl IntoElement,
+) -> Div {
+    let initial = who
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default();
+    div()
+        .flex()
+        .items_start()
+        .gap(px(10.0))
+        .child(
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .size(px(26.0))
+                .rounded_full()
+                .bg(tint.opacity(0.16))
+                .text_size(px(11.0))
+                .font_weight(FontWeight::BOLD)
+                .text_color(tint)
+                .child(initial),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    // The buttons are laid over the line's right end, so showing them moves nothing.
+                    div()
+                        .relative()
+                        .flex()
+                        .items_baseline()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(who.to_string()),
+                        )
+                        .child(div().text_size(px(11.0)).text_color(ui.title).child(when))
+                        .child(actions.absolute().top(px(-4.0)).right_0()),
+                )
+                .child(body),
+        )
+}
+
+/// What a comment said, in its bubble: the person's own in the theme's accent.
+fn bubble(ui: Ui, mine: bool, text: String) -> Div {
+    div()
+        .px(px(12.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .bg(if mine {
+            ui.accent.opacity(0.10)
+        } else {
+            ui.card
+        })
+        .text_size(px(13.0))
+        .line_height(relative(1.5))
+        .child(text)
+}
+
+/// A small icon button of a comment, shown while the pointer is over its `group`.
+fn comment_action(
+    id: String,
+    icon: IconName,
+    tip: &'static str,
+    group: &SharedString,
+    ui: Ui,
+) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(id.into()))
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(22.0))
+        .rounded(px(5.0))
+        .opacity(0.0)
+        .group_hover(group.clone(), |s| s.opacity(1.0))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(Icon::new(icon).size(px(12.0)).text_color(ui.title_dim))
+        .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+}
+
 /// The open card: title, description and labels apply as they change. `new`: the title is
 /// selected, to type over "New card".
 pub(crate) fn open_card(
@@ -881,10 +1231,15 @@ pub(crate) fn open_card(
     let title_focus = title.clone();
     let description = cx.new(|cx| {
         TextareaState::new(window, cx)
-            .rows(5)
+            .rows(4)
+            .placeholder("Add a description")
             .default_value(current.description.clone())
     });
-    let comment = cx.new(|cx| TextareaState::new(window, cx).rows(2));
+    let comment = cx.new(|cx| {
+        TextareaState::new(window, cx)
+            .rows(2)
+            .placeholder("Write a comment")
+    });
     let item = cx.new(|cx| InputState::new(window, cx).placeholder("Add an item"));
     // Enter adds what is typed (a line per item) and empties the field; it needs the window.
     {
@@ -937,6 +1292,42 @@ pub(crate) fn open_card(
         })
         .detach();
     }
+    // What is typed in the comment field is no change of the card, but it lights Comment up.
+    {
+        let ws = ws.clone();
+        App::subscribe(cx, &comment, move |_, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                ws.update(cx, |_, cx| cx.notify())
+            }
+        })
+        .detach();
+    }
+    // The comment being edited in its place, and its field: one at a time. It ends with Save
+    // (Enter), Cancel (Escape), or its comment being gone.
+    let editing: Editing = Rc::default();
+    let deleted: Deleted = Rc::default();
+    let finish: Finish = {
+        let (ws, editing, comment) = (ws.clone(), editing.clone(), comment.clone());
+        Rc::new(move |save, window, cx| {
+            let Some((id, input)) = editing.borrow().clone() else {
+                return;
+            };
+            if save {
+                let text = input.read(cx).value().trim().to_string();
+                // A comment needs text: the trash button takes one away.
+                if text.trim().is_empty() {
+                    return;
+                }
+                // The same words are no edit, and no step of Ctrl+Z.
+                ws.update(cx, |ws, _| {
+                    ws.edit_boards(|b| b.edit_comment(board, card, id, &text))
+                });
+            }
+            *editing.borrow_mut() = None;
+            comment.update(cx, |c, cx| c.focus(window, cx));
+            ws.update(cx, |_, cx| cx.notify());
+        })
+    };
     // A card gone meanwhile (an agent, another block, Ctrl+Z) draws its last values.
     let last = RefCell::new((current, String::new()));
     window.open_alert_dialog(cx, move |alert, _, cx| {
@@ -947,6 +1338,10 @@ pub(crate) fn open_card(
             *last.borrow_mut() = (c.clone(), place(&ws_now.boards, board, card));
         }
         let (shown, place) = last.borrow().clone();
+        // A comment that is in the thread again (Ctrl+Z, an agent) needs no Undo.
+        deleted
+            .borrow_mut()
+            .retain(|(_, c)| shown.comments.iter().all(|x| x.id != c.id));
         // Each change from the dialog is one step of the kanban's Ctrl+Z.
         let edit = {
             let ws = ws.clone();
@@ -960,60 +1355,53 @@ pub(crate) fn open_card(
                 }
             }
         };
+        // The six labels: a ring of the label's color, filled and checked while the card has it.
         let toggles = Label::ALL.map(|label| {
             let on = shown.labels.contains(&label);
+            let color = hsla(palette.ansi[label.ansi()], 1.0);
+            let name = label.name();
             div()
-                .id(ElementId::Name(format!("label-{}", label.name()).into()))
-                .w(px(40.0))
-                .h(px(22.0))
-                .rounded(px(6.0))
-                .bg(hsla(
-                    palette.ansi[label.ansi()],
-                    if on { 1.0 } else { 0.35 },
-                ))
+                .id(ElementId::Name(format!("label-{name}").into()))
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(22.0))
+                .rounded_full()
                 .border_2()
-                .border_color(if on {
-                    hsla(palette.foreground, 0.8)
-                } else {
-                    gpui_kit::transparent_black()
+                .border_color(color)
+                .when(on, |el| {
+                    el.bg(color).child(
+                        Icon::new(IconName::Check)
+                            .size(px(12.0))
+                            .text_color(hsla(palette.background, 1.0)),
+                    )
                 })
                 .cursor_pointer()
+                .hover(move |s| s.bg(color.opacity(if on { 0.85 } else { 0.25 })))
+                .tooltip(move |window, cx| {
+                    Tooltip::new(format!("Toggle the {name} label")).build(window, cx)
+                })
                 .on_click(edit(Rc::new(move |b| b.toggle_label(board, card, label))))
                 .test_support()
         });
+        // The priorities side by side in one rounded strip; the card's own is lit.
         let chips = std::iter::once(None)
             .chain(Priority::ALL.map(Some))
             .map(|p| {
-                let on = shown.priority == p;
                 let word = p.map_or("None", Priority::title);
-                div()
-                    .id(ElementId::Name(
+                segment(
+                    ui,
+                    ElementId::Name(
                         format!("priority-{}", p.map_or("none", Priority::name)).into(),
-                    ))
-                    .h(px(26.0))
-                    .px(px(10.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .rounded(px(6.0))
-                    .border_1()
-                    .text_size(px(12.0))
-                    .cursor_pointer()
-                    .map(|el| {
-                        if on {
-                            el.bg(ui.hover).border_color(ui.accent).text_color(ui.title)
-                        } else {
-                            el.border_color(ui.hairline)
-                                .text_color(ui.title_dim)
-                                .hover(move |s| s.bg(ui.hover))
-                        }
-                    })
-                    .when_some(p, |el, p| el.child(priority_icon(ws_now, p, 12.0)))
-                    .child(word)
-                    .on_click(edit(Rc::new(move |b| {
-                        b.edit_card(board, card, |c| c.priority = p)
-                    })))
-                    .test_support()
+                    ),
+                    shown.priority == p,
+                )
+                .when_some(p, |el, p| el.child(priority_icon(ws_now, p, 12.0)))
+                .child(word)
+                .on_click(edit(Rc::new(move |b| {
+                    b.edit_card(board, card, |c| c.priority = p)
+                })))
+                .test_support()
             });
         let now = notes::now();
         let author = |by: &str| {
@@ -1025,62 +1413,266 @@ pub(crate) fn open_card(
                 ws_now.uid_title(by, cx).unwrap_or_else(|| by.to_string())
             }
         };
+        let agent_tint = hsla(palette.ansi[5], 1.0);
+        // A comment gone meanwhile (an agent, Ctrl+Z) ends its edit.
+        if editing
+            .borrow()
+            .as_ref()
+            .is_some_and(|(id, _)| !shown.comments.iter().any(|c| c.id == *id))
+        {
+            *editing.borrow_mut() = None;
+        }
+        let editing_now = editing.borrow().clone();
         let comments: Vec<_> = shown
             .comments
             .iter()
             .map(|c| {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .child(
+                let (id, mine) = (c.id, c.by == "you");
+                let tint = if mine { ui.accent } else { agent_tint };
+                let mut when = notes::ago(c.at, now);
+                if c.edited {
+                    when.push_str(" · edited");
+                }
+                let group = SharedString::from(format!("comment-group-{id}"));
+                let field = editing_now.as_ref().filter(|(e, _)| *e == id);
+                let mut actions = div().flex().gap(px(2.0));
+                if field.is_none() {
+                    // The person may delete any comment: the board is theirs, and a row with Undo
+                    // stands where it was, as well as Ctrl+Z. They may edit only their own: an
+                    // agent's words changed by someone else would still wear its name.
+                    if mine {
+                        let begin = {
+                            let (ws, editing, finish) =
+                                (ws.clone(), editing.clone(), finish.clone());
+                            let text = c.text.clone();
+                            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                // Another comment's draft is kept, not dropped.
+                                save_draft(&ws, &editing, board, card, cx);
+                                let input = cx.new(|cx| {
+                                    TextareaState::new(window, cx)
+                                        .auto_grow(2, 8)
+                                        .submit_on_enter(true)
+                                        .default_value(text.clone())
+                                });
+                                // Enter saves (Shift+Enter adds a line); typing lights Save up.
+                                // The field outlives the edit when the dialog closes in the middle of
+                                // it: its subscription holds `finish` (and so the field) weakly.
+                                let (ws_typing, finish) = (ws.clone(), Rc::downgrade(&finish));
+                                window
+                                    .subscribe(
+                                        &input,
+                                        cx,
+                                        move |_, event: &InputEvent, window, cx| match event {
+                                            InputEvent::PressEnter { shift: false, .. } => {
+                                                if let Some(finish) = finish.upgrade() {
+                                                    finish(true, window, cx)
+                                                }
+                                            }
+                                            InputEvent::Change => {
+                                                ws_typing.update(cx, |_, cx| cx.notify())
+                                            }
+                                            _ => {}
+                                        },
+                                    )
+                                    .detach();
+                                // The caret goes after the last word, as to go on writing.
+                                let line = text.lines().count().saturating_sub(1) as u32;
+                                let column =
+                                    text.lines().last().map_or(0, |l| l.encode_utf16().count());
+                                input.update(cx, |input, cx| {
+                                    input.set_cursor_position(
+                                        Position::new(line, column as u32),
+                                        window,
+                                        cx,
+                                    )
+                                });
+                                *editing.borrow_mut() = Some((id, input));
+                                ws.update(cx, |_, cx| cx.notify());
+                            }
+                        };
+                        actions = actions.child(
+                            comment_action(
+                                format!("comment-edit-{id}"),
+                                IconName::Pencil,
+                                "Edit the comment",
+                                &group,
+                                ui,
+                            )
+                            .on_click(begin)
+                            .test_support(),
+                        );
+                    }
+                    actions = actions.child(
+                        comment_action(
+                            format!("comment-delete-{id}"),
+                            IconName::Trash,
+                            "Delete the comment",
+                            &group,
+                            ui,
+                        )
+                        .on_click({
+                            let (ws, deleted) = (ws.clone(), deleted.clone());
+                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                ws.update(cx, |ws, cx| {
+                                    let thread = ws.boards.card(board, card).map(|c| &c.comments);
+                                    let Some((index, comment)) = thread.and_then(|t| {
+                                        let i = t.iter().position(|c| c.id == id)?;
+                                        Some((i, t[i].clone()))
+                                    }) else {
+                                        return;
+                                    };
+                                    ws.edit_boards(|b| b.remove_comment(board, card, id));
+                                    deleted.borrow_mut().push((index, comment));
+                                    cx.notify();
+                                })
+                            }
+                        })
+                        .test_support(),
+                    );
+                }
+                let body = match field {
+                    None => bubble(ui, mine, c.text.clone()).into_any_element(),
+                    Some((_, input)) => {
+                        let can_save = !input.read(cx).value().trim().is_empty();
+                        let (bg, color) = if can_save {
+                            (ui.accent, ui.surface)
+                        } else {
+                            (ui.hover, ui.title_dim)
+                        };
+                        let (cancel, save) = (finish.clone(), finish.clone());
+                        let escape = finish.clone();
                         div()
-                            .text_size(px(11.0))
-                            .text_color(ui.title_dim)
-                            .child(format!("{} · {}", author(&c.by), notes::ago(c.at, now))),
-                    )
-                    .child(div().text_size(px(13.0)).child(c.text.clone()))
+                            .id(ElementId::Name(format!("comment-editor-{id}").into()))
+                            .flex()
+                            .flex_col()
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(ui.accent.opacity(0.6))
+                            .bg(ui.card)
+                            // Enter saves: it mustn't confirm (close) the dialog. Escape, which the
+                            // field hands on as the dialog's cancel, only ends the edit.
+                            .on_action(|_: &Confirm, _, cx| cx.stop_propagation())
+                            .on_action(move |_: &Cancel, window, cx| {
+                                escape(false, window, cx);
+                                cx.stop_propagation();
+                            })
+                            .child(
+                                div()
+                                    .id(ElementId::Name(format!("comment-edit-field-{id}").into()))
+                                    .child(Textarea::new(input).appearance(false).bordered(false))
+                                    .test_support(),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(6.0))
+                                    .px(px(8.0))
+                                    .pb(px(8.0))
+                                    .child(
+                                        div()
+                                            .id(ElementId::Name(
+                                                format!("comment-cancel-{id}").into(),
+                                            ))
+                                            .h(px(26.0))
+                                            .px(px(10.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .rounded(px(8.0))
+                                            .text_size(px(12.5))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(ui.title)
+                                            .cursor_pointer()
+                                            .hover(move |s| s.bg(ui.hover))
+                                            .child("Cancel")
+                                            .on_click(move |_: &ClickEvent, window, cx| {
+                                                cancel(false, window, cx)
+                                            })
+                                            .test_support(),
+                                    )
+                                    .child(
+                                        pill(
+                                            ElementId::Name(format!("comment-save-{id}").into()),
+                                            "Save",
+                                            Some(IconName::Check),
+                                            bg,
+                                            color,
+                                        )
+                                        .h(px(26.0))
+                                        .px(px(10.0))
+                                        .when(!can_save, |el| el.cursor_default())
+                                        .on_click(move |_: &ClickEvent, window, cx| {
+                                            save(true, window, cx)
+                                        })
+                                        .test_support(),
+                                    ),
+                            )
+                            .into_any_element()
+                    }
+                };
+                comment_view(ui, tint, &author(&c.by), when, actions, body)
+                    .id(ElementId::Name(format!("comment-{id}").into()))
+                    .group(group)
+                    .test_support()
             })
             .collect();
+        // The comments the person deleted stand as a row with Undo where each was.
+        let gone = deleted.borrow().clone();
+        let len = shown.comments.len();
+        let mut live = comments.into_iter();
+        let mut comments = Vec::new();
+        for at in 0..=len {
+            for (_, c) in gone.iter().filter(|(index, _)| (*index).min(len) == at) {
+                let id = c.id;
+                let (ws, deleted) = (ws.clone(), deleted.clone());
+                let row = removed_comment(id, ui, move |_, _, cx| {
+                    let taken = {
+                        let mut gone = deleted.borrow_mut();
+                        gone.iter()
+                            .position(|(_, c)| c.id == id)
+                            .map(|i| gone.remove(i))
+                    };
+                    if let Some((index, comment)) = taken {
+                        ws.update(cx, |ws, cx| {
+                            ws.edit_boards(|b| b.restore_comment(board, card, index, comment));
+                            cx.notify();
+                        });
+                    }
+                });
+                comments.push(row.test_support());
+            }
+            comments.extend(live.next());
+        }
+        let can_send = !comment.read(cx).value().trim().is_empty();
         let add = {
             let (ws, comment) = (ws.clone(), comment.clone());
-            Button::new("add-comment")
-                .small()
-                .label("Add comment")
+            let (bg, color) = if can_send {
+                (ui.accent, ui.surface)
+            } else {
+                (ui.hover, ui.title_dim)
+            };
+            pill("add-comment", "Comment", Some(IconName::ArrowUp), bg, color)
+                .h(px(26.0))
+                .px(px(10.0))
+                .when(!can_send, |el| el.cursor_default())
+                .tooltip(|window, cx| Tooltip::new("Add the comment").build(window, cx))
                 .on_click(move |_: &ClickEvent, window, cx| {
                     let text = comment.read(cx).value().trim().to_string();
                     if text.is_empty() {
                         return;
                     }
                     ws.update(cx, |ws, cx| {
-                        let said = Comment {
-                            by: "you".into(),
-                            text,
-                            at: notes::now(),
-                        };
-                        ws.edit_boards(|b| b.edit_card(board, card, |c| c.comments.push(said)));
+                        ws.edit_boards(|b| b.add_comment(board, card, "you", &text, notes::now()));
                         cx.notify();
                     });
                     comment.update(cx, |c, cx| c.set_value("", window, cx));
                 })
+                .test_support()
         };
         let delete = {
             let ws = ws.clone();
-            let red = hsla(palette.ansi[1], 1.0);
-            div()
-                .id("delete-card")
-                .h(px(28.0))
-                .px(px(10.0))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .rounded(px(6.0))
-                .text_size(px(13.0))
-                .text_color(red)
-                .cursor_pointer()
-                .hover(move |s| s.bg(ui.hover))
-                .child(Icon::new(IconName::Trash).size(px(14.0)).text_color(red))
-                .child("Delete card")
+            danger("delete-card", "Delete card", hsla(palette.ansi[1], 1.0))
                 .on_click(move |_: &ClickEvent, window, cx| {
                     ws.update(cx, |ws, cx| {
                         ws.edit_boards(|b| b.remove_card(board, card));
@@ -1090,63 +1682,13 @@ pub(crate) fn open_card(
                 })
                 .test_support()
         };
-        let section = |label: &'static str| {
-            div()
-                .text_size(px(12.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(ui.title_dim)
-                .child(label)
-        };
-        // A section's header: its label at the left, a count at the right.
-        let header = |label: &'static str, count: Option<String>| {
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(section(label))
-                .when_some(count, |el, count| {
-                    el.child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(ui.title_dim)
-                            .child(count),
-                    )
-                })
-        };
-        let property = |label: &'static str| {
-            div()
-                .min_h(px(28.0))
-                .flex()
-                .items_center()
-                .gap(px(12.0))
-                .child(
-                    div()
-                        .w(px(84.0))
-                        .flex_shrink_0()
-                        .text_size(px(12.0))
-                        .text_color(ui.title_dim)
-                        .child(label),
-                )
-        };
         let who = shown
             .assignee
             .as_ref()
             .map_or_else(|| "Anyone".to_string(), |a| assignee_label(ws_now, a, cx));
         let unassign = shown.assignee.is_some().then(|| {
-            div()
-                .id("unassign")
-                .size(px(24.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(6.0))
-                .cursor_pointer()
-                .hover(move |s| s.bg(ui.hover))
-                .child(
-                    Icon::new(IconName::Close)
-                        .size(px(12.0))
-                        .text_color(ui.title_dim),
-                )
+            icon_button("unassign", IconName::Close, ui, 1.0)
+                .tooltip(|window, cx| Tooltip::new("Give it to anyone").build(window, cx))
                 .on_click(edit(Rc::new(move |b| {
                     b.edit_card(board, card, |c| c.assignee = None)
                 })))
@@ -1157,34 +1699,26 @@ pub(crate) fn open_card(
         let items = shown.checklist.iter().map(|i| {
             let (id, done) = (i.id, i.done);
             let group = SharedString::from(format!("card-item-row-{id}"));
-            let check = div()
-                .id(ElementId::Name(format!("card-item-box-{id}").into()))
-                .flex_shrink_0()
-                .mt(px((13.0 * 1.5 - 14.0) / 2.0))
-                .size(px(14.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(3.0))
-                .border_1()
-                .border_color(if done { ui.accent } else { ui.title_dim })
-                .when(done, |el| {
-                    el.bg(ui.accent).child(
-                        Icon::new(IconName::Check)
-                            .size(px(10.0))
-                            .text_color(ui.surface),
-                    )
-                })
-                .cursor_pointer()
-                .on_click(edit(Rc::new(move |b| {
-                    b.set_item_done(board, card, id, !done);
-                })))
-                .test_support();
+            let check = check_box(
+                ElementId::Name(format!("card-item-box-{id}").into()),
+                if done {
+                    Check::Checked
+                } else {
+                    Check::Unchecked
+                },
+                ui,
+                1.0,
+            )
+            .mt(px((13.0 * 1.5 - 16.0) / 2.0))
+            .on_click(edit(Rc::new(move |b| {
+                b.set_item_done(board, card, id, !done);
+            })))
+            .test_support();
             let delete = div()
                 .id(ElementId::Name(format!("card-item-delete-{id}").into()))
                 .flex_shrink_0()
-                .mt(px((13.0 * 1.5 - 16.0) / 2.0))
-                .size(px(16.0))
+                .mt(px((13.0 * 1.5 - 18.0) / 2.0))
+                .size(px(18.0))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1195,9 +1729,10 @@ pub(crate) fn open_card(
                 .hover(move |s| s.bg(ui.hover))
                 .child(
                     Icon::new(IconName::Close)
-                        .size(px(10.0))
+                        .size(px(11.0))
                         .text_color(ui.title_dim),
                 )
+                .tooltip(|window, cx| Tooltip::new("Remove the item").build(window, cx))
                 .on_click(edit(Rc::new(move |b| b.remove_item(board, card, id))))
                 .test_support();
             div()
@@ -1205,8 +1740,11 @@ pub(crate) fn open_card(
                 .group(group)
                 .flex()
                 .items_start()
-                .gap(px(8.0))
-                .py(px(4.0))
+                .gap(px(10.0))
+                .px(px(6.0))
+                .py(px(5.0))
+                .rounded(px(6.0))
+                .hover(move |s| s.bg(ui.hover))
                 .child(check)
                 .child(
                     div()
@@ -1223,7 +1761,7 @@ pub(crate) fn open_card(
         let progress = (all > 0).then(|| {
             div()
                 .h(px(4.0))
-                .mb(px(4.0))
+                .mb(px(6.0))
                 .rounded_full()
                 .bg(ui.hover)
                 .child(
@@ -1234,38 +1772,116 @@ pub(crate) fn open_card(
                         .bg(ui.accent),
                 )
         });
-        alert
-            .title(
+        let thread = if comments.is_empty() {
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.0))
+                .py(px(14.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_dashed()
+                .border_color(ui.hairline)
+                .text_size(px(12.0))
+                .text_color(ui.title)
+                .child(
+                    Icon::new(IconName::MessageSquare)
+                        .size(px(13.0))
+                        .text_color(ui.title_dim),
+                )
+                .child("No comments yet")
+        } else {
+            div().flex().flex_col().gap(px(14.0)).children(comments)
+        };
+        let header = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .px(px(SIDE))
+            .pt(px(16.0))
+            .pb(px(14.0))
+            .border_b_1()
+            .border_color(ui.hairline)
+            .child(
                 div()
                     .id("card-number")
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .rounded(px(6.0))
+                    .bg(ui.accent.opacity(0.16))
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ui.accent)
+                    .child(Icon::new(IconName::Kanban).size(px(12.0)))
                     .child(format!("Card #{card}"))
                     .test_support(),
             )
-            .description(place)
-            .w(px(560.0))
-            .footer(
+            .child(
                 div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(delete)
-                    .child(
-                        Button::new("card-done")
-                            .primary()
-                            .label("Done")
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                    ),
-            )
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(ui.title)
+                    .child(place),
+            );
+        let footer = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px(px(SIDE))
+            .py(px(12.0))
+            .border_t_1()
+            .border_color(ui.hairline)
+            .child(delete)
+            .child(
+                pill("card-done", "Done", None, ui.accent, ui.surface)
+                    .on_click({
+                        let (ws, editing) = (ws.clone(), editing.clone());
+                        move |_, window, cx| {
+                            save_draft(&ws, &editing, board, card, cx);
+                            window.close_dialog(cx)
+                        }
+                    })
+                    .test_support(),
+            );
+        alert
+            .title(header)
+            // Enter in the title confirms the dialog, Escape cancels it: an edit in the middle
+            // keeps what was typed (Done, which closes it by itself, does the same).
+            .on_close({
+                let (ws, editing) = (ws.clone(), editing.clone());
+                move |_, _, cx| save_draft(&ws, &editing, board, card, cx)
+            })
+            .width(px(DIALOG_W))
+            // A block's own color, not the canvas's: the fields and the faint fills read on it.
+            .bg(ui.surface)
+            .pt(px(0.0))
+            .pb(px(0.0))
+            .pl(px(0.0))
+            .pr(px(0.0))
+            .footer(footer)
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(16.0))
+                    .gap(px(22.0))
+                    .px(px(SIDE))
+                    .pt(px(10.0))
+                    .pb(px(14.0))
                     .child(
                         div()
                             .id("card-title")
-                            .child(Input::new(&title))
+                            .child(Styled::h(
+                                Input::new(&title).text_size(px(15.0)).px(px(12.0)),
+                                px(38.0),
+                            ))
                             .test_support(),
                     )
                     .child(
@@ -1273,9 +1889,13 @@ pub(crate) fn open_card(
                             .id("card-properties")
                             .flex()
                             .flex_col()
-                            .gap(px(8.0))
+                            .gap(px(2.0))
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .rounded(px(8.0))
+                            .bg(ui.card)
                             .child(
-                                property("Assignee")
+                                property(ui, IconName::Bot, "Assignee")
                                     .child(assignee_menu(
                                         &ws,
                                         board,
@@ -1286,12 +1906,12 @@ pub(crate) fn open_card(
                                     .children(unassign),
                             )
                             .child(
-                                property("Priority")
-                                    .child(div().flex().gap(px(6.0)).children(chips)),
+                                property(ui, IconName::SignalHigh, "Priority")
+                                    .child(strip(ui).children(chips)),
                             )
                             .child(
-                                property("Labels")
-                                    .child(div().flex().gap(px(6.0)).children(toggles)),
+                                property(ui, IconName::Tag, "Labels")
+                                    .child(div().flex().gap(px(8.0)).children(toggles)),
                             )
                             .test_support(),
                     )
@@ -1299,16 +1919,18 @@ pub(crate) fn open_card(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(6.0))
-                            .child(section("Description"))
+                            .gap(px(8.0))
+                            .child(section(ui, IconName::FileText, "Description", None))
                             .child(Textarea::new(&description)),
                     )
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(6.0))
-                            .child(header(
+                            .gap(px(8.0))
+                            .child(section(
+                                ui,
+                                IconName::ListChecks,
                                 "Checklist",
                                 (all > 0).then(|| format!("{done}/{all}")),
                             ))
@@ -1322,14 +1944,18 @@ pub(crate) fn open_card(
                                     .child(
                                         div()
                                             .id("card-item-field")
-                                            .mt(px(4.0))
+                                            .mt(px(6.0))
                                             // Enter adds the item: it mustn't confirm (close) the dialog.
                                             .on_action(|_: &Confirm, _, cx| cx.stop_propagation())
-                                            .child(Input::new(&item).on_paste(paste_items(
-                                                ws.clone(),
-                                                board,
-                                                card,
-                                            )))
+                                            .child(
+                                                field(&item, 1.0)
+                                                    .prefix(
+                                                        Icon::new(IconName::Plus)
+                                                            .size(px(13.0))
+                                                            .text_color(ui.title_dim),
+                                                    )
+                                                    .on_paste(paste_items(ws.clone(), board, card)),
+                                            )
                                             .test_support(),
                                     )
                                     .test_support(),
@@ -1339,16 +1965,41 @@ pub(crate) fn open_card(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(6.0))
-                            .child(header("Comments", (count > 0).then(|| count.to_string())))
-                            .child(div().flex().flex_col().gap(px(10.0)).children(comments))
+                            .gap(px(10.0))
+                            .child(section(
+                                ui,
+                                IconName::MessageSquare,
+                                "Comments",
+                                (count > 0).then(|| count.to_string()),
+                            ))
+                            .child(thread)
                             .child(
                                 div()
-                                    .id("comment-field")
-                                    .child(Textarea::new(&comment))
-                                    .test_support(),
-                            )
-                            .child(div().mt(px(2.0)).flex().justify_end().child(add)),
+                                    .flex()
+                                    .flex_col()
+                                    .rounded(px(8.0))
+                                    .border_1()
+                                    .border_color(ui.hairline)
+                                    .bg(ui.card)
+                                    .child(
+                                        div()
+                                            .id("comment-field")
+                                            .child(
+                                                Textarea::new(&comment)
+                                                    .appearance(false)
+                                                    .bordered(false),
+                                            )
+                                            .test_support(),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .justify_end()
+                                            .px(px(8.0))
+                                            .pb(px(8.0))
+                                            .child(add),
+                                    ),
+                            ),
                     ),
             )
     });

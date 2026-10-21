@@ -211,9 +211,10 @@ impl Ask {
         text.lines().next().unwrap_or_default().to_string()
     }
 
-    /// One single-select question with options: a click on one answers at once.
+    /// A plan's Approve and Reject answer on a click: they are the decision itself. Every other
+    /// option only picks; Send answers.
     pub fn quick(&self) -> bool {
-        matches!(&self.questions[..], [q] if !q.multi && !q.options.is_empty())
+        self.plan.is_some()
     }
 
     /// The result's text: `answers[q]` holds the labels picked in question `q`, in option order,
@@ -372,7 +373,7 @@ impl Form {
     }
 
     /// The dialog's rows in order: for `questions`, each question's options then its Other, then
-    /// the note and Send; today's shape, its options alone, or its field and Send.
+    /// the note and Send; today's shape, its options and Send, or its field and Send.
     pub fn rows(ask: &Ask) -> Vec<Row> {
         // A plan's: Comment, then Reject on the left and Approve on the right.
         if ask.plan.is_some() {
@@ -380,11 +381,12 @@ impl Form {
         }
         if !ask.json {
             let options = ask.questions[0].options.len();
-            return if options == 0 {
-                vec![Row::Other(0), Row::Send]
-            } else {
-                (0..options).map(|i| Row::Option(0, i)).collect()
+            let mut rows = match options {
+                0 => vec![Row::Other(0)],
+                n => (0..n).map(|i| Row::Option(0, i)).collect(),
             };
+            rows.push(Row::Send);
+            return rows;
         }
         let mut rows: Vec<Row> = ask
             .questions
@@ -450,6 +452,13 @@ impl Form {
         (0..ask.questions.len())
             .map(|q| Some(self.answer_of(ask, q, others)).filter(|a| !a.is_empty()))
             .collect()
+    }
+
+    /// How many questions have an answer so far.
+    pub fn answered(&self, ask: &Ask, others: &[String]) -> usize {
+        (0..ask.questions.len())
+            .filter(|q| !self.answer_of(ask, *q, others).is_empty())
+            .count()
     }
 
     fn answer_of(&self, ask: &Ask, q: usize, others: &[String]) -> Vec<String> {
@@ -806,7 +815,10 @@ mod tests {
     #[test]
     fn todays_shape_has_no_other_nor_note() {
         let ask = parse(&json!({ "question": "Ship it?", "options": ["Yes", "No"] })).unwrap();
-        assert_eq!(Form::rows(&ask), [Row::Option(0, 0), Row::Option(0, 1)]);
+        assert_eq!(
+            Form::rows(&ask),
+            [Row::Option(0, 0), Row::Option(0, 1), Row::Send]
+        );
     }
 
     #[test]
@@ -853,6 +865,21 @@ mod tests {
             Some(Row::Option(0, 0)),
             "all answered: it stays"
         );
+    }
+
+    #[test]
+    fn the_foot_counts_the_questions_answered() {
+        let ask = singles(3);
+        let mut others = vec![String::new(); 3];
+        let mut form = Form::new(&ask);
+        assert_eq!(form.answered(&ask, &others), 0);
+        form.pick(&ask, 1, 0);
+        assert_eq!(form.answered(&ask, &others), 1);
+        others[2] = "later".into();
+        form.typed(&ask, 2, "later");
+        assert_eq!(form.answered(&ask, &others), 2, "Other's text counts");
+        form.typed(&ask, 2, "  ");
+        assert_eq!(form.answered(&ask, &others), 1, "a blank one doesn't");
     }
 
     #[test]

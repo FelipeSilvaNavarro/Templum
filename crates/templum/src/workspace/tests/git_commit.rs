@@ -1,5 +1,7 @@
 //! The Git block: committing, syncing with a remote, and failures.
 
+use gpui_kit::Focusable as _;
+
 use super::*;
 
 #[test]
@@ -31,29 +33,35 @@ const COMMIT_KEY: &str = "ctrl-enter";
 fn commit_needs_something_staged_and_a_summary_then_commits(cx: &mut TestAppContext) {
     use crate::git_block::row_id;
     let repo = git_repo();
+    // Two files: one alone would be committed with a generic message.
     std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+    std::fs::write(repo.path().join("b.txt"), "one\n").unwrap();
     let (handle, ws) = open(cx);
     open_git(handle, &ws, cx, repo.path());
+    // The button always shows; it commits only when committing is possible.
     let disabled = |cx: &mut TestAppContext| {
-        cx.update_window(handle, |_, window, _| {
-            window.try_find("git-commit").is_none()
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("git-commit").is_some());
         })
-        .unwrap()
+        .unwrap();
+        ws.read_with(cx, |ws, cx| !ws.space.git().unwrap().can_commit(cx))
     };
     assert!(disabled(cx), "nothing staged");
-    click_row_button(
-        handle,
-        cx,
-        row_id("files", 0),
-        git_button("check", "files", 0),
-    );
+    for i in 0..2 {
+        click_row_button(
+            handle,
+            cx,
+            row_id("files", i),
+            git_button("check", "files", i),
+        );
+    }
     assert!(disabled(cx), "no summary");
     let summary = git_of(&ws, cx, |g| g.summary.clone());
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.focus(window, cx));
         window.input("Add a", cx);
         window.render_frame(cx);
-        assert!(window.try_find("git-commit").is_some());
         window.click("git-commit", cx);
     })
     .unwrap();
@@ -70,6 +78,214 @@ fn commit_needs_something_staged_and_a_summary_then_commits(cx: &mut TestAppCont
         assert_eq!(summary.read(cx).value(), "", "cleared")
     });
     assert_eq!(notification_count(handle, cx), 1, "Committed abc1234");
+}
+
+/// Commit's state with the summary left empty: whether it can commit, and what the field's
+/// placeholder promises.
+fn empty_summary(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> (bool, String) {
+    ws.read_with(cx, |ws, cx| {
+        let g = ws.space.git().unwrap();
+        (g.can_commit(cx), g.placeholder.to_string())
+    })
+}
+
+#[gpui_kit::test]
+fn a_commit_of_one_file_needs_no_message_and_the_field_says_what_it_will_be(
+    cx: &mut TestAppContext,
+) {
+    use crate::git_block::row_id;
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    // Nothing staged, one change: Commit all changes takes it.
+    assert_eq!(empty_summary(&ws, cx), (true, "Update a.txt".to_string()));
+    // A second file: a message is needed again, and the field is the plain one.
+    std::fs::write(repo.path().join("new.txt"), "n\n").unwrap();
+    settle_read(handle, &ws, cx);
+    assert_eq!(
+        empty_summary(&ws, cx),
+        (false, "Commit message".to_string())
+    );
+    // Staging one of the two is a commit of one file: "Add new.txt" (the row of the new file).
+    click_row_button(
+        handle,
+        cx,
+        row_id("files", 1),
+        git_button("check", "files", 1),
+    );
+    assert_eq!(empty_summary(&ws, cx), (true, "Add new.txt".to_string()));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("git-commit", cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["show", "--name-only", "--format=%s", "HEAD"]),
+        "Add new.txt\n\nnew.txt\n"
+    );
+    // a.txt is left, alone again: its own sentence.
+    assert_eq!(empty_summary(&ws, cx), (true, "Update a.txt".to_string()));
+}
+
+#[gpui_kit::test]
+fn a_typed_summary_wins_over_the_generic_one_and_a_deleted_file_is_named_so(
+    cx: &mut TestAppContext,
+) {
+    let repo = committed_repo();
+    std::fs::remove_file(repo.path().join("a.txt")).unwrap();
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    assert_eq!(empty_summary(&ws, cx), (true, "Delete a.txt".to_string()));
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("Drop a", window, cx));
+        window.render_frame(cx);
+        window.click("git-commit", cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["log", "-1", "--format=%s"]),
+        "Drop a\n"
+    );
+}
+
+/// The form read the status up to 2 s ago: "Update a.txt" was made for one file, and an agent may
+/// have written another since. Committing both under that name would be a wrong message.
+#[gpui_kit::test]
+fn a_file_that_appeared_after_the_status_was_read_is_not_committed_under_the_one_files_name(
+    cx: &mut TestAppContext,
+) {
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    assert_eq!(empty_summary(&ws, cx), (true, "Update a.txt".to_string()));
+    // The read hasn't seen this one yet.
+    std::fs::write(repo.path().join("new.txt"), "n\n").unwrap();
+    let head = git_run(repo.path(), &["rev-parse", "HEAD"]);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("git-commit", cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["rev-parse", "HEAD"]),
+        head,
+        "nothing committed"
+    );
+    assert_eq!(notification_count(handle, cx), 1, "it says why");
+    // Both are staged now, the field is the plain one, and a message commits them.
+    assert_eq!(
+        empty_summary(&ws, cx),
+        (false, "Commit message".to_string())
+    );
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
+    cx.update_window(handle, |_, window, cx| {
+        assert!(summary.read(cx).focus_handle(cx).is_focused(window));
+        summary.update(cx, |s, cx| s.set_value("Both", window, cx));
+        window.render_frame(cx);
+        window.click("git-commit", cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["show", "--name-only", "--format=%s", "HEAD"]),
+        "Both\n\na.txt\nnew.txt\n"
+    );
+}
+
+/// A commit that stops for a message while the person does `leave` (between the click and the end
+/// of the job): the warning shows, and nothing takes them back.
+fn a_commit_that_stops_while(
+    cx: &mut TestAppContext,
+    leave: impl FnOnce(&mut Workspace, &mut Window, &mut gpui_kit::Context<Workspace>),
+) -> (AnyWindowHandle, Entity<Workspace>) {
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    assert_eq!(empty_summary(&ws, cx), (true, "Update a.txt".to_string()));
+    // The read hasn't seen this one yet: the job finds two files and stops for a message.
+    std::fs::write(repo.path().join("new.txt"), "n\n").unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("git-commit", cx);
+        ws.update(cx, |ws, cx| leave(ws, window, cx));
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(notification_count(handle, cx), 1, "it says why");
+    (handle, ws)
+}
+
+#[gpui_kit::test]
+fn a_commit_that_stops_for_a_message_does_not_reopen_a_popup_closed_meanwhile(
+    cx: &mut TestAppContext,
+) {
+    let (_, ws) = a_commit_that_stops_while(cx, |ws, window, cx| ws.close_git(window, cx));
+    assert!(!ws.read_with(cx, |ws, _| ws.git_open), "still closed");
+}
+
+#[gpui_kit::test]
+fn a_commit_that_stops_for_a_message_does_not_take_back_to_a_workspace_left_meanwhile(
+    cx: &mut TestAppContext,
+) {
+    let first = std::cell::RefCell::new(None);
+    let (_, ws) = a_commit_that_stops_while(cx, |ws, window, cx| {
+        *first.borrow_mut() = Some(ws.space.id.clone());
+        ws.new_space(window, cx);
+    });
+    let now = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    assert_ne!(Some(now), first.into_inner(), "still in the new workspace");
+}
+
+#[gpui_kit::test]
+fn an_amend_still_needs_its_message(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    // Staged, so that without the guard the one staged file would give the sentence.
+    git_run(repo.path(), &["add", "a.txt"]);
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    assert_eq!(empty_summary(&ws, cx).1, "Update a.txt");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.set_amend(true, window, cx))
+    })
+    .unwrap();
+    settle(handle, cx);
+    // Its files aren't known, and the fields hold the last commit's message.
+    git_of(&ws, cx, |g| assert_eq!(g.generic_summary(), None));
+    assert_eq!(empty_summary(&ws, cx).1, "Commit message");
+}
+
+#[gpui_kit::test]
+fn during_a_merge_the_prepared_message_is_not_replaced_by_the_generic_one(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    git_run(repo.path(), &["checkout", "-q", "-b", "feat"]);
+    std::fs::write(repo.path().join("b.txt"), "b\n").unwrap();
+    git_run(repo.path(), &["add", "b.txt"]);
+    git_run(repo.path(), &["commit", "-q", "-m", "b"]);
+    git_run(repo.path(), &["checkout", "-q", "main"]);
+    git_run(
+        repo.path(),
+        &["merge", "-q", "--no-ff", "--no-commit", "feat"],
+    );
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    git_of(&ws, cx, |g| {
+        assert!(g.operation.is_some(), "merging");
+        assert_eq!(g.status.staged().len(), 1, "one file, b.txt");
+        assert_eq!(g.generic_summary(), None);
+    });
+    // The merge's own message is what a commit uses; a sentence made up here would replace it.
+    assert_eq!(
+        empty_summary(&ws, cx),
+        (false, "Commit message".to_string())
+    );
 }
 
 #[gpui_kit::test]
@@ -95,9 +311,14 @@ fn ctrl_enter_commits_with_the_description_and_amend_fills_the_fields(cx: &mut T
         git_run(repo.path(), &["log", "-1", "--format=%B"]).trim_end(),
         "Add b\n\nWhy b."
     );
-    // Amend: the fields show the last message; off again: they clear.
-    cx.update_window(handle, |_, window, cx| window.click("git-amend", cx))
-        .unwrap();
+    // Amend, from Commit's ▾: the fields show the last message; off again: they clear.
+    cx.update_window(handle, |_, window, cx| {
+        window.click("git-commit-menu", cx);
+        window.render_frame(cx);
+        // Commit, Commit & Push, a separator, Amend the last commit.
+        window.within("popup-menu").click(3usize, cx);
+    })
+    .unwrap();
     settle(handle, cx);
     ws.read_with(cx, |ws, cx| {
         assert!(ws.space.git().unwrap().amend);
@@ -174,7 +395,10 @@ fn without_an_author_commit_is_disabled_and_set_asks_for_one(cx: &mut TestAppCon
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.set_value("x", window, cx));
         window.render_frame(cx);
-        assert!(window.try_find("git-commit").is_none(), "no author");
+        assert!(
+            !ws.read(cx).space.git().unwrap().can_commit(cx),
+            "no author"
+        );
         window.click("git-set-author", cx);
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx));

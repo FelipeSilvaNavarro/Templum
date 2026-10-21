@@ -3,13 +3,14 @@
 //! passes, its call is cancelled or its connection ends, or its block closes.
 
 use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::InputState;
 use gpui_kit::{App, Context, Entity, Focusable as _, Subscription, Window};
 use serde_json::Value;
 use templum_canvas::{BlockId, Level};
-use templum_mcp::ask::{Ask, Form};
+use templum_mcp::ask::{Ask, Form, Row};
 use templum_mcp::tools::Event;
 use templum_mcp::{Replier, Reply, tools};
 use templum_terminal::Pattern;
@@ -45,6 +46,11 @@ pub(crate) struct Wait {
     pub what: Waiting,
     /// When the balloon first drew it, by the executor's clock.
     pub shown: Cell<Option<Instant>>,
+    /// The scroll of the balloon's body, past what fits of its terminal's height.
+    pub body: crate::markdown::PreviewScroll,
+    /// The row the keys just moved the highlight to: the body scrolls to show it once, when it is
+    /// drawn (a wheel that scrolled it away since isn't fought).
+    pub reveal: Rc<Cell<Option<Row>>>,
 }
 
 /// A field of a question's dialog, and what it hears from it.
@@ -191,6 +197,8 @@ impl Workspace {
             from: asked.from,
             what,
             shown: Cell::new(None),
+            body: Default::default(),
+            reveal: Rc::default(),
         };
         let looks = matches!(
             wait.what,
@@ -302,6 +310,7 @@ impl Workspace {
     /// The connection `conn` ended (its agent quit, its command exited): what it waited for has
     /// no one to answer.
     pub(super) fn closed(&mut self, conn: u64, cx: &mut Context<Self>) {
+        self.tool_conns.remove(&conn);
         let gone: Vec<Wait> = self.waits.extract_if(.., |w| w.conn == conn).collect();
         for wait in &gone {
             self.unwatch(wait);

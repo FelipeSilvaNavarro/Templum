@@ -24,10 +24,10 @@ would have opened together with the block's. The canvas and the blocks had no me
 
 | Right-click on | Items |
 |---|---|
-| The empty canvas | **AI agent ▸** (the agents), **Add ▸** Terminal, Kanban board, Note, Checklist, Editor, **Notes…** (the Notes dialog), **Checklists…** (the Checklists dialog). The block's top-left corner goes where you clicked. |
+| The empty canvas | **AI agent ▸** (the agents), **Add ▸** Terminal ▸ (Default, then the shells found, [shells.md](shells.md#the-menus)), Kanban board, Note, Checklist, Editor, **Notes…** (the Notes dialog), **Checklists…** (the Checklists dialog). The block's top-left corner goes where you clicked. |
 | A terminal block (header or body) | Copy (disabled without a selection), Paste, *the grid's items*, Close terminal |
-| A kanban block (header, or its empty space) | Board list (or Back to the board, while the list shows), *the grid's items*, Close |
-| A note block | All notes… (the Notes dialog), Copy all (the note on screen), Send to ▸ (the workspace's terminals), Color ▸ (None and the six label colors, for the note on screen), *the grid's items*, Close |
+| A kanban block (header, or its empty space) | All boards… (the Boards dialog), Rename board… and Delete board… (asks first; for the board it shows), *the grid's items*, Close |
+| A note block | All notes… (the Notes dialog), Rename… (the note on screen's name), Copy all (the note on screen), Send to ▸ (the workspace's terminals), Color ▸ (None and the six label colors, for the note on screen), *the grid's items*, Close |
 | A checklist block | All checklists… (the Checklists dialog), *the grid's items*, Close |
 | An editor block | Change folder…, Hide (or Show) the file tree, Turn soft wrap on (or off), Send to ▸, *the grid's items*, Close |
 | A file in an editor's tree | Open, Reveal in file manager, File history, Blame (in the Git popup, moved to the file's repository when it shows another), Rename…, Delete… |
@@ -46,11 +46,14 @@ would have opened together with the block's. The canvas and the blocks had no me
 | A branch in the Git popup | Compare with *main* (the default branch; not on itself), Merge into *current*…, Rename…, Delete… (an unmerged one asks again with its count), Publish (a local branch with no upstream, or one deleted on the server), Copy name |
 | A stash in the Git popup | Apply, Pop, Drop…, Show |
 | The toolbar's AI agent button | The agents; the chosen one opens in the middle of the canvas |
-| A board in a block's board list | Open, Rename…, Delete… |
+| The toolbar's Terminal button (a click) | Default (*its name*), then the shells found; the chosen one opens where a new terminal goes |
 | A column's title | Rename…, Add a card, Delete |
 | A card | Open, Send to ▸, Delete card (asks first) |
 | A workspace tile in the sidebar, or its card on the workspaces screen | Open (disabled for the one shown), Edit…, Stop (disabled while it is the only workspace, or stopped), Delete… (disabled for the last workspace) |
 | A drawing (with the Select tool) | Delete |
+
+Every block's header has a **⋯** (More), shown on hover beside Fullscreen and Close, which opens the block's menu at the
+click, as a right-click does.
 
 Every block's menu ends with **Move to workspace ▸** (the other workspaces, a stopped one disabled, and New
 workspace; the selection the block is in moves with it), then Close.
@@ -72,7 +75,7 @@ workspace's blocks left on the canvas), then **Flip the split** (a tile with a n
 | File | Change |
 |---|---|
 | `menu.rs` (new) | `Target` (what was right-clicked), `Workspace::open_menu`, each target's items, and drawing the open menu |
-| `workspace.rs` | The open menu; the canvas's right-click; `add_terminal_at` and `add_kanban_at` |
+| `workspace.rs` | The open menu; the canvas's right-click; `open_shell` and `add_kanban_at` |
 | `block.rs`, `kanban.rs`, `sidebar.rs` | Each right-clickable element opens its target's menu and stops the event, so the innermost menu wins |
 
 The menu itself is gpui-kit's `PopupMenu`, drawn the way its `context_menu` draws it.
@@ -85,8 +88,9 @@ gets a `Target` variant, its `Items` arm, and a right-click handler that calls `
 
 **Headless UI:**
 
-- right-clicking the empty canvas, then **Add ▸ Terminal** or **Add ▸ Kanban board**, adds that block with its
+- right-clicking the empty canvas, then **Add ▸ Terminal ▸** a shell or **Add ▸ Kanban board**, adds that block with its
   top-left corner at the click;
+- the toolbar's Terminal opens the shells' menu; Esc closes it and opens nothing;
 - right-clicking a card opens the card's menu, not its block's;
 - a terminal's menu closes it;
 - a second right-click replaces the first menu.

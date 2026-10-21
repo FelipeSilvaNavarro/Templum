@@ -66,6 +66,22 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
 
 From batches 3 and 4 (line numbers of `development` at 5046612).
 
+- [ ] **The branch dialog's rows have lost their dim second line.** `branch_lines`
+  (`crates/templum/src/git_block/branches.rs:359`) draws the commit's subject, its age and ↑↓ at the text's full color
+  on every row of the dialog (`None => el`), not only on the selected one, so a person sees two lines of the same
+  weight of color; only size and weight tell them apart. Fix: in the `CommandItem` closure, read the selected index of
+  the `CommandState` and dim with `title_dim` every row but the selected one.
+- [ ] **A branch can still be renamed, or a worktree made, with a remote branch's full name.** `rename_branch`
+  (`crates/templum-git/src/repo.rs:1430`) and `add_worktree` (`:519`, whose name may hold `/`) make
+  `refs/heads/origin/main` without the refusal `new_branch` has, so `origin/main` turns ambiguous and rebase, merge
+  and Compare quietly use the stale local one. Fix: move `new_branch`'s `show-ref --verify refs/remotes/<name>`
+  check into a helper the three call.
+- [ ] **The branch dialog's Remote group can't be folded, as the Branches tab's can.**
+  `crates/templum/src/git_block/switcher.rs`, `open`: a palette heading (`CommandGroup::label`) is a plain row with
+  no click, so Remote is always open; with hundreds of remote branches a person sees 50 rows and "N more". Fix: a
+  `Pick::Fold` item row ("Remote · N") that flips an `Rc<Cell<bool>>` kept by `open`, without closing the dialog, and
+  that folds only while nothing is typed (a query that matches only remote branches must not hide them).
+
 - [ ] **A comparison's "⋯ 40 unchanged lines" does nothing when clicked.** `fold_row`
   (`crates/templum/src/git_block/diff_view/paint.rs:460`) is inert on a read-only panel: Compare's diff is read once
   with git's 3 lines of context. Fix: read that file of the range again with `-U` and its length (as `show_whole`
@@ -164,6 +180,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Tests
 
+- [ ] **The PowerShell piping test failed once on macOS CI.** `powershell_gives_typed_agents_templums_words`
+  (`crates/templum-terminal/src/integration.rs`) types `'x' | claude -p review` right after `typed_qwen`'s last
+  command; on PR #46's macOS runner the line never showed on the screen and the wait for `claude.args` ran out (30
+  s), while the run before passed. PowerShell can drop what is typed while it gets its next prompt ready, as
+  `type_first` already handles for the first line. Fix: wait for the prompt (the reported folder, or `wait_pressing`
+  with `\r`) before typing each piped line.
 - [ ] **Three tests don't check the words they are about.** `discard_all_with_a_filter_on_takes_only_the_rows_shown`
   (`crates/templum/src/workspace/tests/git_layout.rs`) doesn't check the count in the question;
   `a_hunk_that_changed_since_it_was_read_is_refused` (`tests/git_hunks.rs`) checks the notification count, not "The
@@ -193,9 +215,26 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   on a loaded machine lands past the 150 ms glide. A person sees nothing; a contributor may see CI fail once. Fix:
   let the test set the glide's clock (a progress it passes in, or a start far enough from both ends that a late frame
   stays mid-glide), not the real clock.
+- [ ] **`a_clone_stopped_midway_leaves_no_folder_and_an_empty_one_empty` fails now and then on Linux.**
+  (`crates/templum-git/tests/repo.rs:2003`, "Couldn't run …/slow-git: Text file busy (os error 26)", seen once in a
+  full `cargo test --workspace` during card 69; it passed alone and on the next run.) The test writes its fake `git`
+  script and runs it at once while another test thread forks, which holds the file's write descriptor open (ETXTBSY).
+  A person sees nothing; a contributor may see CI fail once. Fix: write the script, `sync_all` it and drop the
+  handle, then retry the spawn once on `ErrorKind::ExecutableFileBusy`, or create the script before any thread starts.
+- [ ] **`stop_agent_ends_what_an_agent_that_quit_left_running` fails when the machine is busy.**
+  (`crates/templum/src/workspace/tests/spawn.rs:1099`, "its job wrote its file", seen at 4748d5b in a full
+  `cargo test --workspace`, 84 s; it passed alone three times.) The job left running is
+  `sleep 3 && touch f` and the test has to stop it before that, after a 1.5 s sleep of its own, so a loaded machine
+  that delays `stop_agent` lets the job write its file. A person sees nothing; a contributor may see CI fail once.
+  Fix: a longer job (`sleep 10`, the final wait to match) so the stop has seconds to spare, or have the job loop
+  until a "stopped" file exists and fail the test if it ever ends by itself.
 
 ## Release and benches
 
+- [ ] **`--bench-git` measures only the default Git popup size.** The bench has no data folder, so the popup is
+  760×540, but a person can now drag it to the whole window (`git_size`, `crates/templum/src/workspace/input.rs`):
+  about 2.5× the diff rows on a 1440p window, and longer lines on each Split side. Fix: a bench variant, or a one-off
+  run, with `git_size` set to the window's room, checking p95 <= 16.7 ms.
 - [ ] **The CHANGELOG will list three features twice.** Batch 2 has a `feat` commit for the library and another for
   the UI of the same feature: 726079b with c7e13c6 (hunks), 1d5bc9a with cb26cfd (the trash), efdd911 with 6362120
   (commit all, undo commit). Fix: edit the generated section at the next release so each feature reads once.
@@ -290,15 +329,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `crates/templum/src/workspace/selection.rs`): resuming it would put two agents on one conversation, so a copied
   Claude Code terminal pastes as a shell in its folder. Fix: type the agent's own command (not its resume command)
   into the pasted shell.
-- [ ] **A held block doesn't move the canvas near its edge.** A block dragged by its title stops at the canvas's
-  edge: the camera goes there only for the selection rectangle (`marquee_edge`,
-  `crates/templum/src/workspace/selection.rs`) and the wheel (`on_background_scroll`, `input.rs`). A person must let
-  go, pan, and grab it again (or scroll while holding it). Fix: keep the pointer and the last frame's time in
-  `Drag::Canvas` as `Drag::Marquee` does, and a per-frame `move_edge` that pans by `edge_scroll` and re-applies the
-  gesture.
 
 ## Notes
 
+- [ ] **A note block with more tabs than fit keeps the tab on screen out of view.** The strip scrolls sideways
+  (`tab_strip`, `crates/templum/src/tab_strip.rs`) but nothing scrolls it to the lit tab, so opening a note from the
+  Notes dialog into a full block shows no tab lit, and the + is out of reach until the strip is scrolled. Fix: keep a
+  `ScrollHandle` for the strip and `scroll_to_item` the active tab when it changes.
 - [ ] **Undoing a blank note's close brings back an empty block.** A blank note goes when its block closes
   (`drop_if_blank`, `crates/templum/src/workspace/note_tabs.rs`), so Ctrl+Z after closing it, or Ctrl+Shift+Z after
   undoing a new note block, shows "No note open here". Fix: in `add_saved`, a note item whose notes are all gone opens
@@ -316,6 +353,15 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   root when the focused element isn't drawn; `release_focus` runs only when a block is closed, a note's preview
   toggles or an editor's file changes (`crates/templum/src/workspace/blocks.rs`), not when a pan or zoom takes the
   block off screen. Fix: release the focus of a block that leaves the viewport, for every kind.
+
+- [ ] **A note's name can't be renamed from the block's header.** A double click on the title frames the block
+  (`title` in `crates/templum/src/block.rs`, `frame_block`), so renaming is on the tab (double click) and in the
+  block's menu (Rename…, the right click's and the ⋯'s). Fix: for a note block, give the title's text its own double
+  click that calls `rename_note_tab` for the tab on screen and stops the press, so the frame stays on the bar around.
+- [ ] **`block::title` takes a `cx` nothing uses.** A note's title came from its editor's text, which needed it;
+  now it comes from `Workspace::notes` (`crates/templum/src/block.rs`), and the parameter is `_cx`. Dropping it frees the
+  same parameter in `about` (`workspace/bus.rs`), `tail` (`menu/mod.rs`) and `swap_overlay` (`workspace/render.rs`),
+  and the closures' in three tests. Fix: remove them all.
 
 ## Checklists
 
@@ -415,6 +461,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Programs in a terminal
 
+- [ ] **A shell only the login shell's PATH finds is forgotten on the first restore.** `found_shell`
+  (`crates/templum/src/workspace/persist.rs`) looks a saved terminal's shell up in `Workspace::shells`, read before the
+  login shell's PATH arrives (`read_shell_path`, a thread); `program_dirs`
+  (`crates/templum-terminal/src/agent.rs`) covers Homebrew, Nix, MacPorts and `~/.cargo/bin`, but a shell elsewhere
+  (a version manager's shim, a company's folder) started from the Dock or a desktop menu is missing, and the block
+  reopens the default, its saved shell forgotten for good (saved without it at the next write). Fix: write the login
+  PATH to a file in the data folder once it is read, and let `program_dirs` use that file until the fresh read arrives.
 - [ ] **Programs never hear the focus come and go.** Claude Code and Codex turn on focus reporting (mode 1004), but
   no block sends `CSI I` / `CSI O` (`focus_block`, `crates/templum/src/workspace/blocks.rs`), so a program that
   waits for focus to redraw or to stop notifying doesn't know. Fix: send them to the terminal losing and the one
@@ -428,6 +481,14 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The pointer stays a text cursor over a program that uses the mouse.** The body's `cursor_text`
   (`crates/templum/src/block.rs`) doesn't look at the mode, so htop's or Claude Code's buttons look like text to
   select. Fix: show the arrow when `modes().mouse`, read in the snapshot rather than under the lock while painting.
+- [ ] **Templum doesn't see an agent that runs in WSL.** `templum_terminal::inspect` reads the Windows processes under a
+  block's shell, and WSL 2's Linux processes aren't among them, so the snapshot (`Space::see`,
+  `crates/templum/src/workspace/mod.rs`) drops the agent `start_agent` named: an agent set to WSL (Settings ▸ Agents ▸
+  Shell), or opened while Settings ▸ Shell is WSL, has no status dot, closing its block doesn't warn, and a restart
+  brings back a WSL shell without it; `spawn_agent` refuses it (`Workspace::spawn_problem`) since its prompt could
+  never be typed. Fix: read the distribution's processes (`wsl.exe -e ps -o pid,args`, or
+  `\\wsl.localhost\<distribution>\proc`) and match them to the block by the shell's session, then resume it with its
+  resume command.
 
 ## Updates
 
@@ -497,11 +558,81 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   adds files to `<data folder>/theme-gallery/`; a theme changed upstream leaves its old file there (a few hundred
   bytes each). Fix: after a refresh, delete the `.toml` files `index.json` doesn't name.
 
+- [ ] **The gallery test failed once in a full run.** `the_gallery_previews_restores_and_installs`
+  (`crates/templum/src/workspace/tests/themes.rs:661`) found "Catppuccin Latte" where it expected "Paper" after
+  clicking "gallery-theme-Paper", in one run of `cargo test -p templum` (card 69's, under load); alone, three times, and in
+  the next full run, it passed. Fix: find what the click raced with (a frame not rendered before the read) and wait for
+  it, as the neighbouring tests do.
+- [ ] **The X of a dialog reads less than `Theme::on_accent` counts on.** It picks the hover color over the theme's
+  background (`crates/templum/src/theme.rs:155`), which is where a notification's X sits, but gpui-kit paints a
+  dialog with `tokens.background`, which Templum sets to `ui.canvas`, 30% darker in dark themes: under the pointer
+  the dialog's X reads 3.54:1 in Mocha (3.83 counted), 3.51 in One Dark (3.89), 2.42 in Apple Dark (2.61). A
+  person's own theme may fall under 3:1. Fix: pick by the worse of the two hovers (over `palette.background` and over
+  `ui.canvas`), and name both backgrounds in the doc comment and in `docs/specs/design-system.md`.
+- [ ] **In Apple Dark, the X of a dialog or a notification reads 2.4 to 2.6:1 under the pointer.** gpui-kit fills a ghost
+  button's hover, in dark mode, with the accent at 50% over the background and draws its icon in `accent_foreground`
+  (`Theme::on_accent`, `crates/templum/src/theme.rs`), the one color a selected row uses too. Apple Dark's blue is
+  too bright for the light text its hover needs (white is 8:1 on the hover, but 3.65:1 on the full accent) and too
+  dark for the dark text the full accent needs (black is 5.8:1 on it, the pick, and 2.6:1 on the hover). Every other
+  built-in theme has 3.8:1 or more. Fix: a darker accent in `themes/apple-dark.toml` (white then reads on both), or
+  ghost buttons of our own that don't share `accent_foreground` with the selected rows.
+
 ## Settings panel
 
 - [ ] **The tabs wrap to three rows.** Since Canvas joined, the twelve pills (`Section::ALL`,
   `crates/templum/src/settings/mod.rs`) don't fit in two rows of the 480 px panel: a third row holds the last one or
   two, and every section starts lower. Fix: tighter pills (less padding) or one row that scrolls sideways.
+- [ ] **A shell installed while Templum runs isn't in the shells' menus yet.** `Workspace::shells` is read at start
+  and when Settings or the welcome opens (`load_lists`, `crates/templum/src/workspace/preferences.rs`); until then the
+  toolbar's Terminal and Add ▸ Terminal ▸ show the older list. Fix: read it again when one of those menus opens, with
+  a seam that keeps the tests' made-up list.
+- [ ] **No test covers how Settings ▸ Agents' rows are wired to an agent's shell.** `agent_row`
+  (`crates/templum/src/settings/agents.rs:27-31`) and the account row (`settings/accounts.rs:163-167`) are only
+  unit-tested through `description` and `with_shell`: if `agent_row` went back to `templum_terminal::installed(…)`, a
+  WSL agent Windows lacks would read "Yours · not found …" again and no test would fail. Fix: in
+  `an_agent_that_runs_in_wsl_counts_as_installed`, open Settings ▸ Agents and check the row reads
+  "Yours · templum-no-such-agent · in WSL".
+- [ ] **The agent dialog's WSL note repeats `Workspace::in_wsl`.** The note under the Shell list
+  (`crates/templum/src/settings/agents.rs:267-274`) decides WSL on its own, beside `in_wsl`
+  (`crates/templum/src/workspace/blocks.rs:389-394`): if one changes (how a label not found falls back), the note says
+  WSL while the agent opens elsewhere, or the other way round. Fix: one `Workspace` helper taking a label and whether
+  the entry is an account, called by both.
+
+- [ ] **macOS: an entry switched off in System Settings ▸ General ▸ Login Items still reads on.** `is_on`
+  (`crates/templum/src/autostart.rs`) only checks that the LaunchAgent's file exists; the switch macOS keeps for a
+  background item lives in launchd's database. A person sees the toggle on while the system won't start Templum.
+  Fix: ask `launchctl print-disabled gui/<uid>` for the label and read it as off.
+- [ ] **Windows: `reg.exe`'s output is read as UTF-8, but it prints the OEM code page.** `reg`/`reg_ok`
+  (`crates/templum/src/autostart.rs`) decode stdout and stderr with `from_utf8_lossy`. Two things show: a program path
+  with letters outside the OEM code page reads back garbled, so `refresh` takes the entry's file for gone and writes it
+  again at each start (invisible: one `reg add` per start), and on a localized Windows the reason a change failed
+  (`reg_ok`'s first stderr line, shown on the row and in the notification) has broken letters. Fix: decode with the
+  OEM code page (`GetOEMCP` with `encoding_rs`, which is already in the lock file), or run `reg` through `chcp 65001`.
+- [ ] **Windows: uninstalling Templum leaves its `Run` value.** The NSIS and MSI uninstallers
+  (`[package.metadata.packager]` in `crates/templum/Cargo.toml`) know nothing of the `Templum` value `autostart.rs`
+  writes under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (nor `Templum (dev)`), so after uninstalling,
+  Windows still tries to start a program that is gone at each login, and the startup apps list keeps a dead entry.
+  Fix: delete the value from both uninstallers (NSIS: `DeleteRegValue` in a custom template or hook; MSI: a
+  `RegistryValue` with a remove action), and check both on a Windows machine.
+- [ ] **Linux: a program path with a line break or bytes that aren't UTF-8 breaks the `.desktop` file.**
+  `exec_line` and `desktop_entry` (`crates/templum/src/autostart.rs`) write `launch.program.to_string_lossy()`: a
+  line break ends the `Exec=` line early and a lossy `�` names a file that doesn't exist, so the entry starts
+  nothing (or something else) while the switch shows on. Rare: it takes such a name in the AppImage's path. Fix:
+  refuse it in `set(true)` ("The path of Templum has a character a startup entry can't hold").
+- [ ] **macOS: a Templum on another volume is taken for the disk image.** `Install::detect`
+  (`crates/templum-update/src/install.rs`) takes any app under `/Volumes/` for a mounted image, so a `Templum.app` on
+  an external disk or a second partition is `Manual(NotInstalled)`: `set(true)` in `crates/templum/src/autostart.rs`
+  answers "Move Templum to Applications first", and the updater won't update it either. Fix: refuse only a mounted
+  disk image or a read-only volume (`hdiutil info`, or `statfs` with `MNT_RDONLY`), not any `/Volumes/` path.
+- [ ] **The startup rewrite can undo a switch-off made while it runs.** `refresh_autostart`
+  (`crates/templum/src/workspace/autostart.rs`) reads the entry, then writes it on, and isn't counted as a change:
+  switching off in Settings ▸ General between the two puts the entry back, and the switch shows off while the system
+  starts Templum. Only when Templum was moved with the entry on, and within the rewrite (a millisecond on Linux, a few
+  `reg.exe` runs on Windows). Fix: count the rewrite as a change (`changing`, `changes += 1`), so the switch stays
+  disabled until it ends.
+- [ ] **A Linux entry in Flatpak or Snap would be written inside the sandbox.** Neither is a way Templum is
+  packaged today, but `XDG_CONFIG_HOME` there is the sandbox's, not the desktop's. Fix: ask the Background portal
+  (`org.freedesktop.portal.Background.RequestBackground`) when `FLATPAK_ID` is set.
 
 ## GPUI engine (gpui-fast)
 
@@ -519,6 +650,31 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Kanban
 
+- [ ] **Esc or Enter in the title saving a comment edit's draft is untested, and Esc is unspecified.** `on_close`
+  (`crates/templum/src/kanban.rs`) saves the edit's draft when the card dialog closes by Escape from another field or
+  Enter in the title; `docs/specs/kanban.md` lists only "Done, Enter in the title", and no test covers `on_close`
+  (the tests use Done and `window.close_dialog`, which skips it). Fix: add "Escape outside the edit's field" to the
+  spec, and a test that types a draft, focuses the title, presses Escape (and Enter) and checks the saved text.
+- [ ] **Two deleted comments undone in the order they were deleted come back in the wrong order.** `deleted` keeps
+  each comment's index at deletion (`crates/templum/src/kanban.rs`) and `restore_comment` (`board.rs`) inserts at it:
+  delete B then C from [A,B,C], Undo B then C, and the thread reads [A,C,B]; the same when an agent removes an earlier
+  comment meanwhile. A person sees a later comment above an earlier one. Fix: insert by id order (ids grow with time),
+  before the first comment whose id is greater, draw the Undo rows the same way, and correct `docs/specs/kanban.md`'s
+  "at its own place".
+- [ ] **Ctrl+Z in an open card's dialog doesn't undo an item's ✕, a label or a priority.** A deleted comment has an
+  Undo row in its place (`removed_comment`, `crates/templum/src/kanban.rs`), but the dialog's other changes, like an
+  item's ✕ or a label, are steps of the kanban's Ctrl+Z, and with the dialog open the key goes to the field that has
+  the keyboard; closed, it undoes the whole boards' snapshot, every later change of the agents and the person with
+  it. A person who removes the wrong item may not know. Fix: let the dialog's Ctrl+Z undo the board when no text
+  field has the keyboard, or give an item's ✕ the comment's Undo row.
+- [ ] **The comment buttons and the editor aren't seen in a window.** Card 83's pencil and trash on hover and the
+  editing box (`crates/templum/src/kanban.rs`, `comment_view`, `comment_action`) were laid out and tested headless
+  only. A person may meet buttons that crowd a long author name or an editor too tall at 8 rows. Fix: run
+  `cargo run -p templum -- --dev`, open a card with comments, and correct what looks wrong.
+- [ ] **A comment can be edited or deleted only with the mouse.** The pencil and the trash of a comment in the card's
+  dialog (`comment-edit-{id}`, `comment-delete-{id}`, `comment_action`, `crates/templum/src/kanban.rs`) show on hover
+  and take no focus, so a person at the keyboard can't reach them (Tab skips them). Fix: let Tab reach them (a
+  `focusable` element that is shown while it has focus), or open a comment's edit from Enter on it.
 - [ ] **A short card list scrolls from anywhere but its exact middle while a card is dragged over it.** A list
   shorter than its two edge zones (80 world units: a block resized near its smallest whose cards overflow) is in both
   zones at once, and `edge_scroll` gives (2 × at − length) / 40 × 900: 10 units off its middle scrolls at 450 a
@@ -555,6 +711,29 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   such clicks (`edit_typed`, `crates/templum/src/kanban.rs:748`): type in the open card's title, click a priority, an
   item or the assignee, type more, then Ctrl+Z: the later typing goes with the click. Fix: reset the `typed` flag when
   a click in the dialog makes its own undo step.
+- [ ] **No headless test drops a card.** Found with card 78 (`crates/templum/src/workspace/tests/kanban.rs`): the
+  tests drag a card (`hold_drag`, gpui-kit's `drag` and `drag_to`) and its `on_drag` starts, but no `on_drop` of a
+  card or a column fires, at the commit before the column scrollbar too; gpui-kit's own `drag_to` test drops on a
+  bare view, so something in the workspace's window (a layer over the blocks, or its mouse-up listener) swallows it
+  in the harness. A change to dropping is checked by hand. Fix: find what takes the mouse-up (print in the card's
+  `on_drop` and in `Workspace::release`), then add a test that drops a card on a card, on a column's end and on a
+  long column's scrollbar strip.
+- [ ] **A scrolled column shows other cards after a zoom.** Found by the review of card 78 (`column_view` and
+  `board_view`, `crates/templum/src/kanban.rs:493`, and the columns' row at `:356`): `EdgeScroll`'s offset is in pixels
+  and isn't rescaled when the zoom changes, as `keep_list_rows` does for `editor.rs`'s lists, so zooming a block whose
+  column is scrolled moves its cards and the scrollbar's thumb, and breaks "zoom scales like a photo". Fix: keep the
+  last frame's zoom in `EdgeScroll` and rescale the offset by the ratio.
+- [ ] **A column's scroll resets when it isn't drawn.** Found by the review of card 78 (`column_view`,
+  `crates/templum/src/kanban.rs:493`): the offset lives in `use_keyed_state`, which lasts only while the column is
+  drawn, so switching the block's board, or the workspace, and back puts every column at its top. Fix: keep the offsets
+  per (block, column) in the `Workspace`.
+- [ ] **A right-click in the gap between two cards, on a long column's scrollbar strip, scrolls the column.** Left by
+  the fix of the strip taking right and middle presses (`card_view`, `crates/templum/src/kanban.rs`): the card opens
+  its menu from the capture phase, ahead of the scrollbar, but the 6 units between cards (and the list's padding) have
+  no card to do it, so the scrollbar's bubble listener takes that right press as a jump. Without the scrollbar, the
+  press would open the block's menu. Fix: open the block's menu from the list's capture handler when the pointer is
+  over the strip and no card is (the cards as direct children of the scrolling box give their bounds through
+  `ScrollHandle::bounds_for_item`).
 
 ## Connections
 
@@ -684,9 +863,6 @@ Left by batch 3 (agents together) and its review; line numbers are those of `dev
 - [ ] **The balloon covers the find field.** Both sit at the terminal's top right (`render`,
   `crates/templum/src/balloon.rs:18`; `find_bar`, `crates/templum/src/block.rs:682`). A person who opens find while an
   agent asks sees the balloon over the field. Fix: put the balloon under the find field while it is open.
-- [ ] **A long question is cut by its block.** The balloon is clipped by the block (`render`,
-  `crates/templum/src/balloon.rs:18`); in a small block a long question loses its end and its buttons. Fix: a scroll in
-  the balloon's text, or let it overflow the block.
 - [ ] **The balloon's field misses Templum's paste shortcut.** The balloon's branch of `on_key_down`
   (`crates/templum/src/workspace/input.rs`) lets every command but Copy and Paste through, so Ctrl+Shift+V does
   nothing in a question's field; the find field's branch above it handles it. Fix: the same case as the find field's.
@@ -723,10 +899,6 @@ Left by the fourth review of batch 3; line numbers are those of `development` at
 
 Left by batch 4 (content); line numbers are those of `development` at 9e33f19.
 
-- [ ] **`list_cards` lists a board left on a kanban showing its board list.** `wired_boards`
-  (`crates/templum/src/workspace/content.rs:27`) counts `Kanban::board` also while the block picks (Decision 3 of
-  the plan): an agent reads and changes a board the person no longer sees in that block. Fix: count `shown()` only, if
-  that surprises anyone.
 - [ ] **The first Ctrl+Z after an agent's change can take back the person's typing in a card.** `edit_typed`
   (`crates/templum/src/kanban.rs:567`) keeps the boards for undo only at the dialog's first change; when an agent
   changes the boards while the dialog is open, the person's typing after that lands in no step, and the kanban's
@@ -1082,12 +1254,36 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
   it by hand (`delegate` with `wait` on a `sleep 150` task, the `[task …]` comes back typed); if the cancel never
   comes, drop a wait whose client went away (its MCP connection's request id answered or abandoned).
 
-Left by the ask_user dialog (kanban card 29).
+Left by the ask_user dialog's redesign (kanban card 81, `docs/specs/ask-user.md`).
 
-- [ ] **A long question scrolls the dialog's "Waiting for your answer" out of view.** The whole dialog scrolls
-  (`crates/templum/src/balloon.rs`), its first line too: a person who scrolls down a long question or many options
-  no longer sees that the agent waits (the block's dot still says so). Fix: keep the first line out of the scrolled
-  part (a column with the line, then a `min_h_0` part that scrolls), checked by hand that taffy shrinks it.
+- [ ] **The ask_user balloon grows when its block shrinks past the first threshold.** `fit`
+  (`crates/templum/src/balloon.rs`) gives 80% of the area while it holds what the dialog needs, else the whole area:
+  400×271 gives at most 194, 400×270 gives 242, so a person resizing a block sees the dialog jump taller as the block
+  gets shorter. Fix: `((area * SHARE).max(needs.min(area)), area < needs)`.
+- [ ] **A keyboard highlight on Send, Approve or Reject isn't scrolled into view when the whole frame scrolls.**
+  `reveal` (`crates/templum/src/balloon.rs`) is attached to options, Other and the note, not to `send_button` or the
+  plan's buttons: in a small block ↑/Shift+Tab puts the highlight on a Send out of view (Enter still sends). Fix:
+  attach `reveal(Row::Send, wait)` to Send and `reveal(Row::Option(0, i))` to Approve/Reject.
+- [ ] **A plan's frame ignores the stopped banner and a wrapped foot.** `(tallest - BORDER - HEAD - FOOT)`
+  (`crates/templum/src/balloon.rs`) overestimates the body by `notice(w)`, and by 38 when the foot wraps: in a narrow
+  block whose plan the agent stopped waiting for, the frame can be taller than the body and the wheel over it never
+  scrolls the body to Comment. Fix: subtract the same foot and notice that `fit` uses.
+- [ ] **In a narrow dialog the header's title runs over "1 of 3".** "Waiting for your answer" is `flex_shrink_0`
+  (`crates/templum/src/balloon.rs`): under about 290 wide it covers the count badge and is clipped, so a person may not
+  see other requests wait. Fix: let the title truncate (`min_w_0` + `truncate`), keep the badge `flex_shrink_0`.
+- [ ] **The small-block test covers only today's shape.** `a_dialog_in_a_small_block_keeps_its_body_and_reaches_send`
+  (`crates/templum/src/workspace/tests/requests.rs`) answers `question`/`options` only; a plan, two buttons, several
+  questions with Other and the note, and a stopped question in a small block aren't driven. Fix: loop the same sizes
+  over those calls.
+- [ ] **connections.md and ask-user.md's Testing lag the small-block fixes.** `docs/specs/connections.md` still says
+  "at most 80% of its height" with no small-block exception, and `docs/specs/ask-user.md`'s Testing doesn't list the
+  small-block, fit-heights, keys-scroll, plan-wheel or scrollbar-strip tests. Fix: point connections.md to
+  ask-user.md's *A small block* and add the tests to the list.
+
+- [ ] **The wheel over a dialog of a block that isn't the one worked in pans the canvas.** `route_wheel`
+  (`crates/templum/src/workspace/input.rs`) gives the wheel to a block's content only when it is focused or selected,
+  and the balloon is the block's content: with focus not following the pointer, a huge dialog can't be scrolled by
+  wheel until a click focuses its block. Fix: let `route_wheel` pass a wheel over a balloon that overflows to it.
 
 Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
 
@@ -1103,10 +1299,11 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   Windows; neither was played on those systems, so a person there may hear nothing (or a console flash on Windows).
   On Linux both `canberra-gtk-play` and `pw-play` exit 0, but no one listened. Fix: play it there and adjust
   `chime::players`.
-- [ ] **ask_user v2's dialog isn't tried by hand.** The dialog (`crates/templum/src/balloon.rs`) was built and tested
-  headless only: its look at far and near zooms, the preview's two columns, the highlight, and Claude Code, Codex
+- [ ] **ask_user v2's dialog isn't tried by hand.** The dialog (`crates/templum/src/balloon.rs`, redrawn by card 81)
+  was built and tested headless only: its look at far and near zooms, the header's tile and badge, the options'
+  panel and marks, the preview beside or under the options, the scrollbar, the highlight, and Claude Code, Codex
   and Gemini CLI each asking with `questions`, then Esc in Claude Code and an answer typed back, weren't seen. A
-  person may meet misaligned marks or a pane that crowds the options. Fix: run `cargo run -p templum -- --dev`, ask
+  person may meet misaligned marks, a pane that crowds the options or a header that wraps in a narrow block. Fix: run `cargo run -p templum -- --dev`, ask
   with the spec's example from each agent and from `templum ask`, and correct what looks wrong.
 - [ ] **A withdrawn request leaves its alert.** `tell_asking` (`crates/templum/src/workspace/waits.rs`) gives the
   block an "Asks you: …" alert that only answering clears (`seen_asking`); after the agent quits or the deadline
@@ -1338,6 +1535,68 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   `spawn_agent` with `fork` from one of them says it can't, though `pi --fork <id>` and `grok --resume <id>
   --fork-session` exist, since Templum couldn't find the fork's own session to resume it after a restart. Fix: give a
   fork a `--session-id` Templum picks, once each agent takes one with its fork flag.
+- [ ] **An agent in WSL gets none of Templum's server, hooks or status line.** `Workspace::gives`
+  (`crates/templum/src/workspace/usage.rs`) gives nothing when the block's shell is `wsl.exe`: Templum's files are
+  Windows paths, the bus is Windows' loopback, and the block's variables (`TEMPLUM_BUS`, `TEMPLUM_TERMINAL`, the
+  `TEMPLUM_*_ARGS`) don't cross into WSL. A Claude Code set to WSL has no Templum tools, no plan limits and no hooks.
+  Fix: in a WSL block, list those variables in `WSLENV` (`/p` for paths), type Claude Code's and Codex's flags with
+  their files as `/mnt/c/…` paths, and run the MCP bridge as `templum.exe` through WSL's interop, which reaches
+  Windows' loopback.
+- [ ] **Gemini CLI and Qwen Code ask before `reply`.** Left by the plan of card 69
+  (`docs/specs/agent-protocol.md`, 9): every task now asks for `reply`, and these two show "Allow execution of MCP
+  tool reply?" until the person allows it always; a subagent there waits on its own dialog. They let a whole server
+  run unasked (`trust: true`), never one tool, and Templum pre-allows only `reply`. Fix: a per-tool rule if either
+  gains one (Gemini CLI's policy files), written into the extension and Qwen Code's `mcp.json`.
+- [ ] **A subagent with Templum's tools that never replies and never goes still is never told.** Left by the plan of
+  card 69 (`went_quiet`, `crates/templum/src/workspace/delegate.rs`): a screen that redraws every second (a clock, a
+  counter) never stays still for 5 looks, so neither quiet nor an end comes; a waiting master hears its call's
+  timeout, one not waiting hears nothing. Fix: once the task is past its timeout, tell its master once, as quiet does.
+- [ ] **A nested agent's server counts as the block's.** Left by the plan of card 69 (`Workspace::has_tools`,
+  `crates/templum/src/workspace/bus.rs`): a `claude -p` an agent's shell tool runs inherits `TEMPLUM_TERMINAL`, so
+  while it runs its `templum mcp` makes `list_blocks` and `delegate` say the block has Templum's tools. Fix: count a
+  connection only while the snapshot's agent process is its ancestor.
+
+- [ ] **A subagent whose own task never ends can't end its task by a turn's end.** Left by the plan of card 69
+  (`Workspace::hands_out`, `crates/templum/src/workspace/delegate.rs`): while a task the subagent handed out stays in
+  its pane (also past its timeout, and a spawn's prompt included), the end of its turns ends nothing of its own task,
+  and a still screen tells nothing. Its master hears its call's timeout, or nothing if it didn't wait, until the
+  subagent replies, its agent leaves or its block closes. A sub-task whose agent went quiet (Templum's tools, no
+  hooks) doesn't count: `hands_out` skips it once its master was told. Fix for the rest: ignore a handed task past
+  its timeout in `hands_out`, and tell the master once, as quiet does.
+- [ ] **A second `reply` naming the former asker's block is typed to it.** Left by the review of card 69
+  (`Workspace::reply_to`, `crates/templum/src/workspace/delegate.rs`): after a task ended, `reply` with the block of
+  the agent that handed it matches no task, so it is a message and is typed into that agent as `[reply from …]`; only
+  the form without a block says "You are on no task". A master sees one message after the end. Fix: remember the last
+  asker of the pane's task for a few seconds and refuse a `reply` to it.
+- [ ] **`templum reply <text>` with no block isn't accepted.** (`call_of`, `crates/templum-mcp/src/cli.rs`) The usage
+  line reads `reply [<block>] <text>|- [--json]`, but a block-less reply is only `reply -`; `templum reply all done`
+  takes `all` for a block. A person sees a refusal from Templum ("all isn't a block"). Fix: say `reply [<block>]
+  <text>|-` as `reply (-|<block> <text>|<block> -)`, or take a block-less text when the first word is no block id.
+- [ ] **`delegate` with `wait` doesn't tell that the agent has no Templum tools.** (`hand_task`,
+  `crates/templum/src/workspace/delegate.rs`) The sentence is added to the immediate answer only; a master that waits
+  hears the task's end. Fix: put it first in the end's text when the agent had no tools at hand-over.
+- [ ] **`has_tools` ignores the connections switch.** (`Workspace::has_tools`, `crates/templum/src/workspace/bus.rs`)
+  An `initialize` while connections are off isn't counted, and entries from before stay when they are turned off: after
+  turning them on again an agent whose server started meanwhile reads "no Templum tools" until it restarts, and one
+  that had tools keeps them while its MCP `reply` is refused. Fix: always record `initialize`, and make `has_tools`
+  false while connections are off.
+- [ ] **A server that goes away after its task went quiet leaves the task open.** (`look_at_agents`,
+  `crates/templum/src/workspace/activity.rs`) The still-screen check runs once, when the state goes from Working to
+  Idle; the task then waits for the screen to move and go still again. A master sees nothing until its timeout. Fix:
+  in `closed`, end the task of a terminal that lost its last connection and whose state is Idle, as a still screen does.
+- [ ] **A subagent's turn can end before it sees the notice of its sub-task's end or quiet, and that ends its task.**
+  Left by the second review of card 69 (`hands_out`, `crates/templum/src/workspace/delegate.rs`; `agent_event`,
+  `crates/templum/src/workspace/bus.rs`): B hands C a task; C answers it, or goes quiet, while B is still in its turn,
+  and B's turn ends before it reads the `[task t2 …]` notice. The sub-task no longer counts, so that turn's end ends
+  B's own task, and its master gets B's last words ("…I handed it to C; waiting.") as the answer. Rare with Claude
+  Code. Fix: in `hands_out`, keep counting a sub-task whose end or quiet notice to B is queued, or was typed during
+  B's current turn, until B's next `Submitted` or `Working` event after it.
+- [ ] **A `reply` that a quiet subagent's waiting call takes doesn't start its wait over.** Left by the fourth review
+  of card 69 (`reply_to`, `crates/templum/src/workspace/delegate.rs:891-908`): when the quiet C (no hooks) is itself in
+  `wait_for_idle(B)` on its master, B's `reply` to C answers that call; nothing is typed into C, so `asker_wrote` isn't
+  called and `quiet` stays true. B's turn ending with "waiting for C" then ends B's own task, and its master gets B's
+  interim words as the answer. Rare: C has no hooks, waits on its own master, and is still during that call. Fix: call
+  `asker_wrote(&asker, from)` in the waits branch too, and drop the spec's "not one that a waiting call takes".
 
 ## Placing new blocks
 
@@ -1417,11 +1676,6 @@ Left by the third review of its fixes; line numbers are those of `development` a
 The known limits of [specs/accounts.md](specs/accounts.md#known-limits), and what kanban card 37's run couldn't check
 by hand (a second real login, macOS, Windows). Line numbers are those of `development` at 173017d.
 
-- [ ] **A shell that sets the agent's variable again runs the agent in that folder.** An account's block gets its
-  variable from Templum (`agent_vars`, `crates/templum/src/workspace/usage.rs:180`); an `export
-  CLAUDE_CONFIG_DIR=…` in the person's `.bashrc` replaces it, so `claude` there runs on that folder while the block
-  still names the account. Fix: read the agent process's environment in the snapshot (sysinfo's `environ`) and name
-  the block by the folder found.
 - [ ] **An agent that rewrites a shared file by a rename stops sharing it until the next start.** Templum notices a
   link the agent replaced only when the account starts (`apply`, `When::Starting`,
   `crates/templum-usage/src/accounts/folder.rs:246`): until then the two accounts' settings drift apart. Fix: also
@@ -1461,21 +1715,18 @@ Left by the final review of kanban card 37; line numbers are those of `developme
   there too.
 - [ ] **The menu switch of an account rewrites its entry.** The row's switch
   (`crates/templum/src/settings/accounts.rs:103`) saves through `save_account`: it applies the folder's choices as
-  Save does (keeping aside a copy the agent wrote) and writes the default title ("Claude Code (claude2)") as `name`.
-  Fix: edit only `agents.<id>.show`.
+  Save does (keeping aside a copy the agent wrote) and writes its command again when its text changed. Fix: edit only
+  `agents.<id>.show`.
 - [ ] **`Report::theirs` is filled and never read.** `crates/templum-usage/src/accounts/folder.rs:37`: the dialog reads a
   folder with `read` instead. Fix: delete it and its assertions.
 - [ ] **Windows' test pins deleting only.** `a_folder_is_a_junction_and_a_file_needs_the_privilege`
   (`crates/templum-usage/src/accounts/folder.rs:627`) never makes an item own again nor re-points a junction, so
   whether `at` takes a junction's target (`\\?\`-prefixed) for Templum's is untested there. Fix: `apply(&[])` after,
   then assert the junction is gone and its target's file stays.
-- [ ] **A deleted account's id is given to the next one.** `new_account_id` (`crates/templum/src/agents.rs:282`)
-  reuses `claude2` after it was deleted: a stopped workspace's block of the old one then comes back as the new
-  account's, typing `--resume <its old session>` there, where the spec wants it plain. Fix: remember the ids
-  deleted (a list in config.toml) and skip them.
-- [ ] **The dialog may show another id than Save writes.** `Form::id` (`crates/templum/src/settings/accounts.rs:268`)
-  checks the agents in effect, `save_account` the pending config too: with an account added and not yet applied,
-  the dialog says "Its id: claude2" and saves `claude3`. Fix: pass the pending config's keys to the form.
+- [ ] **A deleted account's name can be typed again.** `save_account`
+  (`crates/templum/src/workspace/preferences.rs:78`) accepts the name of an account deleted before: a stopped
+  workspace's block of the old one then comes back as the new account's, typing `--resume <its old session>` there,
+  where the spec wants it plain. Fix: remember the ids deleted (a list in config.toml) and skip them.
 - [ ] **Gemini CLI's own folder is two answers.** `Dirs::of` (`crates/templum-usage/src/lib.rs:176`) ignores
   `GEMINI_CLI_HOME`, `Kind::own_folder` follows it, so with it set the extension notice and the accounts disagree on
   where Gemini CLI's own folder is. Fix: `Dirs::of` takes Claude Code's, Codex's and Gemini CLI's from
@@ -1516,6 +1767,100 @@ Left by the data-safety fixes after that review; line numbers are those of `deve
   folder a link to `~/.claude` and claude5 on `~/.claude/work`, deleting claude2 says "Claude Code 5's folder is in
   Claude Code (claude2)'s: change it first", though deleting would only remove the link. Found by reading. Fix: skip
   the check when the account's folder is itself a link.
+
+Left by kanban card 65 (accounts by name, each a command in every shell); line numbers are those of `development` at
+db2baa3.
+
+- [ ] **A `.cmd` passes the person's words through cmd.** On Windows, `claudinho.cmd` ends in `claude %*`
+  (`files`, `crates/templum-usage/src/accounts/command.rs:177`): a word with `"`, `%` or `^` may reach the agent
+  changed, as with npm's commands. Fix: have the `.cmd` call a PowerShell script that passes its arguments through.
+- [ ] **A folder outside home with non-ASCII letters, or under home in another case or with AppData redirected, is garbled in the `.cmd`.** `in_cmd`
+  (`crates/templum-usage/src/accounts/command.rs:162`) writes only the home prefix as `%USERPROFILE%`; the rest of the
+  `.cmd` is UTF-8, which cmd reads in the console's code page (850, 437), so a folder chosen as `D:\Contas\João` (and
+  an absolute program path with such letters, on the `.cmd`'s second-to-last line) reaches `CLAUDE_CONFIG_DIR` as `JoÃ£o`: a
+  different folder, with no login. What a person sees: the account asks to log in again when run from cmd or
+  PowerShell. Fix: write `chcp 65001 >nul` before the `set` (and the program's line) and the code page back after.
+- [ ] **A program installed later with the account's name is told only at the next start.** `make_command`
+  (`crates/templum/src/agents.rs:515`) looks for the id as a program at each start and each change of the agents
+  (`sync_commands`), and then the row says "No command: claudinho is already a command: …"; until then nothing says
+  so. Templum's own file stays in the commands folder and the account stays in `TEMPLUM_ACCOUNTS` (`accounts_env`
+  looks for no programs), so its function still runs in Templum's terminals; in any other, the order of the PATH
+  decides. Fix: look again when the PATH changes, and remove the file or say on the row that it is shadowed.
+- [ ] **An account taken out of config.toml by hand keeps its command.** `sync_commands`
+  (`crates/templum/src/workspace/preferences.rs:149`) only writes: the file, which still opens the account's folder,
+  stays in `~/.local/bin` until the person deletes it. Fix: at start, remove the commands that carry this data
+  folder's marker and whose id is no account.
+- [ ] **A block where `claudinho` ran stays the account's after the agent quits.** `Space::see`
+  (`crates/templum/src/workspace/mod.rs:877`) changes `Pane::account` only when it finds an agent with its variable:
+  once it quits, the block keeps the title and the Delete wait until another agent is found there. Fix: forget the
+  account when the agent that gave it is gone and the block's shell has no variable naming one.
+- [ ] **A command made while `~/.local/bin` isn't on the PATH works in other terminals only once the person adds it.**
+  `path_note` (`crates/templum/src/settings/accounts.rs:95`) says so under Accounts and in the dialog, with the line
+  to add; nothing checks that the person did. Fix: offer to add it to the shell's startup file, in a marked block.
+- [ ] **A dialog opened while the shell's PATH is still being read has no PATH note.** `path_note` waits for
+  `shell_path_pending` to be over and the dialog only redraws when something changes in it, so one opened in the
+  first seconds shows the note after the next key. Fix: redraw the dialog when `read_shell_path` finishes.
+- [ ] **The Accounts heading looks at the PATH at every frame.** `path_note` canonicalizes each folder of the PATH (on
+  Windows it reads the registry too) each time Settings ▸ Agents is drawn. Fix: ask once when the panel opens, and
+  again when `read_shell_path` finishes.
+- [ ] **An account of an agent whose command is a wrapper runs only its first word.** An agent set to `npx claude-code`
+  in Settings ▸ Agents makes a `claudinho` that runs `npx` with the person's words (`AgentEntry::program`). Fix: write
+  the whole command, quoted for each shell, in the command and in `TEMPLUM_ACCOUNTS`.
+- [ ] **Enter in the Edit dialog closes it without saving.** Only Create answers Enter (in the name field): in Edit
+  the dialog's own Enter closes it as Esc does. Fix: answer `Confirm` there with Save.
+- [ ] **`SHELL_WORDS` misses builtins whose function would break a shell.** `crates/templum-usage/src/accounts/command.rs:9`:
+  a function named `compopt` replaces the builtin bash-completion calls at each Tab; fish's `path`, `math`, `random`,
+  `abbr`, `argparse`, `commandline`, `set_color` and zsh's `zparseopts`, `zformat`, `vared`, `float`, `nocorrect` do
+  the same, or fail to define and print an error at each shell start. On Windows, PowerShell's aliases (`start`, `h`,
+  `r`, `gc`, …) win over the function, and cmd's builtins (`start`, `dir`, `path`, `title`, `color`, `copy`, …) over
+  the `.cmd`, so `claudinho` named so runs something else. Fix: add them to the list (the Windows ones only on
+  Windows: `copy` or `r` are fine names elsewhere).
+- [ ] **A Windows device name is a valid account name.** `aux`, `con`, `nul`, `prn`, `com1`–`com9`, `lpt1`–`lpt9` pass
+  every rule (`name_problem`, `crates/templum/src/agents.rs:476`), but Windows can't make `accounts\aux` or `aux.cmd`.
+  Fix: refuse them with their own words, on every OS.
+- [ ] **A function is defined for an account whose row says "No command".** `accounts_env`
+  (`crates/templum/src/agents.rs:631`) leaves out ids that break rules 1, 2 and 4 only: an account written by hand as
+  `cc` has the row "No command: cc is already a command: /usr/bin/cc", yet in every Templum terminal `cc` runs its
+  agent. Fix: build `TEMPLUM_ACCOUNTS` from the accounts whose `Workspace::commands` entry is `Ok`.
+- [ ] **A program written with `~` is never found.** An agent whose command starts with `~/bin/claude` makes a
+  command that runs `'~/bin/claude'`, quoted, and a function that runs `"~/bin/claude"`: the shell doesn't expand it
+  (`word`, `crates/templum-usage/src/accounts/command.rs:153`). Fix: expand the home folder when writing both.
+- [ ] **Edit ▸ Save writes the folder as `~/…`.** `AccountDraft::of` (`crates/templum/src/agents.rs:819`) gives the chosen
+  folder through `tilde()`, so `/home/me/x` is saved as `~/x` (the same folder; the spec says "as config.toml has
+  it"). Fix: keep the string config.toml had in the draft.
+- [ ] **Delete is refused when the command can't be removed.** `delete_account`
+  (`crates/templum/src/workspace/preferences.rs:206`) removes the command before the folder: a `~/.local/bin` made
+  read-only since Create refuses the deletion, and a folder deletion that then fails leaves the account without a
+  command until the next start. Fix: remove the command last and warn instead of refusing.
+- [ ] **The dialog re-checks the name three or four times per frame.** `Form::problem`
+  (`crates/templum/src/settings/accounts.rs`) looks for the name as a program (on Windows the registry's Path too)
+  from the note, Create and its label, also while the dialog slides in. Fix: compute it once per change of the name.
+- [ ] **Not checked by hand: a real click-through and typing `claudinho` in a Templum terminal.** Card 65's run could
+  not type or click into windows, so the dialog was looked at in screenshots of a dev build (light and dark, with a
+  temporary home) and the command was run from plain bash and fish against a fake `claude`; the typed path in a
+  Templum terminal is covered by the shell tests (bash, zsh, fish and PowerShell in a PTY). Not seen: the block
+  titled "Claude Code (claudinho)" with its status dot moving, with a real Claude Code. Fix: do the spec's "Manual
+  (card 65)" once.
+- [ ] **Not checked: bash 3.2, Windows' cmd and Git Bash, and the agent's environment on macOS and Windows.** zsh,
+  fish and PowerShell were run in the PTY tests, and `cargo clippy -p templum -p templum-usage -p templum-terminal
+  --all-targets --target x86_64-pc-windows-msvc -- -D warnings` passes (with a stand-in C compiler: the C dependencies
+  need MSVC's `lib.exe`, missing here). Not run: the functions in bash 3.2 (macOS's), the `.cmd` in cmd and the
+  command in Git Bash, and the read of an agent's folder variable through sysinfo on macOS and Windows:
+  `a_found_agents_folder_variable_is_read` (`crates/templum-terminal/src/terminal.rs:1653`) starts a `#!/bin/sh`
+  script, so it runs on Linux only and CI never covers the other two. Fix: run `claudinho` in each by hand, and make
+  the test start a copy of `/bin/sleep` named `claude` on macOS and a copy of a Windows program on Windows.
+- [ ] **An account opened with Default while Settings ▸ Shell is WSL runs on WSL's own login.** An account's own
+  Shell leaves WSL out (`Workspace::agent_shell`, `crates/templum/src/workspace/blocks.rs`), since its folder reaches
+  its agent through a variable (`CLAUDE_CONFIG_DIR`…) that doesn't cross into WSL; but with no shell of its own it
+  follows Settings ▸ Shell, so when that is WSL the account's block runs WSL's agent on WSL's login, not the account.
+  Fix: pass the variable through `WSLENV` with `/p` (and check from Linux that the account folder's links resolve), or
+  open an account in the system's default shell when Settings ▸ Shell is WSL.
+- [ ] **An account set to WSL says "no shell" on stderr though WSL is installed.** `Workspace::shell_for`
+  (`crates/templum/src/workspace/blocks.rs`) prints `templum: no shell "WSL" for <account>: the default one opens` for a
+  hand-written `shell = "WSL"` on an account, whose real reason is that an account never runs in WSL
+  (`agent_shell` filters it out). Only a person reading stderr sees it; the account opens in the default shell as
+  intended. Fix: in `shell_for`, when the label is among `self.shells` and the entry is an account, print that
+  reason instead.
 
 ## Templum Agent
 

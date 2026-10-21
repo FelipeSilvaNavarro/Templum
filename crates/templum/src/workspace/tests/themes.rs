@@ -61,6 +61,11 @@ fn follows_the_system_appearance(cx: &mut TestAppContext) {
             ws.theme.ui.canvas,
             "gpui-kit's root paints the opaque canvas"
         );
+        assert_eq!(
+            gpui_kit::component::Theme::global(cx).accent_foreground,
+            ws.theme.on_accent(),
+            "a selected row's text reads on the accent"
+        );
     });
 }
 

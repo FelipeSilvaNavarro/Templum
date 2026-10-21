@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::LazyLock;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
@@ -286,6 +286,15 @@ impl SpaceDialog {
     }
 }
 
+/// A button with no fill, the pointer's fills the rest of the interface has. (`ghost()` shows the
+/// kit's accent under the pointer, which the accent's own text color is not meant to sit on.)
+fn quiet(ui: Ui, cx: &App) -> ButtonCustomVariant {
+    ButtonCustomVariant::new(cx)
+        .foreground(ui.title)
+        .hover(ui.hover)
+        .active(ui.pressed)
+}
+
 impl Render for SpaceDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = self.ui;
@@ -327,7 +336,7 @@ impl Render for SpaceDialog {
                     Button::new("space-image-remove")
                         .label("Remove image")
                         .small()
-                        .ghost()
+                        .custom(quiet(ui, cx))
                         .on_click(cx.listener(|d, _: &ClickEvent, _, cx| {
                             d.look.image = None;
                             cx.notify();
@@ -368,7 +377,7 @@ impl Render for SpaceDialog {
                     Button::new("space-folder-clear")
                         .label("Clear")
                         .small()
-                        .ghost()
+                        .custom(quiet(ui, cx))
                         .on_click(cx.listener(|d, _: &ClickEvent, _, cx| {
                             d.folder = None;
                             cx.notify();

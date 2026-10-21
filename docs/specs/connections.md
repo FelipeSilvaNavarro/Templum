@@ -121,7 +121,9 @@ trust question or Codex's choice of model, looks like this; Claude Code's spinne
 second while they work); its task stays handed over, `wait_for(needs_you)` answers, the agent that handed it hears so
 ([Delegating](#delegating) 10), and its screen moving again turns it back to Working. An agent without hooks, or one the
 person typed into since its last hook (an Esc while Claude Code writes, which no hook tells of), whose screen stays
-still for 5 looks while it works is at rest instead, and the task it was on ends with its last 40 screen lines. A wait
+still for 5 looks while it works is at rest instead, and the task it was on ends with its last 40 screen lines (from
+card 69 not an agent with Templum's tools and no hooks, which can answer with `reply`: its task stays open and its
+master is told once, [Delegating](#delegating) 6). A wait
 for the person ends from the screen only once the person typed into the terminal since it began (they answered the
 dialog): a subagent drawing under an open dialog doesn't end it, nor does a still screen. A look right after the person
 typed, pasted, clicked or scrolled in it, or its block was resized (its agent redraws at the new size), tells nothing,
@@ -138,9 +140,10 @@ later starts with none.
   block. In the background it is a system notification, as a terminal's are.
 - **A question** (`ask_user`) and **a request to connect** (`connect`) open a **balloon** on the asking block, at the
   Full level of detail: a dialog centered on its terminal (under the title bar), 80% of its width and at most 80% of
-  its height, its sizes the block's at the zoom, so it scales like a photo; past that height it scrolls, the wheel
-  over it scrolling it and not the terminal (with Ctrl it zooms the canvas). A yellow frame and a first line, a
-  yellow dot and "Waiting for your answer", say the agent waits for the person, in the yellow of the block's dot:
+  its height, its sizes the block's at the zoom, so it scales like a photo. Its header ("Waiting for your answer",
+  with a yellow tile and frame, the yellow of the block's dot, that say the agent waits for the person) and its foot
+  (the buttons) stay; the body between them scrolls past that height, the wheel over it scrolling it and not the
+  terminal (with Ctrl it zooms the canvas) ([ask-user.md](ask-user.md#the-dialog)):
   - a question ([ask-user.md](ask-user.md#the-dialog)) shows its questions, each with its header, its options (a
     radio or a checkbox, the label, the description), an Other field, then a note, **Dismiss** and **Send**; today's
     shape (`question`, `options` as strings) shows its text whole and a button per option, or a text field and
@@ -175,8 +178,10 @@ later starts with none.
 
 1. *Claude Code · api* is wired to *Codex · api*. It calls `delegate` with Codex's block id and a task.
 2. Templum types into Codex's terminal a first line, `[from Claude Code · api (b7k2m)] Your task is in the pasted text:
-   do it.` (from batch 8 it names the task: `[from Claude Code · api (b7k2m), task t7]`), as a paste of its own, then
-   the task as a second paste (batch 7; before, both as one: Claude Code takes a paste of 4 lines or more than 800
+   do it.` (from batch 8 it names the task: `[from Claude Code · api (b7k2m), task t7]`; from card 69 it asks for the
+   answer: `… do it, then answer it with reply.`), as a paste of its own, then the task as a second paste, which ends
+   with how to answer it ([agent-protocol.md](agent-protocol.md#1-every-task-says-how-to-answer): call Templum's `reply`
+   tool once with the whole answer, or run `templum reply -` in its shell without Templum's tools) (batch 7; before, both as one: Claude Code takes a paste of 4 lines or more than 800
    characters for data it was shown, not for what it is asked, unless typed text comes with it), then Enter, a moment
    (150 ms) after the paste: an agent may take keys that come in one burst for a paste, where Enter is a new line. The
    Enter goes only once the agent's screen shows the paste (Templum looks for about 2 seconds), and only if Templum
@@ -199,10 +204,17 @@ later starts with none.
    `SessionStart` comes with its first prompt), get no confirmation: a second Enter, blind, could answer a dialog
    Templum doesn't hear.
 3. The wire's dot travels from Claude Code to Codex while Codex works.
-4. When Codex finishes its turn, its last answer becomes the result of Claude Code's `delegate` (when it asked to
-   wait), or of a later `wait_for_idle`. If Codex calls `reply` first, that text is the answer instead. Each task
+4. When Codex answers the task with `reply` (it is asked to: 2), that text, whole, ends the task and becomes the
+   result of Claude Code's `delegate` (when it asked to wait), or of a later `wait_for_idle`. Without a `reply`, its
+   turn's end ends it with its last answer, as before card 69, unless Codex waits for a task it handed out itself
+   (a `delegate` or a spawn's prompt of its own): then the turn's end ends nothing, and its `reply` or the end of a
+   turn with nothing handed out any more does ([agent-protocol.md](agent-protocol.md#4-a-turn-that-ends-while-the-subagent-waits-on-its-own-task)). Each task
    has an id (`t7`, batch 8), which `delegate` and `spawn_agent` say; `delegate` without `wait` answers at once:
-   "Handed to k9x1d as task t7.". Ids count from `t1` each time Templum starts: tasks aren't saved ([Files](#files)).
+   "Handed to k9x1d as task t7.", and for an agent without Templum's tools (no `initialize` from its server) it adds
+   why and what else ends the task (` k9x1d has no Templum tools (<why>): it can still answer with `templum reply -`
+   in its shell; …`; `list_blocks` says `, no Templum tools` on its line:
+   [agent-protocol.md](agent-protocol.md#8-templums-tools-checked)). Ids count from `t1` each time Templum starts: tasks
+   aren't saved ([Files](#files)).
 5. Templum refuses to type into an agent that is waiting for its person (a permission prompt would take the text
    as its answer; the refusal says what it asks and gives the last 20 lines of its screen, the dialog as drawn, so
    the caller can answer it with `send_keys`), into a terminal running no agent (`send_to_terminal` is for those),
@@ -210,18 +222,27 @@ later starts with none.
    to try again in a few seconds), and into an agent already on another agent's task (`wait_for_idle` waits for its
    end; the agent whose task it is changes it instead, 11).
 6. An agent Templum gets no events from (see the table under [Hooks](#hooks-and-agent-state)) answers through
-   `reply`, or its task ends once its screen has been still for 5 seconds after working, with its last screen lines,
-   or at its timeout.
+   `reply`. Without Templum's tools, or with neither tools nor hooks, its task ends once its screen has been still for 5
+   seconds after working, with its last screen lines. An agent **with** Templum's tools and no hooks keeps its task
+   open then: its master is told once (**quiet**) that it hasn't answered, with its screen: a call of its that waits
+   for the task gets that as an error, otherwise a notice `[task t7 from Codex · api (k9x1d) hasn't answered: its
+   screen is still] Its screen is in the pasted text.` and the last 20 lines is typed as a dialog's is (10); `reply`
+   still ends the task, and a change from the master (11) lets it tell once more. Not while the agent waits for a task
+   of its own. Else at its timeout.
 7. A task stays handed over until its answer comes, the agent's session ends (or a snapshot no longer finds the agent
    it found before: Codex says nothing when it quits), its block closes, or its timeout passes (`delegate`'s, 600 s
    unless asked, also without `wait`). Past its timeout the agent that handed it over still waits for its answer
    with `wait_for_idle`, and its end still comes back (10); the wire's dot stops, and another agent may hand it a
    task.
-8. `reply` with no call waiting types `[reply from <title> (<id>)]` and the text, then Enter, into the agent named;
-   never into a terminal running no agent, or an agent no snapshot has found yet. From batch 7 the first line goes as
-   a task's does (2): `[reply from <title> (<id>)] Its reply is in the pasted text.`, then the text. From batch 8 the
-   line names the task the agent it goes to handed the replier, if any: `[reply from <title> (<id>) to task t7] Its
-   reply is in the pasted text.`; that reply is the task's end, and no notice (10) follows it.
+8. `reply` with a `block` that didn't hand the caller its task, with no call of it waiting, types `[reply from <title>
+   (<id>)]` and the text, then Enter, into the agent named; never into a terminal running no agent, or an agent no
+   snapshot has found yet. From batch 7 the first line goes as a task's does (2): `[reply from <title> (<id>)] Its
+   reply is in the pasted text.`, then the text. It ends no task. From card 69 `reply` needs no `block`: without it, or
+   with the block of the agent that handed the caller its task, it is the caller's answer and **ends that task** with
+   its whole text: the calls of the asker that wait for it get the text, otherwise the asker hears the end as any end
+   is told (10), and the Templum Agent, which no block names, in its chat. It answers "Answered task t7."; with no task,
+   "You are on no task: reply answers the task an agent handed you; name a block to write to one."; a blank text is
+   refused. A second `reply` finds no task. `templum reply -` is the same, its text read from standard input.
 9. A task typed into an agent at work on a prompt of its own is answered by the end of the turn that took it
    (batch 7, once its hooks say when it takes a prompt). Codex takes it into the turn under way once a tool ends or
    its answer is written, and says so then, in that turn. Claude Code says so at its Enter and queues it: a tool's
@@ -242,7 +263,7 @@ later starts with none.
     it) counts it whole; nothing when unknown or when nothing new was read, never `0 tokens`. Templum reads it again a
     second after the end (Claude Code's status line gives its last cost about 0.3 s after its `Stop`), and the notice
     goes then. The transcript is the one its agent's last turn's end
-    named (`transcript_path`). Besides its end, only a task that gets stuck comes back: its agent starts waiting for its
+    named (`transcript_path`). Besides its end, only a task that gets stuck comes back, and a quiet one (6): its agent starts waiting for its
     person in its terminal (a hook says so, a permission or another dialog, while it wasn't waiting already), or it
     seems stuck. It sends `[task t7 from Codex · api (k9x1d) waits for its person: Allow
     Bash?] Its screen is in the pasted text.` and the last 20 lines of its screen, as drawn (300 ms after its hook),
@@ -256,7 +277,8 @@ later starts with none.
     may still be due), a notice waits, oldest first. Into a terminal whose agent is gone (its shell is in front, as when
     `templum delegate` ran from a script), never: the notice is dropped.
 11. **A change** (batch 8). `delegate` from the agent whose task it is changes that task: typed at once under
-    `[from Claude Code · api (b7k2m), a change to task t7] The change is in the pasted text: do it.`, even while it
+    `[from Claude Code · api (b7k2m), a change to task t7] The change is in the pasted text: do it, then answer the task with
+    reply.` (and how, as 2), even while it
     works, as Claude Code's queued messages are; the task's answer is the end of the turn that took the change, and
     its timeout starts again from the change's. Answered "Typed into k9x1d as a change to task t7." (or, with `wait`,
     the task's end); refused while the agent waits for its person (5), and while a spawned agent hasn't got its
@@ -449,22 +471,24 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | Tool | Arguments | Does | Needs | Batch |
 |---|---|---|---|---|
 | `whoami` | — | The caller's id, title, kind, folder and workspace | — | 1 |
-| `list_blocks` | — | Every block of the caller's workspace: id, kind, title, folder, agent and its state (from batch 7 with what it asks), connected or not | — | 1 |
+| `list_blocks` | — | Every block of the caller's workspace: id, kind, title, folder, agent and its state (from batch 7 with what it asks), connected or not; `, no Templum tools` after an agent's state when its terminal has none (card 69) | — | 1, card 69 |
 | `read_terminal` | `block`, `lines` (200, at most 2000), `last_command` (false) | The last lines of the terminal's history and screen, or its last finished command and its output (needs [shell integration](shell-integration.md)) | wired | 1 |
 | `send_to_terminal` | `block`, `text`, `enter` (false) | Types the text, as a paste; Enter after it when asked | wired | 1 |
 | `notify` | `text` | A notification from the caller ([Requests](#requests-from-agents)) | — | 1 |
 | `connect` | `block`, `timeout` (1800 s) | Asks the person to wire the caller to the block; waits for the answer | — | 3 |
 | `spawn_agent` | `agent` (an id of [agents.md](agents.md) or of `[agents]`), `prompt`, `folder`, `worktree`, `model`, `effort`, `fork`, `role` | [Spawning](#spawning); the prompt's task id; with `fork`, a copy of the caller's own Claude Code or Codex on its conversation ([agent-tools.md](agent-tools.md#spawn_agent-with-fork)); with `role`, a role of `[roles]` ([agent-tools.md](agent-tools.md#roles)) | — | 3, 6, 8, card 35 |
-| `delegate` | `block`, `task`, `wait` (false), `timeout` (600 s) | [Delegating](#delegating); without `wait`, says the task's id at once, and its end is typed into the caller's terminal; to the agent on the caller's task, a change to it | wired, an agent | 3, 8 |
-| `reply` | `block`, `text` | Answers the task the block handed the caller; with none waiting, types `[reply from …]` (from batch 8 naming the task) and the text into it | wired | 3, 8 |
+| `delegate` | `block`, `task`, `wait` (false), `timeout` (600 s) | [Delegating](#delegating); without `wait`, says the task's id at once (and why the agent has no Templum tools, if so), and its end is typed into the caller's terminal; to the agent on the caller's task, a change to it | wired, an agent | 3, 8, card 69 |
+| `reply` | `text`, `block` (optional) | Answers the task the caller is on, whole, and ends it ([Delegating](#delegating) 8); with a `block` that didn't hand it the task, types `[reply from …]` and the text into it | wired when it names a block | 3, 8, card 69 |
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
 | `ask_user` | `questions` (each `question`, `header`, `options` with `label`, `description`, `preview`, `multiSelect`), or `question` and `options` (strings); `timeout` (none) | Questions in a balloon ([Requests](#requests-from-agents), [ask-user.md](ask-user.md)); the answers as JSON, or with `question` the answer as text | — | 3 |
 | `propose_plan` | `plan` (Markdown, at most 256 KB), `title`, `timeout` (none) | A plan in the caller's balloon, Approve or Reject with a comment ([agent-tools.md](agent-tools.md#propose_plan)); `Approved.`, or the error `Rejected.`, with the comment | — | card 35 |
-| `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, priority, assignee (`(you)` on the caller's), checklist progress and comment count; with `card`, that card whole: its description, checklist items and comments ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40 |
+| `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, priority, assignee (`(you)` on the caller's), checklist progress and comment count; with `card`, that card whole: its description, checklist items and comments, each with its number (and "edited" once its author changed it) ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40, card 77 |
 | `create_card` | `board`, `column`, `title`, `description`, `priority`, `for`, `checklist` | A new card at the column's end (the board's first column when left out); its id. Its description tells an agent a review's findings are a card each (card 35) | wired kanban | 4, card 40 |
 | `edit_card` | `card`, `priority`, `for`, `add_items`, `check`, `uncheck` | Sets the card's priority and who it is for, adds checklist items, checks and unchecks them: one Ctrl+Z step ([Cards for an agent](#cards-for-an-agent)) | wired kanban | card 40 |
 | `move_card` | `card`, `column` | Moves a card to the end of a column; into the board's last column or one titled Review (either case), unless the card's newest comment is the caller's, its answer asks for one: "Say on it what you did and what the next one needs to know: comment_card." | wired kanban | 4 |
-| `comment_card` | `card`, `text` | Adds a comment signed with the caller's id: what it did on the card, and what the next one needs to know, when it finishes it | wired kanban | 4 |
+| `comment_card` | `card`, `text` | Adds a comment signed with the caller's id: what it did on the card, and what the next one needs to know, when it finishes it; its answer says the comment's number: `Commented on card 40 (comment 51).` | wired kanban | 4, card 77 |
+| `edit_comment` | `card`, `comment`, `text` | The text of a comment the caller wrote becomes `text`; the comment keeps its author, its place and its time, and reads "edited". Refused for the person's comment and another agent's ([Cards for an agent](#cards-for-an-agent)); one Ctrl+Z step | wired kanban | card 77 |
+| `delete_comment` | `card`, `comment` | Deletes a comment the caller wrote; refused as `edit_comment` is; one Ctrl+Z step | wired kanban | card 77 |
 | `claim_card` | `card` | Makes the caller the card's assignee; refused when another block holds it, or (card 40) when the card is for another agent ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40 |
 | `read_note` | `block` | The text of the note the note block shows | wired note | 4 |
 | `append_note` | `block`, `text` | Adds the text at the note's end, after a blank line; the note shows it at once and Ctrl+Z takes it back | wired note | 4 |
@@ -548,11 +572,22 @@ runs "any X" when its agent is X or runs X's program (the first word of their co
 
 - **`move_card` and `comment_card`** stay open to every wired agent. `move_card`'s answer ends with
   ` It is for any codex, not you.` (or `b7k2m "Codex · api"`) when the card's assignee isn't the caller's.
+- **`edit_comment` and `delete_comment`** (card 77) change only the caller's own comments, those whose author
+  (`by`) is the caller's block id; the rest, the person's and other agents', are refused with
+  `Comment 52 is by the person, not you: you can only change your own.` (`b7k2m "Codex · api"` for another agent).
+  A comment is named by its **number**, a never-reused id like a checklist item's: `list_cards` with `card` shows it
+  (`comment 51 by b7k2m "Claude Code", 3 min ago, edited:`) and `comment_card` says it. A number that isn't on the
+  card is refused (`Card 40 has no comment 99: list_cards with card shows its comments.`); an `edit_comment` whose
+  text is blank is refused too (`delete_comment` removes one). An `edit_comment` with the text the comment already has
+  changes nothing, takes no Ctrl+Z step and doesn't mark it "edited": it answers `Comment 52 already says that.`
+  (not an error). They are not in the Templum Agent's tools, as
+  `edit_item` and `delete_item` aren't.
 - **The instructions** ask an agent to claim its card when it starts and to check its checklist's items as it
   finishes them ([The MCP server](#the-mcp-server)).
 - **The command line:** `templum kanban add` takes `--priority`, `--for` and `--checklist`; `templum kanban edit <card>`
   takes `--priority`, `--for`, `--add <text>`, and `--check <item>` and `--uncheck <item>`, each as many times as
-  wanted.
+  wanted; `templum kanban edit-comment <card> <comment> <text>` and `templum kanban delete-comment <card> <comment>`
+  (card 77).
 
 ### Agent tools (card 35)
 
@@ -1151,11 +1186,11 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum connect <block>` | `connect` | 3 |
 | `templum spawn [<agent>] [--fork] [--role <role>] [--folder <f>] [--worktree <name>] [--prompt <text>] [--model <m>] [--effort <e>]` | `spawn_agent` | 3, 6, card 35 |
 | `templum delegate <block> <task> [--wait]` | `delegate` (from batch 8 it prints the task's id; a script's terminal gets no notice: `templum wait` waits for its end) | 3, 8 |
-| `templum reply <block> <text>` | `reply` | 3 |
+| `templum reply <block> <text>\|-`, or `templum reply -` (`-` reads stdin; with no block it answers the caller's task) | `reply` | 3, card 69 |
 | `templum wait <block> [--for <event>] [--match <pattern>] [--lines <n>] [--timeout <s>]` | `wait_for_idle`, `wait_for` | 3, 5, card 35 |
 | `templum ask <question> [--option <o>]…` | `ask_user` | 3 |
 | `templum plan <file> [--title <t>]` (`-` reads stdin; a rejection exits 1) | `propose_plan` | card 35 |
-| `templum kanban list [<board>] [--card <card>] \| add <title> [--column <c>] [--description <d>] [--board <b>] [--priority <p>] [--for <who>] [--checklist <text>] \| edit <card> [--priority <p>] [--for <who>] [--add <text>] [--check <item>]… [--uncheck <item>]… \| move <card> <column> \| comment <card> <text> \| claim <card>` | the kanban tools (`edit` and the new options: card 40) | 4, card 40 |
+| `templum kanban list [<board>] [--card <card>] \| add <title> [--column <c>] [--description <d>] [--board <b>] [--priority <p>] [--for <who>] [--checklist <text>] \| edit <card> [--priority <p>] [--for <who>] [--add <text>] [--check <item>]… [--uncheck <item>]… \| move <card> <column> \| comment <card> <text> \| edit-comment <card> <comment> <text> \| delete-comment <card> <comment> \| claim <card>` | the kanban tools (`edit` and the new options: card 40; `edit-comment` and `delete-comment`: card 77) | 4, card 40, card 77 |
 | `templum note read\|append <block> [text]` | `read_note`, `append_note` | 4 |
 | `templum note replace <block> <text> [--old <text>]` | `replace_note` | card 35 |
 | `templum checklist read <block> \| add <block> <text> \| check\|uncheck <block> <item>` | `read_checklist`, `add_items`, `check_item` | — |

@@ -12,7 +12,7 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, level of detail, wires' curves (`wire.rs`), layout (de)serialization | No |
 | `templum-terminal` | lib | Wraps `alacritty_terminal`: shell in a PTY, input, resize, key encoding, events | No |
 | `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, finds conflict regions by their markers (`conflict.rs`), lays History's commits out in lanes from their parents (`graph.rs`), turns a blame into the diff panel's rows (`blame.rs`), makes a worktree for a new branch under `.worktrees/` (`repo.rs`), keeps the trash of discarded changes, and asks an AI agent for a commit message (`message.rs`) | No |
-| `templum-usage` | lib | Reads what CLI agents write about their sessions and plan limits: Claude Code's status line through Templum's relay, and its transcripts (`claude.rs`, which also writes the settings file Claude Code is given, with Templum's hooks, and its `mcp.json`); Codex's rollout files (`codex.rs`); the Gemini CLI extension (`gemini.rs`); the files that give Copilot CLI Templum's server and a plugin of hooks, with the words that name them (`copilot.rs`); the JSON and the JavaScript plugin that give OpenCode and Kilo Code the same through their config variable (`opencode.rs`, `opencode.js`); Qwen Code's MCP file and the system settings file with Templum's hooks that its variable moves (`qwen.rs`); Pi's extension, which reports its events and registers the server where Pi has MCP (`pi.rs`, `pi.ts`); the program those files run and its hook command (`bin`, `hook_command`); when to warn about a limit or tell its reset (`watch.rs`); each agent's variable, items and login for its accounts (`accounts.rs`). Never an agent's credentials ([specs/usage.md](specs/usage.md)) | No |
+| `templum-usage` | lib | Reads what CLI agents write about their sessions and plan limits: Claude Code's status line through Templum's relay, and its transcripts (`claude.rs`, which also writes the settings file Claude Code is given, with Templum's hooks, and its `mcp.json`); Codex's rollout files (`codex.rs`); the Gemini CLI extension (`gemini.rs`); the files that give Copilot CLI Templum's server and a plugin of hooks, with the words that name them (`copilot.rs`); the JSON and the JavaScript plugin that give OpenCode and Kilo Code the same through their config variable (`opencode.rs`, `opencode.js`); Qwen Code's MCP file and the system settings file with Templum's hooks that its variable moves (`qwen.rs`); Pi's extension, which reports its events and registers the server where Pi has MCP (`pi.rs`, `pi.ts`); the program those files run and its hook command (`bin`, `hook_command`); when to warn about a limit or tell its reset (`watch.rs`); each agent's variable, items and login for its accounts (`accounts.rs`), and each account's command, the file in `~/.local/bin` that runs its agent on its folder (`accounts/command.rs`). Never an agent's credentials ([specs/usage.md](specs/usage.md)) | No |
 | `templum-update` | lib | Finds the newest release on GitHub (`lib.rs`), how Templum was installed and the release file that fits it (`install.rs`). Downloads it and checks GitHub's SHA-256 (`fetch.rs`), then puts it in place: a rename over the AppImage or executable, a bundle swap on macOS, an installer's command line, a command for a terminal ([specs/updates.md](specs/updates.md)) | No |
 | `templum-mcp` | lib | The bus Templum's blocks talk over: JSON-RPC lines on a local socket (`bus.rs`), the MCP tools (`tools.rs`), the Templum Agent's control tools and their danger (`control.rs`), the agents' hook events (`hooks.rs`) and the `templum` command line (`cli.rs`: the MCP bridges `mcp` and `control`, `hook`, the verbs) ([specs/connections.md](specs/connections.md)) | No |
 | `templum-agent` | lib | The Templum Agent's engine: Claude Code's words and its stream-json lines read into chat events (`claude.rs`), the conversation's rows, its own things and its file (`conversation.rs`), the child process and its reader threads (`engine.rs`), and the fake engine the tests run (`fake.rs`) ([specs/templum-agent.md](specs/templum-agent.md)) | No |
@@ -150,7 +150,7 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   History's, Stashes', a comparison's: `Git::diff()` picks the one on screen), so the 2-second read of the
   working changes never touches another tab's. `git_block/history.rs` draws History's left column: the commits
   with their graph, or the commit shown. `git_block/words.rs` holds the Git words' tooltips and the sentences the Git says;
-  `git_block/switcher.rs` the branch switcher.
+  `git_block/switcher.rs` the branch dialog (switch or create).
 - `chat/`: the Templum Agent's state on the workspace (`mod.rs`: `TemplumAgent`, the pill's keyboard, the
   approval's), the pill (`pill.rs`), the chat (`panel.rs`) and its rows (`rows.rs`), and the approval popup
   (`approval.rs`): window chrome over the canvas's bottom center, never scaled by the zoom
@@ -162,6 +162,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 - `welcome.rs`: the welcome a first run opens over a frosted canvas (each block a soft shadow of its shape: GPUI has
   no backdrop blur), five pages whose settings are the panel's rows (`settings/welcome.rs`); the first terminal
   opens when it closes ([specs/welcome.md](specs/welcome.md)).
+- `autostart.rs`: the system's own entry that starts Templum when the person logs in (an XDG autostart file, a
+  LaunchAgent, a `Run` registry value), the only record of it ([specs/settings.md](specs/settings.md#start-at-login)).
 - `usage.rs`: the title bar's usage meter, its popover and a terminal's usage chip.
 - `wires.rs`: painting the wires in the layer under the blocks, with the dot grid, and the dot that travels along one
   while a task is handed over ([specs/connections.md](specs/connections.md#wires)).
@@ -232,7 +234,10 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   a move to another workspace; a missing, taken or malformed one is replaced; the canvas's `wires` name their blocks
   by it. A terminal's item also keeps the block that opened it (`opened_by`), its agent's model and effort, and the
   account its shell was opened for (`Pane::account`, saved as `account`): the shell gets that account's variable
-  back, and its agent found there is the account ([specs/accounts.md](specs/accounts.md)).
+  back, and its agent found there is the account ([specs/accounts.md](specs/accounts.md)), and the shell chosen for it
+  (`Pane::shell`, saved as its label in `shell`, [specs/shells.md](specs/shells.md#a-shell-for-each-terminal)); an
+  agent's block runs its agent's shell (`[agents]`'s `shell`, `Workspace::agent_shell`, [specs/shells.md](specs/shells.md#a-shell-for-each-agent)),
+  and a restored one its own saved shell, not the setting as it is then.
   The workspace's Git is the file's optional `git` object (`SavedGit`: folder, tab, the commit message draft, the
   left column folded, Split); an older file's Git block item is read into it, and no block.
 

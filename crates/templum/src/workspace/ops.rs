@@ -14,7 +14,7 @@ use super::bus::{Outcome, clean_title, flat};
 use super::content::Caller;
 use super::history::Then;
 use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Kanban, Space, Workspace, remember};
-use crate::board::{Assignee, Card, Comment, Priority};
+use crate::board::{Assignee, Card, Priority};
 use crate::checklist::{self, Checklist};
 use crate::note::{self, Note};
 use crate::{checklists, notes};
@@ -143,7 +143,13 @@ impl Workspace {
                 NewBlock::Note { text } => {
                     let note = ws.notes.add(text, None, now);
                     let tabs = ws.note_tab(note, window, cx).into_iter().collect();
-                    Some(ws.add_block(rect, Body::Note(Note { tabs, active: 0 })))
+                    Some(ws.add_block(
+                        rect,
+                        Body::Note(Note {
+                            tabs,
+                            ..Default::default()
+                        }),
+                    ))
                 }
                 NewBlock::Checklist { name, items } => {
                     let list = ws.checklists.add(now);
@@ -171,10 +177,7 @@ impl Workspace {
                     id
                 }
                 NewBlock::Kanban { board } => {
-                    let kanban = Kanban {
-                        board: Some(board),
-                        picking: false,
-                    };
+                    let kanban = Kanban { board: Some(board) };
                     Some(ws.add_block(rect, Body::Kanban(kanban)))
                 }
                 NewBlock::Editor { folder } => {
@@ -421,23 +424,33 @@ impl Workspace {
     }
 
     /// Types `text` into a terminal, as a paste; Enter after it when `enter`, answered once it
-    /// went: a caller that waits for each answer gets its texts and Enters in order.
+    /// went: a caller that waits for each answer gets its texts and Enters in order. `asker`,
+    /// the terminal that calls (`ASKER` for the Templum Agent), answers a dialog of an agent that
+    /// went quiet on its task by it (`asker_wrote`).
     pub(super) fn type_text(
-        &self,
+        &mut self,
+        asker: &str,
         (space, id): (&str, BlockId),
         block: &str,
         text: &str,
         enter: bool,
         cx: &mut Context<Self>,
     ) -> Outcome {
-        let Some(pane) = self.space_named(space).and_then(|s| s.terminal(id)) else {
+        let Some(worker) = self
+            .space_named(space)
+            .and_then(|s| s.terminal(id))
+            .map(|pane| pane.term.id().to_string())
+        else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
+        self.asker_wrote(&worker, asker);
         if !enter {
-            pane.term.type_in(text);
+            if let Some(pane) = self.pane(&worker) {
+                pane.term.type_in(text);
+            }
             return Outcome::Now(Reply::ok(format!("Typed into {block}.")));
         }
-        let entered = self.type_then_enter(pane.term.id().to_string(), text, cx);
+        let entered = self.type_then_enter(worker, text, cx);
         let block = block.to_string();
         Outcome::Later(cx.spawn(async move |_, _| {
             if entered.await {
@@ -661,9 +674,11 @@ impl Workspace {
         let now = notes::now();
         for comment in &c.comments {
             text.push_str(&format!(
-                "\ncomment by {}, {}:\n{}",
+                "\ncomment {} by {}, {}{}:\n{}",
+                comment.id,
                 self.who(&comment.by, cx),
                 notes::ago(comment.at, now),
+                if comment.edited { ", edited" } else { "" },
                 indent(&comment.text)
             ));
         }
@@ -849,14 +864,13 @@ impl Workspace {
         if text.trim().is_empty() {
             return Reply::err("A comment needs text.");
         }
-        let comment = Comment {
-            by: by.to_string(),
-            text: text.trim_end().to_string(),
-            at: notes::now(),
-        };
-        self.edit_boards(|b| b.edit_card(board, card, |c| c.comments.push(comment)));
+        let said =
+            self.edit_boards(|b| b.add_comment(board, card, by, text.trim_end(), notes::now()));
         cx.notify();
-        Reply::ok(format!("Commented on card {card}."))
+        match said {
+            Some(id) => Reply::ok(format!("Commented on card {card} (comment {id}).")),
+            None => Reply::err(format!("Card {card} is gone.")),
+        }
     }
 
     /// Adds `text` at the end of the note a note block shows, after a blank line, as one step of

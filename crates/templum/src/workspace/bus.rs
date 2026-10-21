@@ -45,7 +45,7 @@ pub(super) fn start(
         }
     };
     let env = terminal_env(&bus, data);
-    if let Some(gemini) = templum_usage::Dirs::of(data).gemini {
+    if let Some(gemini) = crate::agents::dirs(data).gemini {
         templum_usage::gemini::refresh(data, &gemini, cfg!(windows));
     }
     let task = cx.spawn_in(window, async move |ws, cx| {
@@ -165,6 +165,10 @@ impl Workspace {
             Incoming::Request { id, method, params } => {
                 let answer = match method.as_str() {
                     "initialize" => {
+                        // An agent's Templum server started: its terminal has Templum's tools.
+                        if hello.client == "mcp" && !off {
+                            self.tool_conns.insert(conn, hello.terminal.clone());
+                        }
                         let instructions = if off {
                             OFF_INSTRUCTIONS.to_string()
                         } else {
@@ -243,6 +247,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         use templum_mcp::AgentEvent;
+        let hands_out = self.waits_on_its_own(terminal);
         let Some(pane) = self.pane_mut(terminal) else {
             return;
         };
@@ -306,7 +311,15 @@ impl Workspace {
                             "Its turn ended without an answer: an error, or it was interrupted.",
                         ),
                     };
-                    self.end_turn(terminal, reply, cx);
+                    if hands_out {
+                        // It handed a task of its own over and waits for it, as card 30 asks:
+                        // this turn's end isn't its answer, and only the calls of agents that
+                        // didn't hand it its task hear it. Its `reply`, or the end of a turn with
+                        // nothing handed out any more, is the answer.
+                        self.answer_others(terminal, reply, cx);
+                    } else {
+                        self.end_turn(terminal, reply, cx);
+                    }
                 }
             }
             // A wait that says nothing new (Claude Code's notification about the dialog its
@@ -448,7 +461,7 @@ impl Workspace {
                     Ok(id) => id,
                     Err(reply) => return Outcome::Now(reply),
                 };
-                return self.type_text((&space_id, id), &block, &text, enter, cx);
+                return self.type_text(terminal, (&space_id, id), &block, &text, enter, cx);
             }
             Call::Notify { text } => {
                 let (_, title, _) = self.about(&space.blocks[&me], cx);
@@ -471,7 +484,7 @@ impl Workspace {
                 every,
             } => self.schedule(terminal, &block, &text, when, every, cx),
             Call::CancelSchedule { schedule } => self.cancel_schedule(terminal, &schedule),
-            Call::ReplyTo { block, text } => self.reply_to(terminal, &block, &text, cx),
+            Call::ReplyTo { block, text } => self.reply_to(terminal, block.as_deref(), &text, cx),
             Call::WaitForIdle { block, timeout } => {
                 return self.wait_for_idle(terminal, &block, timeout);
             }
@@ -493,6 +506,14 @@ impl Workspace {
             Call::EditCard(edit) => self.edit_card(terminal, edit, cx),
             Call::MoveCard { card, column } => self.move_card(terminal, card, &column, cx),
             Call::CommentCard { card, text } => self.comment_card(terminal, card, &text, cx),
+            Call::EditComment {
+                card,
+                comment,
+                text,
+            } => self.edit_comment(terminal, card, comment, &text, cx),
+            Call::DeleteComment { card, comment } => {
+                self.delete_comment(terminal, card, comment, cx)
+            }
             Call::ClaimCard { card } => self.claim_card(terminal, card, cx),
             Call::ReadNote { block } => self.read_note(terminal, &block, cx),
             Call::AppendNote { block, text } => {
@@ -630,9 +651,91 @@ impl Workspace {
                     "not connected"
                 };
                 let state = agent_state(space, b.id);
-                format!("{uid}  {kind}  {title}{folder}  {tie}{state}")
+                let tools = match space.terminal(b.id) {
+                    Some(pane) if pane.seen.agent.is_some() && !self.has_tools(pane.term.id()) => {
+                        ", no Templum tools"
+                    }
+                    _ => "",
+                };
+                format!("{uid}  {kind}  {title}{folder}  {tie}{state}{tools}")
             })
             .collect()
+    }
+
+    /// The agent in `terminal` has Templum's tools: its MCP client said `initialize` and is still
+    /// connected (docs/specs/agent-protocol.md, 8).
+    pub(super) fn has_tools(&self, terminal: &str) -> bool {
+        self.tool_conns.values().any(|t| t == terminal)
+    }
+
+    /// The terminal of `pane` runs WSL, which gets neither `TEMPLUM_BUS` nor a `templum` it can
+    /// run.
+    fn pane_in_wsl(&self, pane: &Pane) -> bool {
+        self.shell_is(pane.shell.as_ref().map(|s| s.program.as_str()), "wsl")
+    }
+
+    /// The agent of `pane`, without Templum's tools, can still run `templum reply -` in its
+    /// shell: not in WSL, nor Aider, which has no shell tool.
+    pub(super) fn replies_from_shell(&self, pane: &Pane) -> bool {
+        !self.pane_in_wsl(pane) && pane.seen.agent.as_deref() != Some("aider")
+    }
+
+    /// Why the agent of `pane` has no Templum tools, the first reason that fits, as its master is
+    /// told (docs/specs/agent-protocol.md, 8).
+    pub(super) fn no_tools_why(&self, pane: &Pane) -> String {
+        use templum_terminal::Agent;
+        let name = pane.seen.agent.as_deref().unwrap_or_default();
+        let agent = Agent::from_name(name);
+        if !self.config.connections.enabled {
+            return "connections are off (Settings ▸ Connections ▸ Agents in Templum)".into();
+        }
+        if self.pane_in_wsl(pane) {
+            return "it runs in WSL, where Templum can't give it its server".into();
+        }
+        match agent {
+            Some(aider) if aider.name() == "aider" => "Aider has no MCP".into(),
+            Some(Agent::GEMINI) => {
+                // An account's extensions are its folder's.
+                let dir = match pane
+                    .account
+                    .as_ref()
+                    .and_then(|id| self.agents.iter().find(|a| &a.id == id))
+                    .and_then(|a| a.account.as_ref())
+                {
+                    Some(a) => Some(a.kind.state_dir(&a.folder)),
+                    None => self
+                        .data_dir
+                        .as_deref()
+                        .and_then(|data| crate::agents::dirs(data).gemini),
+                };
+                if dir.is_some_and(|dir| templum_usage::gemini::installed(&dir)) {
+                    "Gemini CLI starts no server in a folder it doesn't trust".into()
+                } else {
+                    "Templum's Gemini CLI extension isn't installed (Settings ▸ Connections ▸ \
+                     Gemini CLI ▸ Install)"
+                        .into()
+                }
+            }
+            Some(Agent::PI) => "Pi has MCP only from 0.99".into(),
+            Some(
+                agent @ (Agent::CLAUDE
+                | Agent::CODEX
+                | Agent::COPILOT
+                | Agent::OPENCODE
+                | Agent::KILO
+                | Agent::QWEN),
+            ) => format!(
+                "its server hasn't connected: it is still starting, its start failed, or it was \
+                 started without Templum's words (command {}, a shell without Templum's \
+                 integration)",
+                agent.command()
+            ),
+            _ => format!(
+                "Templum can't give {} its server for one session: add `templum mcp` to its own \
+                 MCP servers (Settings ▸ Connections ▸ Other agents)",
+                agent.map_or(name, |a| a.title())
+            ),
+        }
     }
 
     /// What `initialize` tells the agent in `terminal` about itself.
@@ -702,7 +805,9 @@ impl Workspace {
              finish them. For work of several steps, open your own checklist with create_block and \
              check its items as you go. A task you \
              hand over without wait comes back typed into your terminal as [task …]: it isn't the \
-             person writing.",
+             person writing. A task handed to you begins [from …, task t7]: when it is done, answer \
+             it once with reply, your whole answer as its text. When you need the person, ask with \
+             ask_user, not on your screen.",
             space.name,
             list(connected),
             list(others),

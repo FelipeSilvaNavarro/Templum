@@ -28,13 +28,23 @@ pub(super) fn fields(
         .iter()
         .enumerate()
         .map(|(q, question)| {
-            let placeholder = question.options.is_empty().then_some("Your answer");
-            field(key, Some(q), placeholder, window, cx)
+            let placeholder = if question.options.is_empty() {
+                "Your answer"
+            } else {
+                "Something else"
+            };
+            field(key, Some(q), Some(placeholder), window, cx)
         })
         .collect();
     let note = match (ask.json, &ask.plan) {
         (_, Some(_)) => Some(field(key, None, Some("Comment (optional)"), window, cx)),
-        (true, None) => Some(field(key, None, Some("Note (optional)"), window, cx)),
+        (true, None) => Some(field(
+            key,
+            None,
+            Some("Add a note for the agent"),
+            window,
+            cx,
+        )),
         (false, None) => None,
     };
     (others, note)
@@ -103,8 +113,8 @@ impl Workspace {
         }
     }
 
-    /// A click on option `i` of question `q` of the question `key`: picked, or checked; one
-    /// single-select question answers with it at once.
+    /// A click on option `i` of question `q` of the question `key`: picked, or checked, and
+    /// nothing more: Send answers. A plan's Approve and Reject answer with their click.
     pub(crate) fn pick_option(
         &mut self,
         key: u64,
@@ -216,6 +226,7 @@ impl Workspace {
             (Some(by), _) => {
                 form.step(ask, by);
                 self.focus_highlight(key, window, cx);
+                self.reveal_highlight(key);
             }
             (None, "space") => {
                 if let Some(Row::Option(q, i)) = form.highlight {
@@ -243,8 +254,9 @@ impl Workspace {
         true
     }
 
-    /// Enter on the question `key`: a single-select option highlighted is picked; then it is
-    /// sent once each question has an answer, else the highlight moves to the next without one.
+    /// Enter on the question `key`: a single-select option highlighted is picked. Once each
+    /// question has an answer Enter sends, except the Enter that just picked the last one, which
+    /// moves the highlight to Send; before, the highlight moves to the next question without one.
     fn question_enter(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
             return;
@@ -260,17 +272,34 @@ impl Workspace {
         if typing.is_some() {
             form.highlight = typing;
         }
+        // An option picked now is only picked: the Enter that sends comes after it, on Send or
+        // anywhere once the dialog is ready. A plan's Approve and Reject answer at once.
+        let mut picking = false;
         if let Some(Row::Option(q, i)) = form.highlight
             && !ask.questions[q].multi
         {
+            picking = !form.picked(q, i) && !ask.quick();
             form.pick(ask, q, i);
         }
-        if form.answers(ask, &others).is_some() {
-            self.send_question(key, window, cx);
-        } else {
+        if form.answers(ask, &others).is_none() {
             form.next_unanswered(ask, &others);
-            self.focus_highlight(key, window, cx);
-            cx.notify();
+        } else if picking {
+            form.highlight = Some(Row::Send);
+        } else {
+            self.send_question(key, window, cx);
+            return;
+        }
+        self.focus_highlight(key, window, cx);
+        self.reveal_highlight(key);
+        cx.notify();
+    }
+
+    /// The highlight the keys moved: the dialog's body scrolls to show its row when it is drawn.
+    fn reveal_highlight(&self, key: u64) {
+        if let Some(wait) = self.waits.iter().find(|w| w.key == key)
+            && let Waiting::Question { form, .. } = &wait.what
+        {
+            wait.reveal.set(form.highlight);
         }
     }
 

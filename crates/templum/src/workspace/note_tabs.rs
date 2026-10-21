@@ -3,12 +3,12 @@
 //! again shows that tab. Every change to a note's text is written to `Workspace::notes` as it is
 //! typed, and saved with the canvas.
 
-use gpui_kit::component::input::InputEvent;
-use gpui_kit::{Context, Window};
+use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::{AppContext as _, Context, Entity, Focusable as _, Window};
 use templum_canvas::{BlockId, Point, Rect};
 
 use crate::board::Label;
-use crate::note::{self, Note, NoteTab};
+use crate::note::{self, Note, NoteTab, Renaming};
 use crate::notes;
 
 use super::{Body, Space, Workspace};
@@ -38,7 +38,10 @@ impl Workspace {
     ) {
         self.space.pristine = false;
         let rect = Rect::new(at.x, at.y, note::SIZE.w, note::SIZE.h);
-        let block = Body::Note(Note { tabs, active: 0 });
+        let block = Body::Note(Note {
+            tabs,
+            ..Default::default()
+        });
         if !block.focus_inner(window, cx) {
             window.focus(&self.focus_handle, cx);
         }
@@ -176,17 +179,14 @@ impl Workspace {
         if index >= note.tabs.len() {
             return;
         }
-        let tab = note.tabs.remove(index);
-        if note.active > index || note.active >= note.tabs.len() {
-            note.active = note.active.saturating_sub(1);
-        }
+        let tab = note.remove_tab(index);
         self.drop_if_blank(tab.id);
         self.focus_block(block, window, cx);
     }
 
-    /// Note `id` is no more open: a blank one goes.
+    /// Note `id` is no more open: a blank one goes (no text, and never named).
     pub(super) fn drop_if_blank(&mut self, id: u64) {
-        if self.notes.get(id).is_some_and(|n| n.text.trim().is_empty()) {
+        if self.notes.get(id).is_some_and(notes::Entry::is_blank) {
             self.notes.remove(id);
         }
     }
@@ -204,13 +204,111 @@ impl Workspace {
                 .and_then(Body::note_mut)
                 && let Some(index) = note.tabs.iter().position(|t| t.id == id)
             {
-                note.tabs.remove(index);
-                if note.active > index || note.active >= note.tabs.len() {
-                    note.active = note.active.saturating_sub(1);
-                }
+                note.remove_tab(index);
             }
         }
         self.notes.remove(id);
+        cx.notify();
+    }
+
+    /// A double click on the block's tab `index`: its name is selected in the tab, to be typed over
+    /// with the keyboard. Enter keeps it, and so does the keyboard leaving; Esc drops it.
+    pub(crate) fn rename_note_tab(
+        &mut self,
+        block: BlockId,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop_note_rename(block, true, window, cx);
+        let Some(id) = self
+            .space
+            .blocks
+            .get(&block)
+            .and_then(|b| b.note()?.tabs.get(index))
+            .map(|t| t.id)
+        else {
+            return;
+        };
+        let name = self.notes.name(id).to_string();
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(name));
+        input.update(cx, |input, cx| input.select_all(window, cx));
+        cx.subscribe_in(
+            &input,
+            window,
+            move |ws, input, event: &InputEvent, window, cx| match event {
+                // Enter, or a click elsewhere.
+                InputEvent::PressEnter { .. } | InputEvent::Blur
+                    if ws.renaming_with(block, input) =>
+                {
+                    ws.stop_note_rename(block, true, window, cx)
+                }
+                _ => {}
+            },
+        )
+        .detach();
+        if let Some(note) = self.space.blocks.get_mut(&block).and_then(Body::note_mut) {
+            note.active = index;
+            note.renaming = Some(Renaming {
+                id,
+                input: input.clone(),
+            });
+        }
+        self.focus_block(block, window, cx);
+        input.update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    /// `block`'s tab is being renamed in `input`.
+    fn renaming_with(&self, block: BlockId, input: &Entity<InputState>) -> bool {
+        self.space
+            .blocks
+            .get(&block)
+            .and_then(|b| b.note()?.renaming.as_ref())
+            .is_some_and(|r| &r.input == input)
+    }
+
+    /// Ends the rename of `block`'s tab: the name typed is kept, or with `keep` false dropped. The
+    /// note takes the keyboard back from the field.
+    pub(crate) fn stop_note_rename(
+        &mut self,
+        block: BlockId,
+        keep: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(renaming) = self
+            .space
+            .blocks
+            .get_mut(&block)
+            .and_then(Body::note_mut)
+            .and_then(|n| n.renaming.take())
+        else {
+            return;
+        };
+        if keep {
+            let name = renaming.input.read(cx).value().to_string();
+            self.notes.rename(renaming.id, &name);
+        }
+        if renaming.input.read(cx).focus_handle(cx).is_focused(window) {
+            self.focus_block(block, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Esc in the tab's field: the old name stays.
+    pub(crate) fn cancel_note_rename(
+        &mut self,
+        block: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop_note_rename(block, false, window, cx);
+    }
+
+    /// The menu's Rename: note `id` is called `name`.
+    pub(crate) fn rename_note(&mut self, id: u64, name: &str, cx: &mut Context<Self>) {
+        self.notes.rename(id, name);
         cx.notify();
     }
 

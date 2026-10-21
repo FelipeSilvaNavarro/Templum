@@ -64,7 +64,8 @@ impl Workspace {
             };
             // An agent resumes the folder's latest conversation: anywhere else, it's another one.
             let in_its_folder = folder.is_some();
-            let id = self.spawn_block(rect, folder, window, cx);
+            let shell = t.shell.as_deref().and_then(|l| self.found_shell(l));
+            let id = self.spawn_block_with(rect, folder, Vec::new(), shell, window, cx);
             failed |= id.is_none();
             if let Some(id) = id {
                 self.restore_terminal(id, t, in_its_folder, cx);
@@ -154,8 +155,8 @@ impl Workspace {
 
     /// A saved terminal `saved`, just started as the terminal `id`: who opened it, and, when
     /// `resume`, its agent (one Templum knows) typed back with its session when it was found, and
-    /// its model and effort when it can type them safely (a hand-edited file may hold others).
-    /// The shell reads it once it is ready.
+    /// its model and effort when it can type them safely (a hand-edited file may hold others),
+    /// worded for the shell the block runs. The shell reads it once it is ready.
     fn restore_terminal(
         &mut self,
         id: BlockId,
@@ -193,7 +194,7 @@ impl Workspace {
                     Some(a) => (a.kind.agent, Some(a.kind.state_dir(&a.folder))),
                     None => (agent.id.as_str(), None),
                 };
-                let dirs = templum_usage::Dirs::of(data);
+                let dirs = crate::agents::dirs(data);
                 templum_usage::session_kept(of, id, &dirs, home.as_deref())
             }
             _ => true,
@@ -206,9 +207,16 @@ impl Workspace {
             .as_ref()
             .and_then(|r| self.config.roles.get(r)?.args.clone());
         let args = agent.launch_args_with(model, effort, words.as_deref());
+        // For the shell the block runs, not the default's.
+        let shell = self
+            .space
+            .terminal(id)
+            .and_then(|p| p.shell.as_ref())
+            .map(|s| s.program.as_str());
         let line = format!(
             "{}\r",
-            self.typed(
+            self.typed_in(
+                shell,
                 Some(agent),
                 &format!("{command}{}", args.as_deref().unwrap_or(""))
             )
@@ -226,6 +234,18 @@ impl Workspace {
             }
             self.cover_start(id, title, cx);
         }
+    }
+
+    /// The shell of that label among the shells found here. A saved terminal names its shell by
+    /// its label, never by a program: a file edited or from another computer can only pick a
+    /// shell this computer lists, and one that isn't here opens the default (the block forgets
+    /// it, and the canvas loses no block for a shell that is gone).
+    fn found_shell(&self, label: &str) -> Option<templum_terminal::ShellOption> {
+        let found = self.shells.iter().find(|s| s.label == label).cloned();
+        if found.is_none() {
+            eprintln!("templum: no shell {label:?} here: the default one opens");
+        }
+        found
     }
 
     /// A block from a saved item, on top and focused. A terminal starts a fresh shell in the
@@ -263,25 +283,21 @@ impl Workspace {
                 if let Some(account) = &account {
                     self.prepare_account(account, window, cx);
                 }
-                let mut vars = self.agent_vars(agent.as_ref(), &super::usage::in_env);
+                // The block's own shell, as it was saved: not the agent's setting now.
+                let shell = t.shell.as_deref().and_then(|l| self.found_shell(l));
+                let program = shell.as_ref().map(|s| s.program.as_str());
+                let mut vars = self.agent_vars(agent.as_ref(), program, &super::usage::in_env);
                 if let Some((name, folder)) = account.as_ref().and_then(AgentEntry::var)
                     && !vars.iter().any(|(k, _)| k == name)
                 {
                     vars.insert(0, (name.to_string(), folder.to_string_lossy().into_owned()));
                 }
-                let id = self.spawn_block_with(rect, folder, vars, window, cx)?;
+                let id = self.spawn_block_with(rect, folder, vars, shell, window, cx)?;
                 self.restore_terminal(id, t, in_its_folder, cx);
                 Some(id)
             }
-            session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN).map(|rect| {
-                self.add_block(
-                    rect,
-                    Body::Kanban(Kanban {
-                        board: k.board,
-                        picking: false,
-                    }),
-                )
-            }),
+            session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN)
+                .map(|rect| self.add_block(rect, Body::Kanban(Kanban { board: k.board }))),
             session::Item::Note(n) => {
                 let rect = clamped_rect(n.rect.into(), note::MIN)?;
                 let mut ids = n.notes.clone();
@@ -297,7 +313,14 @@ impl Workspace {
                     .filter_map(|id| self.note_tab(id, window, cx))
                     .collect();
                 let active = tabs.iter().position(|t| Some(t.id) == shown).unwrap_or(0);
-                Some(self.add_block(rect, Body::Note(Note { tabs, active })))
+                Some(self.add_block(
+                    rect,
+                    Body::Note(Note {
+                        tabs,
+                        active,
+                        ..Default::default()
+                    }),
+                ))
             }
             session::Item::Checklist(c) => {
                 let rect = clamped_rect(c.rect.into(), checklist::MIN)?;

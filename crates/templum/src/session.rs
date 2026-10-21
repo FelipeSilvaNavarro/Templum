@@ -110,6 +110,31 @@ pub(crate) struct Index {
     /// The sidebar is shown.
     #[serde(default = "shown")]
     pub sidebar: bool,
+    /// The Git popup's size the person dragged it to; none until they do. Kept as dragged: the
+    /// window it was set in may be smaller or larger than the one it is drawn in.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "usable_size"
+    )]
+    pub git_size: Option<SavedSize>,
+}
+
+/// A width and a height, pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SavedSize {
+    pub w: f32,
+    pub h: f32,
+}
+
+/// A size with both sides above zero; anything else (a typo, a negative side) is none. A number
+/// too large for JSON (`1e400`) fails the whole index, as anywhere else in it.
+fn usable_size<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SavedSize>, D::Error> {
+    Ok(
+        serde_json::from_value::<SavedSize>(serde_json::Value::deserialize(d)?)
+            .ok()
+            .filter(|s| s.w > 0.0 && s.h > 0.0 && s.w.is_finite() && s.h.is_finite()),
+    )
 }
 
 fn shown() -> bool {
@@ -212,6 +237,7 @@ impl Index {
             }],
             active: 0,
             sidebar: true,
+            git_size: None,
         }
     }
 }
@@ -738,6 +764,12 @@ pub(crate) struct TerminalItem {
     /// The role `spawn_agent` opened it as: its words typed again on resume, while it exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// The shell it was opened with from a menu, by its label ("fish", "PowerShell 7"): started
+    /// again when it is among the shells found here, else the default. A label, never a program
+    /// or arguments: the file names a shell and runs no command (docs/specs/persistence.md,
+    /// Safety). Missing: the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -921,7 +953,7 @@ fn procs(
 
 /// The session each process has open, in order, from the agents' files.
 fn session_ids(procs: &[templum_usage::Proc], data: &Path) -> Vec<Option<String>> {
-    let dirs = templum_usage::Dirs::of(data);
+    let dirs = crate::agents::dirs(data);
     templum_usage::session_ids(procs, &dirs, crate::notes::now())
 }
 
@@ -1251,6 +1283,7 @@ mod tests {
                     effort: None,
                     account: None,
                     role: None,
+                    shell: None,
                 }),
                 Item::Terminal(TerminalItem {
                     uid: String::new(),
@@ -1268,6 +1301,7 @@ mod tests {
                     effort: None,
                     account: None,
                     role: None,
+                    shell: None,
                 }),
                 Item::Kanban(KanbanItem {
                     uid: String::new(),
@@ -1680,6 +1714,41 @@ mod tests {
             ],
             active: 1,
             sidebar: false,
+            git_size: None,
+        }
+    }
+
+    #[test]
+    fn the_git_popups_size_reads_back_and_a_size_that_cant_be_used_is_none() {
+        let d = tempfile::tempdir().unwrap();
+        let mut index = two();
+        index.git_size = Some(SavedSize { w: 820.0, h: 610.5 });
+        save_index(d.path(), &index).unwrap();
+        assert_eq!(load_index(d.path()), Loaded::Saved(index));
+        // Not written until the person sets one.
+        save_index(d.path(), &two()).unwrap();
+        let text = std::fs::read_to_string(index_path(d.path())).unwrap();
+        assert!(!text.contains("git_size"), "{text}");
+        // A value Templum can't use never sets the whole list aside.
+        for bad in [
+            r#""big""#,
+            "null",
+            r#"{"w":-5,"h":300}"#,
+            r#"{"w":0,"h":300}"#,
+            r#"{"w":9}"#,
+        ] {
+            std::fs::write(
+                index_path(d.path()),
+                format!(
+                    r#"{{"version":1,"workspaces":[{{"id":"a","name":"A"}}],"git_size":{bad}}}"#
+                ),
+            )
+            .unwrap();
+            let Loaded::Saved(read) = load_index(d.path()) else {
+                panic!("{bad}: the list was set aside");
+            };
+            assert_eq!(read.git_size, None, "{bad}");
+            assert_eq!(read.workspaces.len(), 1, "{bad}");
         }
     }
 
@@ -1911,6 +1980,7 @@ mod tests {
                         effort: Some("high".into()),
                         account: None,
                         role: None,
+                        shell: None,
                     },
                     Processes::default(),
                     None,
@@ -1932,6 +2002,7 @@ mod tests {
                         effort: None,
                         account: None,
                         role: None,
+                        shell: None,
                     },
                     Processes::default(),
                     None,
@@ -2015,6 +2086,7 @@ mod tests {
                     effort: Some("high".into()),
                     account: None,
                     role: None,
+                    shell: None,
                 },
                 Processes::default(),
                 None,

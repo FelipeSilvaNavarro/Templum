@@ -281,6 +281,8 @@ fn a_commits_menu_branches_from_it_tags_it_and_copies_its_hash(cx: &mut TestAppC
     cx.update_window(handle, |_, window, cx| {
         assert!(window.has_active_dialog(cx));
         window.input("feat", cx);
+        // The dialog's rows follow the text on the next frame.
+        window.render_frame(cx);
         window.press("enter", cx);
         window.render_frame(cx);
     })
@@ -444,11 +446,14 @@ fn new_branch_creates_and_checks_out_and_a_bad_name_is_refused(cx: &mut TestAppC
         crate::git_block::Tab::Branches,
     );
     let create = |cx: &mut TestAppContext, name: &str| {
+        cx.update_window(handle, |_, window, cx| window.click("git-new-branch", cx))
+            .unwrap();
+        // The branches are read first, then the dialog opens.
+        settle(handle, cx);
         cx.update_window(handle, |_, window, cx| {
-            window.click("git-new-branch", cx);
-            window.render_frame(cx);
             assert!(window.has_active_dialog(cx));
             window.input(name, cx);
+            window.render_frame(cx);
             window.press("enter", cx);
             window.render_frame(cx);
         })

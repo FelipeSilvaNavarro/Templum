@@ -4,6 +4,7 @@
 
 mod agents;
 mod alert;
+mod autostart;
 mod balloon;
 mod bench;
 mod block;
@@ -45,6 +46,7 @@ mod welcome;
 mod wires;
 mod workspace;
 
+use autostart::Autostart;
 use gpui_kit::component::TitleBar;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{
@@ -105,6 +107,8 @@ fn main() {
         _ => false,
     };
     let data_dir = data_dir.filter(|_| !second);
+    // The bench leaves the person's login items alone.
+    let autostart = if bench { None } else { Autostart::locate(dev) };
     gpui_kit::application()
         // Every Lucide icon, by name: the toolbar and the notes use ones outside the default set.
         .with_assets(gpui_kit::assets::AllAssets)
@@ -141,7 +145,7 @@ fn main() {
                                    empty and keeps nothing, so the other's canvas stays as it is";
                     workspace::show_notification(window, cx, Notification::warning(message));
                 }
-                cx.new(|cx| Workspace::new(config_dir, data_dir, window, cx))
+                cx.new(|cx| Workspace::new(autostart, config_dir, data_dir, window, cx))
             })
             .expect("failed to open window");
             if let Some(kind) = zoom {

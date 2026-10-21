@@ -1,6 +1,5 @@
 //! The Git block's Stashes tab: Stash changes…, the stashes, and the shown stash's diff.
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -8,7 +7,6 @@ use gpui_kit::{
     px,
 };
 
-use super::widgets::icon_button;
 use super::{FONT, Git, LISTS_W, ROW_H, diff_view, words};
 use crate::editor::button;
 use crate::menu::Target;
@@ -91,13 +89,7 @@ pub(super) fn stashes(
                         })
                         .test_support(),
                 )
-                .child(div().flex_1())
-                .child(
-                    icon_button("git-fold-lists", IconName::PanelLeftClose, ui, z)
-                        .tooltip(|window, cx| Tooltip::new("Fold the lists").build(window, cx))
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(cx)))
-                        .test_support(),
-                ),
+                .child(div().flex_1()),
         )
         .child(
             div()

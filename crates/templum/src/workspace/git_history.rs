@@ -794,38 +794,6 @@ impl Workspace {
         );
     }
 
-    /// New branch… from `from` (a commit; None: the current one): asks the name.
-    pub(crate) fn branch_from(
-        &mut self,
-        from: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let ws = cx.entity();
-        prompt::ask_text(
-            "New branch",
-            "Create",
-            "",
-            move |name, window, cx| {
-                let name = name.trim().to_string();
-                if name.is_empty() {
-                    return false;
-                }
-                let from = from.clone();
-                ws.update(cx, |ws, cx| {
-                    ws.git_action(
-                        move |repo| repo.new_branch(&name, from.as_deref()),
-                        window,
-                        cx,
-                    )
-                });
-                true
-            },
-            window,
-            cx,
-        );
-    }
-
     pub(crate) fn tag_commit(&mut self, hash: String, window: &mut Window, cx: &mut Context<Self>) {
         let ws = cx.entity();
         prompt::ask_text(

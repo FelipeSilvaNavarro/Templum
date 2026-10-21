@@ -19,6 +19,13 @@ pub(crate) struct PreviewScroll {
     zoom: Cell<f32>,
 }
 
+impl PreviewScroll {
+    /// Drawn at zoom `z`: the offset scales with the content, so what shows stays what shows.
+    pub(crate) fn follow(&self, z: f32) {
+        crate::editor::keep_list_rows(&self.handle, &self.zoom, z);
+    }
+}
+
 /// Markdown `text` rendered at zoom `z` like a photo of it at zoom 1: `w` world units wide, its
 /// text `font`, headings, code and spacing (in rems) all scaled by `z`, so it wraps at the same
 /// words at every zoom; its scroll follows the zoom.
@@ -31,7 +38,7 @@ pub(crate) fn preview(
     font: f32,
     z: f32,
 ) -> AnyElement {
-    crate::editor::keep_list_rows(&scroll.handle, &scroll.zoom, z);
+    scroll.follow(z);
     div()
         .id(id)
         .h_full()

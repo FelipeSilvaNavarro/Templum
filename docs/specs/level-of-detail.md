@@ -123,7 +123,7 @@ and it is unit-tested headlessly. `block::render` asks it for each block every f
   (`block.rs:454`), so it never spills onto another block.
 - The label **is** the title: the same `("title", n)` element with its handlers (press to move, double-click to
   frame, `block.rs:137-149`), and the dot keeps its id and tooltip (`("status", n)`, `block.rs:176-185`).
-- The header's small buttons at the top left (a kanban block's ⇅, a note's notebook, an editor's tree toggle,
+- The header's small buttons at the top left (a kanban block's boards, a note's notebook, an editor's tree toggle,
   `block.rs:190-290`) are hidden while the title is a label: the label sits there, and they are 5 px wide at 25%.
   The close button and the resize grip still show on hover (`block.rs:153-171`, `400-424`), and so do the resize
   strips (`block.rs:291-312`).
@@ -228,7 +228,7 @@ horizontally scrolled long line. It costs one `range_to_bounds` per word on scre
 
 - rows are `round(1.5 × 13 × s)` px apart: the editor's own rows (`block.rs:585-592`);
 - a word sits at the text area's left edge plus its span × `s`;
-- where the text area starts at `s` is computed the way Full lays it out. In a note, `FIXED_LEFT × s` and
+- where the text area starts at `s` is computed the way Full lays it out. In a note, `TEXT_LEFT × s` and
   `FIXED_TOP × s` from its box: the note's compensation makes both scale (`note.rs:26-34`, `144-149`). In an editor
   tab, gpui-kit's fixed 6 px left and 8 px top padding (`gpui-component-0.7.1 src/input/input.rs:591-602`), then the
   line numbers: their digits at `s` plus a fixed 6 px margin (`gpui-base-0.7.1 src/input/base/element.rs:50-53`,

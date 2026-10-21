@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use templum_terminal::{Agent, Detect, program_name};
+use templum_usage::accounts::command::{self, SHELL_WORDS};
 use templum_usage::accounts::{Kind, Report, Share, When};
 
 use crate::config::{AgentConfig, CommitMessage, valid_agent_id};
@@ -34,6 +35,8 @@ pub(crate) struct AgentEntry {
     pub generate: Option<String>,
     /// Its models for commit messages, the recommended one first.
     pub models: Vec<String>,
+    /// The label of the shell it opens in; None: the default shell.
+    pub shell: Option<String>,
     /// An account of `builtin` (docs/specs/accounts.md): its folder and what it shares.
     pub account: Option<Account>,
 }
@@ -47,6 +50,8 @@ pub(crate) struct Account {
     pub folder: PathBuf,
     /// The person chose it; false: `<data>/accounts/<id>`.
     pub chosen: bool,
+    /// Its title is config.toml's `name`; false: the default, its agent's and its id.
+    pub named: bool,
     /// Its items shared, by key: the agent's id or another account of it.
     pub share: BTreeMap<String, String>,
 }
@@ -83,6 +88,23 @@ fn own_state_in(
             .any(|a| a.folder == Path::new(v))
     });
     kind.own_folder(var, home).map(|f| kind.state_dir(&f))
+}
+
+/// Where the agents keep their files, and the relay its own, for the data folder `data`. Tests
+/// get the agents' `<OWN_FOLDERS>/<agent>` (as `own_state` does), never the person's `~/.claude`.
+pub(crate) fn dirs(data: &Path) -> templum_usage::Dirs {
+    #[cfg(test)]
+    let own = |agent| templum_usage::accounts::kind(agent).and_then(|k| own_state(k, &[]));
+    #[cfg(test)]
+    return templum_usage::Dirs {
+        relay: templum_usage::relay_dir(data),
+        claude: own("claude"),
+        codex: own("codex"),
+        qwen: None,
+        gemini: own("gemini"),
+    };
+    #[cfg(not(test))]
+    templum_usage::Dirs::of(data)
 }
 
 #[cfg(test)]
@@ -254,8 +276,11 @@ impl AgentEntry {
                 id: self.id.clone(),
                 names: Vec::new(),
                 packages: Vec::new(),
+                var: None,
             },
         };
+        // An agent with accounts: its folder is read from its process, to name the block's account.
+        detect.var = templum_usage::accounts::kind(&self.id).map(|kind| kind.var.to_string());
         let program = program_name(&self.command);
         if !program.is_empty() && !detect.names.contains(&program) {
             detect.names.push(program);
@@ -322,6 +347,7 @@ pub(crate) fn effective(
             show: set_.show.unwrap_or(true),
             generate: text(&set_.generate).or(generate).map(str::to_string),
             models: set_.models.clone().unwrap_or(models),
+            shell: text(&set_.shell).map(str::to_string),
             account: None,
         }
     });
@@ -339,10 +365,13 @@ pub(crate) fn effective(
                 .map_or_else(|| format!("{} ({id})", agent.title), str::to_string),
             changed: false,
             show: set.show.unwrap_or(true),
+            // An account's own shell, never its agent's.
+            shell: text(&set.shell).map(str::to_string),
             account: Some(Account {
                 kind,
                 folder: folder.components().collect(),
                 chosen,
+                named: text(&set.name).is_some(),
                 share: set.share.clone().unwrap_or_default(),
             }),
             ..agent.clone()
@@ -364,6 +393,7 @@ pub(crate) fn effective(
                 show: set.show.unwrap_or(true),
                 generate: text(&set.generate).map(str::to_string),
                 models: set.models.clone().unwrap_or_default(),
+                shell: text(&set.shell).map(str::to_string),
                 account: None,
             })
         });
@@ -380,20 +410,174 @@ pub(crate) fn detects(agents: &[AgentEntry]) -> Vec<Detect> {
         .collect()
 }
 
-/// A new account's id: its agent's and the first free number from 2 (`claude2`). An id whose
-/// folder is still in Templum's data folder `data` (left by a change of folder) is taken: the new
-/// account would open on that login, and deleting it would delete it.
-pub(crate) fn new_account_id(
-    of: &str,
+/// Where the commands of accounts go: `~/.local/bin`, on every OS. Tests never reach it: a test
+/// that needs it sets `COMMANDS` to a temporary folder.
+pub(crate) fn commands_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    return COMMANDS.with_borrow(Clone::clone);
+    #[cfg(not(test))]
+    std::env::home_dir().map(|home| home.join(".local").join("bin"))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Where a test's accounts' commands go; None: nowhere.
+    pub(crate) static COMMANDS: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether `id` can be an account's command: a lowercase letter, then lowercase letters, digits,
+/// `-` and `_`, at most 32 in all. Lowercase because macOS and Windows don't tell `Claude` from
+/// `claude`.
+pub(crate) fn is_command_word(id: &str) -> bool {
+    let mut chars = id.chars();
+    id.len() <= 32
+        && chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// Rules 1 and 2 of docs/specs/accounts.md, Its name: a word, not one of Templum's.
+fn word_problem(id: &str) -> Option<String> {
+    if !is_command_word(id) {
+        return Some("Use lowercase letters, digits, - and _, starting with a letter".into());
+    }
+    if Agent::from_name(id).is_some() {
+        return Some(format!("{id} is one of Templum's agents"));
+    }
+    (id == "templum").then(|| "templum is Templum's own command".into())
+}
+
+/// Rules 4 to 6: not a word of a shell, nor a command of the computer (a program `program` finds,
+/// a file of the `commands` folder) other than the one Templum wrote for `id` in `data`.
+fn computer_problem(
+    id: &str,
     data: Option<&Path>,
+    commands: Option<&Path>,
+    program: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Option<String> {
+    if SHELL_WORDS.contains(&id) {
+        return Some(format!("{id} is a word of your shell"));
+    }
+    let own = |path: &Path| data.is_some_and(|d| command::is_own(path, id, d));
+    let kept = |dir: &Path| -> Option<PathBuf> {
+        let file = |name: &std::ffi::OsStr| {
+            let name = name.to_string_lossy().to_lowercase();
+            name == id || (name.starts_with(&format!("{id}.")) && !name.ends_with(".templum-new"))
+        };
+        let found: Vec<PathBuf> = if cfg!(windows) {
+            let all = std::fs::read_dir(dir).into_iter().flatten().flatten();
+            all.map(|e| e.path())
+                .filter(|p| p.file_name().is_some_and(file))
+                .collect()
+        } else {
+            vec![dir.join(id)]
+        };
+        found
+            .into_iter()
+            .find(|p| p.symlink_metadata().is_ok() && !own(p))
+    };
+    let taken = program(id)
+        .filter(|path| !own(path))
+        .or_else(|| commands.and_then(kept))?;
+    Some(format!("{id} is already a command: {}", taken.display()))
+}
+
+/// What keeps `id` from being the command of an account of config.toml: rules 1, 2, 4, 5 and 6
+/// of docs/specs/accounts.md, Its name. None: it can be one.
+pub(crate) fn command_problem(
+    id: &str,
+    data: Option<&Path>,
+    commands: Option<&Path>,
+    program: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<String> {
+    word_problem(id).or_else(|| computer_problem(id, data, commands, &program))
+}
+
+/// What keeps `name` from being a new account's id, the first rule broken in the order of
+/// docs/specs/accounts.md, Its name. `taken`: an id of `[agents]`, in any case. `program` finds a
+/// program on the computer (`templum_terminal::locate`). None: it is free.
+pub(crate) fn name_problem(
+    name: &str,
     taken: impl Fn(&str) -> bool,
-) -> String {
-    let left =
-        |id: &str| data.is_some_and(|d| d.join("accounts").join(id).symlink_metadata().is_ok());
-    (2..)
-        .map(|n| format!("{of}{n}"))
-        .find(|id| !taken(id) && !left(id) && Agent::from_name(id).is_none())
-        .expect("a free id")
+    data: Option<&Path>,
+    commands: Option<&Path>,
+    program: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<String> {
+    word_problem(name)
+        .or_else(|| {
+            taken(name).then(|| format!("{name} is already an agent or an account in Templum"))
+        })
+        .or_else(|| computer_problem(name, data, commands, &program))
+        .or_else(|| {
+            let left = data?.join("accounts").join(name);
+            left.symlink_metadata().is_ok().then(|| {
+                format!(
+                    "Templum still keeps a folder for {name} ({}): choose another name",
+                    tilde(&left)
+                )
+            })
+        })
+}
+
+/// Where a program is on this computer, as agents are looked for. Tests never read the person's
+/// PATH: there it finds nothing.
+pub(crate) fn locate(program: &str) -> Option<PathBuf> {
+    #[cfg(test)]
+    return {
+        let _ = program;
+        None
+    };
+    #[cfg(not(test))]
+    templum_terminal::locate(program)
+}
+
+/// Makes the command of the account `entry` among `agents` in the commands folder, when its id
+/// can be one and the file there is Templum's own or missing, and rewrites it when its text
+/// changed. Its state: the file that runs it, or why there is none. And, apart, a failure the
+/// person should be told (docs/specs/accounts.md, Its command).
+pub(crate) fn make_command(
+    entry: &AgentEntry,
+    agents: &[AgentEntry],
+    data: Option<&Path>,
+) -> (Result<PathBuf, String>, Option<String>) {
+    let Some(account) = &entry.account else {
+        return (Err(format!("{} isn't an account", entry.title)), None);
+    };
+    let id = entry.id.as_str();
+    let (Some(dir), Some(data)) = (commands_dir(), data) else {
+        return (Err("Templum has no folder for commands".into()), None);
+    };
+    if let Some(why) = command_problem(id, Some(data), Some(&dir), locate) {
+        return (Err(why), None);
+    }
+    let title = agents
+        .iter()
+        .find(|a| a.id == account.kind.agent)
+        .map_or(account.kind.agent, |a| a.title.as_str());
+    let home = std::env::home_dir();
+    let command = command::Command {
+        id,
+        title,
+        program: entry.program(),
+        var: account.kind.var,
+        folder: &account.folder,
+        data,
+        home: home.as_deref(),
+    };
+    match command::write(&dir, &command) {
+        Ok(_) => (
+            Ok(dir.join(if cfg!(windows) {
+                format!("{id}.cmd")
+            } else {
+                id.to_string()
+            })),
+            None,
+        ),
+        Err(e) => (
+            Err(e.to_string()),
+            Some(format!("Couldn't make the command {id}: {e}")),
+        ),
+    }
 }
 
 /// Where an account's agent keeps its files.
@@ -450,6 +634,35 @@ pub(crate) fn in_block(found: Option<&str>, account: Option<&Home>) -> Option<St
         Some(home) if found == Some(home.agent.as_str()) => Some(home.id.clone()),
         _ => found.map(str::to_string),
     }
+}
+
+/// The account of `agent` whose folder is `folder` (a variable found in an agent's process),
+/// among `homes`: compared as `effective` writes a folder, by its components.
+pub(crate) fn account_of(agent: &str, folder: &Path, homes: &[Home]) -> Option<String> {
+    let state =
+        templum_usage::accounts::kind(agent)?.state_dir(&folder.components().collect::<PathBuf>());
+    homes
+        .iter()
+        .find(|h| h.agent == agent && h.state == state)
+        .map(|h| h.id.clone())
+}
+
+/// What `TEMPLUM_ACCOUNTS` holds (docs/specs/accounts.md, Typed in a terminal): a line per
+/// account, `id`, program, variable and folder separated by tabs, raw. Each shell defines a
+/// function per id, so an id that would break one (a word of the shell, one of Templum's own)
+/// and a folder with a tab or a line break are left out.
+pub(crate) fn accounts_env(agents: &[AgentEntry]) -> String {
+    agents
+        .iter()
+        .filter_map(|a| {
+            let (var, folder) = a.var()?;
+            let folder = folder.to_string_lossy();
+            let plain = !folder.contains(['\t', '\n', '\r']);
+            (plain && command_problem(&a.id, None, None, |_| None).is_none())
+                .then(|| format!("{}\t{}\t{var}\t{folder}", a.id, a.program()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Each account's [`Home`].
@@ -536,6 +749,8 @@ pub(crate) struct Draft {
     /// Its models, one per line, the recommended one first; empty: none (one of Templum's: its
     /// own).
     pub models: String,
+    /// The label of the shell it opens in; None: the default shell.
+    pub shell: Option<String>,
 }
 
 impl Draft {
@@ -547,6 +762,7 @@ impl Draft {
             show: entry.show,
             generate: entry.generate.clone().unwrap_or_default(),
             models: entry.models.join("\n"),
+            shell: entry.shell.clone(),
         }
     }
 
@@ -567,6 +783,12 @@ impl Draft {
     pub fn to_config(&self, builtin: Option<Agent>, codex: &[String]) -> Option<AgentConfig> {
         let (name, command, resume) = (self.name.trim(), self.command.trim(), self.resume.trim());
         let generate = self.generate.trim();
+        let shell = self
+            .shell
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let models: Vec<String> = self
             .models
             .lines()
@@ -586,6 +808,7 @@ impl Draft {
                     generate: (!generate.is_empty() && Some(generate) != default_generate)
                         .then(|| generate.to_string()),
                     models: (!models.is_empty() && models != default_models).then_some(models),
+                    shell,
                     ..AgentConfig::default()
                 }
             }
@@ -596,6 +819,7 @@ impl Draft {
                 show: (!self.show).then_some(false),
                 generate: (!generate.is_empty()).then(|| generate.to_string()),
                 models: (!models.is_empty()).then_some(models),
+                shell,
                 ..AgentConfig::default()
             },
         };
@@ -623,6 +847,8 @@ pub(crate) struct AccountDraft {
     pub folder: Option<String>,
     /// Its items shared, by key: the agent's id or another account of it.
     pub share: BTreeMap<String, String>,
+    /// The label of the shell it opens in; None: the default shell.
+    pub shell: Option<String>,
 }
 
 impl AccountDraft {
@@ -630,10 +856,15 @@ impl AccountDraft {
         let account = entry.account.as_ref();
         AccountDraft {
             of: account.map_or_else(String::new, |a| a.kind.agent.to_string()),
-            name: entry.title.clone(),
+            name: if account.is_some_and(|a| a.named) {
+                entry.title.clone()
+            } else {
+                String::new()
+            },
             show: entry.show,
             folder: account.filter(|a| a.chosen).map(|a| tilde(&a.folder)),
             share: account.map(|a| a.share.clone()).unwrap_or_default(),
+            shell: entry.shell.clone(),
         }
     }
 
@@ -651,6 +882,7 @@ impl AccountDraft {
                 .filter(|f| !f.is_empty())
                 .map(str::to_string),
             share: (!self.share.is_empty()).then(|| self.share.clone()),
+            shell: self.shell.clone(),
             ..AgentConfig::default()
         }
     }
@@ -679,6 +911,7 @@ pub(crate) fn to_value(config: &AgentConfig) -> toml_edit::InlineTable {
         ("resume", &config.resume),
         ("generate", &config.generate),
         ("folder", &config.folder),
+        ("shell", &config.shell),
     ] {
         if let Some(value) = value {
             table.insert(key, value.as_str().into());
@@ -803,6 +1036,45 @@ mod tests {
 
     fn agents(text: &str) -> Vec<AgentEntry> {
         effective(&parse(text).unwrap().agents, &[], Some(Path::new("/data")))
+    }
+
+    #[test]
+    fn a_shell_is_each_entrys_own_and_drafts_keep_it() {
+        let list = agents(
+            "[agents.claude]\nshell = \"fish\"\n\
+             [agents.mine]\nname = \"Mine\"\ncommand = \"mine\"\nshell = \"WSL\"\n\
+             [agents.claude2]\nof = \"claude\"\n\
+             [agents.claude3]\nof = \"claude\"\nshell = \"zsh\"\n",
+        );
+        let claude = by(&list, "claude");
+        assert_eq!(claude.shell.as_deref(), Some("fish"));
+        assert!(claude.changed);
+        assert_eq!(by(&list, "mine").shell.as_deref(), Some("WSL"));
+        assert_eq!(by(&list, "codex").shell, None);
+        assert_eq!(
+            by(&list, "claude2").shell,
+            None,
+            "an account's own, not its agent's"
+        );
+        assert_eq!(by(&list, "claude3").shell.as_deref(), Some("zsh"));
+        // The switch and the dialog save the whole entry: the shell goes with it.
+        let set = Draft::of(claude).to_config(claude.builtin, &[]).unwrap();
+        assert_eq!(set.shell.as_deref(), Some("fish"));
+        assert!(to_value(&set).to_string().contains("shell = \"fish\""));
+        let default = Draft {
+            shell: None,
+            ..Draft::of(claude)
+        };
+        assert_eq!(
+            default.to_config(claude.builtin, &[]),
+            None,
+            "Default is Templum's: no entry"
+        );
+        let mine = by(&list, "mine");
+        let set = Draft::of(mine).to_config(None, &[]).unwrap();
+        assert_eq!(set.shell.as_deref(), Some("WSL"));
+        let account = AccountDraft::of(by(&list, "claude3")).to_config();
+        assert_eq!(account.shell.as_deref(), Some("zsh"));
     }
 
     #[test]
@@ -975,6 +1247,7 @@ mod tests {
             share: [("skills", "claude"), ("output-styles", "claude")]
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .into(),
+            shell: Some("zsh".into()),
         };
         let config = draft.to_config();
         let text = format!("[agents]\nclaude2 = {}\n", to_value(&config));
@@ -1008,6 +1281,7 @@ mod tests {
             show: true,
             folder: None,
             share: [("skills".to_string(), "claude3".to_string())].into(),
+            shell: None,
         };
         let problem = draft.problem("claude4", &agents, None).unwrap();
         assert!(problem.contains("shares it back"), "{problem}");
@@ -1062,19 +1336,210 @@ mod tests {
     }
 
     #[test]
-    fn account_ids_count_from_two() {
-        assert_eq!(new_account_id("claude", None, |_| false), "claude2");
+    fn a_name_must_be_a_lowercase_word() {
+        let rule = "Use lowercase letters, digits, - and _, starting with a letter";
+        let long = "a".repeat(33);
+        for bad in [
+            "Claudinho",
+            "claude inho",
+            "1claude",
+            "-x",
+            "",
+            "clau$de",
+            &long,
+        ] {
+            let problem = name_problem(bad, |_| false, None, None, |_| None);
+            assert_eq!(problem.as_deref(), Some(rule), "{bad}");
+        }
+        for good in ["claudinho", "claudio", "work-2", "a_b", &"a".repeat(32)] {
+            assert_eq!(
+                name_problem(good, |_| false, None, None, |_| None),
+                None,
+                "{good}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_isnt_an_agent_a_shell_word_nor_taken() {
+        let p = |n: &str| name_problem(n, |x| x == "claudio", None, None, |_| None);
         assert_eq!(
-            new_account_id("claude", None, |id| id == "claude2"),
-            "claude3"
+            p("claude").as_deref(),
+            Some("claude is one of Templum's agents")
         );
+        assert_eq!(
+            p("templum").as_deref(),
+            Some("templum is Templum's own command")
+        );
+        assert_eq!(
+            p("claudio").as_deref(),
+            Some("claudio is already an agent or an account in Templum")
+        );
+        for word in ["cd", "source", "end", "test", "coproc"] {
+            assert_eq!(p(word), Some(format!("{word} is a word of your shell")));
+        }
+    }
+
+    #[test]
+    fn a_name_isnt_a_command_of_the_computer() {
+        use templum_usage::accounts::command::{Command, write};
+        let (commands, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (commands, data) = (commands.path(), data.path());
+        let found = |n: &str| (n == "gh2").then(|| PathBuf::from("/usr/bin/gh2"));
+        let p = |n: &str| name_problem(n, |_| false, Some(data), Some(commands), found);
+        // A program found: its path.
+        assert_eq!(
+            p("gh2").as_deref(),
+            Some("gh2 is already a command: /usr/bin/gh2")
+        );
+        // A file of the commands folder: its path.
+        std::fs::write(commands.join("claudinho"), "#!/bin/sh\n").unwrap();
+        assert_eq!(
+            p("claudinho"),
+            Some(format!(
+                "claudinho is already a command: {}",
+                commands.join("claudinho").display()
+            ))
+        );
+        // The command another data folder wrote: an installed Templum and a --dev one.
+        let folder = Path::new("/x/accounts/claudio");
+        let of = |id, data| Command {
+            id,
+            title: "Claude Code",
+            program: "claude",
+            var: "CLAUDE_CONFIG_DIR",
+            folder,
+            data,
+            home: None,
+        };
+        write(commands, &of("claudio", Path::new("/x"))).unwrap();
+        assert!(
+            p("claudio")
+                .unwrap()
+                .starts_with("claudio is already a command: ")
+        );
+        // Its own, also when the program lookup finds that very file.
+        write(commands, &of("claudia", data)).unwrap();
+        let finds_file = |n: &str| Some(commands.join(n)).filter(|f| f.exists());
+        assert_eq!(
+            name_problem("claudia", |_| false, Some(data), Some(commands), finds_file),
+            None
+        );
+        assert_eq!(p("claudia"), None);
+        if cfg!(windows) {
+            std::fs::write(commands.join("claudite.exe"), "").unwrap();
+            assert!(p("claudite").is_some());
+        }
+    }
+
+    #[test]
+    fn a_name_whose_folder_is_still_kept_is_refused() {
         let data = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(data.path().join("accounts/claude2")).unwrap();
+        let kept = data.path().join("accounts").join("claudinho");
+        std::fs::create_dir_all(&kept).unwrap();
+        let problem = name_problem("claudinho", |_| false, Some(data.path()), None, |_| None);
         assert_eq!(
-            new_account_id("claude", Some(data.path()), |_| false),
-            "claude3",
-            "its folder, with a login, is still there"
+            problem,
+            Some(format!(
+                "Templum still keeps a folder for claudinho ({}): choose another name",
+                tilde(&kept)
+            ))
         );
+        assert_eq!(
+            name_problem("claudio", |_| false, Some(data.path()), None, |_| None),
+            None
+        );
+    }
+
+    #[test]
+    fn an_older_accounts_id_may_be_a_command() {
+        assert_eq!(command_problem("claude2", None, None, |_| None), None);
+        assert!(command_problem("Work", None, None, |_| None).is_some());
+        assert_eq!(
+            command_problem("test", None, None, |_| None).as_deref(),
+            Some("test is a word of your shell")
+        );
+    }
+
+    #[test]
+    fn the_commands_folder_is_the_tests_own() {
+        assert_eq!(
+            commands_dir(),
+            None,
+            "tests never reach the person's ~/.local/bin"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        COMMANDS.set(Some(dir.path().to_path_buf()));
+        assert_eq!(commands_dir().as_deref(), Some(dir.path()));
+    }
+
+    #[test]
+    fn a_default_title_isnt_written_as_a_name() {
+        let list = agents("[agents]\nclaudinho = { of = \"claude\" }\n");
+        assert_eq!(AccountDraft::of(by(&list, "claudinho")).name, "");
+        let list = agents("[agents]\nclaude2 = { of = \"claude\", name = \"Claude Code 2\" }\n");
+        assert_eq!(AccountDraft::of(by(&list, "claude2")).name, "Claude Code 2");
+    }
+
+    #[test]
+    fn the_folder_found_names_the_account() {
+        let homes = [Home {
+            id: "claudinho".into(),
+            agent: "claude".into(),
+            state: PathBuf::from("/data/accounts/claudinho"),
+        }];
+        let of = |agent, folder| account_of(agent, Path::new(folder), &homes);
+        assert_eq!(
+            of("claude", "/data/accounts/claudinho/").as_deref(),
+            Some("claudinho")
+        );
+        assert_eq!(of("claude", "/home/me/x"), None);
+        assert_eq!(of("codex", "/data/accounts/claudinho"), None);
+    }
+
+    #[test]
+    fn an_agent_with_accounts_is_found_with_its_variable() {
+        let list = agents("[agents]\nmine = { name = \"Mine\", command = \"mine\" }\n");
+        assert_eq!(
+            by(&list, "claude").detect().var.as_deref(),
+            Some("CLAUDE_CONFIG_DIR")
+        );
+        assert_eq!(by(&list, "mine").detect().var, None);
+    }
+
+    #[test]
+    fn each_account_is_a_line_of_templum_accounts() {
+        // `test` is a word of the shell, which would break it as a function; `tab`'s folder is a full
+        // path on each system, with a tab in it.
+        let tab = if cfg!(windows) {
+            r"C:\\with\ttab"
+        } else {
+            r"/with\ttab"
+        };
+        let text = format!(
+            "[agents]\n\
+             claudinho = {{ of = \"claude\" }}\n\
+             Work = {{ of = \"codex\" }}\n\
+             test = {{ of = \"claude\" }}\n\
+             tab = {{ of = \"claude\", folder = \"{tab}\" }}\n"
+        );
+        let list = agents(&text);
+        // The folder as the account has it (on Windows its `/data` reads `\data`).
+        let folder = by(&list, "claudinho")
+            .var()
+            .unwrap()
+            .1
+            .to_string_lossy()
+            .into_owned();
+        assert!(folder.ends_with("claudinho"));
+        assert_eq!(
+            accounts_env(&list),
+            format!("claudinho\tclaude\tCLAUDE_CONFIG_DIR\t{folder}")
+        );
+        assert_eq!(accounts_env(&agents("")), "");
+        let two =
+            agents("[agents]\nclaudinho = { of = \"claude\" }\ncodex2 = { of = \"codex\" }\n");
+        assert_eq!(accounts_env(&two).lines().count(), 2);
     }
 
     #[test]

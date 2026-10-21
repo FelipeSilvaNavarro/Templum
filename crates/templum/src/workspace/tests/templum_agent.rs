@@ -261,7 +261,7 @@ fn cards_go_on_any_board_and_comments_are_signed_templum_agent(cx: &mut TestAppC
     let (failed, whole) = control(handle, &ws, cx, "list_cards", json!({"card": card}));
     assert!(!failed, "{whole}");
     assert!(
-        whole.contains("comment by Templum Agent") && whole.contains("priority high"),
+        whole.contains("by Templum Agent") && whole.contains("priority high"),
         "{whole}"
     );
     let (failed, text) = control(handle, &ws, cx, "list_cards", json!({}));
@@ -1079,6 +1079,42 @@ fn a_grant_lets_the_tool_through(cx: &mut TestAppContext) {
         assert!(ws.templum_agent.grants.contains("send_to_terminal"));
         assert!(ws.templum_agent.approvals.is_empty());
     });
+}
+
+/// The Templum Agent's text, typed into an agent that went quiet on the task it handed it,
+/// answers its dialog as `send_keys` does: the agent waits for the task again
+/// (docs/specs/agent-protocol.md, 5).
+#[gpui_kit::test]
+fn its_typed_text_starts_a_quiet_agents_wait_over(cx: &mut TestAppContext) {
+    use crate::workspace::{AgentState, Handed};
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&first].clone());
+    let quiet = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(first)
+                .unwrap()
+                .handed
+                .as_ref()
+                .map(|h| h.quiet)
+        })
+    };
+    ws.update(cx, |ws, _| {
+        ws.templum_agent.grants.insert("send_to_terminal".into());
+        let pane = ws.space.terminal_mut(first).unwrap();
+        pane.state = Some(AgentState::Idle);
+        pane.handed = Some(Handed {
+            quiet: true,
+            ..Handed::new(::templum_agent::ASKER, std::time::Duration::from_secs(600))
+        });
+    });
+    let typed = json!({"block": uid, "text": "y"});
+    let (failed, text) = control(handle, &ws, cx, "send_to_terminal", typed);
+    assert!(!failed, "{text}");
+    assert_eq!(quiet(&ws, cx), Some(false));
+    let state = ws.read_with(cx, |ws, _| ws.space.terminal(first).unwrap().state.clone());
+    assert_eq!(state, Some(AgentState::Working));
 }
 
 #[gpui_kit::test]
@@ -2723,6 +2759,36 @@ fn a_tasks_end_wakes_the_templum_agent(cx: &mut TestAppContext) {
     rows_until(&ws, cx, ended);
 }
 
+/// The Templum Agent, which no block names, is answered by `reply` without a block as by a turn's
+/// end (docs/specs/agent-protocol.md, 2).
+#[gpui_kit::test]
+fn a_reply_ends_the_templum_agents_task(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    let (_, uid, terminal) = handed_by_the_templum_agent(handle, &ws, cx);
+    let reply = json!({ "text": "Card 4 is done." });
+    let (failed, text) = super::bus::call(handle, &ws, cx, &terminal, "reply", reply);
+    assert_eq!((failed, text.as_str()), (false, "Answered task t1."));
+    super::bus::after(
+        cx,
+        crate::workspace::delegate::SPENT_AFTER.as_millis() as u64,
+    );
+    assert_eq!(
+        notices(&ws, cx),
+        [(::templum_agent::NoticeLevel::Done, Some(uid))]
+    );
+    let sent = ws.read_with(cx, |ws, _| ws.templum_agent.sent.clone());
+    assert!(
+        sent.iter().any(|m| m.starts_with("[task t1 from ")),
+        "{sent:?}"
+    );
+    assert!(
+        sent.iter().any(|m| m.contains("Card 4 is done.")),
+        "{sent:?}"
+    );
+    rows_until(&ws, cx, ended);
+}
+
 #[gpui_kit::test]
 fn a_failed_task_is_red(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
@@ -2766,7 +2832,8 @@ fn waiting_for_its_person_is_told_once(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn delegate_hands_a_task_under_the_templum_agents_line(cx: &mut TestAppContext) {
     let (handle, ws, _, theirs) = super::delegate::two_agents(cx);
-    let (_, them) = me(&ws, cx, theirs);
+    let (worker, them) = me(&ws, cx, theirs);
+    super::bus::has_server(handle, &ws, cx, &worker, 7);
     // The person's agent runs it as its mode lets it: the person allows it first.
     let answers = control_later(
         handle,

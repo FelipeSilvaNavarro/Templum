@@ -71,8 +71,10 @@ Alacritty's format dropped into a folder, all switchable from a picker in the ti
 - One surface: the header is the same color as the terminal, with no separate strip. Corner radius is 10 world
   units (scaled by zoom), and the background is the theme's background, fully opaque.
 - **Title:** centered, in the system UI font, color `title` (focused) or `title_dim` (other blocks).
-- **Close button (✕):** right side of the header. **Resize grip:** gpui-kit's resize-corner icon in the bottom-right corner.
-  Both are rendered only while the pointer is over the block. They fade in over 120 ms, and fade-out is instant.
+- **Close button (✕):** right side of the header, with Fullscreen and, left of it, **More (⋯)**: the same menu a
+  right-click on the block opens ([context-menus.md](context-menus.md)), for whoever doesn't know the right-click is
+  there. **Resize grip:** gpui-kit's resize-corner icon in the bottom-right corner.
+  They are rendered only while the pointer is over the block. They fade in over 120 ms, and fade-out is instant.
   While shown, their hit areas are the same as today: the grip keeps `chrome::HANDLE`.
 - **Border:** always 1 px. It uses the `hairline` color, or the `accent` color when the block is focused. Today the
   focused border grows to 2 px and shifts the grid by 1 px; that goes away.
@@ -88,7 +90,7 @@ Alacritty's format dropped into a folder, all switchable from a picker in the ti
 
 ### Motion
 
-- The close button and grip fade in over 120 ms.
+- The header's buttons and the grip fade in over 120 ms.
 - **A new block pops in** over 0.28 s: it grows from 88% past 100% (about 101.6%) and settles, fading in.
 - **A closed block** shrinks to 92% and fades out over 0.18 s. It leaves the canvas at once and is drawn as a ghost
   that clicks go through; its shell lives until the fade ends.
@@ -147,7 +149,7 @@ The gpui-kit theme, which the picker and the title bar use, gets its colors from
 - `foreground` and `popover_foreground` are the theme foreground;
 - `border`, `title_bar_border` and `window_border` are `hairline`;
 - `muted_foreground` is `title_dim`;
-- `accent` and `ring` are `accent`;
+- `accent` and `ring` are `accent`; `accent_foreground`, the text on it (a selected row, a button under the pointer), is `Theme::on_accent`: the theme's background or foreground, whichever reads better on the accent, white or black when neither reaches 4.5:1; in a dark theme, of those four the ones that reach 4.5:1 on the accent, the one that reads best on the ghost buttons' hover (the accent at 50% over the background, as the kit draws it);
 - `selection` is `selection`.
 
 Templum never calls `Theme::sync_system_appearance`, so gpui-kit never overwrites these colors.

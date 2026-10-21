@@ -262,35 +262,57 @@ close, resize, move, focus, hover lift, pop-in and fade-out, menus, zoom.
 - **Text:** gpui-kit's `Editor` with no language: plain text, no highlighting, nothing rendered. Soft wrap on, no line
   numbers, no border, in the terminal font at 13 world units × zoom. Markdown is just text: no list goes on by itself,
   Ctrl+B types nothing.
-- **Title:** the note's first line with text, trimmed, cut at 60 characters with "…"; "Untitled" when it has none. The
-  block's title is the note on screen's; "Notes" with no tab open.
-- **Tabs:** a strip of 28 world units under the header: each open note's title, the one on screen underlined in the
-  accent color. A click shows a tab; its × closes the tab (the note stays); **+** opens a new note in a new tab.
-  A note is open in **one tab at most**: opening it again shows that tab, in its block, in its workspace.
-- **No tab open:** the block says "No note open here" with **New note** and **Open a note…** (the dialog, for it).
+- **Name:** a note has a name of its own, stored with it (`name` in `notes.json`), no longer taken from its text.
+  A note opened by the toolbar, the menus or the tab strip's **+** is called **Untitled**, whatever is typed in it;
+  the person renames it (below). Names needn't be unique: a note is its id, as a block is, so two "Untitled" tabs
+  are two notes (the Notes dialog tells them apart by when they changed and their text). A note made with text
+  (`create_block`'s `text`, a paste of another's copy) starts with a name too: the first line with text, trimmed, cut at
+  60 characters with "…" (a copy keeps the name it copies). A name is one line, trimmed and cut at 60 characters the
+  same way; a blank one is Untitled. The block's title is the name of the note on screen; "Notes" with no tab open.
+  Renaming doesn't count as a change of the note: its time in the Notes dialog stays.
+- **Renaming:** a **double click on a tab** turns its name into a field in place, the name selected to be typed over,
+  the keyboard in it: **Enter** keeps the name and gives the keyboard back to the note, **Esc** leaves it as it was,
+  and so does nothing else than leaving: a click elsewhere keeps what was typed, as Enter does. **Rename…** in the
+  block's menu (the right click's and the header's **⋯**) asks for the name of the note on screen in a dialog, as
+  **Rename board…** does for a board. The header's title is not a place for a double click: it frames the block.
+- **Tabs:** a strip of 28 world units under the header, a hairline below it: each open note's title as a rounded tab,
+  the one on screen lit (a faint fill and the full text color, the others dim). A click shows a tab, a double click
+  renames it; its × closes the
+  tab (the note stays), and shows on the tab on screen and on the one under the pointer; **+** opens a new note in a
+  new tab. A note is open in **one tab at most**: opening it again shows that tab, in its block, in its workspace.
+  The note's text starts 14 world units in, in line with the first tab's label, and wraps 20 from the right edge.
+- **No tab open:** the block says "No note open here" with a tinted **New note** and a plain **Open a note…** (the
+  dialog, for it), under a notebook icon when the area under the strip is 170 world units tall or more; under 110 it
+  keeps to the two buttons.
 - **Notes dialog** (the header's notebook button, **All notes…** in the block's menu, **Notes…** in the canvas
-  menu): every note, the most recently changed first; each row its title, when it last changed ("5 min ago"), where
-  it is open ("Open", "Open in Workspace 2") and its next line with text. The field on top finds notes by their text,
-  in any case. A click opens a note: as a tab of the block the dialog was opened from, where it is open already, or
+  menu): every note, the most recently changed first; each row its name, when it last changed ("5 min ago"), where
+  it is open ("Open", "Open in Workspace 2") and its first line with text that the name doesn't already say. The
+  field on top finds notes by their name or their text, in any case. A click opens a note: as a tab of the block the dialog was opened from, where it is open already, or
   in a new block. **New note** adds one. The trash deletes a note on its **second** click ("Click again to delete" shows
   after the first), from every block that shows it.
 - **Saved as it is typed:** each change to a note's text goes into the notes at once, and they are written to
   `notes.json` in the data folder with the canvas's snapshot (every 5 s, and when Templum quits). A canvas is written
   only once its notes are. If `notes.json` can't be read, neither it nor the canvases are written that session.
-- **Blank notes go:** a note with no text whose tab or block closes is removed; nothing is lost.
+- **Blank notes go:** a note with no text and still called Untitled whose tab or block closes is removed; nothing is
+  lost. One the person named stays in the Notes dialog, though empty.
 - **Keyboard:** focusing the block focuses the note on screen, so typing goes there. Templum's shortcuts (Ctrl+Shift+…)
   keep working from inside it. Copy, paste, undo and search are the editor's own.
-- **Color:** Color ▸ in the menu tints the note on screen (the background mixed with the label's ANSI color, readable
-  in every built-in theme); a note keeps its color in every block.
-- **Right-click a note block:** All notes…, Copy all, Send to ▸, Color ▸, Close.
+- **Color:** Color ▸ in the menu tints the note on screen: the theme's background taken a tenth of the way to the
+  label's ANSI color in lightness, with the color's hue and 40% of its saturation (a calm amber or navy in a dark theme,
+  a pastel in a light one, readable in every built-in theme); a note keeps its color in every block.
+- **Right-click a note block:** All notes…, Rename…, Copy all, Send to ▸, Color ▸, Close.
 - **Copy and paste** a note block (canvas selection): the pasted block shows copies of its notes.
-- **Files:** `notes.json`: `{ "version": 1, "next_id": 7, "notes": [{ "id": 3, "text": "…", "color": "yellow",
-  "changed": 1760000000 }] }` (`changed` in seconds since 1970). A block in a canvas: `{ "kind": "note", "rect": {…},
+- **Files:** `notes.json`: `{ "version": 1, "next_id": 7, "notes": [{ "id": 3, "name": "Groceries", "text": "…",
+  "color": "yellow", "changed": 1760000000 }] }` (`changed` in seconds since 1970). A file from before names has no
+  `name`: each note is read as called what it was, its first line with text (Untitled with none), and written with
+  it from then on, so no note is renamed under the person's feet; the version stays 1, since an older Templum reads
+  the new file and names its notes by their first line again. A block in a canvas: `{ "kind": "note", "rect": {…},
   "notes": [3, 5], "active": 1 }`. A canvas from before `notes.json` held the note's `text` (and `color`) in the
   block: read once, it becomes a note in `notes.json`.
 
-Architecture: `notes.rs` (the notes, `notes.json`), `note.rs` (`Note { tabs, active }`, the body, the tabs, the Notes
-dialog), `workspace/note_tabs.rs` (opening, closing and deleting). An editor's Markdown preview lives in `markdown.rs`.
+Architecture: `notes.rs` (the notes, their names, `notes.json`), `note.rs` (`Note { tabs, active, renaming }`, the
+body, the tabs, the Notes dialog), `tab_strip.rs` (the tabs and the rename field), `workspace/note_tabs.rs` (opening,
+closing, renaming and deleting). An editor's Markdown preview lives in `markdown.rs`.
 
 ## 6. The workspaces screen
 

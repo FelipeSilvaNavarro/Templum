@@ -52,6 +52,7 @@ const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--col
                       [--description <text>] [--board <board>] [--priority <priority>] [--for <who>] \
                       [--checklist <text>] | edit <card> [--priority <priority>] [--for <who>] [--add <text>] \
                       [--check <item>]… [--uncheck <item>]… | move <card> <column> | comment <card> <text> \
+                      | edit-comment <card> <comment> <text> | delete-comment <card> <comment> \
                       | claim <card> [--json]";
 const NOTE: &str = "note read <block> | note append <block> <text> \
                     | note replace <block> <text> [--old <text>] [--json]";
@@ -130,6 +131,21 @@ pub fn run(
                         Ok(text) => call.arguments["plan"] = json!(text),
                         Err(e) => {
                             let _ = writeln!(stderr, "templum: couldn't read {from}: {e}");
+                            return 2;
+                        }
+                    }
+                }
+                // `reply -`: the answer is standard input, whatever its length, unquoted. Bytes
+                // that aren't UTF-8 (a command's output in another encoding) become U+FFFD, not
+                // a refusal.
+                if call.name == "reply" && call.arguments["text"] == "-" {
+                    let mut bytes = Vec::new();
+                    match stdin.read_to_end(&mut bytes) {
+                        Ok(_) => {
+                            call.arguments["text"] = json!(String::from_utf8_lossy(&bytes));
+                        }
+                        Err(e) => {
+                            let _ = writeln!(stderr, "templum: couldn't read stdin: {e}");
                             return 2;
                         }
                     }
@@ -238,6 +254,8 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
                 json!({ "block": block, "task": task.join(" "), "wait": wait }),
             )
         }
+        // The task its shell is on, answered with what comes on standard input (`run` reads it).
+        ("reply", ["-"]) => ("reply", json!({ "text": "-" })),
         ("reply", [block, text @ ..]) if !text.is_empty() => {
             ("reply", json!({ "block": block, "text": text.join(" ") }))
         }
@@ -371,6 +389,14 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("kanban", ["comment", card, text @ ..]) if !text.is_empty() => (
             "comment_card",
             json!({ "card": card, "text": text.join(" ") }),
+        ),
+        ("kanban", ["edit-comment", card, comment, text @ ..]) if !text.is_empty() => (
+            "edit_comment",
+            json!({ "card": card, "comment": comment, "text": text.join(" ") }),
+        ),
+        ("kanban", ["delete-comment", card, comment]) => (
+            "delete_comment",
+            json!({ "card": card, "comment": comment }),
         ),
         ("kanban", ["claim", card]) => ("claim_card", json!({ "card": card })),
         ("note", ["read", block]) => ("read_note", json!({ "block": block })),
@@ -525,7 +551,7 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("connect", _) => return Err("connect <block> [--json]"),
         ("spawn", _) => return Err(SPAWN),
         ("delegate", _) => return Err("delegate <block> <task> [--wait] [--json]"),
-        ("reply", _) => return Err("reply <block> <text> [--json]"),
+        ("reply", _) => return Err("reply [<block>] <text>|- [--json]"),
         ("wait", _) => return Err(WAIT),
         ("kanban", _) => return Err(KANBAN),
         ("note", _) => return Err(NOTE),
@@ -759,9 +785,9 @@ mod tests {
     /// A wait longer than this fails the test instead of hanging it.
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-    fn run_with(args: &[&str], env: &Env, stdin: &str) -> (i32, String, String) {
+    fn run_with(args: &[&str], env: &Env, stdin: impl AsRef<[u8]>) -> (i32, String, String) {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        let (env, stdin) = (env.clone(), stdin.as_bytes().to_vec());
+        let (env, stdin) = (env.clone(), stdin.as_ref().to_vec());
         let (done, ran) = std::sync::mpsc::channel();
         // On a thread of its own: a command that never ends can't hang the test.
         std::thread::spawn(move || {
@@ -790,7 +816,7 @@ mod tests {
                 let _ = m.reply.send(rpc::result(id, hello));
             }
         });
-        let (code, out, _) = run_with(&["mcp"], &env(&bus), &rpc::request(7, "ping", Value::Null));
+        let (code, out, _) = run_with(&["mcp"], &env(&bus), rpc::request(7, "ping", Value::Null));
         assert_eq!(code, 0);
         let answer: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(answer["id"], 7);
@@ -987,6 +1013,69 @@ mod tests {
         let (code, _, err) = run_with(&["plan", &missing], &env(&bus), "");
         assert_eq!(code, 2, "{err}");
         assert!(err.starts_with("templum: couldn't read "), "{err}");
+    }
+
+    /// `templum reply -` answers the task its shell is on with its standard input, whole; with a
+    /// block it writes to that agent, from the arguments or from `-`.
+    #[test]
+    fn reply_reads_its_answer_from_stdin() {
+        let (seen, calls) = std::sync::mpsc::channel();
+        let (_dir, bus) = test_bus(move |m| {
+            if let Incoming::Request { id, params, .. } = &m.incoming {
+                let _ = seen.send(params.clone());
+                let _ = m.reply.send(tool_result(id, &Reply::ok("ok")));
+            }
+        });
+        for (args, stdin, arguments) in [
+            (
+                &["reply", "-"][..],
+                "Line 42.\n",
+                json!({ "text": "Line 42.\n" }),
+            ),
+            (
+                &["reply", "k9x1d", "-"][..],
+                "Line 42.",
+                json!({ "block": "k9x1d", "text": "Line 42." }),
+            ),
+            (
+                &["reply", "k9x1d", "Line", "42."][..],
+                "ignored",
+                json!({ "block": "k9x1d", "text": "Line 42." }),
+            ),
+        ] {
+            let (code, _, err) = run_with(args, &env(&bus), stdin);
+            assert_eq!(code, 0, "{args:?}: {err}");
+            assert_eq!(
+                calls.recv_timeout(LIMIT).unwrap(),
+                json!({ "name": "reply", "arguments": arguments }),
+                "{args:?}"
+            );
+        }
+        let (code, _, err) = run_with(&["reply"], &env(&bus), "");
+        assert_eq!(code, 2, "{err}");
+        assert!(
+            err.starts_with("usage: templum reply [<block>] <text>|- [--json]"),
+            "{err}"
+        );
+    }
+
+    /// An answer that isn't UTF-8 (a command's output in another encoding) is still sent, its
+    /// bad bytes as U+FFFD.
+    #[test]
+    fn reply_takes_stdin_that_isnt_utf8() {
+        let (seen, calls) = std::sync::mpsc::channel();
+        let (_dir, bus) = test_bus(move |m| {
+            if let Incoming::Request { id, params, .. } = &m.incoming {
+                let _ = seen.send(params.clone());
+                let _ = m.reply.send(tool_result(id, &Reply::ok("ok")));
+            }
+        });
+        let (code, _, err) = run_with(&["reply", "-"], &env(&bus), b"caf\xe9 ok\n");
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(
+            calls.recv_timeout(LIMIT).unwrap(),
+            json!({ "name": "reply", "arguments": { "text": "caf\u{fffd} ok\n" } })
+        );
     }
 
     #[test]
@@ -1362,7 +1451,7 @@ mod tests {
             terminal: None,
             ..env(&bus)
         };
-        let (code, out, _) = run_with(&["control"], &env, &rpc::request(7, "ping", Value::Null));
+        let (code, out, _) = run_with(&["control"], &env, rpc::request(7, "ping", Value::Null));
         assert_eq!(code, 0);
         let answer: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(answer["id"], 7);
@@ -1557,6 +1646,14 @@ mod tests {
             (
                 &["kanban", "comment", "12", "On", "it."][..],
                 json!({ "name": "comment_card", "arguments": { "card": "12", "text": "On it." } }),
+            ),
+            (
+                &["kanban", "edit-comment", "12", "41", "Fixed", "it."][..],
+                json!({ "name": "edit_comment", "arguments": { "card": "12", "comment": "41", "text": "Fixed it." } }),
+            ),
+            (
+                &["kanban", "delete-comment", "12", "41"][..],
+                json!({ "name": "delete_comment", "arguments": { "card": "12", "comment": "41" } }),
             ),
             (
                 &["kanban", "claim", "12"][..],

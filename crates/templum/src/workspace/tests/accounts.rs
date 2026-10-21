@@ -1,0 +1,230 @@
+//! Accounts made by name: each one's command in the commands folder (docs/specs/accounts.md,
+//! Its name and its command). Every test points the commands folder and the agents' own folders
+//! at temporary ones: none reaches the person's `~/.local/bin` or `~/.claude`.
+
+use std::path::PathBuf;
+
+use super::*;
+use crate::agents::{AccountDraft, COMMANDS, OWN_FOLDERS};
+use templum_usage::accounts::command;
+
+/// Temporary folders for the commands, the agents' own, the config and the data.
+struct Dirs {
+    commands: tempfile::TempDir,
+    config: tempfile::TempDir,
+    data: tempfile::TempDir,
+    _own: tempfile::TempDir,
+}
+
+impl Dirs {
+    fn new() -> Dirs {
+        let dirs = Dirs {
+            commands: tempfile::tempdir().unwrap(),
+            config: tempfile::tempdir().unwrap(),
+            data: tempfile::tempdir().unwrap(),
+            _own: tempfile::tempdir().unwrap(),
+        };
+        COMMANDS.set(Some(dirs.commands.path().to_path_buf()));
+        OWN_FOLDERS.set(Some(dirs._own.path().to_path_buf()));
+        dirs
+    }
+
+    fn open(&self, cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>) {
+        open_in(
+            cx,
+            Some(self.config.path().to_path_buf()),
+            Some(self.data.path().to_path_buf()),
+        )
+    }
+
+    fn command(&self, id: &str) -> PathBuf {
+        self.commands.path().join(id)
+    }
+
+    fn is_own(&self, id: &str) -> bool {
+        command::is_own(&self.command(id), id, self.data.path())
+    }
+}
+
+fn save(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: &str,
+) -> Result<String, String> {
+    let draft = AccountDraft {
+        of: "claude".into(),
+        show: true,
+        ..Default::default()
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.save_account(id, &draft, window, cx))
+    })
+    .unwrap()
+}
+
+fn delete(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: &str) -> Result<(), String> {
+    ws.update(cx, |ws, cx| ws.delete_account(id, cx))
+}
+
+#[gpui_kit::test]
+fn creating_an_account_by_name_writes_its_command(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let (handle, ws) = dirs.open(cx);
+    assert_eq!(save(handle, &ws, cx, "claudinho"), Ok("claudinho".into()));
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(dirs.config.path().join(crate::config::FILE)).unwrap();
+    let account = &crate::config::parse(&text).unwrap().agents["claudinho"];
+    assert_eq!(account.of.as_deref(), Some("claude"));
+    assert_eq!(account.name, None, "{text}");
+    assert!(dirs.is_own("claudinho"));
+    let made = ws.read_with(cx, |ws, _| ws.commands["claudinho"].clone());
+    assert_eq!(
+        made,
+        Ok(dirs.commands.path().join(if cfg!(windows) {
+            "claudinho.cmd"
+        } else {
+            "claudinho"
+        }))
+    );
+}
+
+#[gpui_kit::test]
+fn a_taken_name_is_refused_on_save(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let (handle, ws) = dirs.open(cx);
+    assert_eq!(
+        save(handle, &ws, cx, "claude"),
+        Err("claude is one of Templum's agents".into())
+    );
+    ws.read_with(cx, |ws, _| {
+        let agents = &ws.pending.as_ref().unwrap_or(&ws.config).agents;
+        assert!(!agents.contains_key("claude"));
+    });
+    assert!(!dirs.command("claude").exists());
+}
+
+#[gpui_kit::test]
+fn deleting_an_account_removes_its_command_only(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let (handle, ws) = dirs.open(cx);
+    save(handle, &ws, cx, "claudinho").unwrap();
+    save(handle, &ws, cx, "claudio").unwrap();
+    std::fs::write(dirs.command("other"), "#!/bin/sh\n").unwrap();
+    assert!(ws.read_with(cx, |ws, _| ws.command_removed("claudinho")));
+    assert_eq!(delete(&ws, cx, "claudinho"), Ok(()));
+    assert!(!dirs.command("claudinho").exists());
+    assert!(dirs.is_own("claudio"));
+    assert!(dirs.command("other").exists());
+}
+
+#[gpui_kit::test]
+fn an_older_accounts_command_is_made_at_start(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    std::fs::write(
+        dirs.config.path().join(crate::config::FILE),
+        format!("{}[agents.test]\nof = \"claude\"\n", super::agents::CLAUDE2),
+    )
+    .unwrap();
+    let (_handle, ws) = dirs.open(cx);
+    assert!(dirs.is_own("claude2"));
+    assert!(!dirs.command("test").exists());
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.commands["claude2"].is_ok());
+        assert_eq!(
+            ws.commands["test"],
+            Err("test is a word of your shell".to_string())
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn a_file_of_someone_else_is_no_accounts_command(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    std::fs::write(dirs.command("claudinho"), "#!/bin/sh\necho mine\n").unwrap();
+    let (handle, ws) = dirs.open(cx);
+    let saved = save(handle, &ws, cx, "claudinho");
+    assert!(
+        saved
+            .as_ref()
+            .unwrap_err()
+            .starts_with("claudinho is already a command: "),
+        "{saved:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dirs.command("claudinho")).unwrap(),
+        "#!/bin/sh\necho mine\n"
+    );
+    // An account of config.toml met later on that file: its command is not made, the file stays.
+    ws.update(cx, |ws, _| {
+        let config = crate::config::parse("[agents.claudinho]\nof = \"claude\"\n").unwrap();
+        ws.agents = crate::agents::effective(&config.agents, &[], ws.data_dir.as_deref());
+        ws.sync_commands();
+    });
+    assert!(ws.read_with(cx, |ws, _| ws.commands["claudinho"].is_err()));
+    assert!(!dirs.is_own("claudinho"));
+}
+
+#[gpui_kit::test]
+fn a_typed_account_makes_its_block_the_accounts(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let (handle, ws) = dirs.open(cx);
+    save(handle, &ws, cx, "claudinho").unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.apply_and_save(window, cx))
+    })
+    .unwrap();
+    let id = ws.read_with(cx, |ws, _| ws.space.terminals().next().unwrap().0);
+    let folder = dirs.data.path().join("accounts").join("claudinho");
+    let seen = |var: Option<Option<PathBuf>>| templum_terminal::Inspection {
+        agent: Some("claude".into()),
+        folder_var: var,
+        ..Default::default()
+    };
+    let account = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().account.clone())
+    };
+    // Typed by hand on the account's folder: its block.
+    super::agents::see(&ws, cx, id, seen(Some(Some(folder.clone()))));
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(id).unwrap();
+        assert_eq!(pane.account.as_deref(), Some("claudinho"));
+        assert_eq!(ws.agent_name(pane), Some("Claude Code (claudinho)"));
+        assert!(ws.account_in_use("claudinho").is_some());
+    });
+    // An environment that couldn't be read: the block keeps what it had.
+    super::agents::see(&ws, cx, id, seen(None));
+    assert_eq!(account(&ws, cx).as_deref(), Some("claudinho"));
+    // Unset, or another folder: the agent's own, no account's.
+    super::agents::see(&ws, cx, id, seen(Some(Some(PathBuf::from("/elsewhere")))));
+    assert_eq!(account(&ws, cx), None);
+    super::agents::see(&ws, cx, id, seen(Some(Some(folder))));
+    super::agents::see(&ws, cx, id, seen(Some(None)));
+    assert_eq!(account(&ws, cx), None);
+}
+
+/// Another agent run in an account's block (`codex` in a `claude2` block) is that agent on its
+/// own folder: the block stays the account's, and Delete still waits for its shell.
+#[gpui_kit::test]
+fn another_agent_in_an_accounts_block_leaves_it_the_accounts(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let (handle, ws) = dirs.open(cx);
+    super::agents::with_agents(&ws, cx, super::agents::CLAUDE2);
+    let folder = tempfile::tempdir().unwrap();
+    let id = super::agents::launch(handle, &ws, cx, "claude2", folder.path());
+    let seen = |agent: &str, var: Option<PathBuf>| templum_terminal::Inspection {
+        agent: Some(agent.into()),
+        folder_var: Some(var),
+        ..Default::default()
+    };
+    let account = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().account.clone())
+    };
+    // Codex has accounts too, and its variable is unset here: still the block's account.
+    super::agents::see(&ws, cx, id, seen("codex", None));
+    assert_eq!(account(&ws, cx).as_deref(), Some("claude2"));
+    ws.read_with(cx, |ws, _| assert!(ws.account_in_use("claude2").is_some()));
+    // The account's own agent run on the person's folder is no account's.
+    super::agents::see(&ws, cx, id, seen("claude", None));
+    assert_eq!(account(&ws, cx), None);
+}

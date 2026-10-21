@@ -139,11 +139,12 @@ and hides the pill. The conversation is kept across restarts; **New chat** start
 
 ## Kanban boards
 
-The toolbar's board button (or Ctrl+Shift+K) puts a kanban block on the canvas, Trello-style. Pick a board
-in it or create one: it starts with To do, Doing and Done. Drag cards between columns and columns by their titles,
-click a card to edit its title, description and colored labels, and right-click a column or a board to rename or
-delete it. Boards aren't tied to a canvas: any block, in any workspace, can show any board (the ⇅ button at the left
-of its header switches), and blocks showing the same board stay in sync. Boards are kept in `boards.json`, next to
+The toolbar's board button (or Ctrl+Shift+K) puts a kanban block on the canvas, Trello-style. Create a board
+in it (it starts with To do, Doing and Done), or open one. Drag cards between columns and columns by their titles,
+click a card to edit its title, description and colored labels, and right-click a column or the block to rename or
+delete it. The button at the left of the block's header opens the Boards dialog: find a board, open it in the block,
+or delete it with its trash. Boards aren't tied to a canvas: any block, in any workspace, can show any board, and
+blocks showing the same board stay in sync. Boards are kept in `boards.json`, next to
 the `workspaces` folder.
 
 ## Notes
@@ -246,9 +247,10 @@ CLI, OpenCode, Amp, Kiro, Qwen Code, Grok Build, Kimi Code, Mistral Vibe, Aider,
 Code, Cline or Pi. Templum asks which folder it runs in: one of this workspace's recent folders, a folder you choose,
 or a path you type. It opens a terminal there and starts the agent; agents you haven't installed are greyed out, and Settings ▸ Agents
 shows their install command. **Settings ▸ Agents** changes any agent's command or resume command (↺ puts it back), hides
-the ones you don't use from the menu, and adds your own agents. **Settings ▸ Agents ▸ Accounts** adds a second
-account of an agent (`claude2`, on your work plan), opened from the same menu, and chooses what it shares with the
-first: settings, instructions, skills, plugins, sessions, never the login ([specs/accounts.md](specs/accounts.md)). The full list, with how each one resumes, is in [specs/agents.md](specs/agents.md).
+the ones you don't use from the menu, and adds your own agents. **Settings ▸ Agents ▸ Accounts** adds another
+login of an agent by a name you type (`claudinho`, on your work plan): it is a command in every terminal of your
+computer, and in the same menu. Choose what it shares with the first: settings, instructions, skills, plugins,
+sessions, never the login, and Templum opens a terminal to log in ([specs/accounts.md](specs/accounts.md)). The full list, with how each one resumes, is in [specs/agents.md](specs/agents.md).
 
 A terminal running Claude Code or Codex shows its session in its header: how much of the context is used, and the
 cost or the tokens. The title bar shows each agent's plan limits in turn (the 5-hour and weekly windows of a Claude

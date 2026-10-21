@@ -6,8 +6,11 @@
   agents) and [workspaces.md](workspaces.md)
 - **Parity:** what each agent below gets of Templum's server, hooks, usage and flags, and what is missing:
   [agent-parity.md](agent-parity.md)
-- **Accounts** (kanban card 37): several logins of one agent (`claude2`), each on its own folder, sharing what the
+- **Accounts** (kanban card 37): several logins of one agent (`claudinho`, a name the person types), each on its own folder, sharing what the
   person chooses: [accounts.md](accounts.md)
+- **Shells** (kanban card 66): each agent, the person's own and accounts too, opens in Settings ▸ Shell's
+  default or a shell of its own (`shell` in its `[agents]` entry, a Shell list in its dialog):
+  [shells.md](shells.md#a-shell-for-each-agent)
 
 ## Goal
 
@@ -153,13 +156,15 @@ follows each finished command, with shell integration).
 **Settings ▸ Agents** lists every agent: Templum's, then the user's. Under them, **Accounts** lists the accounts of
 an agent ([accounts.md](accounts.md#settings--agents--accounts)), which aren't rows of this list.
 
-- **A row** shows the agent's name and its command (the user's say "Yours"). It has:
+- **A row** shows the agent's name and its command (the user's say "Yours"), then the shell it opens in when it
+  has one (`claude · in PowerShell 7`; `(not available)` after a shell this computer lacks). It has:
   - a switch: whether the canvas's menu lists it;
   - **Edit**, which opens a dialog;
   - **↺**, for one of Templum's the user changed: it goes back to Templum's defaults.
 - **Reset all** next to the heading puts every changed agent of Templum's back. The user's agents stay.
 - **Add an agent** under the list opens the same dialog, empty.
-- **The dialog** has Name, Command and Resume command.
+- **The dialog** has Name, Command, Resume command and **Shell**: Default (Settings ▸ Shell's shell) or one of the
+  shells found, which the agent then always opens in ([shells.md](shells.md#a-shell-for-each-agent)).
   - For one of Templum's, each field shows Templum's value under it.
   - An empty resume command means a new session when the canvas comes back.
   - Save needs a name and a command; otherwise a notification says which is missing and the dialog stays.
@@ -175,6 +180,7 @@ an agent ([accounts.md](accounts.md#settings--agents--accounts)), which aren't r
 claude = { command = "claude --model opus" }   # only what differs from Templum's
 codex = { show = false }
 my-agent = { name = "My agent", command = "my-agent --tui", resume = "my-agent --continue" }
+claude-wsl = { name = "Claude Code (WSL)", command = "claude", shell = "WSL" }   # opens in a shell of its own
 ```
 
 - `[agents.claude]` tables written by hand work too.

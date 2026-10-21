@@ -398,6 +398,8 @@ pub struct Detect {
     pub names: Vec<String>,
     /// Pieces of an npm package's path, in a `node` process's script argument.
     pub packages: Vec<String>,
+    /// The variable that names the agent's folder, read from its process when it has accounts.
+    pub var: Option<String>,
 }
 
 /// An agent Templum knows.
@@ -557,6 +559,7 @@ impl Agent {
             id: self.name().to_string(),
             names: owned(self.spec().names),
             packages: owned(self.spec().packages),
+            var: None,
         }
     }
 }
@@ -729,10 +732,29 @@ static SHELL_PATH: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new(
 /// add. Once, when Templum starts.
 #[cfg(unix)]
 pub fn read_shell_path() {
+    SHELL_PATH_READ_STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
     std::thread::spawn(|| {
         let path = std::env::var("SHELL").ok().and_then(|s| shell_path(&s));
         let _ = SHELL_PATH.set(path.iter().flat_map(std::env::split_paths).collect());
     });
+}
+
+/// Set when [`read_shell_path`] starts: what [`shell_path_pending`] goes by, so nothing counts as
+/// pending for a read that was never started (the tests, `--bench`).
+#[cfg(unix)]
+static SHELL_PATH_READ_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the user's shell's PATH is still being read: what [`locate`] finds meanwhile may lack
+/// programs only that PATH has (Homebrew's, from the Dock).
+#[cfg(unix)]
+pub fn shell_path_pending() -> bool {
+    SHELL_PATH_READ_STARTED.load(std::sync::atomic::Ordering::SeqCst) && SHELL_PATH.get().is_none()
+}
+
+#[cfg(not(unix))]
+pub fn shell_path_pending() -> bool {
+    false
 }
 
 /// Printed before the PATH, to find it among what the shell's startup files print.
@@ -773,19 +795,36 @@ fn shell_path(shell: &str) -> Option<String> {
     path
 }
 
-/// PATH (as [`path_var`] reads it), the shell's, then the usual per-user install folders.
-fn program_dirs() -> Vec<PathBuf> {
+/// The folders of the PATH a shell started now gets: [`path_var`]'s and, once [`read_shell_path`]
+/// has read them, the user's shell's.
+pub fn shell_path_dirs() -> Vec<PathBuf> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut dirs: Vec<PathBuf> = path_var()
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
     #[cfg(unix)]
     dirs.extend(SHELL_PATH.get().into_iter().flatten().cloned());
+    dirs
+}
+
+/// Whether `dir` is one of `dirs`, as a shell resolves them (a `..`, a link): compared
+/// canonicalized when they exist, else as written.
+pub fn on_path(dir: &Path, dirs: &[PathBuf]) -> bool {
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let dir = real(dir);
+    dirs.iter().any(|d| real(d) == dir)
+}
+
+/// PATH (as [`path_var`] reads it), the shell's, then the usual per-user install folders.
+fn program_dirs() -> Vec<PathBuf> {
+    let mut dirs = shell_path_dirs();
     if let Some(home) = std::env::home_dir() {
         for sub in [
             ".local/bin",
             ".npm-global/bin",
             ".bun/bin",
             ".cargo/bin",
+            ".nix-profile/bin",
             ".deno/bin",
             ".volta/bin",
             "go/bin",
@@ -802,7 +841,18 @@ fn program_dirs() -> Vec<PathBuf> {
             dirs.extend(versions.flatten().map(|v| v.path().join("bin")));
         }
     }
-    dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+    // What a desktop launch's PATH lacks: Homebrew's (Apple Silicon, Linuxbrew, Intel), Nix's,
+    // MacPorts'.
+    dirs.extend(
+        [
+            "/opt/homebrew/bin",
+            "/home/linuxbrew/.linuxbrew/bin",
+            "/nix/var/nix/profiles/default/bin",
+            "/opt/local/bin",
+            "/usr/local/bin",
+        ]
+        .map(PathBuf::from),
+    );
     dirs
 }
 
@@ -850,6 +900,25 @@ mod tests {
 
     fn builtins() -> Vec<Detect> {
         Agent::all().map(Agent::detect).collect()
+    }
+
+    /// A shell or an agent from a package manager is found when Templum starts from the Dock or a
+    /// desktop menu, without waiting for the login shell's PATH.
+    #[test]
+    fn programs_are_looked_up_in_the_package_managers_folders() {
+        let dirs = program_dirs();
+        for dir in [
+            "/opt/homebrew/bin",
+            "/home/linuxbrew/.linuxbrew/bin",
+            "/nix/var/nix/profiles/default/bin",
+            "/opt/local/bin",
+            "/usr/local/bin",
+        ] {
+            assert!(dirs.contains(&PathBuf::from(dir)), "{dir}");
+        }
+        if let Some(home) = std::env::home_dir() {
+            assert!(dirs.contains(&home.join(".nix-profile/bin")));
+        }
     }
 
     #[test]
@@ -984,6 +1053,7 @@ mod tests {
             id: "mine".into(),
             names: vec![program_name("~/bin/My-Agent --tui")],
             packages: Vec::new(),
+            var: None,
         });
         assert_eq!(
             agent_of("my-agent", &["my-agent"], &known),
@@ -1372,5 +1442,19 @@ mod tests {
         let path = shell_path(&shell.to_string_lossy()).unwrap();
         assert!(path.starts_with("/from/rc:"), "{path}");
         assert_eq!(shell_path("/no/such/shell"), None);
+    }
+
+    /// A folder is on the PATH through a `..` or a link, as the shell resolves it.
+    #[test]
+    fn a_folder_is_on_path_through_a_dot_dot() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(t.path().join(".local/bin")).unwrap();
+        std::fs::create_dir_all(t.path().join(".local/share")).unwrap();
+        let bin = t.path().join(".local/bin");
+        assert!(on_path(&bin, &[t.path().join(".local/share/../bin")]));
+        assert!(!on_path(&bin, &[t.path().join("other")]));
+        // Neither exists: compared as written.
+        assert!(on_path(Path::new("/no/bin"), &[PathBuf::from("/no/bin")]));
+        assert!(!on_path(Path::new("/no/bin"), &[]));
     }
 }

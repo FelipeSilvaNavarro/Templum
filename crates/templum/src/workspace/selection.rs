@@ -2,16 +2,14 @@
 //! what acts on the selected blocks, or on the focused one: a selected title's drag moves them
 //! together, Delete closes them, Copy and Paste copy them.
 
-use std::time::Instant;
-
 use gpui_kit::{ClipboardItem, Context, Pixels, Point as PixelPoint, Window};
 use serde::{Deserialize, Serialize};
-use templum_canvas::{BlockId, Gesture, Point, Rect, Size, edge_scroll};
+use templum_canvas::{BlockId, Gesture, Point, Rect};
 
 use crate::session;
 
 use super::history::{Change, Then};
-use super::{CLICK_SLOP, Drag, Workspace};
+use super::{Drag, Workspace};
 
 /// What Copy puts on the clipboard for blocks: JSON that Paste knows, here or in another
 /// Templum. A terminal comes back as a fresh shell in its folder, without its agent.
@@ -60,42 +58,6 @@ impl Workspace {
         self.space.selected = selected;
     }
 
-    /// Every frame of a rectangle being dragged: with the pointer near the canvas's edge, the
-    /// camera goes that way (`edge_scroll`) and the rectangle grows with it. True while it goes:
-    /// the next frame is asked for.
-    pub(super) fn marquee_edge(&mut self, viewport: Size, now: Instant) -> bool {
-        let Some(Drag::Marquee {
-            from,
-            to,
-            pointer,
-            scrolled,
-            ..
-        }) = &mut self.drag
-        else {
-            return false;
-        };
-        let pointer = *pointer;
-        let v = edge_scroll(pointer, viewport);
-        // A Shift+click near the edge isn't a drag yet.
-        let dragged = (to.x - from.x).abs().max((to.y - from.y).abs())
-            * self.space.canvas.camera.zoom()
-            >= CLICK_SLOP;
-        if v == Point::default() || !dragged {
-            *scrolled = None;
-            return false;
-        }
-        // From the last frame that moved it; a stalled frame doesn't jump.
-        let dt = scrolled.map_or(0.0, |at| now.duration_since(at).as_secs_f32().min(0.05));
-        *scrolled = Some(now);
-        self.space.pristine = false;
-        self.space
-            .canvas
-            .camera
-            .pan_by(Point::new(-v.x * dt, -v.y * dt));
-        self.marquee_to(pointer);
-        true
-    }
-
     /// A press on a selected block's title: dragging moves every selected block.
     pub(crate) fn begin_group_move(&mut self, pos: PixelPoint<Pixels>) {
         if self.space.grid.is_some() {
@@ -103,8 +65,8 @@ impl Workspace {
         }
         let p = self.local(pos);
         self.space.pristine = false;
-        self.drag =
-            Gesture::move_blocks(&self.space.canvas, &self.space.selected, p).map(Drag::Canvas);
+        self.drag = Gesture::move_blocks(&self.space.canvas, &self.space.selected, p)
+            .map(|g| Drag::held(g, p));
         self.placing(&self.space.selected.clone());
     }
 

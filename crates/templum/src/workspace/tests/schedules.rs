@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 use serde_json::json;
 use templum_canvas::Wire;
 
-use super::bus::{after, call, me, screen_until};
+use super::bus::{after, call, history_with, me};
 use super::delegate::{found, prints};
 use super::spawn::{spawned, spawner};
 use super::*;
@@ -224,7 +224,7 @@ fn a_schedule_that_cant_go_says_so_and_a_closed_caller_ends_its_schedules(cx: &m
     due_now(&ws, cx, 1);
     look(cx);
     assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
-    screen_until(&ws, cx, other, |shown| shown.contains(", scheduled s1] "));
+    history_with(&ws, cx, other, ", scheduled s1] ");
     ws.read_with(cx, |ws, _| {
         let handed = ws.pane(&worker).unwrap().handed.as_ref().unwrap();
         assert_eq!(handed.by, terminal, "its end comes back to the asker");
