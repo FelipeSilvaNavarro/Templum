@@ -891,6 +891,8 @@ impl Workspace {
         // The panel would open under the screen; it has everything the welcome has.
         self.close_screen(window, cx);
         self.close_welcome(window, cx);
+        // After the welcome: closing it may have changed the entry this reads.
+        self.load_autostart(cx);
         let now = Instant::now();
         self.settings = Some(match &self.settings {
             // Still sliding out: it turns back from where it is.

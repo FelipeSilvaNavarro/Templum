@@ -162,6 +162,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 - `welcome.rs`: the welcome a first run opens over a frosted canvas (each block a soft shadow of its shape: GPUI has
   no backdrop blur), five pages whose settings are the panel's rows (`settings/welcome.rs`); the first terminal
   opens when it closes ([specs/welcome.md](specs/welcome.md)).
+- `autostart.rs`: the system's own entry that starts Templum when the person logs in (an XDG autostart file, a
+  LaunchAgent, a `Run` registry value), the only record of it ([specs/settings.md](specs/settings.md#start-at-login)).
 - `usage.rs`: the title bar's usage meter, its popover and a terminal's usage chip.
 - `wires.rs`: painting the wires in the layer under the blocks, with the dot grid, and the dot that travels along one
   while a task is handed over ([specs/connections.md](specs/connections.md#wires)).

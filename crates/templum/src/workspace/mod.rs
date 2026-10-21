@@ -3,6 +3,7 @@
 mod activity;
 mod agent;
 mod approvals;
+mod autostart;
 mod blocks;
 mod bus;
 mod checklist_blocks;
@@ -74,6 +75,7 @@ use templum_terminal::{Notify, Snapshot, Terminal};
 
 use crate::agents::{self, AgentEntry};
 use crate::alert::Alert;
+use crate::autostart::Autostart;
 use crate::board::Boards;
 use crate::checklist::{self, Checklist};
 use crate::checklists::{Checklists, List};
@@ -1278,6 +1280,9 @@ pub struct Workspace {
     /// `git --version` with the configured program, read when the settings panel opens: Ok is
     /// the version, Err why it can't run. None while it is being read.
     pub(crate) git_version: Option<Result<String, String>>,
+    /// The system's entry that starts Templum at login, and what the toggle shows of it
+    /// (docs/specs/settings.md, Start at login).
+    pub(crate) autostart: crate::autostart::State,
     /// Settings ▸ Git ▸ Try it, running or done.
     pub(crate) message_try: Option<TryIt>,
     /// Settings ▸ Connections ▸ Gemini CLI: Install or Remove running, or what went wrong.
@@ -1323,20 +1328,23 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// `config_dir`: where the settings file and themes are; `data_dir`: where the canvas is kept
-    /// (None: it isn't, as for `--bench`).
+    /// `autostart`: the system's entry that starts Templum at login (None: it has none, as for
+    /// `--bench`); `config_dir`: where the settings file and themes are; `data_dir`: where the
+    /// canvas is kept (None: it isn't, as for `--bench`).
     pub fn new(
+        autostart: Option<Autostart>,
         config_dir: Option<PathBuf>,
         data_dir: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::with(None, config_dir, data_dir, window, cx)
+        Self::with(None, autostart, config_dir, data_dir, window, cx)
     }
 
     /// `command`: program for new terminals instead of the login shell (tests).
     pub fn with(
         command: Option<(String, Vec<String>)>,
+        autostart: Option<Autostart>,
         config_dir: Option<PathBuf>,
         data_dir: Option<PathBuf>,
         window: &mut Window,
@@ -1645,6 +1653,10 @@ impl Workspace {
             _files: files,
             _git: git,
             git_version: None,
+            autostart: crate::autostart::State {
+                entry: autostart,
+                ..Default::default()
+            },
             message_try: None,
             gemini_job: None,
             gemini_told: Default::default(),
@@ -1689,6 +1701,7 @@ impl Workspace {
         for failure in ws.sync_commands() {
             preferences::tell_commands(Some(failure), window, cx);
         }
+        ws.refresh_autostart(cx);
         ws.load_spaces(window, cx);
         ws.restore_conversation();
         ws

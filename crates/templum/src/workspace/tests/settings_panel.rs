@@ -47,6 +47,97 @@ fn the_panel_opens_on_appearance_and_tabs_switch_sections(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
+fn the_start_at_login_switch_reads_the_system_and_changes_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let home = tempfile::tempdir().unwrap();
+    let entry = with_autostart(&ws, cx, home.path());
+    let on =
+        |ws: &Entity<Workspace>, cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.autostart.on);
+    // Someone added the entry with the system's own tools: the panel finds it when it opens.
+    entry.set(true).unwrap();
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    cx.run_until_parked();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-general", cx)
+    })
+    .unwrap();
+    frame(handle, cx);
+    assert!(on(&ws, cx), "read from the system");
+    // Switched off here: the entry is gone from the system.
+    cx.update_window(handle, |_, window, cx| {
+        window.click("field-general.autostart", cx)
+    })
+    .unwrap();
+    assert!(!on(&ws, cx));
+    assert!(!entry.is_on(), "removed from the system");
+    cx.update_window(handle, |_, window, cx| {
+        window.click("field-general.autostart", cx)
+    })
+    .unwrap();
+    assert!(on(&ws, cx));
+    assert!(entry.is_on(), "written to the system");
+    // Removed by hand while the panel is shut: the panel opening again shows it off.
+    cx.update_window(handle, |_, window, cx| window.click("settings-close", cx))
+        .unwrap();
+    entry.set(false).unwrap();
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(!on(&ws, cx));
+}
+
+#[gpui_kit::test]
+fn startup_points_an_entry_that_is_on_at_this_executable(cx: &mut TestAppContext) {
+    let home = tempfile::tempdir().unwrap();
+    let on = |program| crate::autostart::Autostart::in_dir("linux", home.path(), program, false);
+    // Templum was moved: the entry the person turned on names where it was.
+    on("/old/templum").set(true).unwrap();
+    let entry = on("/opt/templum");
+    cx.executor().allow_parking();
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        bind_keys(cx);
+        gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+            cx.new(|cx| Workspace::with(Some(quiet()), Some(entry), None, None, window, cx))
+        })
+        .expect("open window");
+    });
+    cx.run_until_parked();
+    let path = home.path().join(".config/autostart/templum.desktop");
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(text.contains("Exec=\"/opt/templum\""), "{text}");
+}
+
+#[gpui_kit::test]
+fn a_start_at_login_that_cant_be_written_says_why_and_stays_off(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let home = tempfile::tempdir().unwrap();
+    // A file where the autostart folder should be.
+    std::fs::create_dir_all(home.path().join(".config")).unwrap();
+    std::fs::write(home.path().join(".config/autostart"), "").unwrap();
+    with_autostart(&ws, cx, home.path());
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-general", cx);
+        window.render_frame(cx);
+        window.click("field-general.autostart", cx)
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.autostart.on, "the switch shows what the system has");
+        let error = ws.autostart.error.as_deref().unwrap();
+        assert!(
+            error.starts_with("Couldn't turn starting at login on: "),
+            "{error}"
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn the_blink_switch_edits_the_config_and_its_reset_removes_the_key(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));

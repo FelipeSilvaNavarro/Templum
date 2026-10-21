@@ -120,7 +120,9 @@ fn open_welcomed(
                 ..Default::default()
             },
             cx,
-            |window, cx| cx.new(|cx| Workspace::with(command, config_dir, data_dir, window, cx)),
+            |window, cx| {
+                cx.new(|cx| Workspace::with(command, None, config_dir, data_dir, window, cx))
+            },
         )
         .expect("open window")
     });
@@ -382,6 +384,18 @@ fn panel_open(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> bool {
 fn settle_slide(handle: AnyWindowHandle, cx: &mut TestAppContext) {
     std::thread::sleep(crate::motion::SLIDE + std::time::Duration::from_millis(50));
     frame(handle, cx);
+}
+
+/// Gives the workspace a start-at-login entry in `home`, a temporary folder standing for the
+/// person's home: tests never reach the system's own.
+fn with_autostart(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    home: &std::path::Path,
+) -> crate::autostart::Autostart {
+    let entry = crate::autostart::Autostart::in_dir("linux", home, "/opt/templum", false);
+    ws.update(cx, |ws, _| ws.autostart.entry = Some(entry.clone()));
+    entry
 }
 
 fn write_canvas(dir: &std::path::Path, text: &str) {

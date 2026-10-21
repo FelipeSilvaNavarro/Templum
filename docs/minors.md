@@ -592,6 +592,18 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   WSL while the agent opens elsewhere, or the other way round. Fix: one `Workspace` helper taking a label and whether
   the entry is an account, called by both.
 
+- [ ] **macOS: an entry switched off in System Settings ▸ General ▸ Login Items still reads on.** `is_on`
+  (`crates/templum/src/autostart.rs`) only checks that the LaunchAgent's file exists; the switch macOS keeps for a
+  background item lives in launchd's database. A person sees the toggle on while the system won't start Templum.
+  Fix: ask `launchctl print-disabled gui/<uid>` for the label and read it as off.
+- [ ] **Windows: a path with letters outside the OEM code page makes startup write the entry every time.** `reg`
+  reads `reg.exe`'s output as UTF-8, but it prints the OEM code page, so the data read back differs from the
+  quoted path and `refresh` writes it again at each start. Nothing is visible; it is one `reg add` per start. Fix:
+  read the value with `reg export` or through `chcp 65001`, or compare after replacing non-ASCII characters.
+- [ ] **A Linux entry in Flatpak or Snap would be written inside the sandbox.** Neither is a way Templum is
+  packaged today, but `XDG_CONFIG_HOME` there is the sandbox's, not the desktop's. Fix: ask the Background portal
+  (`org.freedesktop.portal.Background.RequestBackground`) when `FLATPAK_ID` is set.
+
 ## GPUI engine (gpui-fast)
 
 - [ ] **A note tab's text is saved without telling the window.** The editor subscription in `note_tab`
