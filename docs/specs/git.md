@@ -516,7 +516,7 @@ headlessly.
 | `config.rs`, `settings/` | `[agents]`'s `generate` and `models`; `[git.commit_message]`; `[git.repositories]` (an owned table name in `Edit`); the Git section and the agents dialog's new part. |
 | `workspace/` | `copy` for the focused Git's selection; `git_ops.rs`: opening, closing and pointing the workspace's Git (`toggle_git`, `open_git`, `close_git`, `set_git_folder`, `git_folders`, `poll_git`); `render.rs` places the popup; `input.rs` resizes it (`begin_git_resize`, `release_git_resize`, `git_popup_size`). |
 | `sidebar.rs` | The Git button at the sidebar's foot. |
-| `session.rs` | `SavedGit`: the workspace's Git, with `diff` and `lists`. |
+| `session.rs` | `SavedGit`: the workspace's Git, with `diff` and `lists`; `Index.git_size` (`SavedSize`): the popup's size. |
 
 **Data flow:** every git command still goes through the block's queue (`git_job`/`act_job`, one at a time, results
 dropped when the block changed folder); a diff is read in the background, parsed in `templum-git`, and turned into

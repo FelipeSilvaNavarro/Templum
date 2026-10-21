@@ -225,6 +225,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Release and benches
 
+- [ ] **`--bench-git` measures only the default Git popup size.** The bench has no data folder, so the popup is
+  760×540, but a person can now drag it to the whole window (`git_size`, `crates/templum/src/workspace/input.rs`):
+  about 2.5× the diff rows on a 1440p window, and longer lines on each Split side. Fix: a bench variant, or a one-off
+  run, with `git_size` set to the window's room, checking p95 <= 16.7 ms.
 - [ ] **The CHANGELOG will list three features twice.** Batch 2 has a `feat` commit for the library and another for
   the UI of the same feature: 726079b with c7e13c6 (hunks), 1d5bc9a with cb26cfd (the trash), efdd911 with 6362120
   (commit all, undo commit). Fix: edit the generated section at the next release so each feature reads once.

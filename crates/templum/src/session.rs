@@ -127,7 +127,8 @@ pub(crate) struct SavedSize {
     pub h: f32,
 }
 
-/// A size with both sides above zero; anything else (a typo, a number JSON can't hold) is none.
+/// A size with both sides above zero; anything else (a typo, a negative side) is none. A number
+/// too large for JSON (`1e400`) fails the whole index, as anywhere else in it.
 fn usable_size<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SavedSize>, D::Error> {
     Ok(
         serde_json::from_value::<SavedSize>(serde_json::Value::deserialize(d)?)

@@ -323,13 +323,19 @@ impl Workspace {
             Some(Drag::Wire { to, .. }) => *to = self.space.canvas.camera.to_world(p),
             // The popup sits at the bottom-left: its right edge grows it to the right, its top
             // edge upward, so the pointer's way is the size's. Kept inside the room as dragged,
-            // so the popup never trails a pointer that went past the window.
+            // so the popup never trails a pointer that went past the window. A side not dragged
+            // keeps what was set, not what a smaller window draws.
             Some(Drag::GitResize { edges, from, start }) => {
                 let wanted = Size::new(
                     start.w + if edges.right { p.x - from.x } else { 0.0 },
                     start.h + if edges.top { from.y - p.y } else { 0.0 },
                 );
-                self.git_size = Some(git_block::fit(Some(wanted), self.git_room));
+                let fitted = git_block::fit(Some(wanted), self.git_room);
+                let kept = self.git_size.unwrap_or(git_block::SIZE);
+                self.git_size = Some(Size::new(
+                    if edges.right { fitted.w } else { kept.w },
+                    if edges.top { fitted.h } else { kept.h },
+                ));
             }
             None => return,
         }

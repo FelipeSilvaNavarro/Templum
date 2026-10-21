@@ -239,6 +239,21 @@ fn a_smaller_window_shrinks_the_popup_and_a_larger_one_gives_the_size_back(
 }
 
 #[gpui_kit::test]
+fn dragging_one_edge_in_a_smaller_window_keeps_the_other_side_set(cx: &mut TestAppContext) {
+    let repo = git_repo();
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    drag_zone(handle, cx, "git-resize-top-right", (300.0, -150.0));
+    let set = popup_box(handle, cx);
+    cx.simulate_window_resize(handle, size(px(800.), px(560.)));
+    assert!(popup_box(handle, cx).size.width < set.size.width);
+    // Only the top edge, on the small window: the width set on the big one stays.
+    drag_zone(handle, cx, "git-resize-top", (0.0, 10.0));
+    cx.simulate_window_resize(handle, size(px(1280.), px(800.)));
+    assert_eq!(popup_box(handle, cx).size.width, set.size.width);
+}
+
+#[gpui_kit::test]
 fn the_size_set_comes_back_when_the_popup_opens_again_and_after_a_restart(cx: &mut TestAppContext) {
     let repo = git_repo();
     let data = tempfile::tempdir().unwrap();

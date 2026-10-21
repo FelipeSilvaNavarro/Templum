@@ -100,7 +100,8 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
   ```
 
   `git_size` is the [Git popup's](git.md#1-layout-and-navigation) size the person dragged it to, in pixels; it is
-  left out until they do, and a value that isn't two positive numbers is as if left out.
+  left out until they do, and a value that isn't two positive numbers is as if left out (a number too large for JSON, only a hand edit
+  writes one, sets the whole index aside as any other unreadable index).
 
 - **Without an index,** as on a first run or after the previous version, there is one workspace, `default`,
   named "Main". It opens the canvas in `default.json` if there is one.
