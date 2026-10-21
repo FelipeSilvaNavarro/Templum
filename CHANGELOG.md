@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.1.4
+
+### Features
+
+- Offer to start Templum when you log in
+- Start Templum when you log in
+- Edit and delete a comment from the card's dialog
+- The ask_user dialog is redrawn like the kanban card's, and a long text scrolls instead of being cut
+- A column whose cards don't fit shows a scrollbar
+- Agents edit and delete their own comments on a kanban card
+- Drag the Git popup's right and top edges to resize it, and it opens at that size again
+- Committing a single file needs no message: it is committed as "Update a.rs", "Add a.rs" or "Delete a.rs"
+- One dialog to switch branches and create them, in place of Switch branch and New branch
+- A shorter account dialog, with a note only when something needs doing
+- Reply runs without asking in Claude Code, Codex and Copilot CLI
+- List_blocks and delegate say which agents have no Templum tools, and why
+- Every task an agent gets asks for its answer with reply, and says how without Templum's tools
+- Templum reply - answers your task with what comes on standard input
+- An agent answers the task it is on with reply, no block needed, and its master hears it as the task's end
+- A new note is Untitled, and a double click on its tab or Rename… in the block's menu names it
+- A click on an option only picks it, and a Send button answers
+- Pick an account's shell in its dialog
+- Pick each agent's shell in its dialog, Default following Settings ▸ Shell
+- An agent set to WSL can be opened though Windows doesn't find it, and spawn_agent says why it can't
+- An agent opens in the shell set for it, and its block keeps that shell
+- An agent's entry in config.toml names the shell it opens in
+- A simpler Add an account: type a name, choose Same, Fresh or Custom, and it logs in
+- An account's command typed in a Templum terminal gets Templum's server
+- A block is the account whose folder its agent runs on, typed by hand or not
+- An account is made by its name and is a command in your shells, removed with it
+- Check an account's name as a command: a word, free, not one of the computer's
+- Write and remove an account's command file, never someone else's
+- The wheel scrolls a block only once it is selected; over any other block it moves the canvas
+- A block held by its title near the canvas's edge moves the canvas, like the selection rectangle does
+- A calmer note block with rounded tabs, text in line with them and softer card colors
+- A cleaner card dialog with readable comments and the theme's colors
+- Shells and agents from Linuxbrew, Nix and MacPorts are found when Templum starts from the Dock or a desktop menu
+- The shells' menus read the list again once the login shell's PATH arrives
+- Pick the shell of a new terminal from the toolbar's Terminal or Add ▸ Terminal ▸
+- An agent typed in a terminal gets the words that suit that terminal's own shell
+- A terminal opened with a shell keeps it after a restart, an undo or a paste
+- List fish, zsh, Nushell and pwsh found on the PATH, and start shells as login shells on macOS
+- A ⋯ button in every block's header opens the block's menu, no right-click needed
+- A simpler, cleaner Git popup with a Commit button in the theme's color
+- A Boards dialog, as the notes' and the checklists', finds, opens and deletes boards
+
+### Fixes
+
+- A task for an agent in WSL or Aider no longer suggests templum reply, Aider's missing tools say it has no MCP, and a quiet agent's error says interrupt ends the task
+- Templum reply - sends what comes on standard input even when it isn't UTF-8
+- A subagent without Templum's tools that waits on its own subagent isn't ended by its screen
+- An agent with Templum's tools that goes still keeps its task, and its master hears once that it hasn't answered
+- A subagent that waits on its own subagent isn't taken for done when its turn ends
+- A click outside the Git popup closes it, and the popup shows over the Templum Agent
+
+### Other changes
+
+- Clean up media references in README.md
+
 ## 0.1.3
 
 ### Features
