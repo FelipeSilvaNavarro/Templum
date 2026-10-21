@@ -508,9 +508,13 @@ mod tests {
             .map(|a| a.place)
         };
         let desktop = |p: &str| Some(Place::Desktop(p.into()));
+        // Absolute on the system the test runs on: `/x` has no drive on Windows.
+        let cfg = std::env::temp_dir().join("cfg");
         assert_eq!(
-            at("linux", Some("/x/cfg"), Some("/h"), false),
-            desktop("/x/cfg/autostart/templum.desktop")
+            at("linux", cfg.to_str(), Some("/h"), false),
+            Some(Place::Desktop(
+                cfg.join("autostart").join("templum.desktop")
+            ))
         );
         // Unset, empty or relative: ~/.config.
         for xdg in [None, Some(""), Some("rel/cfg")] {
