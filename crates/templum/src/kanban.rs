@@ -398,11 +398,12 @@ fn board_view(
         .into_any_element()
 }
 
-/// A column's scrollbar, over its list of cards: gpui-component's, as the notes' and the menus'
-/// are, which the theme shows on hover or while scrolling and only once the cards overflow.
-/// Its track and thumb (the widths gpui-component draws at zoom 1) scale with the zoom `z`
-/// like everything in the block: unscaled, the track would be a quarter of a column at 0.25.
-fn column_scrollbar(handle: &ScrollHandle, id: ElementId, z: f32) -> AnyElement {
+/// A scrollbar over a list that scrolls on `handle` (a column's cards, the ask_user dialog's
+/// body): gpui-component's, as the notes' and the menus' are, which the theme shows on hover or
+/// while scrolling and only once the content overflows. Its track and thumb (the widths
+/// gpui-component draws at zoom 1) scale with the zoom `z` like everything in the block:
+/// unscaled, the track would be a quarter of a column at 0.25.
+pub(crate) fn scrollbar_over(handle: &ScrollHandle, id: ElementId, z: f32) -> AnyElement {
     div()
         .id(id)
         .absolute()
@@ -584,7 +585,7 @@ fn column_view(
                         )
                         .test_support(),
                 )
-                .child(column_scrollbar(
+                .child(scrollbar_over(
                     &edge.read(cx).handle,
                     name("scrollbar", n, col),
                     z,

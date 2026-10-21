@@ -312,16 +312,20 @@ conversation.
 - **The dialog** is `ask_user`'s balloon ([ask-user.md](ask-user.md#the-dialog)) holding a plan instead of questions:
 
   ```
-  ● Waiting for your answer                                         1 of 2
-   Plan  Move the bus to tokio
+  (?) Waiting for your answer  Plan to approve                              1 of 2
+  ─────────────────────────────────────────────────────────────────────────────
+   [Plan]  Move the bus to tokio
    ┌─────────────────────────────────────────────────────────────────────┐
    │ ## Steps                                                            │
    │ 1. Replace the reader threads…                                      │
    │ …                                                                   │
    └─────────────────────────────────────────────────────────────────────┘
    Comment [ optional                                                   ]
-   Reject                                                          Approve
+  ─────────────────────────────────────────────────────────────────────────────
+   Reject                                                          [✓ Approve]
   ```
+
+  in the frame of ask_user's dialog since card 81: the header and the foot stay, the body between them scrolls
 
   the header chip "Plan" and the title (or "A plan" when none); the plan rendered as Markdown by `markdown::preview`
   (headings, lists, code, scaled with the zoom like a photo), in a frame on the canvas color that scrolls on its own,

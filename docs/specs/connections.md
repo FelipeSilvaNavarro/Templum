@@ -140,9 +140,10 @@ later starts with none.
   block. In the background it is a system notification, as a terminal's are.
 - **A question** (`ask_user`) and **a request to connect** (`connect`) open a **balloon** on the asking block, at the
   Full level of detail: a dialog centered on its terminal (under the title bar), 80% of its width and at most 80% of
-  its height, its sizes the block's at the zoom, so it scales like a photo; past that height it scrolls, the wheel
-  over it scrolling it and not the terminal (with Ctrl it zooms the canvas). A yellow frame and a first line, a
-  yellow dot and "Waiting for your answer", say the agent waits for the person, in the yellow of the block's dot:
+  its height, its sizes the block's at the zoom, so it scales like a photo. Its header ("Waiting for your answer",
+  with a yellow tile and frame, the yellow of the block's dot, that say the agent waits for the person) and its foot
+  (the buttons) stay; the body between them scrolls past that height, the wheel over it scrolling it and not the
+  terminal (with Ctrl it zooms the canvas) ([ask-user.md](ask-user.md#the-dialog)):
   - a question ([ask-user.md](ask-user.md#the-dialog)) shows its questions, each with its header, its options (a
     radio or a checkbox, the label, the description), an Other field, then a note, **Dismiss** and **Send**; today's
     shape (`question`, `options` as strings) shows its text whole and a button per option, or a text field and

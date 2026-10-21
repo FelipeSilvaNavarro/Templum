@@ -45,6 +45,8 @@ pub(crate) struct Wait {
     pub what: Waiting,
     /// When the balloon first drew it, by the executor's clock.
     pub shown: Cell<Option<Instant>>,
+    /// The scroll of the balloon's body, past what fits of its terminal's height.
+    pub body: crate::markdown::PreviewScroll,
 }
 
 /// A field of a question's dialog, and what it hears from it.
@@ -191,6 +193,7 @@ impl Workspace {
             from: asked.from,
             what,
             shown: Cell::new(None),
+            body: Default::default(),
         };
         let looks = matches!(
             wait.what,

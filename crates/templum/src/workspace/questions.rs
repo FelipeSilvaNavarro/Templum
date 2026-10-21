@@ -28,13 +28,23 @@ pub(super) fn fields(
         .iter()
         .enumerate()
         .map(|(q, question)| {
-            let placeholder = question.options.is_empty().then_some("Your answer");
-            field(key, Some(q), placeholder, window, cx)
+            let placeholder = if question.options.is_empty() {
+                "Your answer"
+            } else {
+                "Something else"
+            };
+            field(key, Some(q), Some(placeholder), window, cx)
         })
         .collect();
     let note = match (ask.json, &ask.plan) {
         (_, Some(_)) => Some(field(key, None, Some("Comment (optional)"), window, cx)),
-        (true, None) => Some(field(key, None, Some("Note (optional)"), window, cx)),
+        (true, None) => Some(field(
+            key,
+            None,
+            Some("Add a note for the agent"),
+            window,
+            cx,
+        )),
         (false, None) => None,
     };
     (others, note)

@@ -796,9 +796,6 @@ Left by batch 3 (agents together) and its review; line numbers are those of `dev
 - [ ] **The balloon covers the find field.** Both sit at the terminal's top right (`render`,
   `crates/templum/src/balloon.rs:18`; `find_bar`, `crates/templum/src/block.rs:682`). A person who opens find while an
   agent asks sees the balloon over the field. Fix: put the balloon under the find field while it is open.
-- [ ] **A long question is cut by its block.** The balloon is clipped by the block (`render`,
-  `crates/templum/src/balloon.rs:18`); in a small block a long question loses its end and its buttons. Fix: a scroll in
-  the balloon's text, or let it overflow the block.
 - [ ] **The balloon's field misses Templum's paste shortcut.** The balloon's branch of `on_key_down`
   (`crates/templum/src/workspace/input.rs`) lets every command but Copy and Paste through, so Ctrl+Shift+V does
   nothing in a question's field; the find field's branch above it handles it. Fix: the same case as the find field's.
@@ -1190,12 +1187,17 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
   it by hand (`delegate` with `wait` on a `sleep 150` task, the `[task …]` comes back typed); if the cancel never
   comes, drop a wait whose client went away (its MCP connection's request id answered or abandoned).
 
-Left by the ask_user dialog (kanban card 29).
+Left by the ask_user dialog's redesign (kanban card 81, `docs/specs/ask-user.md`).
 
-- [ ] **A long question scrolls the dialog's "Waiting for your answer" out of view.** The whole dialog scrolls
-  (`crates/templum/src/balloon.rs`), its first line too: a person who scrolls down a long question or many options
-  no longer sees that the agent waits (the block's dot still says so). Fix: keep the first line out of the scrolled
-  part (a column with the line, then a `min_h_0` part that scrolls), checked by hand that taffy shrinks it.
+- [ ] **A press on the dialog's scrollbar doesn't give its block the keyboard.** The scrollbar over the body
+  (`balloon::render`, `crates/templum/src/balloon.rs`) takes its presses before the balloon's `press_on_balloon`
+  runs, as the kanban column's did (commit adc9e28). A person who drags the thumb in a block they weren't working in
+  scrolls the dialog but has to click it once more before its keys work. Fix: a `capture_any_mouse_down` on the body
+  that calls `press_on_balloon`, as `column_view` does with `focus_block` (check `a_click_in_the_dialogs_field_keeps_the_keyboard_there`).
+- [ ] **The wheel over a dialog of a block that isn't the one worked in pans the canvas.** `route_wheel`
+  (`crates/templum/src/workspace/input.rs`) gives the wheel to a block's content only when it is focused or selected,
+  and the balloon is the block's content: with focus not following the pointer, a huge dialog can't be scrolled by
+  wheel until a click focuses its block. Fix: let `route_wheel` pass a wheel over a balloon that overflows to it.
 
 Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
 
@@ -1211,10 +1213,11 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   Windows; neither was played on those systems, so a person there may hear nothing (or a console flash on Windows).
   On Linux both `canberra-gtk-play` and `pw-play` exit 0, but no one listened. Fix: play it there and adjust
   `chime::players`.
-- [ ] **ask_user v2's dialog isn't tried by hand.** The dialog (`crates/templum/src/balloon.rs`) was built and tested
-  headless only: its look at far and near zooms, the preview's two columns, the highlight, and Claude Code, Codex
+- [ ] **ask_user v2's dialog isn't tried by hand.** The dialog (`crates/templum/src/balloon.rs`, redrawn by card 81)
+  was built and tested headless only: its look at far and near zooms, the header's tile and badge, the options'
+  panel and marks, the preview beside or under the options, the scrollbar, the highlight, and Claude Code, Codex
   and Gemini CLI each asking with `questions`, then Esc in Claude Code and an answer typed back, weren't seen. A
-  person may meet misaligned marks or a pane that crowds the options. Fix: run `cargo run -p templum -- --dev`, ask
+  person may meet misaligned marks, a pane that crowds the options or a header that wraps in a narrow block. Fix: run `cargo run -p templum -- --dev`, ask
   with the spec's example from each agent and from `templum ask`, and correct what looks wrong.
 - [ ] **A withdrawn request leaves its alert.** `tell_asking` (`crates/templum/src/workspace/waits.rs`) gives the
   block an "Asks you: …" alert that only answering clears (`seen_asking`); after the agent quits or the deadline

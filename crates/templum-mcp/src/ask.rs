@@ -454,6 +454,13 @@ impl Form {
             .collect()
     }
 
+    /// How many questions have an answer so far.
+    pub fn answered(&self, ask: &Ask, others: &[String]) -> usize {
+        (0..ask.questions.len())
+            .filter(|q| !self.answer_of(ask, *q, others).is_empty())
+            .count()
+    }
+
     fn answer_of(&self, ask: &Ask, q: usize, others: &[String]) -> Vec<String> {
         let mut answer: Vec<String> = ask.questions[q]
             .options
@@ -858,6 +865,21 @@ mod tests {
             Some(Row::Option(0, 0)),
             "all answered: it stays"
         );
+    }
+
+    #[test]
+    fn the_foot_counts_the_questions_answered() {
+        let ask = singles(3);
+        let mut others = vec![String::new(); 3];
+        let mut form = Form::new(&ask);
+        assert_eq!(form.answered(&ask, &others), 0);
+        form.pick(&ask, 1, 0);
+        assert_eq!(form.answered(&ask, &others), 1);
+        others[2] = "later".into();
+        form.typed(&ask, 2, "later");
+        assert_eq!(form.answered(&ask, &others), 2, "Other's text counts");
+        form.typed(&ask, 2, "  ");
+        assert_eq!(form.answered(&ask, &others), 1, "a blank one doesn't");
     }
 
     #[test]
