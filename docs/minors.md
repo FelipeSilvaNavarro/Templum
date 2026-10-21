@@ -618,6 +618,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   an external disk or a second partition is `Manual(NotInstalled)`: `set(true)` in `crates/templum/src/autostart.rs`
   answers "Move Templum to Applications first", and the updater won't update it either. Fix: refuse only a mounted
   disk image or a read-only volume (`hdiutil info`, or `statfs` with `MNT_RDONLY`), not any `/Volumes/` path.
+- [ ] **The startup rewrite can undo a switch-off made while it runs.** `refresh_autostart`
+  (`crates/templum/src/workspace/autostart.rs`) reads the entry, then writes it on, and isn't counted as a change:
+  switching off in Settings ▸ General between the two puts the entry back, and the switch shows off while the system
+  starts Templum. Only when Templum was moved with the entry on, and within the rewrite (a millisecond on Linux, a few
+  `reg.exe` runs on Windows). Fix: count the rewrite as a change (`changing`, `changes += 1`), so the switch stays
+  disabled until it ends.
 - [ ] **A Linux entry in Flatpak or Snap would be written inside the sandbox.** Neither is a way Templum is
   packaged today, but `XDG_CONFIG_HOME` there is the sandbox's, not the desktop's. Fix: ask the Background portal
   (`org.freedesktop.portal.Background.RequestBackground`) when `FLATPAK_ID` is set.

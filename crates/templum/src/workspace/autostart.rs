@@ -40,8 +40,8 @@ impl Workspace {
 
     /// Turns the system's entry on or off. The switch shows the new state at once and the system
     /// is written off the UI thread (Windows runs programs for it); the switch is disabled
-    /// meanwhile. A failure is on the toggle's row and in a notification, and the toggle shows what the system
-    /// really has.
+    /// meanwhile. A failure is on the toggle's row and in a notification, and the toggle shows what
+    /// the system really has.
     pub(crate) fn set_autostart(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.autostart.entry.clone() else {
             return;

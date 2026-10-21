@@ -176,7 +176,7 @@ switch off.
   Settings ▸ General turns it on or off at any time.
 - **Read** when the panel or the welcome opens (off the UI thread, since Windows reads the registry with a
   program), and set by each change, which is also written off the UI thread: the switch shows the new state at once
-  and is disabled until the first's answer, and a failure puts the switch back to what the system has. A reading
+  and is disabled until the change's answer, and a failure puts the switch back to what the system has. A reading
   never lands over a change that started after it, nor while one runs: the change's own answer is the reading. The
   entry is written for the executable running: the AppImage file, not where it is mounted
   (`templum_update::Install`).
@@ -286,7 +286,7 @@ Tests are written first, as always. Everything runs in CI on Linux, macOS and Wi
   - Backspace leaves the command with no shortcut.
 - With the panel open, clicking a terminal and typing reaches the terminal.
 
-**Start at login** (`autostart.rs` unit tests, and `settings_panel.rs`):
+**Start at login** (`autostart.rs` unit tests, `settings_panel.rs`, and `workspace/tests/welcome.rs`):
 
 - the `.desktop` and `.plist` texts (`TryExec=`, `AssociatedBundleIdentifiers`), the `Exec=` quoting, the `reg.exe`
   program (System32's) and arguments and the parsing of its output, as pure functions;
