@@ -866,7 +866,6 @@ mod windows_tests {
         login_hint: None,
         overrides: &[],
         keychain: Keychain::Never,
-        note: None,
     };
 
     #[test]
