@@ -389,8 +389,15 @@ fn reg_ok(args: &[String]) -> Result<(), String> {
         .to_string())
 }
 
+/// Windows' own `reg.exe`, given `%SystemRoot%`. A bare `reg` is looked for in the folder of the
+/// running executable first, where anything can put one.
+fn reg_path(system_root: Option<OsString>) -> PathBuf {
+    let root = system_root.unwrap_or_else(|| r"C:\Windows".into());
+    PathBuf::from(root).join("System32").join("reg.exe")
+}
+
 fn run_reg(args: &[String]) -> std::io::Result<std::process::Output> {
-    let mut command = Command::new("reg");
+    let mut command = Command::new(reg_path(std::env::var_os("SystemRoot")));
     command.args(args);
     #[cfg(windows)]
     {
@@ -542,6 +549,13 @@ mod tests {
             reg_query(RUN_KEY, "Templum"),
             ["query", RUN_KEY, "/v", "Templum"]
         );
+    }
+
+    #[test]
+    fn reg_is_the_one_in_system32_not_the_one_found_on_a_search() {
+        let expected = |root: &str| PathBuf::from(root).join("System32").join("reg.exe");
+        assert_eq!(reg_path(Some(r"D:\Win".into())), expected(r"D:\Win"));
+        assert_eq!(reg_path(None), expected(r"C:\Windows"));
     }
 
     #[test]
