@@ -46,8 +46,12 @@ Steps at the top (Welcome · Look · Shell · Agents · Ready) show where one is
 - Text is in English, like the rest of the interface.
 - **Start at login** ([settings.md](settings.md#start-at-login)) is the one choice that waits for the welcome to
   close, since it touches the system rather than `config.toml`:
-  - in a first run it shows on, and pressing **Start using Templum** applies that. **Skip** and Esc leave it off:
-    someone who skipped never saw the option, so Templum doesn't start with their computer;
+  - in a first run it shows on when the system has no entry at all, and pressing **Start using Templum** applies
+    that. It shows off, and stays off, for an entry the system's tools switched off (`Hidden=true`, Task
+    Manager), for a `--dev` build, and for a Templum run from the macOS disk image, which couldn't keep one;
+  - nobody gets it without seeing the option: once the last page has been shown, the default applies whichever way
+    the welcome closes (Start using Templum, Skip or Esc), since the person saw it on. **Skip** and Esc before the
+    last page was ever shown leave it off;
   - switching it, either way, is a choice that applies when the welcome closes by any means;
   - opened again from Settings, it shows what the system has and changes nothing unless the person switches it.
 
@@ -100,8 +104,9 @@ Headless UI (`workspace/tests/welcome.rs`):
 - the Shell page shows only the start folder and integration rows, and its switch turns integration off;
 - the Agents page lists the agents found, or says none were;
 - Settings' **Welcome** opens it without a new terminal;
-- start at login shows on in a first run and is applied by **Start using Templum**, not by Skip or Esc; a switch
-  made in the welcome is applied by either; opened again, it shows the system's state and changes only what was
+- start at login shows on in a first run with no entry and is applied by any way of closing once the last page was
+  shown, not by Skip or Esc before it; it shows off for an entry the system switched off and for `--dev`; a switch
+  made in the welcome is applied by any way; opened again, it shows the system's state and changes only what was
   switched;
 - quitting from a first run's welcome writes nothing, and the next start welcomes again;
 - a new workspace over it closes it, and the first terminal is in the first workspace;

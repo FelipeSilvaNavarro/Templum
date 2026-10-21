@@ -174,7 +174,7 @@ pub(crate) fn welcome_groups(
             let on = ws
                 .welcome
                 .as_ref()
-                .is_some_and(|w| w.autostart_shown(ws.autostart.on));
+                .is_some_and(|w| w.autostart_shown(&ws.autostart));
             rows.push(autostart_row(ws, entity, on, |ws, on, _, cx| {
                 ws.choose_autostart(on, cx)
             }));

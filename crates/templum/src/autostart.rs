@@ -77,6 +77,17 @@ pub(crate) struct Autostart {
     launch: Launch,
 }
 
+/// What the system holds for an entry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Status {
+    /// No entry: nothing starts Templum.
+    #[default]
+    Absent,
+    /// An entry the system's tools switched off.
+    Off,
+    On,
+}
+
 /// What the person sees of it: the entry, whether the system starts Templum as of the last
 /// reading, and why the last change failed.
 #[derive(Default)]
@@ -84,10 +95,28 @@ pub(crate) struct State {
     /// None: the system has no place Templum can write one (no home folder).
     pub entry: Option<Autostart>,
     /// Read when the panel or the welcome opens, and set by each change.
-    pub on: bool,
+    pub status: Status,
     pub error: Option<String>,
     /// A change is running off the UI thread; another click waits for its answer.
     pub changing: bool,
+}
+
+impl State {
+    /// The system starts Templum at login, as of the last reading.
+    pub fn on(&self) -> bool {
+        self.status == Status::On
+    }
+
+    /// What a first run's welcome offers before anyone chooses: on, when the system has no entry
+    /// at all (one its tools switched off stays off) and this Templum could keep one: not a
+    /// `--dev` build, whose entry is a build's, nor one run from the macOS disk image.
+    pub fn offered(&self) -> bool {
+        self.status == Status::Absent
+            && self
+                .entry
+                .as_ref()
+                .is_some_and(|e| !e.launch.dev && !e.launch.temporary)
+    }
 }
 
 impl Autostart {
@@ -141,9 +170,19 @@ impl Autostart {
         Autostart::at(os, xdg, Some(home), launch).expect("a folder entry")
     }
 
+    /// What the system holds.
+    pub fn status(&self) -> Status {
+        match self.read() {
+            None => Status::Absent,
+            Some(stored) if self.on_given(&stored) => Status::On,
+            Some(_) => Status::Off,
+        }
+    }
+
     /// The system starts Templum at login.
+    #[cfg(test)]
     pub fn is_on(&self) -> bool {
-        self.read().is_some_and(|stored| self.on_given(&stored))
+        self.status() == Status::On
     }
 
     /// `is_on`, given what `read` found.
@@ -727,6 +766,44 @@ mod tests {
         assert!(!entry.is_on());
         // Taking an entry away is always allowed.
         assert_eq!(entry.set(false), Ok(()));
+    }
+
+    #[test]
+    fn the_status_tells_no_entry_from_one_the_system_switched_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = Autostart::in_dir("linux", dir.path(), "/opt/templum", false);
+        assert_eq!(entry.status(), Status::Absent);
+        entry.set(true).unwrap();
+        assert_eq!(entry.status(), Status::On);
+        let Place::Desktop(path) = &entry.place else {
+            unreachable!()
+        };
+        fs::write(path, format!("{}Hidden=true\n", entry.contents())).unwrap();
+        assert_eq!(entry.status(), Status::Off);
+        entry.set(false).unwrap();
+        assert_eq!(entry.status(), Status::Absent);
+    }
+
+    #[test]
+    fn a_first_run_offers_only_what_templum_could_keep_and_nobody_switched_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = |entry: Option<Autostart>, status| State {
+            entry,
+            status,
+            ..Default::default()
+        };
+        let mut entry = Autostart::in_dir("linux", dir.path(), "/opt/templum", false);
+        assert!(state(Some(entry.clone()), Status::Absent).offered());
+        // An entry that is there: on, or switched off with the system's tools.
+        assert!(!state(Some(entry.clone()), Status::On).offered());
+        assert!(!state(Some(entry.clone()), Status::Off).offered());
+        // No place to write one.
+        assert!(!state(None, Status::Absent).offered());
+        // A build beside the installed Templum, and the disk image.
+        let dev = Autostart::in_dir("linux", dir.path(), "/src/templum", true);
+        assert!(!state(Some(dev), Status::Absent).offered());
+        entry.launch.temporary = true;
+        assert!(!state(Some(entry), Status::Absent).offered());
     }
 
     #[test]

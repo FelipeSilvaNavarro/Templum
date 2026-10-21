@@ -51,8 +51,9 @@ fn the_start_at_login_switch_reads_the_system_and_changes_it(cx: &mut TestAppCon
     let (handle, ws) = open(cx);
     let home = tempfile::tempdir().unwrap();
     let entry = with_autostart(&ws, cx, home.path());
-    let on =
-        |ws: &Entity<Workspace>, cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.autostart.on);
+    let on = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.autostart.on())
+    };
     // Someone added the entry with the system's own tools: the panel finds it when it opens.
     entry.set(true).unwrap();
     cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
@@ -166,7 +167,7 @@ fn a_start_at_login_that_cant_be_written_says_why_and_stays_off(cx: &mut TestApp
     .unwrap();
     cx.run_until_parked();
     ws.read_with(cx, |ws, _| {
-        assert!(!ws.autostart.on, "the switch shows what the system has");
+        assert!(!ws.autostart.on(), "the switch shows what the system has");
         assert!(!ws.autostart.changing);
         let error = ws.autostart.error.as_deref().unwrap();
         assert!(

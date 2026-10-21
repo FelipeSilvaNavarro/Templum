@@ -22,7 +22,7 @@ pub(super) fn rows(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<Row> {
     vec![autostart_row(
         ws,
         entity,
-        ws.autostart.on,
+        ws.autostart.on(),
         |ws, on, window, cx| ws.set_autostart(on, window, cx),
     )]
 }

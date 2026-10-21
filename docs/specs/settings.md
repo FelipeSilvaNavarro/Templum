@@ -171,7 +171,8 @@ is no setting in `config.toml` that could drift from it, so removing the entry w
 switch off.
 
 - **Off for everyone who already uses Templum.** Nothing writes the entry on its own. The welcome
-  ([welcome.md](welcome.md#pages)) offers it on a first run, on by default and applied when the person finishes;
+  ([welcome.md](welcome.md#pages)) offers it on a first run, on by default (but not over an entry the system's tools
+  switched off, nor for `--dev`) and applied when the person has seen the option and the welcome closes;
   Settings ▸ General turns it on or off at any time.
 - **Read** when the panel or the welcome opens (off the UI thread, since Windows reads the registry with a
   program), and set by each change, which is also written off the UI thread: the switch shows the new state at once,

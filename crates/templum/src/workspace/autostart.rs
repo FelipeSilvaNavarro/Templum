@@ -6,6 +6,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
 
 use super::{Workspace, show_notification};
+use crate::autostart::Status;
 
 impl Workspace {
     /// Reads whether the system starts Templum at login. The registry is read by a program on
@@ -17,12 +18,12 @@ impl Workspace {
         // What failed before is old news.
         self.autostart.error = None;
         cx.spawn(async move |ws, cx| {
-            let on = cx
+            let status = cx
                 .background_executor()
-                .spawn(async move { entry.is_on() })
+                .spawn(async move { entry.status() })
                 .await;
             ws.update(cx, |ws, cx| {
-                ws.autostart.on = on;
+                ws.autostart.status = status;
                 cx.notify();
             })
             .ok();
@@ -42,19 +43,20 @@ impl Workspace {
             return;
         }
         self.autostart.changing = true;
-        self.autostart.on = on;
+        // Off is no entry at all, the way `set` leaves it.
+        self.autostart.status = if on { Status::On } else { Status::Absent };
         self.autostart.error = None;
         cx.notify();
         cx.spawn_in(window, async move |ws, cx| {
             let done = cx
                 .background_executor()
-                .spawn(async move { entry.set(on).map_err(|err| (err, entry.is_on())) })
+                .spawn(async move { entry.set(on).map_err(|err| (err, entry.status())) })
                 .await;
             ws.update_in(cx, |ws, window, cx| {
                 ws.autostart.changing = false;
                 if let Err((err, really)) = done {
                     eprintln!("templum: couldn't change starting at login: {err}");
-                    ws.autostart.on = really;
+                    ws.autostart.status = really;
                     let message = format!("Couldn't turn starting at login {}: {err}", state(on));
                     show_notification(window, cx, Notification::warning(message.clone()));
                     ws.autostart.error = Some(message);

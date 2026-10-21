@@ -14,6 +14,7 @@ use gpui_kit::{
     px,
 };
 
+use crate::autostart;
 use crate::grid::hsla;
 use crate::keys::Command;
 use crate::motion;
@@ -77,25 +78,26 @@ pub(crate) struct Welcome {
     pub installed: Vec<String>,
     /// What the person chose for starting Templum at login; None: nothing yet.
     pub autostart: Option<bool>,
-    /// The last page's button closed it: the person saw every page.
-    pub finished: bool,
+    /// The last page, where the start-at-login option is, was shown: the person saw the option.
+    pub seen_autostart: bool,
     pub focus: FocusHandle,
 }
 
 impl Welcome {
-    /// What the start-at-login toggle shows, given what the system has now (`system`): on in
-    /// a first run, where it is the default, and the system's state when the welcome is opened
-    /// again from Settings.
-    pub fn autostart_shown(&self, system: bool) -> bool {
-        self.autostart.unwrap_or(self.first || system)
+    /// What the start-at-login toggle shows, given what the system has (`system`): the person's
+    /// choice; else the system's state, and in a first run, on when `system` has no entry and
+    /// Templum could keep one (`State::offered`).
+    pub fn autostart_shown(&self, system: &autostart::State) -> bool {
+        self.autostart
+            .unwrap_or(system.on() || self.first && system.offered())
     }
 
     /// What closing applies to the system's entry: the person's choice. In a first run, the
-    /// default (on) too, but only once the last page's button was pressed: skipping the welcome
-    /// never starts Templum at login for someone who didn't see the option.
-    fn autostart_to_apply(&self) -> Option<bool> {
+    /// default too (on, as shown), but only once the last page was shown: leaving before it, with
+    /// Skip or Esc, never starts Templum at login for someone who didn't see the option.
+    fn autostart_to_apply(&self, system: &autostart::State) -> Option<bool> {
         self.autostart
-            .or((self.first && self.finished).then_some(true))
+            .or((self.first && self.seen_autostart && system.offered()).then_some(true))
     }
 
     /// How much of it is in view at `now`: 0 hidden, 1 all.
@@ -131,7 +133,7 @@ impl Workspace {
             first,
             installed,
             autostart: None,
-            finished: false,
+            seen_autostart: false,
             focus,
         });
         self.load_autostart(cx);
@@ -147,7 +149,7 @@ impl Workspace {
         welcome.since = motion::turned(welcome.since, false, Instant::now());
         welcome.closing = true;
         let first = welcome.first;
-        let autostart = welcome.autostart_to_apply();
+        let autostart = welcome.autostart_to_apply(&self.autostart);
         self.apply_and_save(window, cx);
         if let Some(on) = autostart {
             self.set_autostart(on, window, cx);
@@ -164,6 +166,7 @@ impl Workspace {
         if let Some(welcome) = &mut self.welcome {
             welcome.back = (to as usize) < (welcome.page as usize);
             welcome.page = to;
+            welcome.seen_autostart |= to == Page::Ready;
             cx.notify();
         }
     }
@@ -172,12 +175,7 @@ impl Workspace {
     fn welcome_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.welcome.as_ref().and_then(|w| w.page.next()) {
             Some(next) => self.welcome_page(next, cx),
-            None => {
-                if let Some(welcome) = &mut self.welcome {
-                    welcome.finished = true;
-                }
-                self.close_welcome(window, cx)
-            }
+            None => self.close_welcome(window, cx),
         }
     }
 
