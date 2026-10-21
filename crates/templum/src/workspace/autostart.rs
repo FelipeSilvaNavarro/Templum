@@ -30,26 +30,40 @@ impl Workspace {
         .detach();
     }
 
-    /// Turns the system's entry on or off. A failure is on the toggle's row and in a
-    /// notification, and the toggle shows what the system really has.
+    /// Turns the system's entry on or off. The switch shows the new state at once and the system
+    /// is written off the UI thread (Windows runs programs for it); a click meanwhile waits. A
+    /// failure is on the toggle's row and in a notification, and the toggle shows what the system
+    /// really has.
     pub(crate) fn set_autostart(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = &self.autostart.entry else {
+        let Some(entry) = self.autostart.entry.clone() else {
             return;
         };
-        match entry.set(on) {
-            Ok(()) => {
-                self.autostart.on = on;
-                self.autostart.error = None;
-            }
-            Err(err) => {
-                eprintln!("templum: couldn't change starting at login: {err}");
-                self.autostart.on = entry.is_on();
-                let message = format!("Couldn't turn starting at login {}: {err}", state(on));
-                show_notification(window, cx, Notification::warning(message.clone()));
-                self.autostart.error = Some(message);
-            }
+        if self.autostart.changing {
+            return;
         }
+        self.autostart.changing = true;
+        self.autostart.on = on;
+        self.autostart.error = None;
         cx.notify();
+        cx.spawn_in(window, async move |ws, cx| {
+            let done = cx
+                .background_executor()
+                .spawn(async move { entry.set(on).map_err(|err| (err, entry.is_on())) })
+                .await;
+            ws.update_in(cx, |ws, window, cx| {
+                ws.autostart.changing = false;
+                if let Err((err, really)) = done {
+                    eprintln!("templum: couldn't change starting at login: {err}");
+                    ws.autostart.on = really;
+                    let message = format!("Couldn't turn starting at login {}: {err}", state(on));
+                    show_notification(window, cx, Notification::warning(message.clone()));
+                    ws.autostart.error = Some(message);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// At startup, an entry that is on but whose executable is gone gets this one's path

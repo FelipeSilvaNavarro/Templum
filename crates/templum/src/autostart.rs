@@ -86,6 +86,8 @@ pub(crate) struct State {
     /// Read when the panel or the welcome opens, and set by each change.
     pub on: bool,
     pub error: Option<String>,
+    /// A change is running off the UI thread; another click waits for its answer.
+    pub changing: bool,
 }
 
 impl Autostart {

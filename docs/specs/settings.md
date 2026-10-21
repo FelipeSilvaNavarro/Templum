@@ -174,7 +174,8 @@ switch off.
   ([welcome.md](welcome.md#pages)) offers it on a first run, on by default and applied when the person finishes;
   Settings ▸ General turns it on or off at any time.
 - **Read** when the panel or the welcome opens (off the UI thread, since Windows reads the registry with a
-  program), and set by each change. The entry is written for the executable running: the AppImage file, not where
+  program), and set by each change, which is also written off the UI thread: the switch shows the new state at once,
+  a second click waits for the first's answer, and a failure puts the switch back to what the system has. The entry is written for the executable running: the AppImage file, not where
   it is mounted (`templum_update::Install`).
 - **Where the entry is**, per system (`autostart.rs`):
 

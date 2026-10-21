@@ -65,17 +65,27 @@ fn the_start_at_login_switch_reads_the_system_and_changes_it(cx: &mut TestAppCon
     .unwrap();
     frame(handle, cx);
     assert!(on(&ws, cx), "read from the system");
-    // Switched off here: the entry is gone from the system.
+    // Switched off here: the switch follows at once, the system a moment later (off the UI
+    // thread), and a second click meanwhile waits.
     cx.update_window(handle, |_, window, cx| {
         window.click("field-general.autostart", cx)
     })
     .unwrap();
     assert!(!on(&ws, cx));
-    assert!(!entry.is_on(), "removed from the system");
+    assert!(entry.is_on(), "not written on the UI thread");
     cx.update_window(handle, |_, window, cx| {
         window.click("field-general.autostart", cx)
     })
     .unwrap();
+    assert!(!on(&ws, cx), "the second click waits for the first");
+    cx.run_until_parked();
+    assert!(!entry.is_on(), "removed from the system");
+    assert!(!on(&ws, cx));
+    cx.update_window(handle, |_, window, cx| {
+        window.click("field-general.autostart", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
     assert!(on(&ws, cx));
     assert!(entry.is_on(), "written to the system");
     // Removed by hand while the panel is shut: the panel opening again shows it off.
@@ -154,8 +164,10 @@ fn a_start_at_login_that_cant_be_written_says_why_and_stays_off(cx: &mut TestApp
         window.click("field-general.autostart", cx)
     })
     .unwrap();
+    cx.run_until_parked();
     ws.read_with(cx, |ws, _| {
         assert!(!ws.autostart.on, "the switch shows what the system has");
+        assert!(!ws.autostart.changing);
         let error = ws.autostart.error.as_deref().unwrap();
         assert!(
             error.starts_with("Couldn't turn starting at login on: "),

@@ -379,6 +379,7 @@ fn a_first_run_offers_start_at_login_on_and_applies_it_when_finished(cx: &mut Te
     cx.update_window(handle, |_, window, cx| window.click("welcome-next", cx))
         .unwrap();
     assert!(!up(&ws, cx));
+    cx.run_until_parked();
     assert!(entry.is_on(), "Start using Templum applies the default");
     assert!(ws.read_with(cx, |ws, _| ws.autostart.on));
 }
@@ -409,6 +410,7 @@ fn switching_it_off_in_the_welcome_keeps_it_off(cx: &mut TestAppContext) {
     assert!(!entry.is_on(), "applied when it closes");
     cx.update_window(handle, |_, window, cx| window.click("welcome-next", cx))
         .unwrap();
+    cx.run_until_parked();
     assert!(!entry.is_on());
 }
 
@@ -421,6 +423,7 @@ fn a_choice_made_in_the_welcome_applies_even_when_it_is_skipped(cx: &mut TestApp
     cx.update_window(handle, |_, window, cx| window.press("escape", cx))
         .unwrap();
     assert!(!up(&ws, cx));
+    cx.run_until_parked();
     assert!(entry.is_on());
 }
 
@@ -450,6 +453,7 @@ fn the_welcome_opened_again_shows_the_system_and_changes_only_what_was_chosen(
     go(handle, &ws, Page::Ready, cx);
     cx.update_window(handle, |_, window, cx| window.click("welcome-next", cx))
         .unwrap();
+    cx.run_until_parked();
     assert!(entry.is_on());
     // Opened again and switched off: that is applied.
     cx.update_window(handle, |_, window, cx| {
@@ -461,5 +465,6 @@ fn the_welcome_opened_again_shows_the_system_and_changes_only_what_was_chosen(
     click_autostart(handle, cx);
     cx.update_window(handle, |_, window, cx| window.click("welcome-next", cx))
         .unwrap();
+    cx.run_until_parked();
     assert!(!entry.is_on());
 }
