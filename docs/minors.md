@@ -613,6 +613,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   line break ends the `Exec=` line early and a lossy `�` names a file that doesn't exist, so the entry starts
   nothing (or something else) while the switch shows on. Rare: it takes such a name in the AppImage's path. Fix:
   refuse it in `set(true)` ("The path of Templum has a character a startup entry can't hold").
+- [ ] **macOS: a Templum on another volume is taken for the disk image.** `Install::detect`
+  (`crates/templum-update/src/install.rs`) takes any app under `/Volumes/` for a mounted image, so a `Templum.app` on
+  an external disk or a second partition is `Manual(NotInstalled)`: `set(true)` in `crates/templum/src/autostart.rs`
+  answers "Move Templum to Applications first", and the updater won't update it either. Fix: refuse only a mounted
+  disk image or a read-only volume (`hdiutil info`, or `statfs` with `MNT_RDONLY`), not any `/Volumes/` path.
 - [ ] **A Linux entry in Flatpak or Snap would be written inside the sandbox.** Neither is a way Templum is
   packaged today, but `XDG_CONFIG_HOME` there is the sandbox's, not the desktop's. Fix: ask the Background portal
   (`org.freedesktop.portal.Background.RequestBackground`) when `FLATPAK_ID` is set.
