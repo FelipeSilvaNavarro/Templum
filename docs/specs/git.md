@@ -88,8 +88,7 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
     the local branches, then the remote ones, each row drawn as in the Branches tab (the name, bold with a check
     for the current one, and ↑↓ against its upstream; under it the last commit's subject and age; the check is the
     accent's in the tab and the row's text color in the dialog, whose selected row is filled with the accent, its
-    text the theme's background or text color, whichever reads better on it, white or black when neither reaches
-    4.5:1; the first 50 matches, then one row "N more: keep typing to narrow them"; the branch the text names, a
+    text the accent text color of [the design system](design-system.md) (`accent_foreground`); the first 50 matches, then one row "N more: keep typing to narrow them"; the branch the text names, a
     remote's without its `origin/`, is the first of its group, and the Remote group goes first when only its first
     row is that);
     Enter or a click switches (with [the switch flow](#switching-branches)). A name no branch has gets a row
@@ -226,7 +225,7 @@ parent), **a stash**, and **a comparison** of two branches.
     revert (which prepare their own message), a summary is required as before; a summary that is typed always wins.
     The sentence is made from what is staged when the commit runs (after Commit all changes has staged), not from
     the status the form last read: if that is no longer exactly one file (an agent wrote another in between), nothing
-    is committed, a notification says the files changed, and the summary gets the keyboard.
+    is committed, a notification says the files changed, and the summary gets the keyboard if the person is still in that workspace with the Git popup open.
   - **Commit,** the whole column's width, filled with the theme's accent once committing is possible, quiet before.
     Its ▾: **Commit**, **Commit & Push** (a Publish when the branch has no upstream), and **Amend the last commit**
     (fills the fields with the last commit's message; while on, a strip says "Amending the last commit" with ✕).

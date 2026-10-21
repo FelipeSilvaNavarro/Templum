@@ -66,6 +66,16 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
 
 From batches 3 and 4 (line numbers of `development` at 5046612).
 
+- [ ] **The branch dialog's rows have lost their dim second line.** `branch_lines`
+  (`crates/templum/src/git_block/branches.rs:359`) draws the commit's subject, its age and ↑↓ at the text's full color
+  on every row of the dialog (`None => el`), not only on the selected one, so a person sees two lines of the same
+  weight of color; only size and weight tell them apart. Fix: in the `CommandItem` closure, read the selected index of
+  the `CommandState` and dim with `title_dim` every row but the selected one.
+- [ ] **A branch can still be renamed, or a worktree made, with a remote branch's full name.** `rename_branch`
+  (`crates/templum-git/src/repo.rs:1430`) and `add_worktree` (`:519`, whose name may hold `/`) make
+  `refs/heads/origin/main` without the refusal `new_branch` has, so `origin/main` turns ambiguous and rebase, merge
+  and Compare quietly use the stale local one. Fix: move `new_branch`'s `show-ref --verify refs/remotes/<name>`
+  check into a helper the three call.
 - [ ] **The branch dialog's Remote group can't be folded, as the Branches tab's can.**
   `crates/templum/src/git_block/switcher.rs`, `open`: a palette heading (`CommandGroup::label`) is a plain row with
   no click, so Remote is always open; with hundreds of remote branches a person sees 50 rows and "N more". Fix: a
@@ -543,7 +553,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   clicking "gallery-theme-Paper", in one run of `cargo test -p templum` (card 69's, under load); alone, three times, and in
   the next full run, it passed. Fix: find what the click raced with (a frame not rendered before the read) and wait for
   it, as the neighbouring tests do.
-- [ ] **In Apple Dark, the X of a dialog or a notification reads 2.6:1 under the pointer.** gpui-kit fills a ghost
+- [ ] **The X of a dialog reads less than `Theme::on_accent` counts on.** It picks the hover color over the theme's
+  background (`crates/templum/src/theme.rs:155`), which is where a notification's X sits, but gpui-kit paints a
+  dialog with `tokens.background`, which Templum sets to `ui.canvas`, 30% darker in dark themes: under the pointer
+  the dialog's X reads 3.54:1 in Mocha (3.83 counted), 3.51 in One Dark (3.89), 2.42 in Apple Dark (2.61). A
+  person's own theme may fall under 3:1. Fix: pick by the worse of the two hovers (over `palette.background` and over
+  `ui.canvas`), and name both backgrounds in the doc comment and in `docs/specs/design-system.md`.
+- [ ] **In Apple Dark, the X of a dialog or a notification reads 2.4 to 2.6:1 under the pointer.** gpui-kit fills a ghost
   button's hover, in dark mode, with the accent at 50% over the background and draws its icon in `accent_foreground`
   (`Theme::on_accent`, `crates/templum/src/theme.rs`), the one color a selected row uses too. Apple Dark's blue is
   too bright for the light text its hover needs (white is 8:1 on the hover, but 3.65:1 on the full accent) and too
