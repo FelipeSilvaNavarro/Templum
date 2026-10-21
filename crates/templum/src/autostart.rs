@@ -99,6 +99,9 @@ pub(crate) struct State {
     pub error: Option<String>,
     /// A change is running off the UI thread; another click waits for its answer.
     pub changing: bool,
+    /// How many changes have started. A reading applies only if none started after it was
+    /// fired: it may have read the system before that change wrote it.
+    pub changes: u32,
 }
 
 impl State {

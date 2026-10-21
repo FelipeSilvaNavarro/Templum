@@ -99,6 +99,27 @@ fn the_start_at_login_switch_reads_the_system_and_changes_it(cx: &mut TestAppCon
     assert!(!on(&ws, cx));
 }
 
+#[gpui_kit::test]
+fn a_reading_fired_before_a_change_never_lands_over_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let home = tempfile::tempdir().unwrap();
+    let entry = with_autostart(&ws, cx, home.path());
+    // The panel's reading is on its way when the switch is clicked.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.load_autostart(cx);
+            ws.set_autostart(true, window, cx);
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(entry.is_on());
+    assert!(
+        ws.read_with(cx, |ws, _| ws.autostart.on()),
+        "the older reading is dropped"
+    );
+}
+
 /// Opens a workspace with `entry` and a data folder (None: a second Templum open, which keeps
 /// nothing) and lets its startup finish.
 fn start_with(

@@ -613,11 +613,6 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   line break ends the `Exec=` line early and a lossy `�` names a file that doesn't exist, so the entry starts
   nothing (or something else) while the switch shows on. Rare: it takes such a name in the AppImage's path. Fix:
   refuse it in `set(true)` ("The path of Templum has a character a startup entry can't hold").
-- [ ] **A settings panel opened right before a change can show the old reading.** `load_autostart`
-  (`crates/templum/src/workspace/autostart.rs`) reads the system off the UI thread and writes `status` when it ends,
-  with no mind to a change made meanwhile; one that ends after `set_autostart` finished puts the older state on the
-  switch until the panel is opened again. Needs a click within the milliseconds a read takes (seconds on Windows). Fix:
-  a counter bumped by each read and change; a reading applies only if it is the latest.
 - [ ] **A Linux entry in Flatpak or Snap would be written inside the sandbox.** Neither is a way Templum is
   packaged today, but `XDG_CONFIG_HOME` there is the sandbox's, not the desktop's. Fix: ask the Background portal
   (`org.freedesktop.portal.Background.RequestBackground`) when `FLATPAK_ID` is set.

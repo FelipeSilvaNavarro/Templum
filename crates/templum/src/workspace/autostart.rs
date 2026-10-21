@@ -10,21 +10,28 @@ use crate::autostart::Status;
 
 impl Workspace {
     /// Reads whether the system starts Templum at login. The registry is read by a program on
-    /// Windows, so it isn't read on the UI thread.
+    /// Windows, so it isn't read on the UI thread. A change running (or one that starts before
+    /// the reading ends) is the newer word: its own answer is the reading.
     pub(crate) fn load_autostart(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = self.autostart.entry.clone() else {
             return;
         };
+        if self.autostart.changing {
+            return;
+        }
         // What failed before is old news.
         self.autostart.error = None;
+        let changes = self.autostart.changes;
         cx.spawn(async move |ws, cx| {
             let status = cx
                 .background_executor()
                 .spawn(async move { entry.status() })
                 .await;
             ws.update(cx, |ws, cx| {
-                ws.autostart.status = status;
-                cx.notify();
+                if ws.autostart.changes == changes {
+                    ws.autostart.status = status;
+                    cx.notify();
+                }
             })
             .ok();
         })
@@ -43,6 +50,7 @@ impl Workspace {
             return;
         }
         self.autostart.changing = true;
+        self.autostart.changes += 1;
         // Off is no entry at all, the way `set` leaves it.
         self.autostart.status = if on { Status::On } else { Status::Absent };
         self.autostart.error = None;

@@ -553,3 +553,37 @@ fn the_welcome_opened_again_shows_the_system_and_changes_only_what_was_chosen(
     cx.run_until_parked();
     assert!(!shown(&ws, cx));
 }
+
+/// Opens the settings panel from the welcome (the shortcut) and lets the entry's change and the
+/// panel's reading reach the system and the workspace.
+fn open_settings(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.toggle_settings(window, cx))
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn settings_opened_from_the_last_page_shows_the_default_the_welcome_turned_on(
+    cx: &mut TestAppContext,
+) {
+    // Written as the welcome closes, and that is what the switch shows, not what was there before.
+    let (handle, ws, entry, _dirs) = ready(cx);
+    open_settings(handle, &ws, cx);
+    assert!(entry.is_on());
+    assert!(ws.read_with(cx, |ws, _| ws.autostart.on()));
+}
+
+#[gpui_kit::test]
+fn settings_opened_from_the_last_page_shows_an_entry_the_welcome_turned_off(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, entry, _dirs) = ready(cx);
+    entry.set(true).unwrap();
+    read_system(&ws, cx);
+    click_autostart(handle, cx);
+    open_settings(handle, &ws, cx);
+    assert!(!entry.is_on());
+    assert!(!ws.read_with(cx, |ws, _| ws.autostart.on()));
+}

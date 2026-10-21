@@ -891,7 +891,7 @@ impl Workspace {
         // The panel would open under the screen; it has everything the welcome has.
         self.close_screen(window, cx);
         self.close_welcome(window, cx);
-        // After the welcome: closing it may have changed the entry this reads.
+        // Closing the welcome may have started a change, which is the reading then.
         self.load_autostart(cx);
         let now = Instant::now();
         self.settings = Some(match &self.settings {

@@ -176,8 +176,10 @@ switch off.
   Settings ▸ General turns it on or off at any time.
 - **Read** when the panel or the welcome opens (off the UI thread, since Windows reads the registry with a
   program), and set by each change, which is also written off the UI thread: the switch shows the new state at once,
-  a second click waits for the first's answer, and a failure puts the switch back to what the system has. The entry is written for the executable running: the AppImage file, not where
-  it is mounted (`templum_update::Install`).
+  a second click waits for the first's answer, and a failure puts the switch back to what the system has. A reading
+  never lands over a change that started after it, nor while one runs: the change's own answer is the reading. The
+  entry is written for the executable running: the AppImage file, not where it is mounted
+  (`templum_update::Install`).
 - **Where the entry is**, per system (`autostart.rs`):
 
 | System | Entry | It starts |
@@ -298,6 +300,8 @@ Tests are written first, as always. Everything runs in CI on Linux, macOS and Wi
 - the program an entry names is read back whatever it holds (spaces, quotes, `$`, backslashes, `%`, `&`, `<`);
 - startup rewrites an entry that is on for an executable that is gone, and leaves alone one that names a file that
   exists, one that is off, switched off or edited by hand, and anything a second Templum finds;
+- a reading never lands over a change: Settings opened from the welcome's last page shows what the welcome applied
+  (on and off), and a reading fired just before a click doesn't undo it;
 - headless: the General tab finds an entry made outside, turns it on and off (the switch follows at once, the system
   is written off the UI thread and a second click waits), and says why it failed; the welcome's cases are in
   [welcome.md](welcome.md#testing).
