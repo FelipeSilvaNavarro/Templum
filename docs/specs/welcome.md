@@ -38,12 +38,18 @@ Steps at the top (Welcome · Look · Shell · Agents · Ready) show where one is
 | Look | Mode; the themes of the mode in effect as cards in their own colors (a click makes it that mode's theme); the font's family, size and preview |
 | Shell | The default shell and each one found, as a list; the start folder; shell integration |
 | Agents | The agents found on this computer (looked for once, when it opens), each with its menu switch and Edit; the agent that writes commit messages and its model; plan limits |
-| Ready | System notifications and checking for updates; the keys worth knowing, from the keymap in effect |
+| Ready | System notifications, checking for updates and **Start Templum when you log in**; the keys worth knowing, from the keymap in effect |
 
 - Every control is the panel's (`settings/sections.rs`, picked by key) or edits the same keys, through
   `Workspace::edit`: a change applies on the next frame and is saved 0.3 s later.
 - Closing applies what is pending and writes it at once, so the first terminal gets the shell just picked.
 - Text is in English, like the rest of the interface.
+- **Start at login** ([settings.md](settings.md#start-at-login)) is the one choice that waits for the welcome to
+  close, since it touches the system rather than `config.toml`:
+  - in a first run it shows on, and pressing **Start using Templum** applies that. **Skip** and Esc leave it off:
+    someone who skipped never saw the option, so Templum doesn't start with their computer;
+  - switching it, either way, is a choice that applies when the welcome closes by any means;
+  - opened again from Settings, it shows what the system has and changes nothing unless the person switches it.
 
 ## Keys and pointer
 
@@ -74,7 +80,7 @@ Steps at the top (Welcome · Look · Shell · Agents · Ready) show where one is
 | File | Change |
 |---|---|
 | `welcome.rs` (new) | `Welcome`, `Page`; opening, closing, pages and keys (`impl Workspace`); the frosted backdrop, the card, the steps, the first page and the keys |
-| `settings/welcome.rs` (new) | Each page's groups: the theme and shell cards, and the panel's rows picked by `Row::key` |
+| `settings/welcome.rs` (new) | Each page's groups: the theme and shell cards, and the panel's rows picked by `Row::key`; the Ready page also has the start-at-login row (`settings/general.rs`) |
 | `settings/mod.rs` | `card` (rows in one card) shared with the panel; the **Welcome** button |
 | `workspace/spaces.rs` | A first run opens the welcome; `open_first_terminal`; a damaged file is no first run for it; showing another workspace closes it; the workspace list isn't written while a first run's welcome is open |
 | `workspace/persist.rs`, `workspace/view.rs` | No canvas written while a first run's welcome is open; showing a block closes it |
@@ -94,6 +100,9 @@ Headless UI (`workspace/tests/welcome.rs`):
 - the Shell page shows only the start folder and integration rows, and its switch turns integration off;
 - the Agents page lists the agents found, or says none were;
 - Settings' **Welcome** opens it without a new terminal;
+- start at login shows on in a first run and is applied by **Start using Templum**, not by Skip or Esc; a switch
+  made in the welcome is applied by either; opened again, it shows the system's state and changes only what was
+  switched;
 - quitting from a first run's welcome writes nothing, and the next start welcomes again;
 - a new workspace over it closes it, and the first terminal is in the first workspace;
 - holding the quit shortcut over it is no second press; a double-click on Skip opens one terminal;
