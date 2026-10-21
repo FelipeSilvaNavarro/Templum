@@ -481,11 +481,13 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
 | `ask_user` | `questions` (each `question`, `header`, `options` with `label`, `description`, `preview`, `multiSelect`), or `question` and `options` (strings); `timeout` (none) | Questions in a balloon ([Requests](#requests-from-agents), [ask-user.md](ask-user.md)); the answers as JSON, or with `question` the answer as text | — | 3 |
 | `propose_plan` | `plan` (Markdown, at most 256 KB), `title`, `timeout` (none) | A plan in the caller's balloon, Approve or Reject with a comment ([agent-tools.md](agent-tools.md#propose_plan)); `Approved.`, or the error `Rejected.`, with the comment | — | card 35 |
-| `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, priority, assignee (`(you)` on the caller's), checklist progress and comment count; with `card`, that card whole: its description, checklist items and comments ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40 |
+| `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, priority, assignee (`(you)` on the caller's), checklist progress and comment count; with `card`, that card whole: its description, checklist items and comments, each with its number (and "edited" once its author changed it) ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40, card 77 |
 | `create_card` | `board`, `column`, `title`, `description`, `priority`, `for`, `checklist` | A new card at the column's end (the board's first column when left out); its id. Its description tells an agent a review's findings are a card each (card 35) | wired kanban | 4, card 40 |
 | `edit_card` | `card`, `priority`, `for`, `add_items`, `check`, `uncheck` | Sets the card's priority and who it is for, adds checklist items, checks and unchecks them: one Ctrl+Z step ([Cards for an agent](#cards-for-an-agent)) | wired kanban | card 40 |
 | `move_card` | `card`, `column` | Moves a card to the end of a column; into the board's last column or one titled Review (either case), unless the card's newest comment is the caller's, its answer asks for one: "Say on it what you did and what the next one needs to know: comment_card." | wired kanban | 4 |
-| `comment_card` | `card`, `text` | Adds a comment signed with the caller's id: what it did on the card, and what the next one needs to know, when it finishes it | wired kanban | 4 |
+| `comment_card` | `card`, `text` | Adds a comment signed with the caller's id: what it did on the card, and what the next one needs to know, when it finishes it; its answer says the comment's number: `Commented on card 40 (comment 51).` | wired kanban | 4, card 77 |
+| `edit_comment` | `card`, `comment`, `text` | The text of a comment the caller wrote becomes `text`; the comment keeps its author, its place and its time, and reads "edited". Refused for the person's comment and another agent's ([Cards for an agent](#cards-for-an-agent)); one Ctrl+Z step | wired kanban | card 77 |
+| `delete_comment` | `card`, `comment` | Deletes a comment the caller wrote; refused as `edit_comment` is; one Ctrl+Z step | wired kanban | card 77 |
 | `claim_card` | `card` | Makes the caller the card's assignee; refused when another block holds it, or (card 40) when the card is for another agent ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40 |
 | `read_note` | `block` | The text of the note the note block shows | wired note | 4 |
 | `append_note` | `block`, `text` | Adds the text at the note's end, after a blank line; the note shows it at once and Ctrl+Z takes it back | wired note | 4 |
@@ -569,11 +571,20 @@ runs "any X" when its agent is X or runs X's program (the first word of their co
 
 - **`move_card` and `comment_card`** stay open to every wired agent. `move_card`'s answer ends with
   ` It is for any codex, not you.` (or `b7k2m "Codex · api"`) when the card's assignee isn't the caller's.
+- **`edit_comment` and `delete_comment`** (card 77) change only the caller's own comments, those whose author
+  (`by`) is the caller's block id; the rest, the person's and other agents', are refused with
+  `Comment 52 is by the person, not you: you can only change your own.` (`b7k2m "Codex · api"` for another agent).
+  A comment is named by its **number**, a never-reused id like a checklist item's: `list_cards` with `card` shows it
+  (`comment 51 by b7k2m "Claude Code", 3 min ago, edited:`) and `comment_card` says it. A number that isn't on the
+  card is refused (`Card 40 has no comment 99: list_cards with card shows its comments.`); an `edit_comment` whose
+  text is blank is refused too (`delete_comment` removes one). They are not in the Templum Agent's tools, as
+  `edit_item` and `delete_item` aren't.
 - **The instructions** ask an agent to claim its card when it starts and to check its checklist's items as it
   finishes them ([The MCP server](#the-mcp-server)).
 - **The command line:** `templum kanban add` takes `--priority`, `--for` and `--checklist`; `templum kanban edit <card>`
   takes `--priority`, `--for`, `--add <text>`, and `--check <item>` and `--uncheck <item>`, each as many times as
-  wanted.
+  wanted; `templum kanban edit-comment <card> <comment> <text>` and `templum kanban delete-comment <card> <comment>`
+  (card 77).
 
 ### Agent tools (card 35)
 
@@ -1176,7 +1187,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum wait <block> [--for <event>] [--match <pattern>] [--lines <n>] [--timeout <s>]` | `wait_for_idle`, `wait_for` | 3, 5, card 35 |
 | `templum ask <question> [--option <o>]…` | `ask_user` | 3 |
 | `templum plan <file> [--title <t>]` (`-` reads stdin; a rejection exits 1) | `propose_plan` | card 35 |
-| `templum kanban list [<board>] [--card <card>] \| add <title> [--column <c>] [--description <d>] [--board <b>] [--priority <p>] [--for <who>] [--checklist <text>] \| edit <card> [--priority <p>] [--for <who>] [--add <text>] [--check <item>]… [--uncheck <item>]… \| move <card> <column> \| comment <card> <text> \| claim <card>` | the kanban tools (`edit` and the new options: card 40) | 4, card 40 |
+| `templum kanban list [<board>] [--card <card>] \| add <title> [--column <c>] [--description <d>] [--board <b>] [--priority <p>] [--for <who>] [--checklist <text>] \| edit <card> [--priority <p>] [--for <who>] [--add <text>] [--check <item>]… [--uncheck <item>]… \| move <card> <column> \| comment <card> <text> \| edit-comment <card> <comment> <text> \| delete-comment <card> <comment> \| claim <card>` | the kanban tools (`edit` and the new options: card 40; `edit-comment` and `delete-comment`: card 77) | 4, card 40, card 77 |
 | `templum note read\|append <block> [text]` | `read_note`, `append_note` | 4 |
 | `templum note replace <block> <text> [--old <text>]` | `replace_note` | card 35 |
 | `templum checklist read <block> \| add <block> <text> \| check\|uncheck <block> <item>` | `read_checklist`, `add_items`, `check_item` | — |

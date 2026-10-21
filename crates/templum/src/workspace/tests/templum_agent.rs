@@ -261,7 +261,7 @@ fn cards_go_on_any_board_and_comments_are_signed_templum_agent(cx: &mut TestAppC
     let (failed, whole) = control(handle, &ws, cx, "list_cards", json!({"card": card}));
     assert!(!failed, "{whole}");
     assert!(
-        whole.contains("comment by Templum Agent") && whole.contains("priority high"),
+        whole.contains("by Templum Agent") && whole.contains("priority high"),
         "{whole}"
     );
     let (failed, text) = control(handle, &ws, cx, "list_cards", json!({}));

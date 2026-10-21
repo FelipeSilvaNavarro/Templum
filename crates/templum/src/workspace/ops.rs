@@ -14,7 +14,7 @@ use super::bus::{Outcome, clean_title, flat};
 use super::content::Caller;
 use super::history::Then;
 use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Kanban, Space, Workspace, remember};
-use crate::board::{Assignee, Card, Comment, Priority};
+use crate::board::{Assignee, Card, Priority};
 use crate::checklist::{self, Checklist};
 use crate::note::{self, Note};
 use crate::{checklists, notes};
@@ -674,9 +674,11 @@ impl Workspace {
         let now = notes::now();
         for comment in &c.comments {
             text.push_str(&format!(
-                "\ncomment by {}, {}:\n{}",
+                "\ncomment {} by {}, {}{}:\n{}",
+                comment.id,
                 self.who(&comment.by, cx),
                 notes::ago(comment.at, now),
+                if comment.edited { ", edited" } else { "" },
                 indent(&comment.text)
             ));
         }
@@ -862,14 +864,13 @@ impl Workspace {
         if text.trim().is_empty() {
             return Reply::err("A comment needs text.");
         }
-        let comment = Comment {
-            by: by.to_string(),
-            text: text.trim_end().to_string(),
-            at: notes::now(),
-        };
-        self.edit_boards(|b| b.edit_card(board, card, |c| c.comments.push(comment)));
+        let said =
+            self.edit_boards(|b| b.add_comment(board, card, by, text.trim_end(), notes::now()));
         cx.notify();
-        Reply::ok(format!("Commented on card {card}."))
+        match said {
+            Some(id) => Reply::ok(format!("Commented on card {card} (comment {id}).")),
+            None => Reply::err(format!("Card {card} is gone.")),
+        }
     }
 
     /// Adds `text` at the end of the note a note block shows, after a blank line, as one step of

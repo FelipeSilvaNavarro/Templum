@@ -506,6 +506,14 @@ impl Workspace {
             Call::EditCard(edit) => self.edit_card(terminal, edit, cx),
             Call::MoveCard { card, column } => self.move_card(terminal, card, &column, cx),
             Call::CommentCard { card, text } => self.comment_card(terminal, card, &text, cx),
+            Call::EditComment {
+                card,
+                comment,
+                text,
+            } => self.edit_comment(terminal, card, comment, &text, cx),
+            Call::DeleteComment { card, comment } => {
+                self.delete_comment(terminal, card, comment, cx)
+            }
             Call::ClaimCard { card } => self.claim_card(terminal, card, cx),
             Call::ReadNote { block } => self.read_note(terminal, &block, cx),
             Call::AppendNote { block, text } => {

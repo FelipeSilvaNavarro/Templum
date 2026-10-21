@@ -52,6 +52,7 @@ const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--col
                       [--description <text>] [--board <board>] [--priority <priority>] [--for <who>] \
                       [--checklist <text>] | edit <card> [--priority <priority>] [--for <who>] [--add <text>] \
                       [--check <item>]… [--uncheck <item>]… | move <card> <column> | comment <card> <text> \
+                      | edit-comment <card> <comment> <text> | delete-comment <card> <comment> \
                       | claim <card> [--json]";
 const NOTE: &str = "note read <block> | note append <block> <text> \
                     | note replace <block> <text> [--old <text>] [--json]";
@@ -388,6 +389,14 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("kanban", ["comment", card, text @ ..]) if !text.is_empty() => (
             "comment_card",
             json!({ "card": card, "text": text.join(" ") }),
+        ),
+        ("kanban", ["edit-comment", card, comment, text @ ..]) if !text.is_empty() => (
+            "edit_comment",
+            json!({ "card": card, "comment": comment, "text": text.join(" ") }),
+        ),
+        ("kanban", ["delete-comment", card, comment]) => (
+            "delete_comment",
+            json!({ "card": card, "comment": comment }),
         ),
         ("kanban", ["claim", card]) => ("claim_card", json!({ "card": card })),
         ("note", ["read", block]) => ("read_note", json!({ "block": block })),
@@ -1637,6 +1646,14 @@ mod tests {
             (
                 &["kanban", "comment", "12", "On", "it."][..],
                 json!({ "name": "comment_card", "arguments": { "card": "12", "text": "On it." } }),
+            ),
+            (
+                &["kanban", "edit-comment", "12", "41", "Fixed", "it."][..],
+                json!({ "name": "edit_comment", "arguments": { "card": "12", "comment": "41", "text": "Fixed it." } }),
+            ),
+            (
+                &["kanban", "delete-comment", "12", "41"][..],
+                json!({ "name": "delete_comment", "arguments": { "card": "12", "comment": "41" } }),
             ),
             (
                 &["kanban", "claim", "12"][..],

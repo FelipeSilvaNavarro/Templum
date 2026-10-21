@@ -499,12 +499,8 @@ fn a_card_shows_its_assignee_and_how_many_comments(cx: &mut TestAppContext) {
         ws.edit_boards(|b| {
             b.edit_card(board, card, |c| {
                 c.assignee = Some(crate::board::Assignee::Block(uid.clone()));
-                c.comments.push(crate::board::Comment {
-                    by: "you".into(),
-                    text: "hi".into(),
-                    at: 0,
-                });
-            })
+            });
+            b.add_comment(board, card, "you", "hi", 0)
         })
     });
     assert!(shown(cx, "assignee") && shown(cx, "comments"));
@@ -682,15 +678,10 @@ fn a_long_open_card_keeps_its_footer_on_screen(cx: &mut TestAppContext) {
     let (_, board, card) = board_with_a_card(handle, &ws, cx);
     ws.update(cx, |ws, _| {
         ws.edit_boards(|b| {
-            b.edit_card(board, card, |c| {
-                for i in 0..30 {
-                    c.comments.push(crate::board::Comment {
-                        by: "you".into(),
-                        text: format!("Comment {i}\nwith a second line"),
-                        at: 0,
-                    });
-                }
-            })
+            for i in 0..30 {
+                let text = format!("Comment {i}\nwith a second line");
+                b.add_comment(board, card, "you", &text, 0);
+            }
         })
     });
     cx.update_window(handle, |_, window, cx| {

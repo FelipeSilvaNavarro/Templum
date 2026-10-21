@@ -95,6 +95,17 @@ pub enum Call {
         card: u64,
         text: String,
     },
+    /// The caller's own comment on a card gets a new text.
+    EditComment {
+        card: u64,
+        comment: u64,
+        text: String,
+    },
+    /// The caller's own comment on a card goes.
+    DeleteComment {
+        card: u64,
+        comment: u64,
+    },
     ClaimCard {
         card: u64,
     },
@@ -501,6 +512,30 @@ pub fn list() -> Value {
             "required": ["block", "item"],
         },
     });
+    let comment = json!({
+        "type": "integer",
+        "description": "A comment's number, as list_cards with card shows it or comment_card says it.",
+    });
+    let edit_comment = json!({
+        "name": "edit_comment",
+        "description": "Changes the text of a comment you wrote on a card (to fix it); the card shows it \
+                        as edited. Not the person's or another agent's. One step of the person's Ctrl+Z.",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "card": card, "comment": comment, "text": { "type": "string" } },
+            "required": ["card", "comment", "text"],
+        },
+    });
+    let delete_comment = json!({
+        "name": "delete_comment",
+        "description": "Deletes a comment you wrote on a card. Not the person's or another agent's. One \
+                        step of the person's Ctrl+Z.",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "card": card, "comment": comment },
+            "required": ["card", "comment"],
+        },
+    });
     let schedule = json!({
         "name": "schedule",
         "description": "Delivers a text later: to an agent connected to you as a task (its end comes back to \
@@ -851,6 +886,8 @@ pub fn list() -> Value {
                 "required": ["card", "text"],
             },
         },
+        edit_comment,
+        delete_comment,
         {
             "name": "claim_card",
             "description": "Makes you the card's assignee. Refused when another block holds it, or when it is \
@@ -1029,6 +1066,10 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
     };
     let card =
         || id("card", "list_cards")?.ok_or_else(|| format!("{name} needs \"card\", a card's id"));
+    let comment = || {
+        id("comment", "list_cards with card")?
+            .ok_or_else(|| format!("{name} needs \"comment\", a comment's number"))
+    };
     let priority = || match optional("priority")? {
         Some(p) => {
             let p = p.trim().to_lowercase();
@@ -1257,6 +1298,15 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         "comment_card" => Call::CommentCard {
             card: card()?,
             text: text("text")?,
+        },
+        "edit_comment" => Call::EditComment {
+            card: card()?,
+            comment: comment()?,
+            text: text("text")?,
+        },
+        "delete_comment" => Call::DeleteComment {
+            card: card()?,
+            comment: comment()?,
         },
         "claim_card" => Call::ClaimCard { card: card()? },
         "read_note" => Call::ReadNote {
@@ -1516,6 +1566,11 @@ mod tests {
             ),
             ("move_card", json!({ "card": 12, "column": "Doing" })),
             ("comment_card", json!({ "card": 12, "text": "On it." })),
+            (
+                "edit_comment",
+                json!({ "card": 12, "comment": 41, "text": "Fixed the parser." }),
+            ),
+            ("delete_comment", json!({ "card": 12, "comment": "41" })),
             ("claim_card", json!({ "card": "12" })),
             ("read_note", json!({ "block": "4qm2a" })),
             (
@@ -1914,6 +1969,43 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_comment_is_edited_and_deleted_by_its_number() {
+        assert_eq!(
+            parse(
+                "edit_comment",
+                &json!({ "card": "12", "comment": 41, "text": "Fixed." })
+            ),
+            Ok(Call::EditComment {
+                card: 12,
+                comment: 41,
+                text: "Fixed.".into()
+            })
+        );
+        assert_eq!(
+            parse("delete_comment", &json!({ "card": 12, "comment": " 41 " })),
+            Ok(Call::DeleteComment {
+                card: 12,
+                comment: 41
+            })
+        );
+        for (tool, bad) in [
+            ("edit_comment", json!({ "card": 12, "text": "x" })),
+            ("edit_comment", json!({ "card": 12, "comment": 41 })),
+            ("edit_comment", json!({ "comment": 41, "text": "x" })),
+            (
+                "edit_comment",
+                json!({ "card": 12, "comment": "last", "text": "x" }),
+            ),
+            ("delete_comment", json!({ "card": 12 })),
+            ("delete_comment", json!({ "card": 12, "comment": -1 })),
+        ] {
+            assert!(parse(tool, &bad).is_err(), "{tool} {bad}");
+        }
+        let err = parse("delete_comment", &json!({ "card": 12 })).unwrap_err();
+        assert!(err.contains("\"comment\""), "{err}");
     }
 
     #[test]

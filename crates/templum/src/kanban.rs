@@ -21,7 +21,7 @@ use gpui_kit::{
 };
 use templum_canvas::{BlockId, EDGE_ZONE, Point, Rect, Size, edge_scroll};
 
-use crate::board::{Assignee, Board, Boards, Card, Column, Comment, Label, Priority};
+use crate::board::{Assignee, Board, Boards, Card, Column, Label, Priority};
 use crate::checklists;
 use crate::git_block::Check;
 use crate::git_block::widgets::{check_box, field, icon_button};
@@ -1226,14 +1226,13 @@ pub(crate) fn open_card(
             .map(|c| {
                 let mine = c.by == "you";
                 let tint = if mine { ui.accent } else { agent_tint };
-                comment_view(
-                    ui,
-                    tint,
-                    mine,
-                    &author(&c.by),
-                    notes::ago(c.at, now),
-                    c.text.clone(),
-                )
+                let mut when = notes::ago(c.at, now);
+                if c.edited {
+                    when.push_str(" · edited");
+                }
+                comment_view(ui, tint, mine, &author(&c.by), when, c.text.clone())
+                    .id(ElementId::Name(format!("comment-{}", c.id).into()))
+                    .test_support()
             })
             .collect();
         let can_send = !comment.read(cx).value().trim().is_empty();
@@ -1255,12 +1254,7 @@ pub(crate) fn open_card(
                         return;
                     }
                     ws.update(cx, |ws, cx| {
-                        let said = Comment {
-                            by: "you".into(),
-                            text,
-                            at: notes::now(),
-                        };
-                        ws.edit_boards(|b| b.edit_card(board, card, |c| c.comments.push(said)));
+                        ws.edit_boards(|b| b.add_comment(board, card, "you", &text, notes::now()));
                         cx.notify();
                     });
                     comment.update(cx, |c, cx| c.set_value("", window, cx));

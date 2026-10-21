@@ -38,7 +38,8 @@ same board stay in sync.
 - **Undo:** with a kanban block focused, Ctrl+Z (Cmd+Z on macOS) undoes the last change to the boards (a card or a
   column added, moved, renamed or deleted, a label, a board added or deleted), up to 50. Typing in a card's dialog
   is undone in its fields. Delete card in a card's menu asks first. A comment added, an assignee freed, and an agent's
-  change ([connections.md](connections.md#tools)) are steps of this Ctrl+Z too.
+  change ([connections.md](connections.md#tools); a comment edited or deleted by its author among them) are steps
+  of this Ctrl+Z too.
 
 ### No board
 
@@ -115,8 +116,8 @@ Every change applies as it is typed or clicked, so every block showing the board
   }
   ```
 
-  - Ids are unique across boards, columns and cards, and never reused (`next_id`). A file edited by hand keeps them
-    so: an id given twice gets a new one after its first, and `next_id` passes them all.
+  - Ids are unique across boards, columns, cards, checklist items and comments, and never reused (`next_id`). A file
+    edited by hand keeps them so: an id given twice gets a new one after its first, and `next_id` passes them all.
   - Missing `description`, `labels` and `comments` mean empty, a missing `assignee` none; a card with no assignee
     or comments writes neither key. An unknown label color is dropped.
   - `assignee` is the block id of the agent that claimed the card. A comment's `by` is an agent's block id, or
@@ -493,3 +494,47 @@ menu with two Claude Code blocks and a Codex one, one of them in another workspa
   dialog. The field's wrapper takes the dialog's `Confirm` action so Enter only adds; a test holds it.
 - **Scrolling and drop targets:** GPUI highlights drop targets from the last frame's hit boxes; scrolling moves them
   every frame, so the highlight may trail by a frame. Harmless.
+
+## Editing and deleting a comment (kanban card 77)
+
+The card, as the person wrote it: *"Permita MCP editar/excluir comentário nos cards do kanban."* An agent could add a
+comment (`comment_card`) but not fix a wrong one.
+
+- **Tools:** `edit_comment` (`card`, `comment`, `text`) and `delete_comment` (`card`, `comment`)
+  ([connections.md](connections.md#tools)); the command line has `templum kanban edit-comment` and `delete-comment`.
+- **A comment is named by its number**, an id from the boards' `next_id` (unique across boards, columns, cards,
+  checklist items and comments, never reused), like a checklist item's. A number rather than a place in the thread
+  because the thread changes: the person or another agent deleting the third comment would make "comment 4" mean
+  another one. `list_cards` with `card` shows it (`comment 51 by …`) and `comment_card` says the number of the one it
+  just added.
+- **Saved** as `"comments": [{ "id": 51, "by": "b7k2m", "text": "On it.", "at": 1760000000, "edited": true }]`. A
+  comment with no `id` (every file from before) gets a new one when the file loads, in the file's order; `edited`
+  is missing for a comment its author never changed, and nothing else in the file changes, so an older Templum reads it
+  and a file from before loads unchanged.
+- **Whose to change:** an agent changes only a comment whose `by` is its own block id. The person's (`"you"`) and
+  other agents' are refused, saying whose they are. The person edits nothing here: the card's dialog has no
+  comment editing in this change, and its Ctrl+Z is the way back.
+- **A step of Ctrl+Z each:** the kanban's, like a comment added.
+- **The open card** shows the change at once: it reads the card each frame. An edited comment keeps its author,
+  its place in the thread and its time, and its age reads "3 min ago · edited" so the person can tell that what they
+  read is not what was first said.
+
+### Calls made for card 77
+
+1. **Two tools, not one:** `edit_comment` and `delete_comment` follow `edit_item` and `delete_item`; one tool with an
+   optional `text` would delete a comment on an empty text.
+2. **An id, not a number in the thread:** see above; the saved file gains one key per comment.
+3. **Only the author:** a wrong comment of the person's or of another agent's is for the person to fix; the answer
+   says whose it is.
+4. **"edited" is shown,** because it is one word in the age and an agent rewriting what was said should not pass
+   unseen.
+5. **Not in the Templum Agent's tools,** which have no `edit_item` and `delete_item` either.
+
+### Testing
+
+**Unit (`board`):** comments get ids; editing changes the text in place, marks it edited, and leaves author and time;
+the same text is no edit; deleting; a file from before gives its comments ids that clash with nothing and writes no
+`edited`. **Unit (`templum-mcp`):** the two tools parse `comment` as a number or a string and name what is missing; the
+command line's verbs build them. **Headless UI:** an agent edits and deletes its own comment, is refused the person's
+and another agent's (nothing changes, no Ctrl+Z step), the open card shows each change at once, and Ctrl+Z undoes the
+delete, then the edit.
