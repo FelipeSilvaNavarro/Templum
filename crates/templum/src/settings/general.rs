@@ -2,6 +2,7 @@
 //! the system's own entry, so it follows a change made with the system's tools; the welcome has
 //! the same row, which applies its choice when it closes (docs/specs/settings.md, Start at login).
 
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::{Context, Entity, Window};
 
@@ -49,6 +50,8 @@ pub(super) fn autostart_row(
     .control(
         Switch::new("autostart-switch")
             .checked(on)
+            // A change is being written: its answer comes before another.
+            .disabled(ws.autostart.changing)
             .on_click(move |on: &bool, window, cx| {
                 let on = *on;
                 e.update(cx, |ws, cx| choose(ws, on, window, cx))

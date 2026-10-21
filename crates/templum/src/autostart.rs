@@ -97,7 +97,7 @@ pub(crate) struct State {
     /// Read when the panel or the welcome opens, and set by each change.
     pub status: Status,
     pub error: Option<String>,
-    /// A change is running off the UI thread; another click waits for its answer.
+    /// A change is running off the UI thread; the switch is disabled until its answer.
     pub changing: bool,
     /// How many changes have started. A reading applies only if none started after it was
     /// fired: it may have read the system before that change wrote it.

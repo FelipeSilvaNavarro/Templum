@@ -66,22 +66,33 @@ fn the_start_at_login_switch_reads_the_system_and_changes_it(cx: &mut TestAppCon
     .unwrap();
     frame(handle, cx);
     assert!(on(&ws, cx), "read from the system");
+    // A disabled switch can't take focus, which is what its snapshot shows of it.
+    let disabled = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("autostart-switch").focused().is_none()
+        })
+        .unwrap()
+    };
+    assert!(!disabled(cx));
     // Switched off here: the switch follows at once, the system a moment later (off the UI
-    // thread), and a second click meanwhile waits.
+    // thread), and the switch is disabled until then.
     cx.update_window(handle, |_, window, cx| {
         window.click("field-general.autostart", cx)
     })
     .unwrap();
     assert!(!on(&ws, cx));
     assert!(entry.is_on(), "not written on the UI thread");
+    assert!(disabled(cx), "no second click while it is written");
     cx.update_window(handle, |_, window, cx| {
         window.click("field-general.autostart", cx)
     })
     .unwrap();
-    assert!(!on(&ws, cx), "the second click waits for the first");
+    assert!(!on(&ws, cx), "a click meanwhile does nothing");
     cx.run_until_parked();
     assert!(!entry.is_on(), "removed from the system");
     assert!(!on(&ws, cx));
+    assert!(!disabled(cx), "and the switch is back");
     cx.update_window(handle, |_, window, cx| {
         window.click("field-general.autostart", cx)
     })

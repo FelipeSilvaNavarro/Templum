@@ -175,8 +175,8 @@ switch off.
   switched off, nor for `--dev`) and applied when the person has seen the option and the welcome closes;
   Settings ▸ General turns it on or off at any time.
 - **Read** when the panel or the welcome opens (off the UI thread, since Windows reads the registry with a
-  program), and set by each change, which is also written off the UI thread: the switch shows the new state at once,
-  a second click waits for the first's answer, and a failure puts the switch back to what the system has. A reading
+  program), and set by each change, which is also written off the UI thread: the switch shows the new state at once
+  and is disabled until the first's answer, and a failure puts the switch back to what the system has. A reading
   never lands over a change that started after it, nor while one runs: the change's own answer is the reading. The
   entry is written for the executable running: the AppImage file, not where it is mounted
   (`templum_update::Install`).
@@ -303,7 +303,7 @@ Tests are written first, as always. Everything runs in CI on Linux, macOS and Wi
 - a reading never lands over a change: Settings opened from the welcome's last page shows what the welcome applied
   (on and off), and a reading fired just before a click doesn't undo it;
 - headless: the General tab finds an entry made outside, turns it on and off (the switch follows at once, the system
-  is written off the UI thread and a second click waits), and says why it failed; the welcome's cases are in
+  is written off the UI thread and the switch is disabled meanwhile), and says why it failed; the welcome's cases are in
   [welcome.md](welcome.md#testing).
 
 **Manual (Hyprland):**
