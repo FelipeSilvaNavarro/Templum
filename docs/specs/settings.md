@@ -286,16 +286,21 @@ Tests are written first, as always. Everything runs in CI on Linux, macOS and Wi
 
 **Start at login** (`autostart.rs` unit tests, and `settings_panel.rs`):
 
-- the `.desktop` and `.plist` texts, the `Exec=` quoting, the `reg.exe` arguments and the parsing of its output, as
-  pure functions;
+- the `.desktop` and `.plist` texts (`TryExec=`, `AssociatedBundleIdentifiers`), the `Exec=` quoting, the `reg.exe`
+  program (System32's) and arguments and the parsing of its output, as pure functions;
 - where each system keeps the entry, with and without `XDG_CONFIG_HOME` or a home;
 - on, off, off again and read back in a temporary home (never the real one, nor the registry); removing the file
   by hand reads off; `Hidden=true` reads off and turning it on writes it again; an unwritable folder is an error;
+- the status tells no entry from one the system switched off; a Templum run from the macOS disk image refuses to
+  turn it on; the welcome's default (`State::offered`) is on only with no entry at all, and not for `--dev` or the
+  disk image;
 - the `--dev` entry doesn't touch the installed one's;
 - the program an entry names is read back whatever it holds (spaces, quotes, `$`, backslashes, `%`, `&`, `<`);
 - startup rewrites an entry that is on for an executable that is gone, and leaves alone one that names a file that
   exists, one that is off, switched off or edited by hand, and anything a second Templum finds;
-- headless: the General tab finds an entry made outside, turns it on and off, and says why it failed.
+- headless: the General tab finds an entry made outside, turns it on and off (the switch follows at once, the system
+  is written off the UI thread and a second click waits), and says why it failed; the welcome's cases are in
+  [welcome.md](welcome.md#testing).
 
 **Manual (Hyprland):**
 
