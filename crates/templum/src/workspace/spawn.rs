@@ -7,7 +7,6 @@ use std::time::Duration;
 use gpui_kit::{Context, Window};
 use templum_canvas::{BlockId, Rect, Size, chrome};
 use templum_mcp::{Reply, tools};
-use templum_terminal::Agent;
 
 use super::bus::{Outcome, target};
 use super::delegate::{TASK_LEAD, answer_how};
@@ -337,12 +336,7 @@ impl Workspace {
                 ..Handed::new(&asker, Duration::from_secs(tools::TASK_WAIT))
             };
             if let Some(pane) = self.pane_mut(&terminal) {
-                pane.prompt = Some(Prompt {
-                    text,
-                    screen: None,
-                    gated: entry.builtin == Some(Agent::CLAUDE)
-                        || entry.builtin == Some(Agent::CODEX),
-                });
+                pane.prompt = Some(Prompt::new(text, entry.builtin));
                 pane.handed = Some(handed);
             }
             // Every agent is looked at, hooks or not: Codex's SessionStart comes only with its
@@ -386,7 +380,7 @@ impl Workspace {
 
     /// Looks, every READY_LOOK, whether the agent in `terminal` is ready for its prompt, until it
     /// is typed, its block is gone, a snapshot dropped it, or a minute (STARTS_WITHIN) passed.
-    fn watch_ready(&self, terminal: String, cx: &mut Context<Self>) {
+    pub(super) fn watch_ready(&self, terminal: String, cx: &mut Context<Self>) {
         cx.spawn(async move |ws, cx| {
             loop {
                 cx.background_executor().timer(READY_LOOK).await;

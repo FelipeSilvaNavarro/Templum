@@ -195,6 +195,18 @@ pub(crate) struct Prompt {
     pub gated: bool,
 }
 
+impl Prompt {
+    /// `text`, for an agent built on `builtin`.
+    pub(crate) fn new(text: String, builtin: Option<templum_terminal::Agent>) -> Self {
+        use templum_terminal::Agent;
+        Self {
+            text,
+            screen: None,
+            gated: matches!(builtin, Some(Agent::CLAUDE | Agent::CODEX)),
+        }
+    }
+}
+
 pub(crate) struct Pane {
     pub term: Terminal,
     pub snapshot: Rc<RefCell<Snapshot>>,

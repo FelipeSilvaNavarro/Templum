@@ -619,9 +619,10 @@ fn wait_for_idle_waits_on_an_agent_a_snapshot_found_no_trace_of_yet(cx: &mut Tes
 
 /// An agent no snapshot found yet may never have started (its folder's trust declined, its
 /// shell's startup asking something): typed text could run in its shell, which macOS can't tell
-/// is in front until a snapshot found the agent. What another agent hands it is refused until then.
+/// is in front until a snapshot found the agent. A reply to it is refused until then; a change to
+/// the task its prompt hands it, until that prompt is typed.
 #[gpui_kit::test]
-fn nothing_is_handed_to_an_agent_no_snapshot_found_yet(cx: &mut TestAppContext) {
+fn nothing_is_typed_into_an_agent_no_snapshot_found_yet(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, _) = me(&ws, cx, mine);
     let folder = tempfile::tempdir().unwrap();
@@ -643,7 +644,72 @@ fn nothing_is_handed_to_an_agent_no_snapshot_found_yet(cx: &mut TestAppContext) 
     assert!(failed && text.contains("still starting"), "{text}");
     let task = json!({ "block": uid, "task": "go" });
     let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
-    assert!(failed && text.contains("still starting"), "{text}");
+    assert!(failed && text.contains("it is starting"), "{text}");
+}
+
+/// A task handed to an agent just spawned (no prompt), still starting: no snapshot found it yet
+/// (Codex on Windows), or its screen isn't up (OpenCode, Copilot CLI: a paste typed then is
+/// lost). It waits, as a spawn's prompt does, and is typed once the agent is ready.
+#[gpui_kit::test]
+fn a_task_for_an_agent_still_starting_is_typed_once_it_is_ready(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path() });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    let (worker, uid) = me(&ws, cx, new);
+    // A snapshot before its process started: it found no agent there yet.
+    snapshot(
+        handle,
+        &ws,
+        cx,
+        new,
+        templum_terminal::Inspection::default(),
+    );
+    let task = json!({ "block": uid, "task": "say hi" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert_eq!(
+        (failed, text),
+        (
+            false,
+            format!(
+                "Handed to {uid} as task t1. It is starting: the task is typed once it is ready."
+            )
+        )
+    );
+    let waiting = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some())
+    };
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    in_front(&ws, cx, new, true);
+    for _ in 0..3 {
+        after(cx, look);
+    }
+    assert!(waiting(cx), "no snapshot found it: nothing typed");
+    let p = ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().term.processes());
+    let running = templum_terminal::Inspection {
+        agent: Some("codex".into()),
+        pid: p.foreground,
+        ..Default::default()
+    };
+    snapshot(handle, &ws, cx, new, running);
+    let mut looks = 0;
+    while waiting(cx) {
+        assert!(looks < 10, "never typed");
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+        looks += 1;
+    }
+    screen_with(&ws, cx, new, "say hi");
+    entered(&ws, cx, new);
+    said_twice(&ws, cx, new);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let task = ws.read_with(cx, |ws, _| {
+        let handed = ws.space.terminal(new).unwrap().handed.as_ref();
+        handed.map(|h| (h.id, h.taken))
+    });
+    assert_eq!(task, Some((1, true)), "its task, taken");
 }
 
 /// A spawned agent no snapshot found a while after its spawn never started: its prompt and its

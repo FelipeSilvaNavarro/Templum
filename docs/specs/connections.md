@@ -224,8 +224,9 @@ later starts with none.
    has an id (`t7`, batch 8), which `delegate` and `spawn_agent` say; `delegate` without `wait` answers once the
    agent took the task (2; card 118, before at once, which let a master take a task left in an input for one under
    way): "Handed to k9x1d as task t7.", or, when it didn't, why (`k9x1d didn't take the task: typed but not
-   submitted: …` and the last 20 lines of its screen), the task then ended without a notice besides (10). For an
-   agent without Templum's tools (no `initialize` from its server) it adds
+   submitted: …` and the last 20 lines of its screen), the task then ended without a notice besides (10). One still
+   starting (5) answers at once: "Handed to k9x1d as task t7. It is starting: the task is typed once it is ready.",
+   and its end comes back as any end does. For an agent without Templum's tools (no `initialize` from its server) it adds
    why and what else ends the task (` k9x1d has no Templum tools (<why>): it can still answer with `templum reply -`
    in its shell; …`; `list_blocks` says `, no Templum tools` on its line:
    [agent-protocol.md](agent-protocol.md#8-templums-tools-checked)). Ids count from `t1` each time Templum starts: tasks
@@ -235,7 +236,12 @@ later starts with none.
    the caller can answer it with `send_keys`), into a terminal running no agent (`send_to_terminal` is for those),
    into an agent no snapshot has found yet (one Templum just typed may not have started at all; the caller is told
    to try again in a few seconds), and into an agent already on another agent's task (`wait_for_idle` waits for its
-   end; the agent whose task it is changes it instead, 11).
+   end; the agent whose task it is changes it instead, 11). From card 118 a task handed to an agent Templum started
+   that may not take typing yet, no snapshot found it or its screen hasn't shown it (its cover is still on), isn't
+   refused: it waits as a spawn's prompt does, typed once the agent is ready ([Spawning](#spawning)), its task ended
+   with its screen when it isn't within a minute. A `delegate` right after `spawn_agent` was refused there (Codex on
+   Windows, which a snapshot didn't find yet), or typed into an input not up yet and lost (OpenCode, Kilo Code; Copilot
+   CLI showed it later). A reply is still refused until a snapshot found the agent.
 6. An agent Templum gets no events from (see the table under [Hooks](#hooks-and-agent-state)) answers through
    `reply`. Without Templum's tools, or with neither tools nor hooks, its task ends once its screen has been still for 5
    seconds after working, with its last screen lines. An agent **with** Templum's tools and no hooks keeps its task
@@ -492,7 +498,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `notify` | `text` | A notification from the caller ([Requests](#requests-from-agents)) | — | 1 |
 | `connect` | `block`, `timeout` (1800 s) | Asks the person to wire the caller to the block; waits for the answer | — | 3 |
 | `spawn_agent` | `agent` (an id of [agents.md](agents.md) or of `[agents]`), `prompt`, `folder`, `worktree`, `model`, `effort`, `fork`, `role` | [Spawning](#spawning); the prompt's task id; with `fork`, a copy of the caller's own Claude Code or Codex on its conversation ([agent-tools.md](agent-tools.md#spawn_agent-with-fork)); with `role`, a role of `[roles]` ([agent-tools.md](agent-tools.md#roles)) | — | 3, 6, 8, card 35 |
-| `delegate` | `block`, `task`, `wait` (false), `timeout` (600 s) | [Delegating](#delegating); without `wait`, says the task's id once its agent took it, or why it didn't (card 118), and why the agent has no Templum tools, if so; its end is typed into the caller's terminal; to the agent on the caller's task, a change to it | wired, an agent | 3, 8, card 69, 118 |
+| `delegate` | `block`, `task`, `wait` (false), `timeout` (600 s) | [Delegating](#delegating); without `wait`, says the task's id once its agent took it, or why it didn't (card 118; one still starting: at once), and why the agent has no Templum tools, if so; its end is typed into the caller's terminal; to the agent on the caller's task, a change to it | wired, an agent | 3, 8, card 69, 118 |
 | `reply` | `text`, `block` (optional) | Answers the task the caller is on, whole, and ends it ([Delegating](#delegating) 8); with a `block` that didn't hand it the task, types `[reply from …]` and the text into it | wired when it names a block | 3, 8, card 69 |
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
 | `ask_user` | `questions` (each `question`, `header`, `options` with `label`, `description`, `preview`, `multiSelect`), or `question` and `options` (strings); `timeout` (none) | Questions in a balloon ([Requests](#requests-from-agents), [ask-user.md](ask-user.md)); the answers as JSON, or with `question` the answer as text | — | 3 |
@@ -1387,7 +1393,8 @@ it; `wait_for(needs_you)` and `delegate`'s refusal show the dialog as drawn, `li
 the looks; an agent no hook speaks for took it when its screen moves; an Enter taken for a new line (a fake agent that
 reads its first line and starts on the second Enter) gets a second one, and `delegate` answers once it went; two
 Enters that change nothing (a fake whose input never sends) answer `delegate` with "typed but not submitted", end the
-task, and type no notice besides.
+task, and type no notice besides; a task handed to an agent spawned a moment ago, which no snapshot found yet, waits
+and is typed once it is ready.
 
 **Batch 8:** a task handed without `wait` comes back typed, with its id and time; what it spent is its cost, else its
 tokens, read again after its end, and its transcript is the one its hooks named, on one line; a waiting call gets the

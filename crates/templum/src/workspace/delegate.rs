@@ -14,7 +14,7 @@ use templum_usage::Session;
 use super::activity::STILL;
 use super::bus::{Outcome, clean_title, flat, target};
 use super::waits::{LAST_LINES, Waiting};
-use super::{AgentState, Handed, Pane, Space, Workspace};
+use super::{AgentState, Handed, Pane, Prompt, Space, Workspace};
 
 /// How long apart Templum looks at an agent's screen while a typed task waits for its Enter, and
 /// after it: an agent may take keys that come in one burst for a paste, where Enter is a new line.
@@ -423,6 +423,13 @@ impl Pane {
             )));
         }
         self.takes_typing(uid)
+    }
+
+    /// The agent Templum started in it may not take typing yet: no snapshot found it yet, or its
+    /// screen hasn't shown it (its cover is still on). A task handed to it waits, as a spawn's
+    /// prompt does (docs/specs/connections.md, Delegating 5).
+    fn agent_starting(&self) -> bool {
+        self.agent().is_some() && (self.seen.pid.is_none() || self.starting.is_some())
     }
 }
 
@@ -898,7 +905,8 @@ impl Workspace {
         let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
-        if let Err(refused) = pane.takes_handing(block) {
+        let starting = pane.agent_starting();
+        if !starting && let Err(refused) = pane.takes_handing(block) {
             return Outcome::Now(refused);
         }
         let mine = pane.handed.as_ref().filter(|h| h.by == from).map(|h| h.id);
@@ -918,8 +926,9 @@ impl Workspace {
         }
         let worker = pane.term.id().to_string();
         let usage = pane.usage.clone();
-        // A task for an agent without Templum's tools says why, and what else ends it.
-        let no_tools = (mine.is_none() && !self.has_tools(&worker)).then(|| {
+        // A task for an agent without Templum's tools says why, and what else ends it. One
+        // starting has none yet.
+        let no_tools = (mine.is_none() && !starting && !self.has_tools(&worker)).then(|| {
             let shell = if self.replies_from_shell(pane) {
                 "it can still answer with `templum reply -` in its shell; else "
             } else {
@@ -948,7 +957,21 @@ impl Workspace {
                 )
             }
         };
-        let sent = self.send_task(&worker, &line, true, cx);
+        // Starting, it gets the task once it is ready, as a spawn's prompt.
+        let sent = if starting {
+            let builtin = self
+                .pane(&worker)
+                .and_then(Pane::agent)
+                .and_then(|id| self.agents.iter().find(|a| a.id == id))
+                .and_then(|a| a.builtin);
+            if let Some(pane) = self.pane_mut(&worker) {
+                pane.prompt = Some(Prompt::new(line, builtin));
+            }
+            self.watch_ready(worker.clone(), cx);
+            None
+        } else {
+            Some(self.send_task(&worker, &line, true, cx))
+        };
         let until = Instant::now() + Duration::from_secs(timeout);
         if let Some(pane) = self.pane_mut(&worker) {
             match (mine, pane.handed.as_mut()) {
@@ -984,6 +1007,17 @@ impl Workspace {
                 "Handed to {block} as task t{id}.{}",
                 no_tools.unwrap_or_default()
             ),
+        };
+        let Some(sent) = sent else {
+            return Outcome::Now(Reply::ok(match mine {
+                Some(_) => format!(
+                    "{block} is starting: the change to task t{id} is typed once it is ready."
+                ),
+                None => format!(
+                    "Handed to {block} as task t{id}. It is starting: the task is typed once it \
+                     is ready."
+                ),
+            }));
         };
         // Answered once the agent took the task, or with why not.
         let gone = format!("{block} closed, or its task ended, before it took the task.");
