@@ -1016,7 +1016,10 @@ impl Workspace {
                 .and_then(|id| self.agents.iter().find(|a| a.id == id))
                 .and_then(|a| a.builtin);
             if let Some(pane) = self.pane_mut(&worker) {
-                pane.prompt = Some(Prompt::new(line, builtin));
+                pane.prompt = Some(Prompt {
+                    delegated: true,
+                    ..Prompt::new(line, builtin)
+                });
             }
             self.watch_ready(worker.clone(), cx);
             None

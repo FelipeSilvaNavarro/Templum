@@ -1559,6 +1559,7 @@ fn a_change_from_the_asker_goes_into_its_task(cx: &mut TestAppContext) {
             text: "say hi".into(),
             screen: None,
             gated: false,
+            delegated: false,
         });
     });
     let (failed, text) = call(
@@ -2315,6 +2316,7 @@ fn interrupt_presses_esc_and_ends_the_callers_task(cx: &mut TestAppContext) {
             text: "count to a million".into(),
             screen: None,
             gated: false,
+            delegated: false,
         })
     });
     let stopped = call_later(handle, &ws, cx, &terminal, 2, "interrupt", stop.clone());

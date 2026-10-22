@@ -712,6 +712,37 @@ fn a_task_for_an_agent_still_starting_is_typed_once_it_is_ready(cx: &mut TestApp
     assert_eq!(task, Some((1, true)), "its task, taken");
 }
 
+/// A task handed to an agent still starting that isn't ready a minute after: it ends, saying it
+/// never got its task, with its screen.
+#[gpui_kit::test]
+fn a_task_for_an_agent_never_ready_ends_a_minute_after_it_was_handed(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path() });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    let (_, uid) = me(&ws, cx, new);
+    let task = json!({ "block": uid, "task": "say hi" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert!(!failed && text.contains("It is starting"), "{text}");
+    let idle = json!({ "block": uid });
+    let waiting = call_later(handle, &ws, cx, &terminal, 1, "wait_for_idle", idle);
+    ws.update(cx, |ws, _| {
+        let handed = ws.space.terminal_mut(new).unwrap().handed.as_mut().unwrap();
+        handed.since -= crate::workspace::spawn::STARTS_WITHIN;
+    });
+    after(cx, crate::workspace::spawn::READY_LOOK.as_millis() as u64);
+    let (failed, text) = answered(&waiting);
+    assert!(
+        failed
+            && text.starts_with(&format!(
+                "{uid} never got its task: a minute after it was handed,"
+            )),
+        "{text}"
+    );
+}
+
 /// An agent spawned without a prompt that no snapshot found within a minute of its start never
 /// started: a task handed to it is refused, as in a terminal running no agent, not kept for an
 /// agent that will never be ready.

@@ -3235,6 +3235,7 @@ fn new_chat_lets_go_of_the_old_conversations_tasks(cx: &mut TestAppContext) {
             text: "Take card 4".into(),
             screen: None,
             gated: true,
+            delegated: false,
         })
     });
     ws.update(cx, |ws, cx| ws.new_chat(cx));

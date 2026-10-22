@@ -193,6 +193,8 @@ pub(crate) struct Prompt {
     /// Its agent is Claude Code or Codex, whose prompt also waits for its input box
     /// (`Modes::typing`): their trust questions come first.
     pub gated: bool,
+    /// A task `delegate` handed the agent while it started, not its spawn's prompt.
+    pub delegated: bool,
 }
 
 impl Prompt {
@@ -203,6 +205,7 @@ impl Prompt {
             text,
             screen: None,
             gated: matches!(builtin, Some(Agent::CLAUDE | Agent::CODEX)),
+            delegated: false,
         }
     }
 }

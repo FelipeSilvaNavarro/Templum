@@ -398,7 +398,7 @@ impl Workspace {
     /// One look: once a snapshot saw the agent's process, it is still in front of its shell, its
     /// screen is as it was a look ago, it doesn't wait for its person (a hook said so), and
     /// (Claude Code, Codex; not on Windows) it takes typing, its prompt is typed. A minute
-    /// (STARTS_WITHIN) after the spawn it is dropped instead, its task ending with the screen.
+    /// (STARTS_WITHIN) after it was handed it is dropped instead, its task ending with the screen.
     /// False once there is nothing more to look for.
     fn look_ready(&mut self, terminal: &str, cx: &mut Context<Self>) -> bool {
         let Some(pane) = self.pane_mut(terminal) else {
@@ -409,12 +409,15 @@ impl Workspace {
         }
         let late = pane.handed.as_ref();
         if late.is_some_and(|h| h.since.elapsed() >= STARTS_WITHIN) {
-            pane.prompt = None;
+            let (what, after) = match pane.prompt.take().is_some_and(|p| p.delegated) {
+                true => ("task", "it was handed"),
+                false => ("prompt", "it opened"),
+            };
             let lines = pane.tail();
             let tail = tools::tail(&lines, tools::MAX_TEXT);
             let uid = self.uid_of(terminal);
             let why = format!(
-                "{uid} never got its prompt: a minute after it opened, it still asks its person \
+                "{uid} never got its {what}: a minute after {after}, it still asks its person \
                  something (trusting its folder, Codex's hooks), or its input wasn't ready. Look \
                  at its block. The last lines of its screen:\n{tail}"
             );

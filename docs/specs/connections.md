@@ -246,8 +246,8 @@ later starts with none.
    that may not take typing yet, its screen hasn't shown it (its cover is still on) or no snapshot found it within a
    minute of its command (after that it never started, and the task is refused as for a terminal running no agent),
    isn't refused: it waits as a spawn's prompt does, typed once the agent is ready and not waiting for its person
-   ([Spawning](#spawning)), its task ended with its screen when it isn't within a minute. A `delegate` right after
-   `spawn_agent` was refused there (Codex on
+   ([Spawning](#spawning)), its task ended with its screen ("never got its task: a minute after it was handed") when it
+   isn't within a minute. A `delegate` right after `spawn_agent` was refused there (Codex on
    Windows, which a snapshot didn't find yet), or typed into an input not up yet and lost (OpenCode, Kilo Code; Copilot
    CLI showed it later). A reply is still refused until a snapshot found the agent.
 6. An agent Templum gets no events from (see the table under [Hooks](#hooks-and-agent-state)) answers through
