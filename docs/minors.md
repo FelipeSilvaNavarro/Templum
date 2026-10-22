@@ -1654,7 +1654,8 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   they stopped typing for 3 s). Fix: put a notice back in `notices` (its text cleared from the input first is the
   hard part), and answer a reply with what `send_task` says, as the reply minor above asks.
 
-Left by kanban card 127 (Claude Code's subagents, `docs/specs/claude-subagents.md`).
+Left by kanban card 127 (Claude Code's subagents, `docs/specs/claude-subagents.md`) and its review; line numbers are
+those of `development` at f8c3ec9.
 
 - [ ] **A task whose turn resumes a subagent started before it is answered too early.** `Handed::subagents`
   (`crates/templum/src/workspace/mod.rs`) keeps the subagents there when the task was taken, and a turn's end with
@@ -1677,9 +1678,29 @@ Left by kanban card 127 (Claude Code's subagents, `docs/specs/claude-subagents.m
 - [ ] **A Claude Code moved to another workspace leaves its subagents' blocks behind.** Moving a block
   (`take_block`, `crates/templum/src/workspace/blocks.rs`) doesn't take the blocks of its subagents along; they stay,
   unwired, until they finish and close. Fix: move them with it, wired again.
-- [ ] **No bench was run with subagent blocks on the canvas.** The study asks for `--bench-mixed` with a dozen of
-  them; card 127's build ran none (its blocks are terminals that run nothing, `Terminal::viewer`, and the bench opens
-  a window). Fix: add a dozen viewers fed a synthetic transcript to `--bench-mixed`'s cockpit and paste its line in the
+- [ ] **Esc during a foreground subagent may leave its parent Working.** With fork mode off (or Claude Code before
+  2.1.232) a subagent runs in the foreground, inside its parent's `Agent` call; an Esc then ends the parent's turn
+  (`PostToolUseFailure` with `is_interrupt`, a `Stopped` without an answer), and whether that subagent's `SubagentStop`
+  still comes wasn't probed. If it doesn't, the subagent stays at work in `Pane::subagents` and `turn_ended`
+  (`crates/templum/src/workspace/bus.rs:414`) only awaits it: the person sees "Working: 1 subagent" until their next
+  prompt's `Stop`, and a task handed to it stays open. Fix: probe it (fork mode off, Esc while an `Explore` runs); if no
+  `SubagentStop` comes, take off, on the parent's interrupt, the subagents no `Stop`'s `background_tasks` ever listed
+  (foreground ones).
+- [ ] **A fork's transcript was never probed.** A fork (`subagent_type: "fork"`, `/subtask`) inherits its parent's whole
+  conversation; its transcript may start with that history, which `Follower::line`
+  (`crates/templum-agent/src/follow.rs:104`) would print as the fork's "Task" (the parent's first prompt) and its words,
+  and title the block with that first prompt. A person would see a block that starts with someone else's conversation.
+  Fix: probe a fork's `agent-<id>.jsonl`; if it holds the history, print from the `user` line that follows the
+  `tool_use` whose id is its `meta.json`'s `toolUseId`, or from the fork's own prompt.
+- [ ] **`/clear` greys and closes background subagents' blocks that may still run.** A new session (`Started`,
+  `crates/templum/src/workspace/bus.rs:306`) forgets the parent's subagents and marks every block of theirs done
+  (`subagents_done`), which closes a minute later; whether Claude Code's background subagents outlive `/clear` or
+  `/resume` wasn't probed. If they do, the person sees a working subagent's block turn grey and close while it still
+  writes its transcript. Fix: probe it; if they survive, keep those blocks open (still following) on `Started`, and mark
+  them done only on their `SubagentStop` or the session's `SessionEnd`.
+- [ ] **No bench was run with subagent blocks on the canvas.** The study asks for `--bench-mixed` with a dozen of them;
+  card 127's build ran none (its blocks are terminals that run nothing, `Terminal::viewer`, and the bench opens a
+  window). Fix: add a dozen viewers fed a synthetic transcript to `--bench-mixed`'s cockpit and paste its line in the
   pull request.
 
 ## Placing new blocks
