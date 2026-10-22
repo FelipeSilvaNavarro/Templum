@@ -1664,6 +1664,16 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   it again. Rare: the person must type in the 150–300 ms between the paste and its Enter (a notice already waits until
   they stopped typing for 3 s). Fix: put a notice back in `notices` (its text cleared from the input first is the
   hard part), and answer a reply with what `send_task` says, as the reply minor above asks.
+- [ ] **A Claude Code that leaves background subagents running ends its task with an interim answer.** Found by the
+  study of card 127 ([docs/plans/2026-10-22-claude-subagents.md](plans/2026-10-22-claude-subagents.md), inferred from
+  Claude Code's documented default, not yet seen by hand): Claude Code runs the subagents it starts in the background,
+  so its turn's `Stop` comes while they work, and the `Stopped` arm of `agent_event`
+  (`crates/templum/src/workspace/bus.rs:292`, at 0a11995) ends the task handed to it with that turn's last message
+  ("I've started three reviewers…") and puts its dot at rest. The master gets the interim message as the answer, and
+  the subagents' report comes in a later turn that answers nothing. Fix: carry how many `subagent` entries the `Stop`
+  input's `background_tasks` lists in `Stopped` (`hooks::claude`, `crates/templum-mcp/src/hooks.rs`), and treat such a
+  turn's end as one that ends while the agent waits on its own task (agent-protocol.md §4): the task stays open and the
+  dot Working.
 
 ## Placing new blocks
 
