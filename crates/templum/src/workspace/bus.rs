@@ -990,7 +990,12 @@ pub(super) fn agent_state(space: &Space, id: BlockId) -> String {
         .filter(|pane| pane.seen.agent.is_some())
         .and_then(|pane| Some((pane, pane.state.as_ref()?)))
         .map(|(pane, state)| match state {
-            AgentState::Working => format!(", {}", pane.working().to_lowercase()),
+            // Not agent-protocol's subagents, the agents it handed tasks to.
+            AgentState::Working => match pane.subagents_at_work() {
+                0 => ", working".to_string(),
+                1 => ", working: 1 Claude Code subagent".to_string(),
+                n => format!(", working: {n} Claude Code subagents"),
+            },
             AgentState::Idle => ", idle".to_string(),
             AgentState::NeedsYou(Some(what)) if !what.is_empty() => {
                 format!(", waiting for its person: {}", clean_title(what))

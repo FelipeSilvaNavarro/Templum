@@ -330,9 +330,14 @@ impl Pane {
         matches!(self.state, Some(AgentState::NeedsYou(_))) && self.asked_by.as_deref() == by
     }
 
+    /// How many of its agent's subagents work.
+    pub fn subagents_at_work(&self) -> usize {
+        self.subagents.iter().filter(|s| !s.reported).count()
+    }
+
     /// What its dot says while its agent works: how many of its subagents do too.
     pub fn working(&self) -> String {
-        match self.subagents.iter().filter(|s| !s.reported).count() {
+        match self.subagents_at_work() {
             0 => "Working".to_string(),
             1 => "Working: 1 subagent".to_string(),
             n => format!("Working: {n} subagents"),

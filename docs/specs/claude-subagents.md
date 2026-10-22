@@ -25,9 +25,10 @@ Templum's instructions to Claude Code about subagents stay as they are.
 ### The parent
 
 A Claude Code whose turn ends while subagents it started still work stays at work: its dot keeps the accent, and its
-tooltip says how many work, "Working: 2 subagents" ("Working: 1 subagent"); `list_blocks` says `, working: 2
-subagents`. Each subagent's report comes back to it as a turn of its own; once the last one is in and that turn ends,
-it is at rest, and a task another agent handed it ends with that turn's answer.
+tooltip says how many work, "Working: 2 subagents" ("Working: 1 subagent"); `list_blocks` says `, working: 2 Claude Code
+subagents` (not the agents it handed tasks to, [agent-protocol.md](agent-protocol.md)'s subagents). Each subagent's
+report comes back to it as a turn of its own; once the last one is in and that turn ends, it is at rest, and a task
+another agent handed it ends with that turn's answer.
 
 A permission dialog a subagent opens is in its parent's screen: the parent's dot turns yellow, "Waiting for you: Allow
 Bash?", and stays so until that subagent's tool ends (or it stops): another subagent's tool, or the parent's own,

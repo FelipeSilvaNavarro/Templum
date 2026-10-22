@@ -113,6 +113,10 @@ fn a_task_ends_with_the_turn_after_its_subagents_reports(cx: &mut TestAppContext
         dot(&ws, cx, theirs).as_deref(),
         Some("Working: 2 subagents")
     );
+    let listed = ws.read_with(cx, |ws, _| {
+        super::super::bus::agent_state(&ws.space, theirs)
+    });
+    assert_eq!(listed, ", working: 2 Claude Code subagents");
     let idle = json!({ "hook_event_name": "Notification", "notification_type": "idle_prompt" });
     hook(handle, &ws, cx, &worker, idle);
     assert!(
