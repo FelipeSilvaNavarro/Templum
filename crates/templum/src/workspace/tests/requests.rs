@@ -2273,6 +2273,7 @@ fn enter_moves_to_the_next_unanswered_question(cx: &mut TestAppContext) {
         highlight(&ws, cx),
         Some(templum_mcp::ask::Row::Option(1, 0))
     );
+    assert_eq!(tab_of(&ws, cx), 1, "its tab shows");
     assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "it waits");
 }
 
@@ -2497,10 +2498,16 @@ fn a_click_on_the_dialog_brings_its_block(cx: &mut TestAppContext) {
     focus_dialog(handle, &ws, cx, kanban);
     click_part(handle, cx, mine.0 as usize, "q0-option-1");
     ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(mine)));
-    press(handle, cx, &["enter"]);
-    assert_eq!(
-        highlight(&ws, cx),
-        Some(templum_mcp::ask::Row::Option(1, 0))
+    // The pick showed Q1 (`a_pick_shows_the_next_question_without_an_answer`): ↓ moves the
+    // highlight in its rows, the dialog's key.
+    press(handle, cx, &["down"]);
+    assert!(
+        matches!(
+            highlight(&ws, cx),
+            Some(templum_mcp::ask::Row::Option(1, _) | templum_mcp::ask::Row::Other(1))
+        ),
+        "{:?}",
+        highlight(&ws, cx)
     );
     assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "it waits");
 }
@@ -2775,4 +2782,286 @@ fn a_plan_off_screen_says_it_asks_for_an_approval(cx: &mut TestAppContext) {
             "Asks you to approve a plan: Move the bus".into()
         )))
     );
+}
+
+/// The question shown of the newest call (its lit tab).
+fn tab_of(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> usize {
+    ws.read_with(cx, |ws, _| match &ws.waits.last().unwrap().what {
+        Waiting::Question { form, .. } => form.tab,
+        _ => panic!("a question"),
+    })
+}
+
+/// Several questions show one at a time, a tab each over it; a click on a tab shows its question.
+/// One question shows no tab.
+#[gpui_kit::test]
+fn several_questions_show_one_at_a_time_under_tabs(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    roomy(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    for part in ["tab-0", "tab-1", "q0-option-0", "q0-other", "note", "send"] {
+        assert!(drawn(handle, cx, n, part), "{part}");
+    }
+    assert!(
+        !drawn(handle, cx, n, "q1-option-0"),
+        "Features waits its tab"
+    );
+    click_part(handle, cx, n, "tab-1");
+    assert_eq!(tab_of(&ws, cx), 1);
+    for part in ["q1-option-0", "q1-other", "note", "send"] {
+        assert!(drawn(handle, cx, n, part), "{part}");
+    }
+    assert!(!drawn(handle, cx, n, "q0-option-0"));
+    click_part(handle, cx, n, "tab-0");
+    assert!(drawn(handle, cx, n, "q0-option-0") && !drawn(handle, cx, n, "q1-option-0"));
+    for (conn, asked) in [
+        json!({ "questions": [{ "question": "Ship it?", "options": ["Yes"] }] }),
+        json!({ "question": "Ship it?", "options": ["Yes"] }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let _one = call_later(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            conn as u64 + 2,
+            "ask_user",
+            asked,
+        );
+        let key = last_wait(&ws, cx);
+        ws.update(cx, |ws, _| ws.waits.retain(|w| w.key == key));
+        assert!(drawn(handle, cx, n, "q0-option-0"));
+        assert!(!drawn(handle, cx, n, "tab-0"), "one question needs no tab");
+    }
+}
+
+/// A tab's ring fills with a check once its question has an answer.
+#[gpui_kit::test]
+fn a_tab_says_whether_its_question_is_answered(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    roomy(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    assert!(!drawn(handle, cx, n, "tab-0-answered") && !drawn(handle, cx, n, "tab-1-answered"));
+    click_part(handle, cx, n, "tab-1");
+    click_part(handle, cx, n, "q1-option-0");
+    assert!(drawn(handle, cx, n, "tab-1-answered"), "Auth checked");
+    assert!(!drawn(handle, cx, n, "tab-0-answered"));
+    click_part(handle, cx, n, "q1-option-0");
+    assert!(!drawn(handle, cx, n, "tab-1-answered"), "Auth unchecked");
+}
+
+/// What is typed in a tab (an Other text, a free answer, the note) stays when another tab shows,
+/// and Send answers every question in the call's JSON.
+#[gpui_kit::test]
+fn answers_typed_in_a_tab_stay_when_another_shows(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    roomy(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let asked = json!({ "questions": [
+        { "question": "Which?", "options": ["A", "B"] },
+        { "question": "When?" }
+    ] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    let key = last_wait(&ws, cx);
+    type_into(handle, &ws, cx, key, Some(0), "C");
+    type_into(handle, &ws, cx, key, None, "soon");
+    click_part(handle, cx, n, "tab-1");
+    type_into(handle, &ws, cx, key, Some(1), "Friday");
+    click_part(handle, cx, n, "tab-0");
+    let kept = ws.read_with(cx, |ws, cx| {
+        let text = |field| field_of(ws, key, field).read(cx).value().to_string();
+        (text(Some(0)), text(Some(1)), text(None))
+    });
+    assert_eq!(kept, ("C".into(), "Friday".into(), "soon".into()));
+    assert!(drawn(handle, cx, n, "tab-0-answered") && drawn(handle, cx, n, "tab-1-answered"));
+    click_part(handle, cx, n, "send");
+    let (failed, text) = answered(&answers);
+    assert!(!failed, "{text}");
+    assert_eq!(
+        json_of(&text),
+        json!({ "answers": { "Which?": "C", "When?": "Friday" }, "note": "soon" })
+    );
+}
+
+/// ← and → show the previous and the next question, wrapping; in a field they move in its text.
+#[gpui_kit::test]
+fn left_and_right_turn_the_tabs_out_of_a_field(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", singles(3));
+    let key = last_wait(&ws, cx);
+    focus_dialog(handle, &ws, cx, mine);
+    press(handle, cx, &["right"]);
+    assert_eq!(tab_of(&ws, cx), 1);
+    press(handle, cx, &["left", "left"]);
+    assert_eq!(tab_of(&ws, cx), 2, "it wraps");
+    // ↓ highlights Q2's first option; → takes the highlight to Q0's.
+    press(handle, cx, &["down", "right"]);
+    assert_eq!(
+        (tab_of(&ws, cx), highlight(&ws, cx)),
+        (0, Some(templum_mcp::ask::Row::Option(0, 0)))
+    );
+    type_into(handle, &ws, cx, key, Some(0), "ab");
+    press(handle, cx, &["left", "left", "x"]);
+    assert_eq!(tab_of(&ws, cx), 0, "the field's");
+    let text = ws.read_with(cx, |ws, cx| {
+        field_of(ws, key, Some(0)).read(cx).value().to_string()
+    });
+    assert_eq!(text, "xab");
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "it waits");
+}
+
+/// A click that picks an option of a single-select question shows the next question without an
+/// answer; a checkbox, or a call with every question answered, stays.
+#[gpui_kit::test]
+fn a_pick_shows_the_next_question_without_an_answer(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    roomy(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", singles(3));
+    click_part(handle, cx, n, "tab-1");
+    click_part(handle, cx, n, "q1-option-1");
+    assert_eq!(tab_of(&ws, cx), 2);
+    click_part(handle, cx, n, "q2-option-0");
+    assert_eq!(tab_of(&ws, cx), 0, "it wraps to the one left");
+    click_part(handle, cx, n, "q0-option-1");
+    assert_eq!(tab_of(&ws, cx), 0, "all answered: it stays");
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "Send answers");
+    click_part(handle, cx, n, "send");
+    assert_eq!(
+        json_of(&answered(&answers).1),
+        json!({ "answers": { "Q0": "B", "Q1": "B", "Q2": "A" } })
+    );
+    let _asked = call_later(handle, &ws, cx, &terminal, 2, "ask_user", two_questions());
+    click_part(handle, cx, n, "tab-1");
+    click_part(handle, cx, n, "q1-option-0");
+    assert_eq!(tab_of(&ws, cx), 1, "a checkbox stays");
+}
+
+/// Another question shows from its top: the body scrolled down in a long one goes back up. A
+/// call of one question has no tabs, and ← → leave its scroll alone.
+#[gpui_kit::test]
+fn a_question_turned_to_shows_from_its_top(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let options: Vec<Value> = (0..30).map(|i| json!(format!("Option {i}"))).collect();
+    let long = json!({ "question": "Which?", "options": options });
+    for (conn, questions) in [
+        vec![
+            long.clone(),
+            json!({ "question": "When?", "options": ["Now"] }),
+        ],
+        vec![long],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let asked = json!({ "questions": questions });
+        let _asked = call_later(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            conn as u64 + 1,
+            "ask_user",
+            asked,
+        );
+        let key = last_wait(&ws, cx);
+        ws.update(cx, |ws, _| ws.waits.retain(|w| w.key == key));
+        focus_dialog(handle, &ws, cx, mine);
+        press(handle, cx, &["down"; 30]);
+        frame(handle, cx);
+        let scrolled = body_scroll(&ws, cx);
+        assert!(scrolled < -100.0, "the last option, far down: {scrolled}");
+        press(handle, cx, &["right"]);
+        if conn == 0 {
+            assert_eq!((tab_of(&ws, cx), body_scroll(&ws, cx)), (1, 0.0));
+        } else {
+            assert_eq!(body_scroll(&ws, cx), scrolled, "no tab to turn to");
+        }
+    }
+}
+
+/// In a dialog too narrow for one row of tabs they wrap, none past the body's sides; in a block
+/// too small for the dialog the whole frame scrolls and every tab, option and Send is reached.
+#[gpui_kit::test]
+fn tabs_wrap_and_are_reached_in_a_small_block(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let min = ws.read_with(cx, |ws, _| chrome::min_block_size(ws.cell.size));
+    let questions: Vec<Value> = (0..6)
+        .map(|q| {
+            json!({ "question": format!("Q{q}"), "header": format!("Deployment {q}"),
+                         "options": ["A", "B"] })
+        })
+        .collect();
+    for (conn, (w, h)) in [(400.0, 600.0), (400.0, min.h), (min.w, min.h)]
+        .into_iter()
+        .enumerate()
+    {
+        ws.update(cx, |ws, _| {
+            let rect = &mut ws.space.canvas.get_mut(mine).unwrap().rect;
+            (rect.w, rect.h) = (w, h);
+            let at = Point::new(rect.x, rect.y);
+            ws.space.canvas.camera = Camera::at(at, 1.0);
+        });
+        let asked = json!({ "questions": questions });
+        let answers = call_later(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            conn as u64 + 1,
+            "ask_user",
+            asked,
+        );
+        let key = last_wait(&ws, cx);
+        shown(handle, cx);
+        let (content, tabs) = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                let content = window.find(("balloon-wait", key)).bounds();
+                let tabs: Vec<_> = (0..6)
+                    .map(|q| {
+                        window
+                            .find(crate::balloon::part(n, &format!("tab-{q}")))
+                            .bounds()
+                    })
+                    .collect();
+                (content, tabs)
+            })
+            .unwrap();
+        for tab in &tabs {
+            assert!(
+                tab.left() >= content.left() - px(1.0) && tab.right() <= content.right() + px(1.0),
+                "{w} x {h}: {tab:?} in {content:?}"
+            );
+        }
+        assert!(tabs[5].top() > tabs[0].top(), "{w} x {h}: on several lines");
+        click_part(handle, cx, n, "tab-5");
+        for q in [5, 0, 1, 2, 3, 4] {
+            assert_eq!(tab_of(&ws, cx), q, "{w} x {h}");
+            click_part(handle, cx, n, &format!("q{q}-option-1"));
+        }
+        click_part(handle, cx, n, "send");
+        let (failed, text) = answered(&answers);
+        assert!(!failed, "{text}");
+        assert_eq!(json_of(&text)["answers"].as_object().unwrap().len(), 6);
+    }
 }

@@ -1283,13 +1283,20 @@ Left by the ask_user dialog's redesign (kanban card 81, `docs/specs/ask-user.md`
   (`crates/templum/src/balloon.rs`): under about 290 wide it covers the count badge and is clipped, so a person may not
   see other requests wait. Fix: let the title truncate (`min_w_0` + `truncate`), keep the badge `flex_shrink_0`.
 - [ ] **The small-block test covers only today's shape.** `a_dialog_in_a_small_block_keeps_its_body_and_reaches_send`
-  (`crates/templum/src/workspace/tests/requests.rs`) answers `question`/`options` only; a plan, two buttons, several
-  questions with Other and the note, and a stopped question in a small block aren't driven. Fix: loop the same sizes
-  over those calls.
+  (`crates/templum/src/workspace/tests/requests.rs`) answers `question`/`options` only; several questions under tabs
+  are driven by `tabs_wrap_and_are_reached_in_a_small_block` (card 115), but a plan, two buttons, Other and the note,
+  and a stopped question in a small block aren't. Fix: loop the same sizes over those calls.
 - [ ] **connections.md and ask-user.md's Testing lag the small-block fixes.** `docs/specs/connections.md` still says
   "at most 80% of its height" with no small-block exception, and `docs/specs/ask-user.md`'s Testing doesn't list the
   small-block, fit-heights, keys-scroll, plan-wheel or scrollbar-strip tests. Fix: point connections.md to
   ask-user.md's *A small block* and add the tests to the list.
+
+- [ ] **A lit tab on an upper line of wrapped tabs is underlined over the next line.** `tabs`
+  (`crates/templum/src/balloon.rs`, kanban card 115) draws one hairline under the whole row and each tab's 2-unit
+  underline at its own bottom: where many questions or a narrow block wrap the row, the lit tab of the first line
+  has its accent line between the two lines, not on the hairline. A person still sees which is lit, the line just
+  floats. Fix: a hairline under each line (a row per line, splitting the tabs by measured width), or tabs as
+  filled pills (`kanban::segment`'s look) when the row wraps.
 
 - [ ] **The wheel over a dialog of a block that isn't the one worked in pans the canvas.** `route_wheel`
   (`crates/templum/src/workspace/input.rs`) gives the wheel to a block's content only when it is focused or selected,
@@ -1314,8 +1321,10 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   was built and tested headless only: its look at far and near zooms, the header's tile and badge, the options'
   panel and marks, the preview beside or under the options, the scrollbar, the highlight, and Claude Code, Codex
   and Gemini CLI each asking with `questions`, then Esc in Claude Code and an answer typed back, weren't seen. A
-  person may meet misaligned marks, a pane that crowds the options or a header that wraps in a narrow block. Fix: run `cargo run -p templum -- --dev`, ask
-  with the spec's example from each agent and from `templum ask`, and correct what looks wrong.
+  person may meet misaligned marks, a pane that crowds the options or a header that wraps in a narrow block. Card 115's
+  tabs (`tabs` in the same file: their rings, the lit tab's underline, a row that wraps) weren't seen either. Fix: run
+  `cargo run -p templum -- --dev`, ask with the spec's example from each agent and from `templum ask`, and correct
+  what looks wrong.
 - [ ] **A withdrawn request leaves its alert.** `tell_asking` (`crates/templum/src/workspace/waits.rs`) gives the
   block an "Asks you: …" alert that only answering clears (`seen_asking`); after the agent quits or the deadline
   passes, the workspace's tile stays lit and Ctrl+Shift+A leads to a block with no dialog. Fix: clear that alert

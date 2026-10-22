@@ -2,7 +2,8 @@
 
 - **Date:** 2026-10-17
 - **Status:** Implemented (kanban card 34, "Correções ask_user"; card 70 made a click only pick, Send answers; card 81
-  redrew the dialog in the language of the kanban card's dialog and the Git popup); plan:
+  redrew the dialog in the language of the kanban card's dialog and the Git popup; card 115 shows several questions
+  one at a time under tabs); plan:
   [2026-10-17-ask-user-v2.md](../plans/2026-10-17-ask-user-v2.md)
 - **Builds on:** [connections.md](connections.md#requests-from-agents) (the balloon, the tools, the notices typed
   back), [settings.md](settings.md), [shell-integration.md](shell-integration.md#news-and-notifications) (alerts and
@@ -22,9 +23,9 @@ tells the person with a sound and, when they are away, a notification and an ale
 
 1. Today's calls (`question`, `options` as strings, `timeout`; `templum ask`) show today's dialog, with Dismiss added,
    and get the answer as plain text: one of their options, or what was typed when they have none.
-2. A call with `questions` shows them all in one dialog: each with its header, its options (label, description; a
-   checkbox when `multiSelect`), a preview beside the options, and an Other field; one note for the whole call. The
-   answer comes back as JSON, an answer per question.
+2. A call with `questions` shows them in one dialog, one at a time under a tab each: each with its header, its options
+   (label, description; a checkbox when `multiSelect`), a preview beside the options, and an Other field; one note for
+   the whole call. The answer comes back as JSON, an answer per question.
 3. By default a question waits until the person answers or dismisses it; Settings ▸ Connections can set a limit.
 4. An agent whose client stops waiting doesn't lose the person's answer: it is typed into its terminal.
 5. A request makes a short sound; one the person doesn't see is a notification and an alert (the workspace's dot,
@@ -157,25 +158,17 @@ pushes "Waiting for your answer" or Send out of reach (a block too short for tha
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ (?) Waiting for your answer  2 questions                          1 of 2 │  header
 ├──────────────────────────────────────────────────────────────────────────┤
-│  [Database]                                                              │
+│  (✓) Database    ( ) Features                                            │  tabs
+│  ━━━━━━━━━━━━━                                                           │
+│  ────────────────────────────────────────────────────────────────────    │
 │  Which database should the service use?                                  │
 │  ┌──────────────────────────────┐  Preview                               │
 │  │ ◉ Postgres                   │  ┌─────────────────────────────────┐   │
-│  │   What production runs       │  │ DATABASE_URL=postgres://…       │   │
-│  │ ○ SQLite                     │  │ pool = 10                       │   │
+│  │   What production runs       │  │ DATABASE_URL=postgres://…       │   │   body,
+│  │ ○ SQLite                     │  │ pool = 10                       │   │   scrolls
 │  │   One file, no server        │  └─────────────────────────────────┘   │
 │  │ ○ Other [ Something else   ] │                                        │
-│  └──────────────────────────────┘                                        │   body,
-│  ────────────────────────────────────────────────────────────────────    │   scrolls
-│  [Features]                                                              │
-│  Which features go in the first release?                                 │
-│  ≣ Pick any                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │ ☑ Auth                                                              │ │
-│  │ ☐ Search                                                            │ │
-│  │ ☑ Export                                                            │ │
-│  │ ☐ Other [ Something else                                          ] │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
+│  └──────────────────────────────┘                                        │
 │  ────────────────────────────────────────────────────────────────────    │
 │  ▤ Note                                                         optional │
 │  [ Add a note for the agent                                            ] │
@@ -202,9 +195,20 @@ pushes "Waiting for your answer" or Send out of reach (a block too short for tha
   (header, banner, questions and foot), with the scrollbar over it, so every part is reachable by the wheel. The foot's
   buttons wrap on a second line in a dialog narrower than 260, Send on the right, so none is cut at the sides. A
   test (`the_balloons_fixed_parts_are_as_tall_as_its_fit_assumes`) keeps the heights `balloon::fit` assumes true.
-- **Questions** stack in their order with a gap of 18 and a hairline between them. Each starts with its header as a
-  chip (the kanban card number's look: `ui.accent` on `ui.accent` at 16%, rounded 6, 11.5 semibold), then its text,
-  whole (14.5, medium, line height 1.4); a multiSelect's says "Pick any" under it, dim, with lucide `list-checks`.
+- **Tabs** (card 115): a call of several questions shows **one at a time**, under a row of tabs at the top of the
+  body, one per question in its order, in the Git popup's look: each its header as its chip shows it (12 characters
+  at most), or "Question 2" without one, in `title_dim` (the terminal's text color under the pointer), medium, the
+  Git tabs' size; the shown one in the terminal's text color, underlined by 2 of the accent; a hairline under the row.
+  Before each label a 14 ring (`title_dim`) **fills with the accent and a check** once its question has an answer
+  (an option picked, or Other's text), so the person sees what is left. A click on a tab shows its question. The row
+  wraps on more lines in a dialog too narrow for one, so no tab is ever cut; it lies in the body, so card 81's small
+  block (the minimum body, the whole area, the whole frame scrolling) holds with it unchanged. Another question
+  shows from the body's top, where the tabs are. A call of one question (and today's shape, and a plan) shows no
+  tab. The note, the foot and its count are the call's, under every tab; what is typed in a tab (an Other text, a
+  free answer, the note) stays when another shows.
+- **The question shown** starts with its header as a chip (the kanban card number's look: `ui.accent` on `ui.accent`
+  at 16%, rounded 6, 11.5 semibold; not under tabs, which already name it), then its text, whole (14.5, medium, line
+  height 1.4); a multiSelect's says "Pick any" under it, dim, with lucide `list-checks`.
 - **Options** sit in a faint panel (`ui.card`, rounded 10, 4 inside), one row each: a radio (a 16 circle, a dot of the
   accent inside when picked) or a checkbox (a 16 rounded square, filled with the accent and a check when picked), the
   label (13.5) and the description under it (12, `title_dim`, line height 1.45). A row is padded 10 and 8, rounded
@@ -216,7 +220,7 @@ pushes "Waiting for your answer" or Send out of reach (a block too short for tha
   without options shows the field alone, full width (placeholder "Your answer"), with no radio and no panel.
 - **Text never gets cut.** Every text wraps in the dialog's width, a word longer than it (a path, a hash) by letters,
   and its container may shrink to it (`min_w_0`): long questions, long labels and long descriptions grow their rows,
-  and the body scrolls. Many questions stack in the same body and stay usable: Send in the foot says "1 of 3
+  and the body scrolls. Many questions stay usable: one shows at a time under its tab, and the foot says "1 of 3
   answered".
 - **Preview:** a question with an option that has a preview lays out in two columns when the dialog is at least 520
   world units wide (the block's width × 0.8; fixed by the block, not the zoom), its panel on the left (45%), the
@@ -234,7 +238,10 @@ pushes "Waiting for your answer" or Send out of reach (a block too short for tha
   `ui.hover` fill, dim and inert before, as the kanban's Comment; and left of it, when the call has several
   questions, how many have an answer ("1 of 3 answered").
 - **A click only picks.** An option, the only one of a single question too, is picked or checked and nothing more:
-  the person sends with Send, so a click by mistake answers nothing. (A plan's Approve and Reject,
+  the person sends with Send, so a click by mistake answers nothing. Under tabs, a click that picks an option of a
+  single-select question then shows the next question without an answer (wrapping), as Enter does, so a call is
+  answered with one click per question and Send; a checkbox stays (several may be checked), and so does a call whose
+  questions all have an answer. A wrong pick is still only a pick: its tab shows it again. (A plan's Approve and Reject,
   [agent-tools.md](agent-tools.md), are the decision itself and answer with their click.)
 - **Today's shape** draws today's dialog in the same frame: its options as full-width buttons (no radio: a picked one is
   tinted and its label in the accent), a click picking one; or, with none, the field. No Other row, no note; Dismiss
@@ -250,7 +257,7 @@ The card, as the person wrote it: *"Refatoração modal de ask_user: atualmente 
 textos gigantes, o texto fica cortado, layout com aspecto antigo; quero um layout mais moderno igual refatoramos o
 modal de create card do kanban e o modal de git."* The redesign changes no behavior: the same ids (`q<q>-option-<i>`,
 `q<q>-other`, `note`, `send`, `dismiss`, `allow`, `deny`, `count`, `waiting`, `stopped`, `plan-*`, `("balloon", n)`),
-the same rows and keys, the same answers.
+the same rows and keys, the same answers (card 115 changed the rows: the shown question's).
 
 1. **A header and a foot outside the scroll,** not one dialog that scrolls whole: the old balloon scrolled its first
    line and its buttons away with the text (two minors, deleted). The balloon is a column; its body is the part that
@@ -267,22 +274,46 @@ the same rows and keys, the same answers.
 6. **A block that isn't the one worked in** still pans the canvas on the wheel, as over any block ([Keyboard](#keyboard)
    and [navigation.md](navigation.md)): a click on the dialog takes the block first.
 
+### Calls made for card 115
+
+The card, as the person wrote it: *"ask_user em sistema de tabs: atualmente está em scroll, mas quero uma abinha que
+pode mudar entre as perguntas."* The answers, Other, the note, previews, multiSelect, plans and requests with two
+buttons don't change; the ids tests use stay, with `tab-<q>` and `tab-<q>-answered` added.
+
+1. **The tabs are in the body, not fixed over it.** Fixed, their height (more when they wrap) would enter
+   `balloon::fit`'s sum for the small block; in the body they scroll with it and the small block's rules hold as they
+   are. Another question shows from the top, where they are.
+2. **They wrap, rather than scroll sideways:** every tab stays in sight and clickable, and a header is 12 characters
+   at most, so a row wraps only with many questions or a narrow block.
+3. **← and → turn them; Ctrl+Tab doesn't:** it is the next workspace's shortcut, which the dialog leaves running.
+   In a field the arrows stay the field's.
+4. **A click on a single-select option moves on** to the next question without an answer, as Enter already did:
+   without it, tabs would cost a click on the next tab per question. A checkbox doesn't (the person checks several),
+   nor Space (it only picks).
+5. **The keys' rows are the shown question's**, so ↓ and Tab never land on a hidden row; the next question is reached
+   with →, or by Enter and a pick moving on.
+
 ### Keyboard
 
 - The dialog has the keyboard while its block does (focused, or under the pointer with focus following it), from the
   moment it shows, until Esc gives it back to the terminal. Given back, it stays the terminal's, also when the
   pointer leaves the block and comes back, until a click on the dialog takes it again. Meanwhile no key reaches the
   terminal; shortcuts still run, as they do from today's field.
-- **The highlight** is on one row (an option, an Other row, the note or Send) or on none, as the dialog opens. ↓ and
-  Tab put it on the first row, ↑ and Shift+Tab on Send, then move it; hovering a row puts it there. With no row
+- **The highlight** is on one row (an option, an Other row, the note or Send) or on none, as the dialog opens. Its
+  rows are the shown question's, the note and Send. ↓ and Tab put it on the first row, ↑ and Shift+Tab on Send, then
+  move it; hovering a row puts it there. With no row
   highlighted, Space and Enter do nothing: a key meant for the terminal while the pointer drifts over the block
   can't answer. A move by the keys (not the pointer, nor the wheel) scrolls the body just enough to show the row,
   once, when it is drawn: a wheel that scrolls it away after isn't fought.
+- **← and →** show the previous and the next question under tabs, wrapping, while no field has the keyboard (in a
+  field they move in its text). A highlight on the question left goes to the first row of the one shown; on the note
+  or Send it stays. Not Ctrl+Tab: it switches workspaces, and shortcuts still run while the dialog has the keys.
 - **Space** picks the highlighted option (single-select) or checks and unchecks it (multiSelect).
 - **Enter** on a single-select question's option that isn't picked picks it, and sends nothing: the highlight goes to
-  the next question without an answer (wrapping to the first) or, when that was the last, to Send. Anywhere else
-  (an option already picked, an Other field, the note, Send) it sends once every question has an answer, and moves
-  the highlight to the next question without one before. So a question without options sends what was typed on
+  the next question without an answer (wrapping to the first; under tabs, its tab shows) or, when that was the
+  last, to Send. Anywhere else (an option already picked, an Other field, the note, Send) it sends once every
+  question has an answer, and moves the highlight to the next question without one before (the shown one first,
+  from the note or Send). So a question without options sends what was typed on
   Enter, as today; a multiSelect's options are checked with Space, never Enter.
 - On an Other row or the note, the field has the keyboard (GPUI's focus) and types; Tab and Shift+Tab, and ↑ and ↓
   where the field lets them through, move on.
@@ -343,7 +374,7 @@ A `question_timeout` outside 0–1440 is an invalid file, as any bad value is.
 
 | File | Change |
 |---|---|
-| `templum-mcp/src/ask.rs` (new) | `Ask` (the questions, and whether the call used `questions`), `Question`, `Choice`; parsing both shapes; the answer's text (JSON or plain), the notice's; `Form`: what is picked, the rows, the highlight, answered or not, how many answered. Headless, unit-tested |
+| `templum-mcp/src/ask.rs` (new) | `Ask` (the questions, and whether the call used `questions`; whether it has tabs, and each tab's name), `Question`, `Choice`; parsing both shapes; the answer's text (JSON or plain), the notice's; `Form`: what is picked, the question shown (`tab`: `show`, `turn`), the rows, the highlight, answered or not, how many answered, the next question without an answer. Headless, unit-tested |
 | `templum-mcp/src/tools.rs` | the schema and description; `Call::AskUser { ask, timeout: Option<u64> }` |
 | `templum-mcp/src/lib.rs` | Codex's `tool_timeout_sec=604800` |
 | `templum-usage/src/claude.rs`, `gemini.rs` | the server's `timeout`, 604800000 ms |
@@ -351,7 +382,7 @@ A `question_timeout` outside 0–1440 is an invalid file, as any bad value is.
 | `templum/src/workspace/waits.rs` | the deadline from the setting; a cancel keeps a question; the front-of-queue time |
 | `templum/src/workspace/questions.rs` (new) | a question's fields (one per question's Other, the note), picks, Send, Dismiss, keys, the answer typed back once cancelled, the alert |
 | `templum/src/workspace/input.rs` | the dialog's keys before the terminal's |
-| `templum/src/balloon.rs` | the dialog: the frame (header, banner, scrolling body, foot) and what each kind puts in it (`question`, `plan`, `allow`) |
+| `templum/src/balloon.rs` | the dialog: the frame (header, banner, scrolling body, foot) and what each kind puts in it (`question`, its `tabs`, `plan`, `allow`) |
 | `templum/src/workspace/waits.rs`, `markdown.rs`, `kanban.rs` | `Wait::body`, the body's scroll; `PreviewScroll::follow`, which keeps it through zooms; `scrollbar_over`, the kanban column's scrollbar shared |
 | `templum/src/chime.rs` (new) | the platform's player |
 
@@ -380,6 +411,15 @@ No new dependency.
   never grows past the body); the preview goes beside the options in a wide dialog and under them in a narrow one; the
   foot counts the answers of several questions and says nothing for one; the body's scroll follows the zoom; the
   wheel over a short preview scrolls the body and over a tall one the preview. `templum-mcp`: `Form::answered`.
+- **Tabs (card 115, `templum-mcp` and `workspace/tests/requests.rs`):** the rows are the shown question's; showing a
+  question moves a highlight off the hidden one, none and the note's staying; turning wraps both ways; only several
+  questions have tabs, each named by its header or "Question N"; the next question without an answer starts after
+  the shown one, or from it. In the app: one question shows at a time and a click on a tab shows another, one
+  question shows no tab; a tab's mark follows its answer; Other texts, a free answer and the note stay across tabs and
+  Send answers the JSON; ← → turn the tabs, wrapping, and stay the field's in a field; a click on a single-select
+  option shows the next unanswered question, a checkbox stays; another question shows from the body's top, and ← →
+  on one question leave the scroll alone; Enter moving on shows its tab; tabs wrap inside the body of a narrow dialog
+  and every tab, option and Send is reached in a block too small for the dialog.
 - **By hand:** Claude Code, Codex and Gemini CLI each asking with `questions` and getting the JSON; a question left 3
   minutes in Claude Code (is the call cancelled once backgrounded? the answer reaches it either way); Esc in Claude Code while it asks, then an answer typed into
   it; the sound on Linux (with and without `canberra-gtk-play`), macOS and Windows; the dialog at far and near zooms.

@@ -344,16 +344,17 @@ pub(crate) fn render(
 }
 
 /// The id of the balloon's element `what` on block `n`: `q<q>-option-<i>`, `q<q>-other`, `note`,
-/// `send`, `dismiss`, `progress`, `allow`, `deny`, `count`, `waiting`, `stopped`, `body`.
+/// `send`, `dismiss`, `progress`, `allow`, `deny`, `count`, `waiting`, `stopped`, `body`,
+/// `tab-<q>` and, on an answered question's tab, `tab-<q>-answered`.
 pub(crate) fn part(n: usize, what: &str) -> ElementId {
     ElementId::Name(format!("balloon-{n}-{what}").into())
 }
 
-/// A question's dialog, `w` world units wide: each question with its header, text, options and
-/// Other field, a hairline between them, the note; Dismiss and Send in the foot. Today's shape
-/// (`ask.json` false) draws today's: a button per option, or the field. A click on an option only
-/// picks it; Send, lit once every question has an answer, answers. Only the rows `Form::rows`
-/// lists are drawn.
+/// A question's dialog, `w` world units wide: with several questions, a tab each, then the shown
+/// one with its header, text, options and Other field; the note; Dismiss and Send in the foot.
+/// Today's shape (`ask.json` false) draws today's: a button per option, or the field. A click on
+/// an option only picks it; Send, lit once every question has an answer, answers. Only the rows
+/// `Form::rows` lists are drawn.
 #[allow(clippy::too_many_arguments)]
 fn question(
     ws: &Workspace,
@@ -377,132 +378,134 @@ fn question(
     let ready = texts
         .as_ref()
         .is_some_and(|texts| form.answers(ask, texts).is_some());
-    let answered = texts.map_or(0, |texts| form.answered(ask, &texts));
-    let rows = Form::rows(ask);
+    let answered = texts.as_ref().map_or(0, |texts| form.answered(ask, texts));
+    let rows = form.rows(ask);
     let mut body = div().flex().flex_col().gap(px(18.0 * z));
-    for (q, question) in ask.questions.iter().enumerate() {
-        if q > 0 {
-            body = body.child(div().h(px(1.0 * z)).bg(ui.hairline));
-        }
-        let title = div()
-            .flex()
-            .flex_col()
-            .gap(px(8.0 * z))
-            .when_some(question.header_shown(), |el, header| {
-                el.child(div().flex().child(chip(header, ui, z)))
-            })
-            .child(
+    if ask.tabs() {
+        let texts = texts.as_deref().unwrap_or_default();
+        body = body.child(tabs(ws, key, ask, form, texts, n, z, cx));
+    }
+    let q = form.tab;
+    let question = &ask.questions[q];
+    let title = div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0 * z))
+        .when_some(
+            question.header_shown().filter(|_| !ask.tabs()),
+            |el, header| el.child(div().flex().child(chip(header, ui, z))),
+        )
+        .child(
+            div()
+                .min_w(px(0.0))
+                .text_size(px(TEXT * z))
+                .font_weight(FontWeight::MEDIUM)
+                .line_height(relative(1.4))
+                .child(question.text.clone()),
+        )
+        .when(question.multi, |el| {
+            el.child(
                 div()
-                    .min_w(px(0.0))
-                    .text_size(px(TEXT * z))
-                    .font_weight(FontWeight::MEDIUM)
-                    .line_height(relative(1.4))
-                    .child(question.text.clone()),
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0 * z))
+                    .text_size(px(SMALL * z))
+                    .text_color(ui.title_dim)
+                    .child(
+                        Icon::new(IconName::ListChecks)
+                            .size(px(13.0 * z))
+                            .text_color(ui.title_dim),
+                    )
+                    .child("Pick any"),
             )
-            .when(question.multi, |el| {
-                el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(5.0 * z))
-                        .text_size(px(SMALL * z))
-                        .text_color(ui.title_dim)
-                        .child(
-                            Icon::new(IconName::ListChecks)
-                                .size(px(13.0 * z))
-                                .text_color(ui.title_dim),
-                        )
-                        .child("Pick any"),
-                )
-            });
-        let mut block = div().flex().flex_col().gap(px(10.0 * z)).child(title);
-        // Its options and Other, in a faint panel; with a preview, a column beside it (or under
-        // it, in a narrow dialog).
-        let mut choices = div().flex().flex_col().gap(px(2.0 * z));
-        for (i, choice) in question.options.iter().enumerate() {
-            let id = part(n, &format!("q{q}-option-{i}"));
-            let (picked, lit) = (form.picked(q, i), form.highlight == Some(Row::Option(q, i)));
-            // Today's shape: a button, no radio.
-            let mark = ask.json.then_some(question.multi);
-            choices = choices.child(
-                option(id, mark, picked, lit, choice, ui, z)
-                    .children(reveal(Row::Option(q, i), wait))
-                    .on_click(cx.listener(once(move |ws, window, cx| {
-                        ws.pick_option(key, q, i, window, cx)
-                    })))
-                    .on_hover(hover(key, Row::Option(q, i), cx))
-                    .test_support(),
+        });
+    let mut block = div().flex().flex_col().gap(px(10.0 * z)).child(title);
+    // Its options and Other, in a faint panel; with a preview, a column beside it (or under
+    // it, in a narrow dialog).
+    let mut choices = div().flex().flex_col().gap(px(2.0 * z));
+    for (i, choice) in question.options.iter().enumerate() {
+        let id = part(n, &format!("q{q}-option-{i}"));
+        let (picked, lit) = (form.picked(q, i), form.highlight == Some(Row::Option(q, i)));
+        // Today's shape: a button, no radio.
+        let mark = ask.json.then_some(question.multi);
+        choices = choices.child(
+            option(id, mark, picked, lit, choice, ui, z)
+                .children(reveal(Row::Option(q, i), wait))
+                .on_click(cx.listener(once(move |ws, window, cx| {
+                    ws.pick_option(key, q, i, window, cx)
+                })))
+                .on_hover(hover(key, Row::Option(q, i), cx))
+                .test_support(),
+        );
+    }
+    if rows.contains(&Row::Other(q)) {
+        let input = &others[q].0;
+        let lit = form.highlight == Some(Row::Other(q));
+        let mut other = div()
+            .id(part(n, &format!("q{q}-other")))
+            .flex()
+            .items_center()
+            .gap(px(8.0 * z))
+            .w_full()
+            .rounded(px(8.0 * z))
+            .when(!question.options.is_empty(), |el| {
+                let (fill, _) = tint(form.other_picked(q), lit, ui);
+                el.px(px(10.0 * z))
+                    .py(px(6.0 * z))
+                    .when_some(fill, |el, fill| el.bg(fill))
+            })
+            .when(question.options.is_empty() && lit, |el| el.bg(ui.hover));
+        if !question.options.is_empty() {
+            // A press on its mark or its name puts the keyboard in its field.
+            let focus = input.clone();
+            other = other.child(
+                div()
+                    .id(part(n, &format!("q{q}-other-mark")))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0 * z))
+                    .cursor_pointer()
+                    .child(mark(question.multi, form.other_picked(q), ui, z))
+                    .child(div().text_size(px(LABEL * z)).child("Other"))
+                    .on_click(move |_, window, cx| {
+                        focus.update(cx, |input, cx| input.focus(window, cx))
+                    }),
             );
         }
-        if rows.contains(&Row::Other(q)) {
-            let input = &others[q].0;
-            let lit = form.highlight == Some(Row::Other(q));
-            let mut other = div()
-                .id(part(n, &format!("q{q}-other")))
-                .flex()
-                .items_center()
-                .gap(px(8.0 * z))
-                .w_full()
-                .rounded(px(8.0 * z))
-                .when(!question.options.is_empty(), |el| {
-                    let (fill, _) = tint(form.other_picked(q), lit, ui);
-                    el.px(px(10.0 * z))
-                        .py(px(6.0 * z))
-                        .when_some(fill, |el, fill| el.bg(fill))
-                })
-                .when(question.options.is_empty() && lit, |el| el.bg(ui.hover));
-            if !question.options.is_empty() {
-                // A press on its mark or its name puts the keyboard in its field.
-                let focus = input.clone();
-                other = other.child(
-                    div()
-                        .id(part(n, &format!("q{q}-other-mark")))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.0 * z))
-                        .cursor_pointer()
-                        .child(mark(question.multi, form.other_picked(q), ui, z))
-                        .child(div().text_size(px(LABEL * z)).child("Other"))
-                        .on_click(move |_, window, cx| {
-                            focus.update(cx, |input, cx| input.focus(window, cx))
-                        }),
-                );
-            }
-            other = other
-                .child(git_block::field(input, z).flex_1().min_w(px(0.0)))
-                .children(reveal(Row::Other(q), wait));
-            choices = choices.child(other.on_hover(hover(key, Row::Other(q), cx)).test_support());
-        }
-        let panel = |choices: Div| {
-            if question.options.is_empty() {
-                choices
-            } else {
-                choices.p(px(4.0 * z)).rounded(px(10.0 * z)).bg(ui.card)
-            }
-        };
-        block = block.child(match ask.preview_of(q, form) {
-            None => panel(choices),
-            Some(shown) => {
-                let preview = preview(ws, shown, n, q, z);
-                if w >= BESIDE {
-                    div()
-                        .flex()
-                        .items_start()
-                        .gap(px(12.0 * z))
-                        .child(panel(choices).w(relative(0.45)).flex_shrink_0())
-                        .child(preview)
-                } else {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.0 * z))
-                        .child(panel(choices))
-                        .child(preview)
-                }
-            }
-        });
-        body = body.child(block);
+        other = other
+            .child(git_block::field(input, z).flex_1().min_w(px(0.0)))
+            .children(reveal(Row::Other(q), wait));
+        choices = choices.child(other.on_hover(hover(key, Row::Other(q), cx)).test_support());
     }
+    let panel = |choices: Div| {
+        if question.options.is_empty() {
+            choices
+        } else {
+            choices.p(px(4.0 * z)).rounded(px(10.0 * z)).bg(ui.card)
+        }
+    };
+    block = block.child(match ask.preview_of(q, form) {
+        None => panel(choices),
+        Some(shown) => {
+            let preview = preview(ws, shown, n, q, z);
+            if w >= BESIDE {
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.0 * z))
+                    .child(panel(choices).w(relative(0.45)).flex_shrink_0())
+                    .child(preview)
+            } else {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0 * z))
+                    .child(panel(choices))
+                    .child(preview)
+            }
+        }
+    });
+    body = body.child(block);
     if let Some((input, _)) = note {
         body = body.child(div().h(px(1.0 * z)).bg(ui.hairline)).child(
             div()
@@ -575,6 +578,81 @@ fn question(
         body,
         foot,
     }
+}
+
+/// The tabs of the question `key`, which asks several (docs/specs/ask-user.md, Tabs), in the Git
+/// popup's look: each its header, or "Question N", after a ring that fills with a check once its
+/// question has an answer (`others`: the Other texts); the shown one is underlined in the accent.
+/// A click shows its question. They wrap on more lines in a dialog too narrow for one row.
+#[allow(clippy::too_many_arguments)]
+fn tabs(
+    ws: &Workspace,
+    key: u64,
+    ask: &Ask,
+    form: &Form,
+    others: &[String],
+    n: usize,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> Div {
+    let ui = ws.ui;
+    let fg = hsla(ws.theme.palette.foreground, 1.0);
+    let tabs = (0..ask.questions.len()).map(|q| {
+        let on = q == form.tab;
+        let ring = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .flex_shrink_0()
+            .size(px(14.0 * z))
+            .rounded_full();
+        let ring = if form.has_answer(ask, q, others) {
+            ring.id(part(n, &format!("tab-{q}-answered")))
+                .bg(ui.accent)
+                .child(
+                    Icon::new(IconName::Check)
+                        .size(px(10.0 * z))
+                        .text_color(ui.surface),
+                )
+                .test_support()
+                .into_any_element()
+        } else {
+            ring.border_1()
+                .border_color(ui.title_dim)
+                .into_any_element()
+        };
+        div()
+            .id(part(n, &format!("tab-{q}")))
+            .flex()
+            .items_center()
+            .gap(px(6.0 * z))
+            .min_w(px(0.0))
+            .min_h(px(30.0 * z))
+            .border_b_2()
+            .border_color(if on {
+                ui.accent
+            } else {
+                gpui_kit::transparent_black()
+            })
+            .text_size(px(FONT * z))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(if on { fg } else { ui.title_dim })
+            .cursor_pointer()
+            .hover(move |s| s.text_color(fg))
+            .child(ring)
+            .child(ask.tab(q))
+            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                ws.show_question(key, q, window, cx)
+            }))
+            .test_support()
+    });
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_x(px(16.0 * z))
+        .border_b_1()
+        .border_color(ui.hairline)
+        .children(tabs)
 }
 
 /// A plan's dialog (docs/specs/agent-tools.md, propose_plan): the chip "Plan" and its title, its

@@ -3,7 +3,7 @@
 
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Focusable as _, Keystroke, Window};
+use gpui_kit::{App, Context, Focusable as _, Keystroke, Window, point, px};
 use templum_canvas::BlockId;
 use templum_mcp::Reply;
 use templum_mcp::ask::{Ask, Form, Row};
@@ -114,7 +114,8 @@ impl Workspace {
     }
 
     /// A click on option `i` of question `q` of the question `key`: picked, or checked, and
-    /// nothing more: Send answers. A plan's Approve and Reject answer with their click.
+    /// nothing more: Send answers. A pick in a single-select question shows the next question
+    /// without an answer, as Enter does. A plan's Approve and Reject answer with their click.
     pub(crate) fn pick_option(
         &mut self,
         key: u64,
@@ -126,14 +127,48 @@ impl Workspace {
         if self.question_too_soon(key, cx) {
             return;
         }
+        let others = self.others(key, cx);
         let Some((ask, form)) = self.form_of(key) else {
             return;
         };
         form.pick(ask, q, i);
         let quick = ask.quick();
+        let next = (!ask.questions[q].multi)
+            .then(|| form.unanswered(ask, &others))
+            .flatten();
+        if let Some(next) = next.filter(|next| *next != form.tab) {
+            form.show(ask, next);
+            self.question_turned(key, window, cx);
+        }
         cx.notify();
         if quick {
             self.send_question(key, window, cx);
+        }
+    }
+
+    /// A click on the tab of question `q` of the question `key`: that question shows.
+    pub(crate) fn show_question(
+        &mut self,
+        key: u64,
+        q: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((ask, form)) = self.form_of(key)
+            && form.tab != q
+        {
+            form.show(ask, q);
+            self.question_turned(key, window, cx);
+            cx.notify();
+        }
+    }
+
+    /// The question `key` shows another of its questions: the keyboard goes where the highlight
+    /// went (off a hidden field), and the body back to its top, where the question starts.
+    fn question_turned(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_highlight(key, window, cx);
+        if let Some(wait) = self.waits.iter().find(|w| w.key == key) {
+            wait.body.handle.set_offset(point(px(0.0), px(0.0)));
         }
     }
 
@@ -185,8 +220,9 @@ impl Workspace {
     }
 
     /// The dialog's keys, while it has the keyboard (`balloon_keys`): ↑ ↓ Tab Shift+Tab move the
-    /// highlight, Space picks, Enter picks and sends or moves on, Esc gives the keyboard back to
-    /// the terminal. True: the dialog took the key.
+    /// highlight, ← → show the previous or next question (out of a field), Space picks, Enter
+    /// picks and sends or moves on, Esc gives the keyboard back to the terminal. True: the dialog
+    /// took the key.
     pub(crate) fn question_key(
         &mut self,
         terminal: &str,
@@ -202,15 +238,21 @@ impl Workspace {
         if m.control || m.alt || m.platform || m.function {
             return false;
         }
-        let by = match (keystroke.key.as_str(), m.shift) {
-            ("down", false) | ("tab", false) => Some(1),
-            ("up", false) | ("tab", true) => Some(-1),
-            ("space" | "enter" | "escape", false) => None,
+        let (by, turn) = match (keystroke.key.as_str(), m.shift) {
+            ("down", false) | ("tab", false) => (Some(1), None),
+            ("up", false) | ("tab", true) => (Some(-1), None),
+            ("left", false) => (None, Some(-1)),
+            ("right", false) => (None, Some(1)),
+            ("space" | "enter" | "escape", false) => (None, None),
             _ => return false,
         };
-        // In a field, the highlight is its row, and Space types.
+        // In a field, the highlight is its row, and Space types (← → never come here from a
+        // field: its own keys take them).
         let typing = self.typing_row(wait, window, cx);
         if typing.is_some() && keystroke.key == "space" {
+            return false;
+        }
+        if turn.is_some() && !matches!(&wait.what, Waiting::Question { ask, .. } if ask.tabs()) {
             return false;
         }
         if wait.too_soon(cx) {
@@ -222,18 +264,22 @@ impl Workspace {
         if typing.is_some() {
             form.highlight = typing;
         }
-        match (by, keystroke.key.as_str()) {
-            (Some(by), _) => {
+        match (by, turn, keystroke.key.as_str()) {
+            (Some(by), _, _) => {
                 form.step(ask, by);
                 self.focus_highlight(key, window, cx);
                 self.reveal_highlight(key);
             }
-            (None, "space") => {
+            (_, Some(turn), _) => {
+                form.turn(ask, turn);
+                self.question_turned(key, window, cx);
+            }
+            (_, _, "space") => {
                 if let Some(Row::Option(q, i)) = form.highlight {
                     form.pick(ask, q, i);
                 }
             }
-            (None, "enter") => {
+            (_, _, "enter") => {
                 if form.highlight.is_some() {
                     self.question_enter(key, window, cx);
                 }
@@ -265,13 +311,14 @@ impl Workspace {
             return;
         }
         let typing = self.typing_row(wait, window, cx);
-        let others = self.texts(wait, cx).map(|(o, _)| o).unwrap_or_default();
+        let others = self.others(key, cx);
         let Some((ask, form)) = self.form_of(key) else {
             return;
         };
         if typing.is_some() {
             form.highlight = typing;
         }
+        let tab = form.tab;
         // An option picked now is only picked: the Enter that sends comes after it, on Send or
         // anywhere once the dialog is ready. A plan's Approve and Reject answer at once.
         let mut picking = false;
@@ -289,7 +336,11 @@ impl Workspace {
             self.send_question(key, window, cx);
             return;
         }
-        self.focus_highlight(key, window, cx);
+        if form.tab != tab {
+            self.question_turned(key, window, cx);
+        } else {
+            self.focus_highlight(key, window, cx);
+        }
         self.reveal_highlight(key);
         cx.notify();
     }
@@ -412,6 +463,16 @@ impl Workspace {
         if typing {
             window.focus(&self.focus_handle, cx);
         }
+    }
+
+    /// The Other texts of the question `key` (none when it isn't one).
+    fn others(&self, key: u64, cx: &App) -> Vec<String> {
+        self.waits
+            .iter()
+            .find(|w| w.key == key)
+            .and_then(|w| self.texts(w, cx))
+            .map(|(others, _)| others)
+            .unwrap_or_default()
     }
 
     /// A question's Other texts and its note ("" without one).
