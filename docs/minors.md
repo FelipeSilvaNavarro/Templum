@@ -1636,6 +1636,27 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   the person sees the file added to the chat without saying yes. Fix: the second Enter into a changed screen only for
   the agents known to take a burst of keys for a paste (Codex, Copilot CLI: a flag in the agent table,
   `templum_terminal::Agent`), not for every agent on Windows.
+- [ ] **Two Enters taken for new lines count as a task taken by an agent without hooks.** Left by card 118's review
+  (`EnterCheck::look`, the `(true, _, false) if self.moved` arm, `crates/templum/src/workspace/delegate.rs`): a paste
+  that went as keys (Codex or Copilot CLI on Windows, before their hooks spoke) can take both Enters for new lines;
+  each changed the screen, so the task counts as taken while it sits in the input. The master hears "Handed to k9x1d
+  as task t7." and waits for an answer that never comes, until the still screen or the timeout ends the task. Fix:
+  after a second Enter into a paste that went as keys, take a screen whose only change is one more row in the input
+  for "typed but not submitted".
+- [ ] **A cancelled `delegate` loses "didn't take the task".** Left by card 118's review (`Outcome::Later` in
+  `serve`, `crates/templum/src/workspace/bus.rs`; `cancel`, `waits.rs`; `not_taken`, `delegate.rs`): a `delegate`
+  without `wait` now answers only once the agent took the task; when its client gives up on the call meanwhile (Esc
+  in Claude Code), `cancel` only drops waits, so the job still answers the cancelled request, and `not_taken`, seeing
+  a call still to tell, types no notice. The master sees nothing about a task its agent never took. Fix: keep the
+  `Later` job's request id with it, and drop the job on `notifications/cancelled`: `not_taken` then finds `told`
+  cancelled and types the notice.
+- [ ] **A notice or a reply its agent's person typed over before its Enter stays unsent.** Left by card 118's review
+  (`Step::Typing` in `send_task`, `crates/templum/src/workspace/delegate.rs`): the Enter no longer goes once the
+  person typed into the agent after the paste, so their text isn't sent with it; a task then ends untaken and its
+  asker hears so, but a notice or a reply (no task) just stays in the input with the person's text, and nothing types
+  it again. Rare: the person must type in the 150–300 ms between the paste and its Enter (a notice already waits until
+  they stopped typing for 3 s). Fix: put a notice back in `notices` (its text cleared from the input first is the
+  hard part), and answer a reply with what `send_task` says, as the reply minor above asks.
 
 ## Placing new blocks
 

@@ -1400,9 +1400,12 @@ it; `wait_for(needs_you)` and `delegate`'s refusal show the dialog as drawn, `li
 **Card 118:** a task's Enter waits for its paste to stand still a look, and a screen that keeps moving gets it after
 the looks; an agent no hook speaks for took it when its screen moves; an Enter taken for a new line (a fake agent that
 reads its first line and starts on the second Enter) gets a second one, and `delegate` answers once it went; two
-Enters that change nothing (a fake whose input never sends) answer `delegate` with "typed but not submitted", end the
-task, and type no notice besides; a task handed to an agent spawned a moment ago, which no snapshot found yet, waits
-and is typed once it is ready.
+Enters that change nothing (a fake whose input never sends) answer `delegate` with "typed but not submitted" and to
+clear its input, end the task, and type no notice besides; a bracketed paste whose Enter changed the screen, then still
+(a dialog drawn at once), gets no second Enter; the person typing before the Enter gets none; an earlier task's looks
+press nothing into a later one; a task handed to an agent spawned a moment ago, which no snapshot found yet, waits and
+is typed once it is ready and not asking its person, and ends a minute after it was handed when it isn't; one no
+snapshot found within a minute of its start never started, and a task for it is refused.
 
 **Batch 8:** a task handed without `wait` comes back typed, with its id and time; what it spent is its cost, else its
 tokens, read again after its end, and its transcript is the one its hooks named, on one line; a waiting call gets the

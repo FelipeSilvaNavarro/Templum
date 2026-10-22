@@ -24,8 +24,14 @@ answers, and a subagent is told to send its answer back that way.
 ## How it works today, agent by agent
 
 A task is always delivered the same way, whatever the agent: Templum types `[from <title> (<id>), task t7] Your task
-is in the pasted text: do it.` as a paste, the task as a second paste, and Enter once the screen shows the paste
-(`send_task`, `crates/templum/src/workspace/delegate.rs`). What differs is what Templum hears back:
+is in the pasted text: do it.` as a paste, the task as a second paste, and Enter once the screen shows the paste and
+stood still a look, 150 ms (an agent that reads a paste as keys takes an Enter among them for a new line), and not
+once its person typed into it since (`send_task`, `crates/templum/src/workspace/delegate.rs`). Then it checks the
+agent took it: its hooks say so (`Submitted`), or, without hooks, its screen moves. With neither within 3 seconds, a
+second Enter goes only where it can't answer a dialog: the first changed nothing on the screen, or the paste went as
+keys (Windows' console, a program that asked for no bracketed paste). `delegate` answers once it knows: the task
+taken, or why not ("typed but not submitted" when neither Enter changed anything). What differs is what Templum hears
+back:
 
 - **An agent whose hooks speak** (`Pane::speaks`): its turn's end (`AgentEvent::Stopped`) carries its whole last
   message, which ends the task (`agent_event`, `crates/templum/src/workspace/bus.rs`); a permission prompt is heard
