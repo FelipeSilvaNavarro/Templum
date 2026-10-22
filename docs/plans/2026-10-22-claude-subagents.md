@@ -148,6 +148,48 @@ The CHANGELOG moves subagents' defaults often: nesting went from five layers to 
 each arrived in a release of their own. Templum should rely on the hooks' fields and the documented transcript path,
 treat `meta.json` as optional, and never on a default (foreground or background, a depth).
 
+### The probe
+
+Run on 2026-10-22 for the build (card 127), on Claude Code **2.1.286**: `claude -p` on haiku, in a scratch folder of
+two small files, with every `TEMPLUM_*` and `CLAUDE_CODE_*` variable unset and Templum's `bin` off `PATH`,
+`--setting-sources local` (none of the person's hooks or plugins), `--strict-mcp-config` with an empty config, and a
+`--settings` file whose hook logged its stdin for `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+`PostToolUseFailure`, `PermissionRequest`, `Notification`, `Stop`, `StopFailure`, `SubagentStart`, `SubagentStop`
+and `SessionEnd`. One run: two `Agent` calls in one message, an `Explore` (no `run_in_background`) and a
+`general-purpose` with `run_in_background: true` asked to `touch` a file. Shapes only, as seen (**observed**):
+
+- **Both ran in the background**, `-p` and the `Explore` without the flag included: `PostToolUse` of `Agent` came at
+  once with `tool_response` `{isAsync: true, status: "async_launched", agentId, description, prompt, resolvedModel,
+  outputFile, canReadOutputFile}`. Per call: `PreToolUse` (`Agent`), then `SubagentStart`, then that `PostToolUse`.
+- **`SubagentStart`**: the common fields (`session_id`, `transcript_path` of the main session, `cwd`, `prompt_id`)
+  and `agent_id`, `agent_type`. The id is `a` and 16 hex digits, with no `agent-` prefix (the file name adds it).
+- **Tool hooks inside a subagent** (`PreToolUse`, `PostToolUse`) carry `agent_id` and `agent_type`; the main loop's
+  carry neither.
+- **A background subagent's `PermissionRequest`** carries `agent_id` and `agent_type`, `tool_name`, `tool_input`,
+  `permission_suggestions`, and **no** `tool_use_id`: a wait is told apart by the subagent, not by the call.
+- **`SubagentStop`**: `agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message`,
+  `stop_hook_active`, `session_crons`, and `background_tasks`, which **still lists the stopping subagent** as
+  `running`. `agent_transcript_path` is the main `transcript_path` without `.jsonl`, then
+  `/subagents/agent-<agent_id>.jsonl`, as documented.
+- **`Stop`**: `background_tasks` lists each subagent at work as `{id, type: "subagent", status: "running",
+  description, agent_type}` (the id is the `agent_id`); `[]` once none is.
+- **A report** comes as a turn of its own: a `UserPromptSubmit` whose `prompt` starts with `<task-notification>` and
+  holds `<task-id>` (the `agent_id`), `<tool-use-id>`, `<output-file>`, `<status>completed</status>`, `<summary>` and
+  a `<note>`; then that turn's `Stop`.
+- **The interim answer, confirmed, and a race.** The first `Stop` came with both subagents in `background_tasks` and
+  an interim message. Then the second subagent stopped while the turn taking the first's report ran: that turn's `Stop`
+  had `background_tasks: []` and the message "Waiting for the background agent to complete…", and the real answer came
+  one turn later, with the second report. `background_tasks` alone would have ended a task one turn early.
+- **The transcript.** `agent-<id>.meta.json` beside it: `agentType`, `description`, `toolUseId`, `spawnDepth`,
+  `requestShape`, `requestNonInteractive`. Its lines: a `user` line whose content is the prompt as a string, then
+  `attachment` lines (environment, model, skills, date…), `assistant` lines with one content block each (`thinking`,
+  `tool_use` or `text`), `user` lines with `tool_result` blocks; the last `assistant` line has
+  `message.stop_reason: "end_turn"`.
+- **In `-p`** the `touch` was refused without a dialog: `PermissionRequest` fired, then the subagent tried `Write`
+  (another `PermissionRequest`), with no `PostToolUseFailure` between.
+- **Not probed:** a foreground subagent (fork mode off), nesting, resuming, `/btw`, the interactive screen's dialogs
+  and whether `Notification` names a subagent, and stopping one from Claude Code's panel.
+
 ## What Templum does with them today
 
 - **Nothing shows them.** Templum's `--settings` (`templum-usage`'s `claude.rs`) has none of the subagent hooks;
