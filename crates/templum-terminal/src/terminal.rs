@@ -1241,7 +1241,7 @@ impl Terminal {
     }
 
     /// The program asked for pastes to be bracketed.
-    fn bracketed(&self) -> bool {
+    pub fn bracketed(&self) -> bool {
         self.term
             .0
             .lock_unfair()

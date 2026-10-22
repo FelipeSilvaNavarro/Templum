@@ -1629,6 +1629,13 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   answers at once; it gets its second Enter like a task, but one that still isn't sent is lost silently. A master sees
   "Typed into k9x1d." for a reply sitting in that agent's input. Fix: answer `reply` with `Outcome::Later` on what
   `send_task` says, as `hand_task` does.
+- [ ] **On Windows a second Enter can still answer a dialog of an agent without hooks.** Left by card 118's review
+  (`EnterCheck::look`, `crates/templum/src/workspace/delegate.rs`): there every paste goes as keys (the console hands
+  keys on, bracketed or not), so a screen the first Enter changed and that stands still for 3 s gets a second Enter.
+  Aider asks at once "Add file to the chat? (Y)es/(N)o … [Yes]" for a task naming a file of its repository or a URL:
+  the person sees the file added to the chat without saying yes. Fix: the second Enter into a changed screen only for
+  the agents known to take a burst of keys for a paste (Codex, Copilot CLI: a flag in the agent table,
+  `templum_terminal::Agent`), not for every agent on Windows.
 
 ## Placing new blocks
 

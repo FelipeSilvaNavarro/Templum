@@ -201,20 +201,22 @@ later starts with none.
    Gemini CLI's `BeforeAgent`) must take the task within 3 seconds of its Enter, or open a dialog; one at work when the
    task was typed queued it (Codex says it took it only once a turn takes it in, maybe minutes later). Nothing else
    confirms it: not a turn's end, a notification (Claude Code's `idle_prompt`, a minute after a turn), nor a moving
-   screen. With no word, it gets its Enter once more (the first may have joined the paste as a new line), only while
-   Templum still may type into it, its screen hasn't changed since 150 ms after the first (a dialog no hook tells of
-   would have drawn) and the person hasn't typed into it for 3 seconds; otherwise, or with still no word 3 seconds
-   later, the task ends untaken, with the last 20 lines of its screen. A turn that ends before the agent took the task
-   (the turn it was on) doesn't answer it.
+   screen. With no word, it gets its Enter once more, only where that Enter can't answer a dialog: the first changed
+   nothing on its screen (the task still sits in its input), or the paste went as keys (Windows' console, a program
+   that asked for no bracketed paste), which an agent may take an Enter among for a new line in it. And only while
+   Templum still may type into it, its screen hasn't changed since 150 ms after the first and the person hasn't typed
+   into it for 3 seconds; otherwise, or with still no word 3 seconds later, the task ends untaken, with the last 20
+   lines of its screen. A turn that ends before the agent took the task (the turn it was on) doesn't answer it.
    **Confirmed by its screen** (card 118): the agents without hooks, and those whose hooks haven't spoken yet (Codex's
    `SessionStart`, Copilot CLI's, OpenCode's and Kilo Code's first event come with their first prompt), took it once
    their screen moves (two looks in a row, 150 ms apart, see it change: a spinner, a timer) within 3 seconds of the
    Enter. Before card 118 they got no confirmation, and a task whose Enter became a new line sat in their input until
-   its timeout. A screen that didn't change at all since 150 ms after the Enter (no dialog drew) gets the Enter once
-   more, as above; with still nothing moving 3 seconds later, the task ends untaken if neither Enter changed the
-   screen: "typed but not submitted". One an Enter changed, then nothing moved, took it and works drawing nothing. A
-   screen that changed and stopped without a second Enter (a dialog no hook tells of, or work that draws nothing) took
-   it too: Templum can't tell, and presses nothing more into it.
+   its timeout. A screen that didn't change since 150 ms after the Enter gets the Enter once more, as above: the Enter
+   changed nothing, or the paste went as keys; with still nothing moving 3 seconds later, the task ends untaken if
+   neither Enter changed the screen: "typed but not submitted". One an Enter changed, then nothing moved, took it and
+   works drawing nothing. A screen that changed and stopped without a second Enter (a dialog no hook tells of, drawn
+   at once, as Aider's "Add file to the chat? [Yes]" for a task naming a file, or work that draws nothing) took it
+   too: Templum can't tell, and presses nothing more into it.
 3. The wire's dot travels from Claude Code to Codex while Codex works.
 4. When Codex answers the task with `reply` (it is asked to: 2), that text, whole, ends the task and becomes the
    result of Claude Code's `delegate` (when it asked to wait), or of a later `wait_for_idle`. Without a `reply`, its
@@ -1493,9 +1495,9 @@ results](../plans/2026-10-16-connections-batch-8.md#spike-results)).
 | An agent answers another's trust question (a folder's, or Codex's for hooks, which may list a repository's own hooks) | The wire is the person's consent; "answered by" names the agent; the result shows the screen after the keys |
 | Keys into a shell | The same trust as `send_to_terminal`; at most 16 keys a call |
 | A model or effort typed into a shell | A strict set of characters, no leading `-`, an effort from its agent's list; refused before anything opens |
-| A dialog no hook tells of (a trust question, Codex's choice of model) | No blind second Enter into a changed screen; a hooked agent gone still for 30 seconds seems stuck, and its asker hears so |
+| A dialog no hook tells of (a trust question, Codex's choice of model, Aider's "Add file to the chat?") | No second Enter into a screen the first changed, unless the paste went as keys (Windows' console; an Aider there may still get one: [minors](../minors.md)); a hooked agent gone still for 30 seconds seems stuck, and its asker hears so |
 | An agent reads a paste as keys and takes an Enter just after them for a new line (Codex and Copilot CLI on Windows) | From card 118 the Enter waits for the screen to stand still, and a screen that didn't move after it gets a second one |
-| An agent no hook speaks for takes a task and draws nothing while it works | Its first Enter changed its screen: it took the task, and its second Enter goes into an empty input; only an agent no Enter changed is told "typed but not submitted" |
+| An agent no hook speaks for takes a task and draws nothing while it works | Its first Enter changed its screen: it took the task (a second Enter, only after a paste that went as keys, goes into an empty input); only an agent no Enter changed is told "typed but not submitted" |
 | Codex's hooks need its person's trust | Asked once, about one fixed command (`templum hook codex`); never `--dangerously-bypass-hook-trust` |
 | A notice typed into an agent the person is typing into | It waits until the person stopped typing for 3 seconds; never into a shell |
 | What a task spent, read before its agent wrote its last figure | Read again a second after its end: Claude Code's status line gives its last cost 0.3 s after its `Stop`, Codex writes its tokens just before its own (batch 8's spikes) |

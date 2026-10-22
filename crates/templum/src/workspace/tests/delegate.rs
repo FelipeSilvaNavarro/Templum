@@ -221,6 +221,14 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
     let (terminal, uid) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
     has_server(handle, &ws, cx, &worker, 7);
+    // `cat` prints the sequence back: the terminal now brackets pastes, which take no Enter for a
+    // new line.
+    prints(&ws, cx, theirs, b"\x1b[?2004hon\r");
+    screen_with(&ws, cx, theirs, "2004honon");
+    let inputs = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().term.inputs())
+    };
+    let before = inputs(cx);
     let task = json!({ "block": them, "task": "fix the tests\nthen push" });
     // Answered once it took the task: `cat` has no hooks, its screen moved after the Enter.
     let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, false);
@@ -228,6 +236,8 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
         (failed, text),
         (false, format!("Handed to {them} as task t1."))
     );
+    // Its first line, its text, one Enter.
+    assert_eq!(inputs(cx), before + 3, "one Enter");
     ws.read_with(cx, |ws, _| {
         let handed = ws
             .space
@@ -239,19 +249,21 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
         assert_eq!(handed.by, terminal);
         assert_eq!(handed.id, 1);
     });
-    // `cat` asks for no bracketed paste: the task comes as one line, echoed as it is typed, then
-    // printed again once Enter sent it.
-    screen_with(&ws, cx, theirs, "then push");
-    // The echo's first row ends at "tests": the rows join without the space after it.
-    screen_with(
+    // The terminal echoes ESC as "^[": the header, a paste of its own, then the task's lines. The
+    // task is longer than the screen: its start is read in the history.
+    history_with(
         &ws,
         cx,
         theirs,
         &format!(
-            "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply. fix the tests"
+            "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply.^[[201~^[[200~"
         ),
     );
-    screen_with(&ws, cx, theirs, "standard input.)[from");
+    screen_with(&ws, cx, theirs, "then push");
+    // Its last line, echoed, then printed once the Enter sent it.
+    screen_until(&ws, cx, theirs, |s| {
+        s.matches("standard input.)").count() >= 2
+    });
 }
 
 /// Claude Code takes a long paste alone for data it was shown, not for what it is asked: the

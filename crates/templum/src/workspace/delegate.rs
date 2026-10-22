@@ -219,15 +219,18 @@ impl NotTaken {
 enum Check {
     Wait,
     Taken,
-    /// Press Enter once more: the first may have joined the paste as a new line.
+    /// Press Enter once more: the first may have joined the paste as a new line, or done nothing.
     Again,
     Not(NotTaken),
 }
 
 /// The looks after a typed task's Enter (`send_task`), ENTER_AFTER apart for CONFIRM: did its
 /// agent take it? One whose hooks speak says so (`Submitted`); another's screen moves (a spinner,
-/// a timer). A screen that didn't change since just after the Enter gets the Enter once more: no
-/// dialog drew, and the text may still sit in its input, the first Enter a new line in it.
+/// a timer). A screen that didn't change since just after the Enter gets the Enter once more
+/// where that Enter can't answer a dialog: it changed nothing (the text still sits in the input),
+/// or the paste went as keys, which an agent may take an Enter among for a new line in it. A
+/// screen the Enter changed otherwise may be a dialog drawn at once (Aider's "Add file to the
+/// chat? [Yes]"), and gets nothing more.
 struct EnterCheck {
     /// Its hooks spoke before the Enter.
     spoke: bool,
@@ -235,7 +238,9 @@ struct EnterCheck {
     submitted: u64,
     /// Its screen when the Enter went.
     before: String,
-    /// An Enter changed it: a new line in its input, or the task taken.
+    /// The paste went as keys (Windows' console, a program that asked for no bracketed paste).
+    keys: bool,
+    /// An Enter changed it: a new line in its input, the task taken, or a dialog.
     moved: bool,
     /// Its screen ENTER_AFTER after the Enter, once read, and at the last look.
     after: Option<String>,
@@ -248,11 +253,12 @@ struct EnterCheck {
 }
 
 impl EnterCheck {
-    fn new(spoke: bool, submitted: u64, before: String) -> Self {
+    fn new(spoke: bool, submitted: u64, before: String, keys: bool) -> Self {
         Self {
             spoke,
             submitted,
             before,
+            keys,
             moved: false,
             after: None,
             last: String::new(),
@@ -292,15 +298,15 @@ impl EnterCheck {
             return Check::Wait;
         }
         match (still && !typing, self.second, self.spoke) {
-            (true, false, _) => Check::Again,
+            (true, false, _) if !self.moved || self.keys => Check::Again,
             // An Enter did something, then nothing moved: it took the task, and works drawing
-            // nothing.
-            (true, true, false) if self.moved => Check::Taken,
+            // nothing, or it drew a dialog no hook tells of. Templum can't tell, and presses
+            // nothing more into it.
+            (true, _, false) if self.moved => Check::Taken,
             (true, true, _) => Check::Not(NotTaken::Unsent),
-            // It changed, then stopped: a dialog no hook tells of, or work that draws nothing
-            // more. Templum can't tell, and presses nothing more into it.
-            (false, _, false) => Check::Taken,
-            (false, _, true) => Check::Not(NotTaken::Unheard),
+            // It changed, then stopped: the same.
+            (_, _, false) => Check::Taken,
+            (_, _, true) => Check::Not(NotTaken::Unheard),
         }
     }
 
@@ -310,7 +316,7 @@ impl EnterCheck {
         *self = Self {
             second: true,
             moved: self.moved,
-            ..Self::new(self.spoke, self.submitted, before)
+            ..Self::new(self.spoke, self.submitted, before, self.keys)
         };
     }
 }
@@ -707,10 +713,10 @@ impl Workspace {
     /// Codex's approval does, which Templum hears nothing of), or an agent that started asking its
     /// person meanwhile (a working agent's screen changes all along), gets no Enter: it would pick
     /// the dialog's answer for the person. Then its looks tell whether it took it (`EnterCheck`),
-    /// with a second Enter when nothing changed; an agent at work when it was typed queues it. A
-    /// `task` (not a reply) not taken ends at once. The answer says how it went, once known: Ok,
-    /// or why not, the task then ended without a notice besides (`not_taken`). A notice waits for
-    /// its Enters (`Pane::sent`).
+    /// with a second Enter when it can't answer a dialog; an agent at work when it was typed
+    /// queues it. A `task` (not a reply) not taken ends at once. The answer says how it went,
+    /// once known: Ok, or why not, the task then ended without a notice besides (`not_taken`). A
+    /// notice waits for its Enters (`Pane::sent`).
     pub(super) fn send_task(
         &mut self,
         terminal: &str,
@@ -726,6 +732,8 @@ impl Workspace {
         // At work, it queues the task: Codex says it took it only once a turn takes it in.
         let queued = pane.state == Some(AgentState::Working);
         let mut wait = EnterWait::new(pane.screen(), pane.term.grid_size());
+        // Windows' console hands what it is typed to its program as keys, bracketed or not.
+        let keys = cfg!(windows) || !pane.term.bracketed();
         // Claude Code shows a paste of 4 lines or more than 800 characters as "[Pasted text]",
         // which it takes for data unless typed text comes with it: the first line is that text.
         match text.find('\n') {
@@ -761,7 +769,7 @@ impl Workspace {
                                 Step::Enter => {
                                     pane.term.write(&b"\r"[..]);
                                     let (speaks, submitted) = (pane.speaks, pane.submitted);
-                                    check = Some(EnterCheck::new(speaks, submitted, screen));
+                                    check = Some(EnterCheck::new(speaks, submitted, screen, keys));
                                     return false;
                                 }
                             }
@@ -1641,7 +1649,7 @@ mod tests {
     /// no more after it. A second Enter goes, and takes it.
     #[test]
     fn an_enter_taken_for_a_new_line_goes_again() {
-        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        let mut c = EnterCheck::new(false, 0, "› fix".into(), true);
         assert_eq!(
             checked(&mut c, |_| "› fix\n".into(), 0),
             (Check::Again, CHECKS)
@@ -1658,7 +1666,7 @@ mod tests {
     #[test]
     fn two_enters_that_changed_nothing_dont_take_the_task() {
         for spoke in [false, true] {
-            let mut c = EnterCheck::new(spoke, 4, "› fix".into());
+            let mut c = EnterCheck::new(spoke, 4, "› fix".into(), false);
             assert_eq!(
                 checked(&mut c, |_| "› fix".into(), 4),
                 (Check::Again, CHECKS)
@@ -1667,9 +1675,10 @@ mod tests {
             let not = Check::Not(NotTaken::Unsent);
             assert_eq!(checked(&mut c, |_| "› fix".into(), 4), (not, CHECKS));
         }
-        // Its first Enter did something (an agent that took it and draws nothing while it works):
-        // only its hooks, when they speak, would say it didn't take it.
-        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        // Its first Enter did something to a paste that went as keys (a new line in it, or the
+        // task taken by an agent that draws nothing while it works): only its hooks, when they
+        // speak, would say it didn't take it.
+        let mut c = EnterCheck::new(false, 0, "› fix".into(), true);
         assert_eq!(
             checked(&mut c, |_| "> fix".into(), 0),
             (Check::Again, CHECKS)
@@ -1679,13 +1688,13 @@ mod tests {
             checked(&mut c, |_| "> fix".into(), 0),
             (Check::Taken, CHECKS)
         );
-        let mut c = EnterCheck::new(true, 0, "› fix".into());
+        let mut c = EnterCheck::new(true, 0, "› fix".into(), true);
         checked(&mut c, |_| "> fix".into(), 0);
         c.again();
         let not = Check::Not(NotTaken::Unsent);
         assert_eq!(checked(&mut c, |_| "> fix".into(), 0), (not, CHECKS));
         // Its second did, at once, and nothing moved after.
-        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        let mut c = EnterCheck::new(false, 0, "› fix".into(), false);
         checked(&mut c, |_| "› fix".into(), 0);
         c.again();
         assert_eq!(
@@ -1697,22 +1706,22 @@ mod tests {
     /// An agent no hook speaks for took it: its screen moves. One whose hooks speak says so.
     #[test]
     fn a_task_is_taken_when_its_screen_moves_or_its_hooks_say_so() {
-        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        let mut c = EnterCheck::new(false, 0, "› fix".into(), false);
         assert_eq!(
             checked(&mut c, |n| format!("Working ⠋{n}"), 0),
             (Check::Taken, 2)
         );
         // A moving screen isn't a prompt taken for an agent whose hooks speak.
-        let mut c = EnterCheck::new(true, 3, "› fix".into());
+        let mut c = EnterCheck::new(true, 3, "› fix".into(), false);
         let unheard = Check::Not(NotTaken::Unheard);
         assert_eq!(
             checked(&mut c, |n| format!("Working ⠋{n}"), 3),
             (unheard, CHECKS)
         );
-        let mut c = EnterCheck::new(true, 3, "› fix".into());
+        let mut c = EnterCheck::new(true, 3, "› fix".into(), false);
         assert_eq!(c.look("› fix".into(), 4, true, false), Check::Taken);
         // A dialog its hooks told of: Templum may not type into it, and what comes next tells.
-        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        let mut c = EnterCheck::new(false, 0, "› fix".into(), false);
         assert_eq!(c.look("Allow?".into(), 0, false, false), Check::Taken);
     }
 
@@ -1728,15 +1737,28 @@ mod tests {
             }
             .to_string()
         };
-        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        let mut c = EnterCheck::new(false, 0, "› fix".into(), false);
         assert_eq!(checked(&mut c, changed, 0), (Check::Taken, CHECKS));
-        let mut c = EnterCheck::new(true, 0, "› fix".into());
+        let mut c = EnterCheck::new(true, 0, "› fix".into(), false);
         let unheard = Check::Not(NotTaken::Unheard);
         assert_eq!(checked(&mut c, changed, 0), (unheard, CHECKS));
-        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        let mut c = EnterCheck::new(false, 0, "› fix".into(), false);
         for _ in 0..CHECKS {
             assert_eq!(c.look("› fix".into(), 0, true, true), Check::Wait);
         }
         assert_eq!(c.look("› fix".into(), 0, true, true), Check::Taken);
+    }
+
+    /// A bracketed paste takes no Enter for a new line: a screen its Enter changed at once, then
+    /// still, is the task taken or a dialog drawn at once (Aider's, for a task naming a file),
+    /// which a second Enter would answer for the person. None goes.
+    #[test]
+    fn no_second_enter_into_a_dialog_drawn_at_once() {
+        let dialog = |_| "Add file to the chat? [Yes]".to_string();
+        let mut c = EnterCheck::new(false, 0, "› fix".into(), false);
+        assert_eq!(checked(&mut c, dialog, 0), (Check::Taken, CHECKS));
+        let mut c = EnterCheck::new(true, 0, "› fix".into(), false);
+        let unheard = Check::Not(NotTaken::Unheard);
+        assert_eq!(checked(&mut c, dialog, 0), (unheard, CHECKS));
     }
 }
