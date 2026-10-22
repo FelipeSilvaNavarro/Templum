@@ -246,10 +246,10 @@ impl Workspace {
             ("space" | "enter" | "escape", false) => (None, None),
             _ => return false,
         };
-        // In a field, the highlight is its row, and Space types (← → never come here from a
-        // field: its own keys take them).
+        // In a field, the highlight is its row, and Space and ← → are the field's: at the start
+        // or the end of its text, the field leaves an arrow to its parents, which drop it.
         let typing = self.typing_row(wait, window, cx);
-        if typing.is_some() && keystroke.key == "space" {
+        if typing.is_some() && (keystroke.key == "space" || turn.is_some()) {
             return false;
         }
         if turn.is_some() && !matches!(&wait.what, Waiting::Question { ask, .. } if ask.tabs()) {

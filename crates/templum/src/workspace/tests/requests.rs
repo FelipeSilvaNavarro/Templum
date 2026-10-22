@@ -2893,7 +2893,8 @@ fn answers_typed_in_a_tab_stay_when_another_shows(cx: &mut TestAppContext) {
     );
 }
 
-/// ← and → show the previous and the next question, wrapping; in a field they move in its text.
+/// ← and → show the previous and the next question, wrapping; in a field they move in its text,
+/// and do nothing at its start or its end (the field leaves them to its parents there).
 #[gpui_kit::test]
 fn left_and_right_turn_the_tabs_out_of_a_field(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
@@ -2913,12 +2914,17 @@ fn left_and_right_turn_the_tabs_out_of_a_field(cx: &mut TestAppContext) {
         (0, Some(templum_mcp::ask::Row::Option(0, 0)))
     );
     type_into(handle, &ws, cx, key, Some(0), "ab");
-    press(handle, cx, &["left", "left", "x"]);
-    assert_eq!(tab_of(&ws, cx), 0, "the field's");
-    let text = ws.read_with(cx, |ws, cx| {
-        field_of(ws, key, Some(0)).read(cx).value().to_string()
-    });
-    assert_eq!(text, "xab");
+    let text = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, cx| {
+            field_of(ws, key, Some(0)).read(cx).value().to_string()
+        })
+    };
+    press(handle, cx, &["left", "left", "left", "x"]);
+    assert_eq!(tab_of(&ws, cx), 0, "the field's, at its start too");
+    assert_eq!(text(cx), "xab");
+    press(handle, cx, &["right", "right", "right", "y"]);
+    assert_eq!(tab_of(&ws, cx), 0, "at its end too");
+    assert_eq!(text(cx), "xaby");
     assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "it waits");
 }
 

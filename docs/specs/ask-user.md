@@ -286,7 +286,7 @@ buttons don't change; the ids tests use stay, with `tab-<q>` and `tab-<q>-answer
 2. **They wrap, rather than scroll sideways:** every tab stays in sight and clickable, and a header is 12 characters
    at most, so a row wraps only with many questions or a narrow block.
 3. **← and → turn them; Ctrl+Tab doesn't:** it is the next workspace's shortcut, which the dialog leaves running.
-   In a field the arrows stay the field's.
+   In a field the arrows stay the field's, also at the start or the end of its text, where they do nothing.
 4. **A click on a single-select option moves on** to the next question without an answer, as Enter already did:
    without it, tabs would cost a click on the next tab per question. A checkbox doesn't (the person checks several),
    nor Space (it only picks).
@@ -306,8 +306,9 @@ buttons don't change; the ids tests use stay, with `tab-<q>` and `tab-<q>-answer
   can't answer. A move by the keys (not the pointer, nor the wheel) scrolls the body just enough to show the row,
   once, when it is drawn: a wheel that scrolls it away after isn't fought.
 - **← and →** show the previous and the next question under tabs, wrapping, while no field has the keyboard (in a
-  field they move in its text). A highlight on the question left goes to the first row of the one shown; on the note
-  or Send it stays. Not Ctrl+Tab: it switches workspaces, and shortcuts still run while the dialog has the keys.
+  field they move in its text, and do nothing at its start or its end). A highlight on the question left goes to the
+  first row of the one shown; on the note or Send it stays. Not Ctrl+Tab: it switches workspaces, and shortcuts still
+  run while the dialog has the keys.
 - **Space** picks the highlighted option (single-select) or checks and unchecks it (multiSelect).
 - **Enter** on a single-select question's option that isn't picked picks it, and sends nothing: the highlight goes to
   the next question without an answer (wrapping to the first; under tabs, its tab shows) or, when that was the
@@ -416,10 +417,10 @@ No new dependency.
   questions have tabs, each named by its header or "Question N"; the next question without an answer starts after
   the shown one, or from it. In the app: one question shows at a time and a click on a tab shows another, one
   question shows no tab; a tab's mark follows its answer; Other texts, a free answer and the note stay across tabs and
-  Send answers the JSON; ← → turn the tabs, wrapping, and stay the field's in a field; a click on a single-select
-  option shows the next unanswered question, a checkbox stays; another question shows from the body's top, and ← →
-  on one question leave the scroll alone; Enter moving on shows its tab; tabs wrap inside the body of a narrow dialog
-  and every tab, option and Send is reached in a block too small for the dialog.
+  Send answers the JSON; ← → turn the tabs, wrapping, and stay the field's in a field, at its start and its end too;
+  a click on a single-select option shows the next unanswered question, a checkbox stays; another question shows from
+  the body's top, and ← → on one question leave the scroll alone; Enter moving on shows its tab; tabs wrap inside the
+  body of a narrow dialog and every tab, option and Send is reached in a block too small for the dialog.
 - **By hand:** Claude Code, Codex and Gemini CLI each asking with `questions` and getting the JSON; a question left 3
   minutes in Claude Code (is the call cancelled once backgrounded? the answer reaches it either way); Esc in Claude Code while it asks, then an answer typed into
   it; the sound on Linux (with and without `canberra-gtk-play`), macOS and Windows; the dialog at far and near zooms.
