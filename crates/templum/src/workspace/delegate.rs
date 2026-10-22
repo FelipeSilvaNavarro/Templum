@@ -107,6 +107,8 @@ enum Step {
     Wait,
     Enter,
     GiveUp,
+    /// Its person typed into it since the paste: an Enter would send their text with the task.
+    Typing,
 }
 
 /// The wait for a typed task's Enter (`send_task`): the agent's screen must show the paste, then
@@ -136,12 +138,21 @@ impl EnterWait {
 
     /// A look at the agent's `screen`, its terminal now `size`; `takes`: Templum may still type
     /// into it; `speaks`: its hooks say when it starts a turn or asks its person, so a dialog of
-    /// it would be heard, and its Enter is confirmed. After a resize, the screen settling shows
-    /// such an agent read the paste; for another (Codex, whose approval Templum doesn't hear) it
-    /// is the new start, and only a change after it is the paste.
-    fn look(&mut self, screen: String, size: (u16, u16), takes: bool, speaks: bool) -> Step {
+    /// it would be heard, and its Enter is confirmed; `typed`: its person typed into it since the
+    /// paste. After a resize, the screen settling shows such an agent read the paste; for another
+    /// (Codex, whose approval Templum doesn't hear) it is the new start, and only a change after
+    /// it is the paste.
+    fn look(
+        &mut self,
+        screen: String,
+        size: (u16, u16),
+        (takes, speaks, typed): (bool, bool, bool),
+    ) -> Step {
         if !takes {
             return Step::GiveUp;
+        }
+        if typed {
+            return Step::Typing;
         }
         self.looks += 1;
         if size != self.size {
@@ -197,6 +208,8 @@ enum NotTaken {
     Unheard,
     /// Two Enters changed nothing on its screen.
     Unsent,
+    /// Its person typed into it before its Enter: no Enter went.
+    Typing,
 }
 
 impl NotTaken {
@@ -210,6 +223,10 @@ impl NotTaken {
                 "typed but not submitted: two Enters changed nothing on its screen, and its input \
                  may still hold it"
             }
+            NotTaken::Typing => {
+                "its person is typing in it: an Enter would have sent their text with it, and its \
+                 input may hold both"
+            }
         }
     }
 
@@ -221,6 +238,7 @@ impl NotTaken {
                 "Look at its block, and clear its input (send_keys) before you try again: else the \
                  task goes in twice."
             }
+            NotTaken::Typing => "Try again once its person is done.",
         }
     }
 }
@@ -723,11 +741,11 @@ impl Workspace {
     /// Templum still may type into it. A screen that doesn't (a dialog that ignores pastes, as
     /// Codex's approval does, which Templum hears nothing of), or an agent that started asking its
     /// person meanwhile (a working agent's screen changes all along), gets no Enter: it would pick
-    /// the dialog's answer for the person. Then its looks tell whether it took it (`EnterCheck`),
-    /// with a second Enter when it can't answer a dialog; an agent at work when it was typed
-    /// queues it. A `task` (not a reply) not taken ends at once. The answer says how it went,
-    /// once known: Ok, or why not, the task then ended without a notice besides (`not_taken`). A
-    /// notice waits for its Enters (`Pane::sent`).
+    /// the dialog's answer for the person, as would one its person typed into since. Then its
+    /// looks tell whether it took it (`EnterCheck`), with a second Enter when it can't answer a
+    /// dialog; an agent at work when it was typed queues it. A `task` (not a reply) not taken
+    /// ends at once. The answer says how it went, once known: Ok, or why not, the task then ended
+    /// without a notice besides (`not_taken`). A notice waits for its Enters (`Pane::sent`).
     pub(super) fn send_task(
         &mut self,
         terminal: &str,
@@ -739,7 +757,8 @@ impl Workspace {
         let Some(pane) = self.pane_mut(terminal) else {
             return answer;
         };
-        pane.sent = Some(Instant::now());
+        let typed_at = Instant::now();
+        pane.sent = Some(typed_at);
         // At work, it queues the task: Codex says it took it only once a turn takes it in.
         let queued = pane.state == Some(AgentState::Working);
         let mut wait = EnterWait::new(pane.screen(), pane.term.grid_size());
@@ -770,9 +789,11 @@ impl Workspace {
                     let took = match check.as_mut() {
                         None => {
                             let size = pane.term.grid_size();
-                            match wait.look(screen.clone(), size, takes, pane.speaks) {
+                            let typed = pane.keyed.get().is_some_and(|at| at > typed_at);
+                            match wait.look(screen.clone(), size, (takes, pane.speaks, typed)) {
                                 Step::Wait => return false,
                                 Step::GiveUp => Err(NotTaken::Unseen),
+                                Step::Typing => Err(NotTaken::Typing),
                                 Step::Enter if queued => {
                                     pane.term.write(&b"\r"[..]);
                                     Ok(())
@@ -1538,17 +1559,20 @@ mod tests {
     #[test]
     fn enter_goes_once_the_screen_shows_the_paste_and_stood_still() {
         let mut w = wait();
-        assert_eq!(w.look("› ".into(), SIZE, true, false), Step::Wait);
+        assert_eq!(w.look("› ".into(), SIZE, (true, false, false)), Step::Wait);
         // Codex and Copilot CLI on Windows read the paste as keys: an Enter among them, or right
         // after, is a new line in it.
-        assert_eq!(w.look("› fix the".into(), SIZE, true, false), Step::Wait);
         assert_eq!(
-            w.look("› fix the tests".into(), SIZE, true, false),
+            w.look("› fix the".into(), SIZE, (true, false, false)),
+            Step::Wait
+        );
+        assert_eq!(
+            w.look("› fix the tests".into(), SIZE, (true, false, false)),
             Step::Wait,
             "still arriving"
         );
         assert_eq!(
-            w.look("› fix the tests".into(), SIZE, true, false),
+            w.look("› fix the tests".into(), SIZE, (true, false, false)),
             Step::Enter
         );
     }
@@ -1562,7 +1586,7 @@ mod tests {
         let mut looks = 0;
         while step == Step::Wait {
             looks += 1;
-            step = w.look(format!("› fix ⠋{looks}"), SIZE, true, true);
+            step = w.look(format!("› fix ⠋{looks}"), SIZE, (true, true, false));
         }
         assert_eq!((step, looks), (Step::Enter, ENTER_LOOKS));
     }
@@ -1571,11 +1595,14 @@ mod tests {
     fn no_enter_for_a_screen_that_never_shows_the_paste_nor_into_a_dialog() {
         let mut w = wait();
         for _ in 1..ENTER_LOOKS {
-            assert_eq!(w.look("› ".into(), SIZE, true, false), Step::Wait);
+            assert_eq!(w.look("› ".into(), SIZE, (true, false, false)), Step::Wait);
         }
-        assert_eq!(w.look("› ".into(), SIZE, true, false), Step::GiveUp);
         assert_eq!(
-            wait().look("› fix".into(), SIZE, false, true),
+            w.look("› ".into(), SIZE, (true, false, false)),
+            Step::GiveUp
+        );
+        assert_eq!(
+            wait().look("› fix".into(), SIZE, (false, true, false)),
             Step::GiveUp,
             "a dialog opened: Templum may not type into it"
         );
@@ -1586,11 +1613,20 @@ mod tests {
     #[test]
     fn a_resize_isnt_the_paste() {
         let mut w = wait();
-        assert_eq!(w.look("redrawn".into(), BIG, true, true), Step::Wait);
-        assert_eq!(w.look("redrawn › fix".into(), BIG, true, true), Step::Wait);
-        assert_eq!(w.look("redrawn › fix".into(), BIG, true, true), Step::Wait);
         assert_eq!(
-            w.look("redrawn › fix".into(), BIG, true, true),
+            w.look("redrawn".into(), BIG, (true, true, false)),
+            Step::Wait
+        );
+        assert_eq!(
+            w.look("redrawn › fix".into(), BIG, (true, true, false)),
+            Step::Wait
+        );
+        assert_eq!(
+            w.look("redrawn › fix".into(), BIG, (true, true, false)),
+            Step::Wait
+        );
+        assert_eq!(
+            w.look("redrawn › fix".into(), BIG, (true, true, false)),
             Step::Enter,
             "settled: an agent whose dialogs are heard gets its Enter, and confirms it"
         );
@@ -1598,23 +1634,35 @@ mod tests {
         // new start, and only a change after it is the paste.
         let mut w = wait();
         for _ in 0..3 {
-            assert_eq!(w.look("redrawn".into(), BIG, true, false), Step::Wait);
+            assert_eq!(
+                w.look("redrawn".into(), BIG, (true, false, false)),
+                Step::Wait
+            );
         }
-        assert_eq!(w.look("redrawn".into(), BIG, true, false), Step::Wait);
-        assert_eq!(w.look("redrawn › fix".into(), BIG, true, false), Step::Wait);
         assert_eq!(
-            w.look("redrawn › fix".into(), BIG, true, false),
+            w.look("redrawn".into(), BIG, (true, false, false)),
+            Step::Wait
+        );
+        assert_eq!(
+            w.look("redrawn › fix".into(), BIG, (true, false, false)),
+            Step::Wait
+        );
+        assert_eq!(
+            w.look("redrawn › fix".into(), BIG, (true, false, false)),
             Step::Enter
         );
         let mut w = wait();
         for _ in 0..3 {
-            w.look("redrawn".into(), BIG, true, false);
+            w.look("redrawn".into(), BIG, (true, false, false));
         }
         for _ in 1..ENTER_LOOKS {
-            assert_eq!(w.look("redrawn".into(), BIG, true, false), Step::Wait);
+            assert_eq!(
+                w.look("redrawn".into(), BIG, (true, false, false)),
+                Step::Wait
+            );
         }
         assert_eq!(
-            w.look("redrawn".into(), BIG, true, false),
+            w.look("redrawn".into(), BIG, (true, false, false)),
             Step::GiveUp,
             "the paste may have been drawn with the redraw: no Enter it can't tell is safe"
         );
@@ -1625,7 +1673,7 @@ mod tests {
         let moving = |w: &mut EnterWait, speaks: bool| {
             let mut step = Step::Wait;
             for n in 0..=ENTER_LOOKS {
-                step = w.look(format!("frame {n}"), BIG, true, speaks);
+                step = w.look(format!("frame {n}"), BIG, (true, speaks, false));
                 if step != Step::Wait {
                     break;
                 }
@@ -1771,5 +1819,19 @@ mod tests {
         let mut c = EnterCheck::new(true, 0, "› fix".into(), false);
         let unheard = Check::Not(NotTaken::Unheard);
         assert_eq!(checked(&mut c, dialog, 0), (unheard, CHECKS));
+    }
+
+    /// The person types into the agent before its Enter: the Enter would send their text too.
+    #[test]
+    fn no_enter_once_the_person_typed() {
+        let mut w = wait();
+        assert_eq!(
+            w.look("› fix".into(), SIZE, (true, false, false)),
+            Step::Wait
+        );
+        assert_eq!(
+            w.look("› fix".into(), SIZE, (true, false, true)),
+            Step::Typing
+        );
     }
 }

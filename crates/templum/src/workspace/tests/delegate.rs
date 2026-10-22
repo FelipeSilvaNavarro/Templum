@@ -3628,6 +3628,35 @@ fn a_task_no_hook_confirms_gets_its_enter_again_then_ends(cx: &mut TestAppContex
     assert!(text.contains("clear its input (send_keys)"), "{text}");
 }
 
+/// The person types into the agent before its task's Enter: the Enter would send their half
+/// line with the task. None goes, and the asker hears why.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn no_enter_once_the_person_typed_into_the_agent(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let inputs = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().term.inputs())
+    };
+    let task = json!({ "block": them, "task": "think" });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    let typed = inputs(cx);
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(theirs).unwrap().person_typed()
+    });
+    after(
+        cx,
+        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+    );
+    let (failed, text) = answered(&answers);
+    assert!(
+        failed && text.contains("its person is typing in it"),
+        "{text}"
+    );
+    assert_eq!(inputs(cx), typed, "no Enter");
+}
+
 /// A turn's end (Claude Code's idle prompt comes a minute after its last turn) and a screen its
 /// looks take for one at work confirm nothing: only the prompt taken does, and its turn's end then
 /// answers the task.

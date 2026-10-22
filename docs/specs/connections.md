@@ -206,7 +206,9 @@ later starts with none.
    that asked for no bracketed paste), which an agent may take an Enter among for a new line in it. And only while
    Templum still may type into it, its screen hasn't changed since 150 ms after the first and the person hasn't typed
    into it for 3 seconds; otherwise, or with still no word 3 seconds later, the task ends untaken, with the last 20
-   lines of its screen. A turn that ends before the agent took the task (the turn it was on) doesn't answer it.
+   lines of its screen. A turn that ends before the agent took the task (the turn it was on) doesn't answer it. The
+   person typing into the agent after the paste and before its Enter gets no Enter (it would send their text too):
+   the task ends untaken, "its person is typing in it".
    **Confirmed by its screen** (card 118): the agents without hooks, and those whose hooks haven't spoken yet (Codex's
    `SessionStart`, Copilot CLI's, OpenCode's and Kilo Code's first event come with their first prompt), took it once
    their screen moves (two looks in a row, 150 ms apart, see it change: a spinner, a timer) within 3 seconds of the
