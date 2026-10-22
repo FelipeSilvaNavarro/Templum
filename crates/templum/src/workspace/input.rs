@@ -601,7 +601,11 @@ impl Workspace {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        if let Some(pane) = self.space.focused_terminal() {
+        if let Some(pane) = self
+            .space
+            .focused_terminal()
+            .filter(|p| p.follows.is_none())
+        {
             pane.person_typed();
             pane.term.paste(&text);
         }
@@ -924,7 +928,12 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        let Some(pane) = self.space.focused_terminal() else {
+        // A subagent's block is read-only: its keys go nowhere.
+        let Some(pane) = self
+            .space
+            .focused_terminal()
+            .filter(|p| p.follows.is_none())
+        else {
             return;
         };
         let k = &e.keystroke;
@@ -1197,7 +1206,11 @@ impl EntityInputHandler for Workspace {
         if self.balloon_keys(window, cx).is_some() {
             return;
         }
-        if let Some(pane) = self.space.focused_terminal() {
+        if let Some(pane) = self
+            .space
+            .focused_terminal()
+            .filter(|p| p.follows.is_none())
+        {
             pane.person_typed();
             pane.term.text(text);
         }

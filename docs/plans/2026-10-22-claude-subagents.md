@@ -1,8 +1,8 @@
 # Claude Code's subagents on the canvas: a feasibility study
 
 - **Date:** 2026-10-22
-- **Status:** Study (kanban card 127, "Subagentes do Claude"). Nothing is built; the person picks what to build from
-  [Recommendation](#recommendation) and answers the [Open questions](#open-questions-for-the-person).
+- **Status:** Study (kanban card 127, "Subagentes do Claude"). C1 and A1 are built, with the person's answers to the
+  open questions: [docs/specs/claude-subagents.md](../specs/claude-subagents.md).
 - **Card:** Claude Code has subagents of its own, created inside Claude. Could each one be seen on the canvas as if it
   were another agent, even though it is Claude Code's own?
 - **Builds on:** [connections.md](../specs/connections.md) (hooks and agent state, spawning, delegating),

@@ -38,6 +38,7 @@ mod selection;
 mod spaces;
 mod spawn;
 pub(crate) mod starting;
+pub(crate) mod subagents;
 mod tiling;
 mod update;
 mod usage;
@@ -310,6 +311,8 @@ pub(crate) struct Pane {
     /// The subagent whose dialog its agent waits on its person for (`NeedsYou`), by id; None:
     /// its own. Another's tool ending doesn't close that dialog.
     pub asked_by: Option<String>,
+    /// The Claude Code subagent it shows (`templum follow`): read-only, never saved.
+    pub follows: Option<subagents::Follows>,
 }
 
 impl Pane {
@@ -869,7 +872,9 @@ impl Space {
         accounts: Arc<Vec<agents::Home>>,
         cx: &App,
     ) -> session::Layout {
-        let blocks = self.canvas.blocks();
+        let blocks: Vec<&Block> = (self.canvas.blocks().iter())
+            .filter(|b| self.kept(b.id))
+            .collect();
         // The canvas as it is, also in grid mode.
         session::Layout {
             camera: self.camera(),
@@ -899,11 +904,14 @@ impl Space {
             accounts,
             ink: self.ink.iter().map(session::InkItem::of).collect(),
             grid: self.grid.as_ref().and_then(|g| {
-                session::SavedTile::of(&g.tiles, &|id| blocks.iter().position(|b| b.id == id))
+                let mut unkept = g.tiles.ids().into_iter().filter(|id| !self.kept(*id));
+                let tiles = unkept.try_fold(g.tiles.clone(), |tiles, id| tiles.without(id))?;
+                session::SavedTile::of(&tiles, &|id| blocks.iter().position(|b| b.id == id))
             }),
             wires: self
                 .wires
                 .iter()
+                .filter(|w| self.kept(w.a) && self.kept(w.b))
                 .filter_map(|w| {
                     Some(session::SavedWire {
                         a: self.uids.get(&w.a)?.clone(),
@@ -972,9 +980,15 @@ impl Space {
         self.canvas
             .blocks()
             .iter()
-            .filter(|b| self.terminal(b.id).is_some())
+            .filter(|b| self.terminal(b.id).is_some() && self.kept(b.id))
             .map(|b| b.id)
             .collect()
+    }
+
+    /// Block `id` is saved with the canvas: any but a Claude Code subagent's, which belongs to a
+    /// live session (docs/specs/claude-subagents.md).
+    pub(super) fn kept(&self, id: BlockId) -> bool {
+        self.terminal(id).is_none_or(|p| p.follows.is_none())
     }
 
     /// Tells each terminal what a snapshot found in it. The terminals whose agent, found running

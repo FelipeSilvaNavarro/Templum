@@ -1,5 +1,5 @@
 //! Claude Code's subagents (docs/specs/claude-subagents.md): their parent busy while they work, a
-//! task answered by its real end. The hooks' inputs have the shapes Claude Code 2.1.286 sent
+//! task answered by its real end, and a block of their own beside it. The hooks' inputs have the shapes Claude Code 2.1.286 sent
 //! (docs/plans/2026-10-22-claude-subagents.md, The probe), turned into events as `templum hook
 //! claude` does.
 
@@ -269,4 +269,214 @@ fn a_parent_awaiting_its_subagents_isnt_ended_by_its_screen(cx: &mut TestAppCont
         assert_eq!(pane.state, Some(AgentState::Working));
         assert!(pane.handed.is_some(), "no answer from its screen");
     });
+}
+
+/// The blocks showing a subagent of the agent in `parent` (its terminal), in the order they
+/// opened, with each one's subagent id.
+fn followers(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    parent: &str,
+) -> Vec<(BlockId, String)> {
+    ws.read_with(cx, |ws, _| {
+        let mut theirs: Vec<(BlockId, String)> = ws
+            .space
+            .terminals()
+            .filter_map(|(id, p)| {
+                let follows = p.follows.as_ref().filter(|f| f.parent == parent)?;
+                Some((id, follows.id.clone()))
+            })
+            .collect();
+        theirs.sort_by_key(|(id, _)| id.0);
+        theirs
+    })
+}
+
+#[test]
+fn a_subagents_block_follows_its_transcript_beside_the_sessions() {
+    use crate::workspace::subagents::{follow, transcript_of};
+    use std::path::Path;
+    let main = Path::new("/home/u/.claude/projects/p").join("s1.jsonl");
+    let theirs = transcript_of(main.to_str().unwrap(), "a80a32db516c45194").unwrap();
+    assert_eq!(
+        theirs,
+        Path::new("/home/u/.claude/projects/p/s1")
+            .join("subagents")
+            .join("agent-a80a32db516c45194.jsonl")
+    );
+    for id in ["", "../../etc/passwd", "a/b", "a b"] {
+        assert_eq!(
+            transcript_of("/p/s1.jsonl", id),
+            None,
+            "{id:?} names no file of its"
+        );
+    }
+    let shell = follow(Path::new("/opt/templum"), &theirs, "Explore");
+    assert_eq!(shell.program, "/opt/templum");
+    assert_eq!(
+        shell.args,
+        ["follow", theirs.to_str().unwrap(), "Explore"],
+        "what main.rs reads"
+    );
+}
+
+/// Each subagent opens a block beside its parent, wired to it, overlapping nothing; the
+/// keyboard, the selection and Ctrl+Z stay as they were; a resumed one opens no second block.
+/// The canvas is saved without them.
+#[gpui_kit::test]
+fn a_subagent_opens_beside_its_parent_wired_and_unsaved(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (worker, _) = me(&ws, cx, theirs);
+    let before = ws.read_with(cx, |ws, _| (ws.space.focused, ws.space.undo.len()));
+    hook(handle, &ws, cx, &worker, started("a1", "Explore"));
+    hook(handle, &ws, cx, &worker, started("a2", "general-purpose"));
+    hook(handle, &ws, cx, &worker, started("a1", "Explore"));
+    let opened = followers(&ws, cx, &worker);
+    let ids: Vec<&str> = opened.iter().map(|(_, id)| id.as_str()).collect();
+    assert_eq!(ids, ["a1", "a2"]);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!((ws.space.focused, ws.space.undo.len()), before);
+        let rects: Vec<Rect> = ws.space.canvas.blocks().iter().map(|b| b.rect).collect();
+        for (i, a) in rects.iter().enumerate() {
+            for b in &rects[i + 1..] {
+                assert!(!a.intersects(b), "{a:?} overlaps {b:?}");
+            }
+        }
+        for (id, _) in &opened {
+            assert!(
+                ws.space
+                    .wires
+                    .iter()
+                    .any(|w| w.touches(*id) && w.touches(theirs))
+            );
+            assert!(
+                !ws.space
+                    .wires
+                    .iter()
+                    .any(|w| w.touches(*id) && w.touches(mine))
+            );
+            assert!(!ws.space.kept(*id), "not saved");
+        }
+        assert!(ws.space.kept(theirs) && ws.space.kept(mine));
+    });
+    let (saved, _) = cx.update(|cx| {
+        let ws = ws.read(cx);
+        let (known, accounts) = (ws.known_agents(), ws.known_accounts());
+        ws.space.layout(known, accounts, cx).snapshot(None)
+    });
+    assert_eq!(saved.items.len(), 2, "its two terminals, no subagent's");
+    assert_eq!(saved.wires.len(), 1, "the wire between them");
+    // In grid mode, its tiles are saved without theirs.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let all = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
+            ws.enter_grid(all, window, cx)
+        })
+    })
+    .unwrap();
+    let (saved, _) = cx.update(|cx| {
+        let ws = ws.read(cx);
+        assert_eq!(ws.space.grid.as_ref().unwrap().tiles.ids().len(), 4);
+        let (known, accounts) = (ws.known_agents(), ws.known_accounts());
+        ws.space.layout(known, accounts, cx).snapshot(None)
+    });
+    assert!(saved.grid.is_some(), "the grid is kept");
+}
+
+/// A finished subagent's block turns grey, and closes a minute later; while the person reads it
+/// (focused, pointed at), it stays, and its minute starts over once they stop.
+#[gpui_kit::test]
+fn a_finished_subagent_closes_a_minute_later_unless_read(cx: &mut TestAppContext) {
+    let (handle, ws, _, theirs) = two_agents(cx);
+    let (worker, _) = me(&ws, cx, theirs);
+    hook(handle, &ws, cx, &worker, started("a1", "Explore"));
+    hook(handle, &ws, cx, &worker, started("a2", "Plan"));
+    let opened = followers(&ws, cx, &worker);
+    let (first, second) = (opened[0].0, opened[1].0);
+    assert_eq!(dot(&ws, cx, first).as_deref(), Some("Working"));
+    hook(handle, &ws, cx, &worker, stopped("a1", &["a2"]));
+    hook(handle, &ws, cx, &worker, stopped("a2", &[]));
+    assert_eq!(dot(&ws, cx, first).as_deref(), Some("Done"));
+    // The person reads the second.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(second, window, cx))
+    })
+    .unwrap();
+    after(cx, 59_000);
+    assert_eq!(followers(&ws, cx, &worker).len(), 2, "a minute isn't over");
+    after(cx, 2_000);
+    let left: Vec<BlockId> = followers(&ws, cx, &worker).iter().map(|f| f.0).collect();
+    assert_eq!(left, [second], "the one being read stays");
+    ws.update(cx, |ws, _| {
+        ws.space.focused = None;
+        ws.space.hovered = Some(second);
+    });
+    after(cx, 61_000);
+    assert_eq!(followers(&ws, cx, &worker).len(), 1, "pointed at");
+    ws.update(cx, |ws, _| ws.space.hovered = None);
+    after(cx, 1_000);
+    assert_eq!(
+        followers(&ws, cx, &worker).len(),
+        1,
+        "its minute starts over"
+    );
+    after(cx, 60_000);
+    assert!(followers(&ws, cx, &worker).is_empty());
+}
+
+/// A subagent's dialog shows on its block too, with where to answer it.
+#[gpui_kit::test]
+fn a_subagents_block_says_where_its_dialog_is(cx: &mut TestAppContext) {
+    let (handle, ws, _, theirs) = two_agents(cx);
+    let (worker, _) = me(&ws, cx, theirs);
+    hook(handle, &ws, cx, &worker, started("a1", "Explore"));
+    let block = followers(&ws, cx, &worker)[0].0;
+    let asks = json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+        "agent_id": "a1", "agent_type": "Explore" });
+    hook(handle, &ws, cx, &worker, asks);
+    assert_eq!(
+        dot(&ws, cx, block).as_deref(),
+        Some("Waiting for you: Allow Bash? Answer in its Claude Code.")
+    );
+    hook(handle, &ws, cx, &worker, tool(Some("a1")));
+    assert_eq!(dot(&ws, cx, block).as_deref(), Some("Working"));
+}
+
+/// Closing the parent closes its subagents' blocks; its session ending finishes them.
+#[gpui_kit::test]
+fn a_subagents_block_goes_with_its_parent(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (worker, _) = me(&ws, cx, theirs);
+    let (asker, _) = me(&ws, cx, mine);
+    hook(handle, &ws, cx, &worker, started("a1", "Explore"));
+    hook(handle, &ws, cx, &asker, started("b1", "Plan"));
+    let end = json!({ "hook_event_name": "SessionEnd", "reason": "other" });
+    hook(handle, &ws, cx, &asker, end);
+    let mine_left = followers(&ws, cx, &asker)[0].0;
+    assert_eq!(dot(&ws, cx, mine_left).as_deref(), Some("Done"));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.remove_block(theirs, window, cx))
+    })
+    .unwrap();
+    assert!(followers(&ws, cx, &worker).is_empty());
+    assert_eq!(followers(&ws, cx, &asker).len(), 1, "another's stay");
+}
+
+/// Typing into a subagent's block reaches nothing: it is read-only.
+#[gpui_kit::test]
+fn a_subagents_block_takes_no_keys(cx: &mut TestAppContext) {
+    let (handle, ws, _, theirs) = two_agents(cx);
+    let (worker, _) = me(&ws, cx, theirs);
+    hook(handle, &ws, cx, &worker, started("a1", "Explore"));
+    let block = followers(&ws, cx, &worker)[0].0;
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(block, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, "x");
+    let typed = ws.read_with(cx, |ws, _| {
+        ws.space.terminal(block).unwrap().term.had_input()
+    });
+    assert!(!typed);
 }

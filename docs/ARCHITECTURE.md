@@ -15,7 +15,7 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | `templum-usage` | lib | Reads what CLI agents write about their sessions and plan limits: Claude Code's status line through Templum's relay, and its transcripts (`claude.rs`, which also writes the settings file Claude Code is given, with Templum's hooks, and its `mcp.json`); Codex's rollout files (`codex.rs`); the Gemini CLI extension (`gemini.rs`); the files that give Copilot CLI Templum's server and a plugin of hooks, with the words that name them (`copilot.rs`); the JSON and the JavaScript plugin that give OpenCode and Kilo Code the same through their config variable (`opencode.rs`, `opencode.js`); Qwen Code's MCP file and the system settings file with Templum's hooks that its variable moves (`qwen.rs`); Pi's extension, which reports its events and registers the server where Pi has MCP (`pi.rs`, `pi.ts`); the program those files run and its hook command (`bin`, `hook_command`); when to warn about a limit or tell its reset (`watch.rs`); each agent's variable, items and login for its accounts (`accounts.rs`), and each account's command, the file in `~/.local/bin` that runs its agent on its folder (`accounts/command.rs`). Never an agent's credentials ([specs/usage.md](specs/usage.md)) | No |
 | `templum-update` | lib | Finds the newest release on GitHub (`lib.rs`), how Templum was installed and the release file that fits it (`install.rs`). Downloads it and checks GitHub's SHA-256 (`fetch.rs`), then puts it in place: a rename over the AppImage or executable, a bundle swap on macOS, an installer's command line, a command for a terminal ([specs/updates.md](specs/updates.md)) | No |
 | `templum-mcp` | lib | The bus Templum's blocks talk over: JSON-RPC lines on a local socket (`bus.rs`), the MCP tools (`tools.rs`), the Templum Agent's control tools and their danger (`control.rs`), the agents' hook events (`hooks.rs`) and the `templum` command line (`cli.rs`: the MCP bridges `mcp` and `control`, `hook`, the verbs) ([specs/connections.md](specs/connections.md)) | No |
-| `templum-agent` | lib | The Templum Agent's engine: Claude Code's words and its stream-json lines read into chat events (`claude.rs`), the conversation's rows, its own things and its file (`conversation.rs`), the child process and its reader threads (`engine.rs`), and the fake engine the tests run (`fake.rs`) ([specs/templum-agent.md](specs/templum-agent.md)) | No |
+| `templum-agent` | lib | The Templum Agent's engine: Claude Code's words and its stream-json lines read into chat events (`claude.rs`), the conversation's rows, its own things and its file (`conversation.rs`), the child process and its reader threads (`engine.rs`), and the fake engine the tests run (`fake.rs`) ([specs/templum-agent.md](specs/templum-agent.md)); `templum follow`, a Claude Code subagent's transcript printed as it grows (`follow.rs`, [specs/claude-subagents.md](specs/claude-subagents.md)) | No |
 
 All eight crates exist. New library crates are created together with the first real code that needs
 them, never as empty scaffolding. The behavior of the current version is specified in
@@ -59,7 +59,8 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   writer thread, and its lines reach the UI thread through a channel that `workspace/bus.rs` drains: the UI thread
   never touches a socket. Every terminal gets `TEMPLUM_BUS` and `<data>/bin` first in `PATH`, where `templum` is
   this Templum: a link to it on Unix, a hard link or a copy named `templum.exe` on Windows. `templum mcp`,
-  `templum hook …` and the verbs are the same program run without a window (`main.rs`). Each connection has a number;
+  `templum hook …` and the verbs are the same program run without a window (`main.rs`), as is `templum follow`, the
+  program of a Claude Code subagent's block ([specs/claude-subagents.md](specs/claude-subagents.md)). Each connection has a number;
   when one ends the UI hears it (`templum/closed`) and drops what it waited for.
   A fourth kind of client, `control`, is the MCP server only the Templum Agent's process gets: its hello carries a
   secret new at each start of the engine, compared at every message, and `workspace/control.rs` serves it on every
@@ -132,7 +133,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   that wait: a question, a request to connect, an agent's turn; their deadlines, cancels and the balloon's answers),
   `delegate.rs` (tasks handed between agents: typing them, their answers, `reply`, `wait_for_idle`, `send_keys` and
   `interrupt`), `spawn.rs` (`spawn_agent`: an agent beside the caller, its worktree, its model and effort, its prompt
-  once it is ready, `close_block`), `content.rs` (the tools on a
+  once it is ready, `close_block`), `subagents.rs` (a Claude Code subagent's block: opened beside its parent as it
+  starts, closed a minute after it finished unless read, never saved), `content.rs` (the tools on a
   wired block's content: a kanban's cards, a note, a checklist, a file opened in an editor, after their wire check),
   `ops.rs` (the workspace operations both MCP servers call, each taking its target, never a caller: `stop_in`,
   `add_block_in`, the worktree operations, a terminal's text, typing into it, closing a block, cards, notes and

@@ -1293,6 +1293,11 @@ impl Terminal {
         moved
     }
 
+    /// Its view is scrolled back from the end of its output.
+    pub fn scrolled_back(&self) -> bool {
+        self.term.0.lock_unfair().grid().display_offset() > 0
+    }
+
     /// Scrolls the history (positive = up). In full-screen apps that asked for it (less,
     /// vim: alternate screen + alternate scroll), sends arrow keys instead.
     pub fn scroll(&self, lines: i32) {

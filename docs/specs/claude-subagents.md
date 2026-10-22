@@ -33,6 +33,38 @@ A permission dialog a subagent opens is in its parent's screen: the parent's dot
 Bash?", and stays so until that subagent's tool ends (or it stops): another subagent's tool, or the parent's own,
 doesn't turn it back to Working.
 
+### Its block
+
+Each subagent of a Claude Code in a Templum terminal opens a block of its own as it starts, built-in ones (`Explore`,
+`Plan`, `general-purpose`) as much as the person's `.claude/agents` ones and forks; Claude Code's own agents (prompt
+suggestions, `/btw`), which have no type, don't. Accounts (`CLAUDE_CONFIG_DIR`) work the same: the transcript's path
+comes from the hook.
+
+- **Where.** Beside its parent, as `spawn_agent` places an agent's blocks: toward the blocks wired to the parent,
+  down the column the ones it opened started, overlapping nothing (`Space::room_near`), 90 × 22 cells. Many at once
+  go down that column, one under the other. It is wired to its parent. The keyboard, the selection and the camera
+  stay where they are, and Ctrl+Z doesn't take it away: the person didn't open it.
+- **What it shows.** An ordinary terminal block running `templum follow <transcript> <type>`, Templum's own program
+  without a window: a dim first line ("A subagent of Claude Code, read-only: what it asks is answered in its Claude
+  Code's block."), then its task (bold "Task" and the prompt), "thinking…" (dim) for a thought, its words, each tool
+  call as `● Bash  cargo test -p parser` (its command, file, pattern, URL… in one line of at most 100 characters),
+  each result's first line under it, `⎿ a.txt +1 lines` (dim) or `✗ Permission denied` (red), and once its last turn
+  ended a dim `─ Done`. A message that resumes it shows as `› …`. Its title is its type and description,
+  "Explore · List probe files", and "· done" once it ended; the description is the transcript's `meta.json`'s
+  (observed, not documented), else the first line of its task. Zoom, the silhouettes far away, selection, copy,
+  scrolling and find are a terminal's.
+- **Its dot.** The accent while it works ("Working"); yellow while its dialog waits in its parent's screen ("Waiting
+  for you: Allow Bash? Answer in its Claude Code."); grey once it finished ("Done").
+- **Read-only.** Keys, typed text and pastes don't reach it; its first line says where its dialogs are answered.
+- **Resumed.** A subagent started again (`SubagentStart` with the same id) works again in the same block.
+- **Closing itself.** A minute after it finished (`SubagentStop`), or after its parent's session ended (`SessionEnd`,
+  a new session, or the agent gone), its block closes without a question and without a Ctrl+Z step. **While the
+  person reads it** (it is focused, the pointer is over it, it is selected, or its view is scrolled back from the
+  end), it stays, and its minute starts over once they stop: nothing closes under the person's eyes.
+- **Closing its parent** closes its subagents' blocks with it; undoing that close brings back only the parent.
+- **Never saved.** A subagent's block belongs to a live session: the canvas is saved without it and its wires
+  (`Space::kept`), so a restart doesn't bring it back, and the snapshot doesn't look at it.
+
 ## Hooks
 
 Templum's Claude Code settings file adds `SubagentStart` and `SubagentStop` to the hooks of
@@ -84,6 +116,22 @@ The dialog a subagent opens (`SubagentNeedsYou`) is remembered with its id (`Pan
 `SubagentWorking` or `SubagentStopped` ends the wait, never another's tool nor the parent's own `Working`; the
 parent's own dialog is ended by its own `Working`, as before.
 
+## The follower
+
+`templum follow <transcript> [<type>]` (`templum-agent`'s `follow.rs`, run from `main.rs` before the verbs) reads the
+transcript from where it last stopped every 250 ms, a whole line at a time (a half-written one waits), and prints
+what is new; the file may not be there yet when the block opens. It reads Claude Code's content blocks with
+`claude::parse`, the Templum Agent's reader of the same blocks, and the task, thoughts and turn's end itself. It
+never ends by itself: its block closing ends it. Every text it prints from the transcript loses its control
+characters but new lines and tabs, so an escape a tool's output holds can't drive the terminal (its title, its
+clipboard). It writes `\r\n`, also where the terminal doesn't turn `\n` into it. It opens the file as any reader, so
+Claude Code, which appends to it, is never kept from writing, on Windows and macOS too.
+
+The workspace (`workspace/subagents.rs`) builds the transcript's path from the session's `transcript_path` and the
+subagent's id (`<transcript without .jsonl>/subagents/agent-<id>.jsonl`, documented), and opens no block for an id
+that isn't letters, digits, `-` and `_`. The block runs the follower as its program (never typed into a shell), in its
+parent's folder.
+
 ## Testing
 
 - `hooks.rs`: `claude_codes_subagents_are_told_apart_from_its_own_turn`, on the probe's shapes.
@@ -91,9 +139,22 @@ parent's own dialog is ended by its own `Working`, as before.
   does: a task answered by the turn after the last report, the race included, an idle prompt ending nothing; a report
   that doesn't take a task in; a subagent's dialog that only its own tool ends; a subagent's tool that doesn't take a
   queued task into the turn; one gone without a word that doesn't keep its parent busy; a still screen that neither
-  ends nor sticks a parent awaiting its subagents.
+  ends nor sticks a parent awaiting its subagents; a block opened beside its parent, wired, overlapping nothing,
+  outside Ctrl+Z and outside the saved canvas; one finished that closes a minute later, and not while read; its dot
+  for its dialog; its blocks closed with its parent and finished with its session; keys that don't reach it.
+- `follow.rs`: a synthetic transcript, written in pieces, read as its task, its tools and its report, its title
+  from its task or its `meta.json`; escapes in a tool's output never reach the terminal.
+- **By hand** (not on the person's canvas): `templum follow` run on a synthetic transcript in a temporary folder,
+  its output read with `cat -v`. The block on the canvas wasn't looked at with a real Claude Code: the workspace tests
+  cover its placing, dot, closing and keys; its look is a terminal's.
 
 ## Risks
+
+- **Windows' release program is a GUI one** (`windows_subsystem`): started as a block's program, it may not be
+  attached to that block's pseudoconsole, and the block would stay empty. Not checked on Windows
+  ([minors.md](../minors.md), "On Windows a release Templum's subagent block may stay empty").
+- **Many subagents** are as many blocks down one column (Claude Code runs up to 20 at once). Each costs a file read
+  four times a second while it lives, and a terminal; off screen it isn't painted.
 
 - **The report's prompt is Claude Code's own format** (`<task-notification>`, `<task-id>`), observed, not
   documented. If it changes, reported subagents are never taken off: the parent stays Working and its task open

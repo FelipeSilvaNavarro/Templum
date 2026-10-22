@@ -1076,6 +1076,29 @@ pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedStr
         (Some(a @ Alert::Attention(_)), None) => (ansi(3), a.text()),
         (Some(a), _) if a.failed() => (ansi(1), a.text()),
         (Some(a), _) => (ansi(2), a.text()),
+        // A subagent's block (docs/specs/claude-subagents.md): its dialog in its parent's
+        // screen, its work, its end.
+        (None, None) if pane.follows.is_some() => {
+            let follows = pane.follows.as_ref().expect("a subagent's block");
+            let asks = ws
+                .pane(&follows.parent)
+                .filter(|p| p.asks(Some(&follows.id)))
+                .and_then(|p| match &p.state {
+                    Some(AgentState::NeedsYou(asks)) => Some(asks.clone()),
+                    _ => None,
+                });
+            match (asks, follows.done) {
+                (Some(asks), _) => (
+                    ansi(3),
+                    format!(
+                        "Waiting for you: {} Answer in its Claude Code.",
+                        asks.as_deref().unwrap_or("it asks you something.")
+                    ),
+                ),
+                (None, Some(_)) => (ws.ui.title_dim, "Done".to_string()),
+                (None, None) => (ws.ui.accent, "Working".to_string()),
+            }
+        }
         (None, None) => {
             // An agent the last snapshot no longer sees (it crashed) says nothing of its turn.
             match pane.state.as_ref().filter(|_| pane.seen.agent.is_some()) {

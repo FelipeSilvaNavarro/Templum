@@ -521,6 +521,7 @@ impl Workspace {
                 .unwrap_or_default();
             for terminal in gone {
                 self.agent_left(&terminal, cx);
+                self.subagents_done(&terminal, None, window, cx);
             }
             // An account found running: `/usage` asks its limits from now on.
             let ran: Vec<String> = self

@@ -753,6 +753,7 @@ impl Workspace {
                         subagents: Vec::new(),
                         awaits_subagents: false,
                         asked_by: None,
+                        follows: None,
                     })),
                 );
                 self.added(id);
@@ -865,12 +866,13 @@ impl Workspace {
         if !self.take_step(then) {
             return;
         }
+        // A subagent's block never comes back: it belongs to a live session.
         let items: Vec<_> = self
             .space
             .canvas
             .blocks()
             .iter()
-            .filter(|b| ids.contains(&b.id))
+            .filter(|b| ids.contains(&b.id) && self.space.kept(b.id))
             .map(|b| (b.id, self.space.item_of(b)))
             .collect();
         // Their wires go with them; undoing the close brings them back.
@@ -902,10 +904,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(terminal) = self.space.terminal(id).map(|p| p.term.id().to_string()) {
+        let terminal = self.space.terminal(id).map(|p| p.term.id().to_string());
+        if let Some(terminal) = &terminal {
             let uid = self.space.uids.get(&id).cloned().unwrap_or_default();
             let why = format!("{uid} was closed before it answered.");
-            self.end_turn(&terminal, templum_mcp::Reply::err(why), cx);
+            self.end_turn(terminal, templum_mcp::Reply::err(why), cx);
         }
         if let Some((block, _, body)) = self.take_block(id, window, cx) {
             // Its notes stay in the Notes dialog, but for blank ones: nothing is lost.
@@ -920,6 +923,10 @@ impl Workspace {
                 body,
                 since: Instant::now(),
             });
+        }
+        // Its subagents' blocks go with it (docs/specs/claude-subagents.md).
+        if let Some(terminal) = terminal {
+            self.close_subagents_of(&terminal, window, cx);
         }
         cx.notify();
     }

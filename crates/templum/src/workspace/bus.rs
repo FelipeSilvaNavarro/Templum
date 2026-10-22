@@ -223,7 +223,7 @@ impl Workspace {
                 if off && method == templum_mcp::hooks::METHOD => {}
             Incoming::Notification { method, params } if method == templum_mcp::hooks::METHOD => {
                 if let Ok(event) = serde_json::from_value(params) {
-                    self.agent_event(&hello.terminal, event, cx);
+                    self.agent_event(&hello.terminal, event, window, cx);
                 }
             }
             // The client gave up on a call (MCP): no answer goes to it.
@@ -244,6 +244,7 @@ impl Workspace {
         &mut self,
         terminal: &str,
         event: templum_mcp::AgentEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         use templum_mcp::AgentEvent;
@@ -298,6 +299,7 @@ impl Workspace {
                 pane.transcript = None;
                 pane.subagents.clear();
                 pane.awaits_subagents = false;
+                self.subagents_done(terminal, None, window, cx);
             }
             // Its turn ended while its subagents work: the reports they send start its next
             // turns, and the last one's end is its answer (docs/specs/claude-subagents.md).
@@ -375,6 +377,7 @@ impl Workspace {
                 pane.state = None;
                 pane.speaks = false;
                 self.agent_left(terminal, cx);
+                self.subagents_done(terminal, None, window, cx);
             }
             // Claude Code's own prompt, its subagents' reports: a turn starts that answers no
             // task and takes none in. A report ends that subagent, also one stopped without a
@@ -386,8 +389,13 @@ impl Workspace {
                     pane.state = Some(AgentState::Working);
                 }
             }
-            AgentEvent::SubagentStarted { id, .. } => {
-                pane.add_subagent(id);
+            AgentEvent::SubagentStarted {
+                id,
+                kind,
+                transcript,
+            } => {
+                pane.add_subagent(id.clone());
+                self.open_subagent(terminal, (&id, &kind), transcript.as_deref(), window, cx);
             }
             // The dialog it asked its person is over: its tool ran, or it stopped.
             AgentEvent::SubagentWorking { id } => {
@@ -408,8 +416,12 @@ impl Workspace {
                 }
                 pane.subagents.retain(|s| s.id != id);
                 if reports {
-                    pane.subagents.push(Subagent { id, reported: true });
+                    pane.subagents.push(Subagent {
+                        id: id.clone(),
+                        reported: true,
+                    });
                 }
+                self.subagents_done(terminal, Some(&id), window, cx);
             }
         }
         cx.notify();
@@ -466,7 +478,7 @@ impl Workspace {
     }
 
     /// The pane of the terminal `terminal` (its `TEMPLUM_TERMINAL`), in any workspace.
-    pub(super) fn pane(&self, terminal: &str) -> Option<&Pane> {
+    pub(crate) fn pane(&self, terminal: &str) -> Option<&Pane> {
         self.spaces()
             .flat_map(|s| s.blocks.values())
             .filter_map(Body::terminal)
