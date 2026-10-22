@@ -559,6 +559,7 @@ fn a_subagents_block_shows_its_transcript_as_it_grows(cx: &mut TestAppContext) {
         ("send_keys", json!({ "block": uid, "keys": ["enter"] })),
         ("interrupt", json!({ "block": uid })),
         ("stop_agent", json!({ "block": uid })),
+        ("delegate", json!({ "block": uid, "task": "go" })),
     ] {
         let (failed, text) = call(handle, &ws, cx, &worker, tool, args);
         assert!(failed && text.contains("read-only"), "{tool}: {text}");
