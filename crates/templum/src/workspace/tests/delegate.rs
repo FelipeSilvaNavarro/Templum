@@ -3657,6 +3657,45 @@ fn no_enter_once_the_person_typed_into_the_agent(cx: &mut TestAppContext) {
     assert_eq!(inputs(cx), typed, "no Enter");
 }
 
+/// A task's looks after its Enter stop once it ended and another came after it: they press no
+/// Enter into the later task, nor end it as not taken.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_earlier_tasks_looks_leave_a_later_task_alone(cx: &mut TestAppContext) {
+    let confirm = crate::workspace::delegate::CONFIRM.as_millis() as u64;
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    event(handle, &ws, cx, &worker, json!({ "event": "started" }));
+    let inputs = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().term.inputs())
+    };
+    let task = json!({ "block": them, "task": "think" });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    screen_with(&ws, cx, theirs, "think");
+    entered(&ws, cx, theirs);
+    screen_until(&ws, cx, theirs, |s| s.matches("think").count() >= 2);
+    // Task t1 ended, and task t2 came after it.
+    ws.update(cx, |ws, _| {
+        ws.space
+            .terminal_mut(theirs)
+            .unwrap()
+            .handed
+            .as_mut()
+            .unwrap()
+            .id = 2
+    });
+    let typed = inputs(cx);
+    after(cx, 2 * confirm);
+    assert_eq!(inputs(cx), typed, "no Enter into task t2");
+    ws.read_with(cx, |ws, _| {
+        let handed = ws.space.terminal(theirs).unwrap().handed.as_ref();
+        assert_eq!(handed.map(|h| h.id), Some(2), "task t2 still handed over");
+    });
+    let (failed, text) = answered(&answers);
+    assert!(failed && text.contains("before it took the task"), "{text}");
+}
+
 /// A turn's end (Claude Code's idle prompt comes a minute after its last turn) and a screen its
 /// looks take for one at work confirm nothing: only the prompt taken does, and its turn's end then
 /// answers the task.

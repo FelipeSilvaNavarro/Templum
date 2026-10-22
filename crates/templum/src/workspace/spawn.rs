@@ -424,6 +424,7 @@ impl Workspace {
         let screen = seen.then(|| pane.screen());
         // Windows' console doesn't pass the cursor's mode on: its still screen alone tells.
         let typing = cfg!(windows) || pane.term.shared().modes().typing;
+        let task = pane.handed.as_ref().map(|h| h.id);
         let Some(prompt) = pane.prompt.as_mut() else {
             return false;
         };
@@ -433,7 +434,7 @@ impl Workspace {
         }
         let text = pane.prompt.take().map(|p| p.text).unwrap_or_default();
         // No call waits to say how it went: a task not taken comes back as its end does.
-        drop(self.send_task(terminal, &text, true, cx));
+        drop(self.send_task(terminal, &text, task, cx));
         false
     }
 }

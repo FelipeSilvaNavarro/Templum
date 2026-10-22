@@ -208,7 +208,8 @@ later starts with none.
    into it for 3 seconds; otherwise, or with still no word 3 seconds later, the task ends untaken, with the last 20
    lines of its screen. A turn that ends before the agent took the task (the turn it was on) doesn't answer it. The
    person typing into the agent after the paste and before its Enter gets no Enter (it would send their text too):
-   the task ends untaken, "its person is typing in it".
+   the task ends untaken, "its person is typing in it". Once the task ended, or another came after it, its looks stop
+   and press nothing more.
    **Confirmed by its screen** (card 118): the agents without hooks, and those whose hooks haven't spoken yet (Codex's
    `SessionStart`, Copilot CLI's, OpenCode's and Kilo Code's first event come with their first prompt), took it once
    their screen moves (two looks in a row, 150 ms apart, see it change: a spinner, a timer) within 3 seconds of the

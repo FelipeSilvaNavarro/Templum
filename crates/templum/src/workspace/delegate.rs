@@ -743,14 +743,15 @@ impl Workspace {
     /// person meanwhile (a working agent's screen changes all along), gets no Enter: it would pick
     /// the dialog's answer for the person, as would one its person typed into since. Then its
     /// looks tell whether it took it (`EnterCheck`), with a second Enter when it can't answer a
-    /// dialog; an agent at work when it was typed queues it. A `task` (not a reply) not taken
-    /// ends at once. The answer says how it went, once known: Ok, or why not, the task then ended
+    /// dialog; an agent at work when it was typed queues it. The `task` of that id (not a reply)
+    /// not taken ends at once; once it ended, or another took its place, its looks stop, pressing
+    /// nothing more. The answer says how it went, once known: Ok, or why not, the task then ended
     /// without a notice besides (`not_taken`). A notice waits for its Enters (`Pane::sent`).
     pub(super) fn send_task(
         &mut self,
         terminal: &str,
         text: &str,
-        task: bool,
+        task: Option<u64>,
         cx: &mut Context<Self>,
     ) -> oneshot::Receiver<Result<(), Reply>> {
         let (told, answer) = oneshot::channel();
@@ -784,6 +785,10 @@ impl Workspace {
                     let Some(pane) = ws.pane(&terminal) else {
                         return true;
                     };
+                    // Its task ended (interrupted, answered), or another came after it.
+                    if task.is_some() && pane.handed.as_ref().map(|h| h.id) != task {
+                        return true;
+                    }
                     let takes = pane.takes_typing("").is_ok();
                     let screen = pane.screen();
                     let took = match check.as_mut() {
@@ -826,7 +831,7 @@ impl Workspace {
                                 let _ = told.send(Ok(()));
                             }
                         }
-                        Err(why) if task => ws.not_taken(&terminal, why, told.take(), cx),
+                        Err(why) if task.is_some() => ws.not_taken(&terminal, why, told.take(), cx),
                         Err(_) => {}
                     }
                     true
@@ -1010,7 +1015,7 @@ impl Workspace {
             self.watch_ready(worker.clone(), cx);
             None
         } else {
-            Some(self.send_task(&worker, &line, true, cx))
+            Some(self.send_task(&worker, &line, Some(id), cx))
         };
         let until = Instant::now() + Duration::from_secs(timeout);
         if let Some(pane) = self.pane_mut(&worker) {
@@ -1124,7 +1129,7 @@ impl Workspace {
                 "[reply from {}] Its reply is in the pasted text.\n{text}",
                 self.signature(space, me, cx)
             );
-            drop(self.send_task(&asker, &reply, false, cx));
+            drop(self.send_task(&asker, &reply, None, cx));
             self.asker_wrote(&asker, from);
         }
         if let Some(mine) = self.pane_mut(from) {
@@ -1506,7 +1511,7 @@ impl Workspace {
                 Some(true) => {
                     let notice = self.notices.remove(i);
                     // Its next notice waits, also in this pass: two never share an Enter.
-                    drop(self.send_task(&notice.to, &notice.text, false, cx));
+                    drop(self.send_task(&notice.to, &notice.text, None, cx));
                 }
             }
         }
