@@ -11,7 +11,7 @@ use templum_mcp::{Reply, tools};
 use super::bus::{Outcome, target};
 use super::delegate::{TASK_LEAD, answer_how};
 use super::ops::Place;
-use super::{AGENT_COLS, AGENT_ROWS, Handed, Prompt, Space, Workspace};
+use super::{AGENT_COLS, AGENT_ROWS, AgentState, Handed, Prompt, Space, Workspace};
 use crate::agents::AgentEntry;
 
 /// How often a spawned agent's readiness for its prompt is looked at.
@@ -396,9 +396,10 @@ impl Workspace {
     }
 
     /// One look: once a snapshot saw the agent's process, it is still in front of its shell, its
-    /// screen is as it was a look ago, and (Claude Code, Codex; not on Windows) it takes typing,
-    /// its prompt is typed. A minute (STARTS_WITHIN) after the spawn it is dropped instead, its
-    /// task ending with the screen. False once there is nothing more to look for.
+    /// screen is as it was a look ago, it doesn't wait for its person (a hook said so), and
+    /// (Claude Code, Codex; not on Windows) it takes typing, its prompt is typed. A minute
+    /// (STARTS_WITHIN) after the spawn it is dropped instead, its task ending with the screen.
+    /// False once there is nothing more to look for.
     fn look_ready(&mut self, terminal: &str, cx: &mut Context<Self>) -> bool {
         let Some(pane) = self.pane_mut(terminal) else {
             return false;
@@ -424,11 +425,13 @@ impl Workspace {
         let screen = seen.then(|| pane.screen());
         // Windows' console doesn't pass the cursor's mode on: its still screen alone tells.
         let typing = cfg!(windows) || pane.term.shared().modes().typing;
+        // A dialog its hooks told of would take the prompt for its answer.
+        let asks = matches!(pane.state, Some(AgentState::NeedsYou(_)));
         let task = pane.handed.as_ref().map(|h| h.id);
         let Some(prompt) = pane.prompt.as_mut() else {
             return false;
         };
-        if screen.is_none() || prompt.screen != screen || (prompt.gated && !typing) {
+        if screen.is_none() || prompt.screen != screen || (prompt.gated && !typing) || asks {
             prompt.screen = screen;
             return true;
         }

@@ -744,6 +744,50 @@ fn a_task_for_an_agent_that_never_started_is_refused(cx: &mut TestAppContext) {
     assert!(failed && text.contains("runs no agent"), "{text}");
 }
 
+/// A starting agent whose hooks say it waits for its person: its prompt waits, as the dialog
+/// would take it for its answer, and is typed once the dialog is gone.
+#[gpui_kit::test]
+fn a_prompt_waits_while_its_agent_asks_its_person(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path(), "prompt": "say hi" });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    in_front(&ws, cx, new, true);
+    found(&ws, cx, new);
+    let set = |cx: &mut TestAppContext, state| {
+        ws.update(cx, |ws, _| {
+            ws.space.terminal_mut(new).unwrap().state = state
+        })
+    };
+    set(
+        cx,
+        Some(AgentState::NeedsYou(Some("Trust these hooks?".into()))),
+    );
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    let waiting = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some())
+    };
+    for _ in 0..4 {
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+    }
+    assert!(waiting(cx), "typed into its dialog");
+    set(cx, Some(AgentState::Idle));
+    let mut looks = 0;
+    while waiting(cx) {
+        assert!(looks < 10, "never typed");
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+        looks += 1;
+    }
+    screen_with(&ws, cx, new, "say hi");
+    entered(&ws, cx, new);
+    said_twice(&ws, cx, new);
+}
+
 /// A spawned agent no snapshot found a while after its spawn never started: its prompt and its
 /// task go, whoever waits on it hears so, and an agent started there later by hand gets no prompt.
 #[gpui_kit::test]
