@@ -651,7 +651,7 @@ Claude Code's hooks:
 | `PermissionRequest` | waiting for the person, "Allow *tool*?" ("Claude asks you a question" for `AskUserQuestion`, "Claude has a plan for you" for `ExitPlanMode`), as soon as the permission dialog opens. The hook prints nothing and exits 0, so the dialog still decides |
 | `PostToolUse` | working (again, after a permission); from batch 7 never a new turn: only a prompt taken starts one |
 | `PostToolUseFailure` | working (again, after a permission: an allowed tool may fail), or done without an answer when `is_interrupt` is true (Esc while the tool ran) |
-| `Stop` | done, with its last answer (`last_assistant_message`); still working while its `background_tasks` lists a subagent ([claude-subagents.md](claude-subagents.md)) |
+| `Stop` | done, with its last answer (`last_assistant_message`); still working while its `background_tasks` lists a subagent, or a subagent's report is still to come ([claude-subagents.md](claude-subagents.md)) |
 | `StopFailure` | done, without an answer: an API error ended the turn, and `Stop` doesn't come |
 | `SubagentStart`, `SubagentStop`, and any hook with an `agent_id` | one of its subagents: never its own turn ([claude-subagents.md](claude-subagents.md#hooks)) |
 | `Notification` | waiting for the person on `permission_prompt`, `elicitation_dialog` and `agent_needs_input` (they come only after about six seconds without typing, hence `PermissionRequest`); `permission_prompt` says the dialog `PermissionRequest` already did, so its "Allow *tool*?" stays; not working on `idle_prompt` (the prompt has sat idle): never a wait for the person, since the agent asks nothing; the others nothing |

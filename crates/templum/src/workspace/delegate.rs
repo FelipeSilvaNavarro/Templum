@@ -1271,6 +1271,7 @@ impl Workspace {
             pane.transcript = None;
             pane.keep_subagents(|_| false);
             pane.awaits_subagents = false;
+            pane.settles = None;
         }
     }
 

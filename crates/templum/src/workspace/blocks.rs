@@ -753,6 +753,7 @@ impl Workspace {
                         subagents: Vec::new(),
                         awaits_subagents: false,
                         asked_by: None,
+                        settles: None,
                         follows: None,
                     })),
                 );

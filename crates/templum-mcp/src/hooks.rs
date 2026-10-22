@@ -32,10 +32,12 @@ pub enum AgentEvent {
     NeedsYou { message: Option<String> },
     /// The session ended.
     Ended,
-    /// Claude Code finished its turn while these subagents of its still work in the background
-    /// (`Stop`'s `background_tasks`, docs/specs/claude-subagents.md): their reports come in
-    /// turns of its own, and the last turn's end is its answer.
+    /// Claude Code finished its turn, with its message, while these subagents of its still work
+    /// in the background (`Stop`'s `background_tasks`, docs/specs/claude-subagents.md): their
+    /// reports come in turns of its own, and the last turn's end is its answer.
     AwaitsSubagents {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         transcript: Option<String>,
         subagents: Vec<String>,
@@ -112,6 +114,7 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
                 transcript: text("transcript_path"),
             },
             subagents => AgentEvent::AwaitsSubagents {
+                message: text("last_assistant_message"),
                 transcript: text("transcript_path"),
                 subagents,
             },
@@ -621,6 +624,7 @@ mod tests {
                 "transcript_path": main, "background_tasks": running })
             ),
             Some(AgentEvent::AwaitsSubagents {
+                message: Some("Both started.".into()),
                 transcript: Some(main.into()),
                 subagents: vec!["a80a32db516c45194".into()]
             }),

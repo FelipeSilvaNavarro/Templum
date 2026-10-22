@@ -134,6 +134,11 @@ fn a_task_ends_with_the_turn_after_its_subagents_reports(cx: &mut TestAppContext
     assert!(answers.try_recv().is_err(), "a report is still to come");
     assert_eq!(dot(&ws, cx, theirs).as_deref(), Some("Working"));
     hook(handle, &ws, cx, &worker, report("a2"));
+    after(cx, 6_000);
+    assert!(
+        answers.try_recv().is_err(),
+        "the turn taking the report is under way"
+    );
     hook(
         handle,
         &ws,
@@ -146,6 +151,92 @@ fn a_task_ends_with_the_turn_after_its_subagents_reports(cx: &mut TestAppContext
         (false, "Both found it: parse.rs:42.".to_string())
     );
     assert_eq!(dot(&ws, cx, theirs), None, "at rest");
+}
+
+/// A report Claude Code took inside a turn (at a tool's end, as it does since 2.1.234) starts no
+/// turn: the turn's end that leaves only reported subagents answers the task once no turn started
+/// within the grace, or at once when its prompt sits idle.
+#[gpui_kit::test]
+fn a_report_taken_inside_a_turn_doesnt_keep_the_task_open(cx: &mut TestAppContext) {
+    for idle in [false, true] {
+        let (handle, ws, mine, theirs) = two_agents(cx);
+        let (terminal, _) = me(&ws, cx, mine);
+        let (worker, them) = me(&ws, cx, theirs);
+        let task = json!({ "block": them, "task": "find it", "wait": true });
+        let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+        let prompt = json!({ "hook_event_name": "UserPromptSubmit", "prompt": "[from …] find" });
+        hook(handle, &ws, cx, &worker, prompt);
+        hook(handle, &ws, cx, &worker, started("a1", "Explore"));
+        hook(handle, &ws, cx, &worker, tool(None));
+        hook(handle, &ws, cx, &worker, stopped("a1", &[]));
+        // Its report, taken at this tool's end.
+        hook(handle, &ws, cx, &worker, tool(None));
+        hook(handle, &ws, cx, &worker, stop("Found it", &[]));
+        assert!(
+            answers.try_recv().is_err(),
+            "a report may still come as a turn"
+        );
+        if idle {
+            let idle = json!({ "hook_event_name": "Notification",
+                "notification_type": "idle_prompt" });
+            hook(handle, &ws, cx, &worker, idle);
+        } else {
+            after(cx, 4_000);
+            assert!(answers.try_recv().is_err(), "within the grace");
+            after(cx, 1_500);
+        }
+        assert_eq!(
+            answered(&answers),
+            (false, "Found it".to_string()),
+            "idle: {idle}"
+        );
+        assert_eq!(dot(&ws, cx, theirs), None, "at rest");
+    }
+}
+
+/// A turn that ends without an answer (an Esc while a tool runs) with only reported subagents left
+/// says so at once: not with an earlier turn's answer.
+#[gpui_kit::test]
+fn a_turn_ended_without_an_answer_says_so_with_reports_left(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let prompt = json!({ "hook_event_name": "UserPromptSubmit", "prompt": "the person's" });
+    hook(handle, &ws, cx, &worker, prompt);
+    hook(handle, &ws, cx, &worker, stop("An earlier answer.", &[]));
+    let task = json!({ "block": them, "task": "find it", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    let prompt = json!({ "hook_event_name": "UserPromptSubmit", "prompt": "[from …] find" });
+    hook(handle, &ws, cx, &worker, prompt);
+    hook(handle, &ws, cx, &worker, started("a1", "Explore"));
+    hook(handle, &ws, cx, &worker, stopped("a1", &[]));
+    let esc = json!({ "hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+        "is_interrupt": true });
+    hook(handle, &ws, cx, &worker, esc);
+    let (failed, text) = answered(&answers);
+    assert!(
+        failed && text.starts_with("Its turn ended without an answer"),
+        "{text}"
+    );
+}
+
+/// A subagent's stop Templum never heard start (a session started since, `/clear`) doesn't keep
+/// its parent waiting for a report.
+#[gpui_kit::test]
+fn an_unknown_subagents_stop_awaits_no_report(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    hook(handle, &ws, cx, &worker, started("a9", "Explore"));
+    let start = json!({ "hook_event_name": "SessionStart", "source": "clear" });
+    hook(handle, &ws, cx, &worker, start);
+    let task = json!({ "block": them, "task": "go", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    let prompt = json!({ "hook_event_name": "UserPromptSubmit", "prompt": "[from …] go" });
+    hook(handle, &ws, cx, &worker, prompt);
+    hook(handle, &ws, cx, &worker, stopped("a9", &[]));
+    hook(handle, &ws, cx, &worker, stop("Done.", &[]));
+    assert_eq!(answered(&answers), (false, "Done.".to_string()));
 }
 
 /// A subagent's report starts a turn of Claude Code's own: a task typed a moment before it isn't
@@ -230,7 +321,11 @@ fn a_gone_subagents_dialog_doesnt_keep_its_parent_waiting(cx: &mut TestAppContex
     hook(handle, &ws, cx, &worker, asks("a2"));
     assert_eq!(dot(&ws, cx, theirs), waiting);
     hook(handle, &ws, cx, &worker, report("a2"));
-    assert_eq!(dot(&ws, cx, theirs).as_deref(), Some("Working"), "its report taken");
+    assert_eq!(
+        dot(&ws, cx, theirs).as_deref(),
+        Some("Working"),
+        "its report taken"
+    );
 }
 
 /// A subagent's tool end doesn't take a task Claude Code queued behind its turn into that turn:

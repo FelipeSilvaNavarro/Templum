@@ -311,6 +311,9 @@ pub(crate) struct Pane {
     /// The subagent whose dialog its agent waits on its person for (`NeedsYou`), by id; None:
     /// its own. Another's tool ending doesn't close that dialog.
     pub asked_by: Option<String>,
+    /// Its agent's turn ended with only reported subagents left: unless a turn starts first, they
+    /// are forgotten then, and that turn's end answers (docs/specs/claude-subagents.md).
+    pub settles: Option<Instant>,
     /// The Claude Code subagent it shows (`templum follow`): read-only, never saved.
     pub follows: Option<subagents::Follows>,
 }

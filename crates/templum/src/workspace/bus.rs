@@ -3,6 +3,7 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use futures::StreamExt as _;
 use gpui_kit::component::notification::Notification;
@@ -14,8 +15,11 @@ use templum_mcp::{Bus, Call, Incoming, Message, Reply, rpc, tools};
 
 use super::delegate::ENTER_AFTER;
 use super::waits::{Asked, Waiting, deadline};
-use super::{AgentState, Body, Pane, Space, Subagent, Workspace, show_notification};
+use super::{AgentState, Body, Pane, Space, Workspace, show_notification};
 
+/// How long a turn's end that left only reported subagents waits for a turn to take their reports
+/// before it answers (docs/specs/claude-subagents.md): Claude Code starts that turn at once.
+const GRACE: Duration = Duration::from_secs(5);
 /// A tool call's answer while connections are off.
 pub(super) const CONNECTIONS_OFF: &str = "Connections are off: turn on Agents in Templum (Settings ▸ Connections) to use Templum's tools.";
 
@@ -248,7 +252,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         use templum_mcp::AgentEvent;
-        let hands_out = self.waits_on_its_own(terminal);
         let Some(pane) = self.pane_mut(terminal) else {
             return;
         };
@@ -258,13 +261,18 @@ impl Workspace {
         if !matches!(event, AgentEvent::Stopped { .. }) {
             pane.speaks = true;
         }
-        // Claude Code's `Stop` with its answer names the subagents still at work
-        // (`AwaitsSubagents` otherwise): none. One counted as such stopped without a word.
-        if let AgentEvent::Stopped {
-            message: Some(_), ..
-        } = &event
-        {
-            pane.keep_subagents(|s| s.reported);
+        // A turn under way, or a new session: the reports a turn's end left to come aren't
+        // settled (`settle`).
+        if matches!(
+            event,
+            AgentEvent::Submitted { .. }
+                | AgentEvent::Reports { .. }
+                | AgentEvent::Working
+                | AgentEvent::NeedsYou { .. }
+                | AgentEvent::Started
+                | AgentEvent::Ended
+        ) {
+            pane.settles = None;
         }
         match event {
             AgentEvent::Submitted { at_enter } => {
@@ -304,6 +312,7 @@ impl Workspace {
             // Its turn ended while its subagents work: the reports they send start its next
             // turns, and the last one's end is its answer (docs/specs/claude-subagents.md).
             AgentEvent::AwaitsSubagents {
+                message,
                 transcript,
                 subagents,
             } => {
@@ -315,15 +324,7 @@ impl Workspace {
                 for id in subagents {
                     pane.add_subagent(id);
                 }
-                pane.await_subagents();
-            }
-            // A report is still to come (its subagent stopped during this turn), or Claude Code's
-            // prompt sat idle while they work: no answer yet.
-            AgentEvent::Stopped { transcript, .. } if !pane.subagents.is_empty() => {
-                if transcript.is_some() {
-                    pane.transcript = transcript;
-                }
-                pane.await_subagents();
+                self.turn_ended(terminal, message, cx);
             }
             AgentEvent::Stopped {
                 message,
@@ -332,31 +333,12 @@ impl Workspace {
                 if transcript.is_some() {
                     pane.transcript = transcript;
                 }
-                pane.state = Some(AgentState::Idle);
-                if let Some(message) = &message {
-                    pane.answer = Some(message.clone());
+                // Claude Code's `Stop` with its answer names the subagents still at work
+                // (`AwaitsSubagents` otherwise): none. One counted as such stopped without a word.
+                if message.is_some() {
+                    pane.keep_subagents(|s| s.reported);
                 }
-                // The turn the task was typed in on, or the one Claude Code queued it behind: the
-                // next turn's end is its own.
-                if let Some(handed) = pane.handed.as_mut().filter(|h| !h.taken || h.behind) {
-                    handed.behind = false;
-                } else {
-                    let reply = match message {
-                        Some(message) => Reply::ok(message),
-                        None => Reply::err(
-                            "Its turn ended without an answer: an error, or it was interrupted.",
-                        ),
-                    };
-                    if hands_out {
-                        // It handed a task of its own over and waits for it, as card 30 asks:
-                        // this turn's end isn't its answer, and only the calls of agents that
-                        // didn't hand it its task hear it. Its `reply`, or the end of a turn with
-                        // nothing handed out any more, is the answer.
-                        self.answer_others(terminal, reply, cx);
-                    } else {
-                        self.end_turn(terminal, reply, cx);
-                    }
-                }
+                self.turn_ended(terminal, message, cx);
             }
             // A wait that says nothing new (Claude Code's notification about the dialog its
             // `PermissionRequest` opened) keeps what it asks: `allowed` looks for it.
@@ -407,17 +389,110 @@ impl Workspace {
             }
             AgentEvent::SubagentStopped { id, reports } => {
                 pane.dialog_over(&id);
-                pane.subagents.retain(|s| s.id != id);
-                if reports {
-                    pane.subagents.push(Subagent {
-                        id: id.clone(),
-                        reported: true,
-                    });
+                match pane.subagents.iter_mut().find(|s| s.id == id) {
+                    // Its report comes in a turn of its own. Never one not heard to start (a new
+                    // session since, `/clear`): nothing would ever take it off.
+                    Some(subagent) if reports => subagent.reported = true,
+                    _ => pane.keep_subagents(|s| s.id != id),
                 }
                 self.subagents_done(terminal, Some(&id), window, cx);
             }
         }
         cx.notify();
+    }
+
+    /// The turn of the agent in `terminal` ended, with `message` (None: without an answer, or
+    /// Claude Code's prompt sat idle). With no subagent of its left, that end answers what waited
+    /// on it. While one works, nothing: their reports come in turns of their own, the last one's
+    /// end is the answer; but a task handed while only these work is answered now. With only
+    /// reported ones left, their reports may never come as a turn (Claude Code took them inside
+    /// this one, at a tool's end; a nested one's went to its own parent; one stopped from Claude
+    /// Code's panel): unless a turn starts within GRACE, or at once when its prompt sat idle,
+    /// they are forgotten and this end answers (docs/specs/claude-subagents.md).
+    fn turn_ended(&mut self, terminal: &str, message: Option<String>, cx: &mut Context<Self>) {
+        let Some(pane) = self.pane_mut(terminal) else {
+            return;
+        };
+        if let Some(message) = &message {
+            pane.answer = Some(message.clone());
+        }
+        if pane.subagents.is_empty() {
+            pane.state = Some(AgentState::Idle);
+            pane.awaits_subagents = false;
+            self.answer_turn(terminal, message, cx);
+            return;
+        }
+        let at_work = pane.subagents.iter().any(|s| !s.reported);
+        if !at_work && message.is_none() {
+            // Its prompt sat idle since the turn that awaited them (its answer is that turn's),
+            // or the turn under way ended without one (an error, an Esc).
+            let kept = pane.awaits_subagents.then(|| pane.answer.clone()).flatten();
+            self.settle(terminal, kept, cx);
+            return;
+        }
+        pane.await_subagents();
+        if !at_work {
+            let at = cx.background_executor().now() + GRACE;
+            pane.settles = Some(at);
+            let terminal = terminal.to_string();
+            cx.spawn(async move |ws, cx| {
+                cx.background_executor().timer(GRACE).await;
+                ws.update(cx, |ws, cx| {
+                    if ws.pane(&terminal).is_some_and(|p| p.settles == Some(at)) {
+                        ws.settle(&terminal, message, cx);
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
+    /// The agent in `terminal` ended a turn, with `message`, leaving only reported subagents, and
+    /// no turn took their reports in: they are forgotten, and that end answers as it would have
+    /// without them.
+    fn settle(&mut self, terminal: &str, message: Option<String>, cx: &mut Context<Self>) {
+        let Some(pane) = self.pane_mut(terminal) else {
+            return;
+        };
+        pane.settles = None;
+        if pane.subagents.iter().any(|s| !s.reported) {
+            return;
+        }
+        pane.keep_subagents(|_| false);
+        pane.state = Some(AgentState::Idle);
+        pane.awaits_subagents = false;
+        self.answer_turn(terminal, message, cx);
+    }
+
+    /// The turn of the agent in `terminal` ended with `message`, and nothing more comes of it:
+    /// the task it is on ends with it, and what waits on its turn hears it.
+    fn answer_turn(&mut self, terminal: &str, message: Option<String>, cx: &mut Context<Self>) {
+        let hands_out = self.waits_on_its_own(terminal);
+        let Some(pane) = self.pane_mut(terminal) else {
+            return;
+        };
+        // The turn the task was typed in on, or the one Claude Code queued it behind: the next
+        // turn's end is its own.
+        if let Some(handed) = pane.handed.as_mut().filter(|h| !h.taken || h.behind) {
+            handed.behind = false;
+            return;
+        }
+        let reply = match message {
+            Some(message) => Reply::ok(message),
+            None => {
+                Reply::err("Its turn ended without an answer: an error, or it was interrupted.")
+            }
+        };
+        if hands_out {
+            // It handed a task of its own over and waits for it, as card 30 asks: this turn's
+            // end isn't its answer, and only the calls of agents that didn't hand it its task
+            // hear it. Its `reply`, or the end of a turn with nothing handed out any more, is
+            // the answer.
+            self.answer_others(terminal, reply, cx);
+        } else {
+            self.end_turn(terminal, reply, cx);
+        }
     }
 
     /// The agent in `terminal` calls the Templum tool `name`: when it was asking its person to

@@ -91,7 +91,8 @@ Templum keeps, on the parent's pane (`Pane::subagents`), the subagents it heard 
 done in the background, its report not yet taken.
 
 - `SubagentStarted` adds one at work (a resumed one is at work again).
-- `SubagentStopped` takes it off, or marks it reported when `reports`.
+- `SubagentStopped` takes it off, or marks it reported when `reports` and it is in the list: one never heard to start
+  (its session started again since, `/clear`, `/resume`) has no report anyone waits for.
 - `Reports` takes off every one it names, at work or reported: its report is in (one stopped from Claude Code's panel
   may say nothing else). It starts a turn that isn't a prompt anyone typed: a task waiting for its Enter isn't taken
   by it.
@@ -100,17 +101,28 @@ done in the background, its report not yet taken.
 - A new session (`Started`) or the agent leaving forgets them all.
 
 A turn's end (`Stopped`, `AwaitsSubagents`) while any is left isn't an answer: the agent stays Working (or waiting
-for its person, when a subagent's dialog is open), nothing waiting on its turn is answered, and its task stays open.
-The turn a task was queued behind ends, as before, and the next turn's end is the task's. Otherwise the turn's end is
-as before ([agent-protocol.md](agent-protocol.md#3-what-ends-a-task)). This covers the race the probe saw: a subagent
-that stops while the turn taking another's report runs leaves its report to come, so that turn's `Stop` (no subagent
-at work, an interim message) answers nothing.
+for its person, when a subagent's dialog is open), nothing waiting on its turn is answered, and its task stays open;
+its message is kept (`Pane::answer`). The turn a task was queued behind ends, as before, and the next turn's end is the
+task's. Otherwise the turn's end is as before ([agent-protocol.md](agent-protocol.md#3-what-ends-a-task)). This covers
+the race the probe saw: a subagent that stops while the turn taking another's report runs leaves its report to come,
+so that turn's `Stop` (no subagent at work, an interim message) answers nothing yet.
+
+A report may also never come as a turn of its own: Claude Code hands a background task's report to the turn under way
+at its next tool's end (CHANGELOG 2.1.234), a nested subagent reports to the subagent that started it (2.1.259), and
+one stopped from Claude Code's panel or with `TaskStop` reports nothing. So a turn's end that leaves only reported ones
+(none at work) **settles** 5 seconds later (`GRACE`, `Pane::settles`) unless a turn starts first (`Submitted`,
+`Reports`, the parent's own `Working` or dialog), as the report's turn does at once in the probe's race: the reported
+ones are forgotten, and that end answers as a `Stopped` with its message would (the task ends with it, the agent is
+at rest). Claude Code's `idle_prompt`, which from 2.1.288 doesn't come while background agents run, settles at once,
+with the message of the turn that awaited them; a turn under way that ends without an answer (an error, an Esc)
+answers so.
 
 Between that turn's end and the next turn (`Pane::awaits_subagents`):
 
 - no turn is under way, so a task typed then starts one at once instead of being queued behind one;
 - its screen isn't looked at ([An agent's state](connections.md#an-agents-state)): its prompt sits still, and its
-  subagents' hooks tell. Claude Code's `idle_prompt` meanwhile (a `Stopped` without an answer) ends nothing.
+  subagents' hooks tell. Claude Code's `idle_prompt` meanwhile (a `Stopped` without an answer) ends nothing while
+  one is at work (Claude Code before 2.1.288 sent it while they ran).
 
 The dialog a subagent opens (`SubagentNeedsYou`) is remembered with its id (`Pane::asked_by`): only that subagent's
 `SubagentWorking` or `SubagentStopped`, or that subagent leaving the list without a word of its own (its report taken,
@@ -138,9 +150,10 @@ parent's folder.
 - `hooks.rs`: `claude_codes_subagents_are_told_apart_from_its_own_turn`, on the probe's shapes.
 - `crates/templum/src/workspace/tests/subagents.rs`, each hook input turned into its event as `templum hook claude`
   does: a task answered by the turn after the last report, the race included, an idle prompt ending nothing; a report
-  that doesn't take a task in; a subagent's dialog that only its own tool ends, or its leaving; a subagent's tool that doesn't take a
-  queued task into the turn; one gone without a word that doesn't keep its parent busy; a still screen that neither
-  ends nor sticks a parent awaiting its subagents; a block opened beside its parent, wired, overlapping nothing,
+  taken inside a turn, settled by the grace or the idle prompt; a turn an Esc ended with reports left; an unknown
+  subagent's stop; a report that doesn't take a task in; a subagent's dialog that only its own tool ends, or its
+  leaving; a subagent's tool that doesn't take a queued task into the turn; one gone without a word that doesn't
+  keep its parent busy; a still screen that neither ends nor sticks a parent awaiting its subagents; a block opened beside its parent, wired, overlapping nothing,
   outside Ctrl+Z and outside the saved canvas; one finished that closes a minute later, and not while read; its dot
   for its dialog; its blocks closed with its parent and finished with its session; keys that don't reach it.
 - `follow.rs`: a synthetic transcript, written in pieces, read as its task, its tools and its report, its title
@@ -158,8 +171,10 @@ parent's folder.
   four times a second while it lives, and a terminal; off screen it isn't painted.
 
 - **The report's prompt is Claude Code's own format** (`<task-notification>`, `<task-id>`), observed, not
-  documented. If it changes, reported subagents are never taken off: the parent stays Working and its task open
-  until its timeout. Only a reported one (it stopped during a turn) depends on it; the others are settled by `Stop`'s
-  `background_tasks`, which is documented.
+  documented. If it changes, a report's turn is taken for a prompt anyone typed, and reported subagents are settled
+  only by the grace or `idle_prompt`: in the probe's race a task would then end one turn early, with the interim
+  message. The others are settled by `Stop`'s `background_tasks`, which is documented.
+- **The grace is a guess.** A report Claude Code takes more than 5 seconds after a turn's end to start its turn for
+  ends the task with that turn's interim message; in the probe the report's turn started at once.
 - **A foreground subagent** (fork mode off) is inferred not to be in `background_tasks` as it stops, so its stop
   takes it off at once. Not probed.
