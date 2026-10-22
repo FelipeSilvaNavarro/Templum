@@ -551,8 +551,9 @@ color from the theme. Esc and the ✕ close it without saving.
      - Fresh: "It starts empty: nothing shared with your Claude Code." No item shared.
      - Custom: "Choose item by item." Under it, in a faint panel (`ui.card`, rounded 8, scrolling past 260), card
        37's controls unchanged: **Share everything with** (`account-share-all`) and a row per item, Own or shared,
-       with "Linked by you to …", the Developer Mode words and "Shared once Claude Code writes one" as before. Custom
-       opens on the choices Same or Fresh last made.
+       with "Linked by you to …", the Developer Mode words and "Shared once Claude Code writes one" as before. Those
+       words go under the item's paths, in the room of the row: an item that has them has no list. Custom opens on
+       the choices Same or Fresh last made.
   5. **Notes** (11, `title_dim`), only when one applies: the [not on PATH](#its-command) note; a variable that wins
      over every account's login (as before). Nothing is shown otherwise: the dialog stays short.
 - **Footer** (a hairline over it, 20 at the sides, 12 up and down): at the right **Create claudinho**

@@ -821,17 +821,22 @@ impl Form {
             let paths = item.paths.join(", ");
             let file = !item.paths[0].ends_with('/');
             let current = self.share.get(item.key).cloned().unwrap_or_default();
-            let choice: AnyElement = if let Some(target) = self.theirs.get(item.key) {
-                note(format!("Linked by you to {}", tilde(target))).into_any_element()
+            // Why it can't be chosen goes under its paths, with the room of the row (beside them it
+            // took all of it: the item's words broke at each letter); else its list, at the right.
+            let (why, choice) = if let Some(target) = self.theirs.get(item.key) {
+                (Some(format!("Linked by you to {}", tilde(target))), None)
             } else if file && !files_share {
-                note(templum_usage::accounts::NO_FILE_LINKS.to_string()).into_any_element()
+                (
+                    Some(templum_usage::accounts::NO_FILE_LINKS.to_string()),
+                    None,
+                )
             } else {
                 let f = form.clone();
                 let key = item.key;
                 let options = std::iter::once(("".into(), "Own".into()))
                     .chain(everyone.iter().cloned())
                     .collect();
-                menu_button(
+                let list = menu_button(
                     ElementId::Name(format!("account-share-{key}").into()),
                     options,
                     current.clone().into(),
@@ -846,8 +851,8 @@ impl Form {
                             cx.notify();
                         })
                     },
-                )
-                .into_any_element()
+                );
+                (None, Some(list))
             };
             // A file the source hasn't written yet is linked once it has.
             let waiting = file
@@ -865,6 +870,7 @@ impl Form {
                     .gap(px(8.0))
                     .child(
                         div()
+                            .id(ElementId::Name(format!("account-item-{}", item.key).into()))
                             .flex()
                             .flex_col()
                             .flex_1()
@@ -874,9 +880,11 @@ impl Form {
                                 format!("{paths} · Shared once {agent} writes one")
                             } else {
                                 paths
-                            })),
+                            }))
+                            .children(why.map(note))
+                            .test_support(),
                     )
-                    .child(div().flex_shrink_0().child(choice)),
+                    .children(choice.map(|list| div().flex_shrink_0().child(list))),
             );
         }
         div()

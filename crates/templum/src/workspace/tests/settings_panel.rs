@@ -1618,3 +1618,50 @@ fn the_agents_tab_looks_for_programs_when_it_opens_not_each_frame(cx: &mut TestA
     frame(handle, cx);
     assert_eq!(drawn(cx), 0, "an agent added while the tab shows");
 }
+
+/// An item Custom can't offer says why under its paths, in the room of the row: beside them, at
+/// the right, the note took all of it and "Settings" broke at each letter.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_item_that_cant_be_chosen_keeps_the_rows_room(cx: &mut TestAppContext) {
+    let (_own, _commands) = account_dirs();
+    let (config, data, chosen, dotfiles) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    // The person's own link: Custom shows it, with no list.
+    std::os::unix::fs::symlink(
+        dotfiles.path().join("settings.json"),
+        chosen.path().join("settings.json"),
+    )
+    .unwrap();
+    let file = format!(
+        "[agents.claude2]\nof = \"claude\"\nfolder = '{}'\n",
+        chosen.path().display()
+    );
+    std::fs::write(config.path().join(crate::config::FILE), file).unwrap();
+    let (handle, _ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    open_accounts(handle, cx);
+    edit_account(handle, cx, "edit-account-claude2");
+    press(handle, cx, "account-setup-custom");
+    cx.update_window(handle, |_, window, _| {
+        let width = |key: &str| {
+            let id = gpui_kit::ElementId::Name(format!("account-item-{key}").into());
+            window.find(id).bounds().size.width
+        };
+        assert!(
+            window.try_find("account-share-settings").is_none(),
+            "no list"
+        );
+        // Its column has the row; one with a list leaves it room.
+        assert!(width("settings") > width("skills"));
+        assert!(width("skills") > px(100.), "{:?}", width("skills"));
+    })
+    .unwrap();
+}
