@@ -228,6 +228,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   that delays `stop_agent` lets the job write its file. A person sees nothing; a contributor may see CI fail once.
   Fix: a longer job (`sleep 10`, the final wait to match) so the stop has seconds to spare, or have the job loop
   until a "stopped" file exists and fail the test if it ever ends by itself.
+- [ ] **`a_quiet_agent_is_told_once_to_a_master_not_waiting` failed once in a full run.**
+  (`crates/templum/src/workspace/tests/delegate.rs:2832`, seen at d71ae86 in a full `cargo test --workspace` while
+  two other agents built in their worktrees: the reply's end notice wasn't there yet, `told` was `[]`; it passed alone
+  five times and on the next full run of the crate.) A person sees nothing; a contributor may see CI fail once. Fix:
+  wait for the notice with a deadline (frames until `notices` has it, as `until` does), not one `after(cx, 1000)`.
 
 ## Release and benches
 
