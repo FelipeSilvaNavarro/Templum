@@ -174,6 +174,15 @@ made otherwise (Find's match, an agent's output) isn't copied. Only the clipboar
 selection on Linux (its middle button pans the canvas, it doesn't paste). Settings ▸ Terminal ▸ Copy selection
 automatically turns it off.
 
+A quiet **"Copied"** says it happened (kanban card 125), not a notification: a pill with a check, in the block's
+surface and hairline colors, where the button was let go, part of the terminal's body, so it moves and zooms with the
+block. It sits above the pointer (below it near the top), grows away from the nearer side and stays inside the body,
+even when the drag ended outside it. It fades in over 120 ms, stays, and fades out over the last 180 ms of 1.2 s
+(`motion::COPIED`); the next copy starts it over where that one was let go, so there is one at a time. A selection of
+several lines says how many ("Copied 3 lines"), counting up to the last line with text. It has no listener: clicks
+and the pointer's text cursor go through it to the grid. Ctrl+Shift+C and the menu's Copy show nothing: the person
+asked for those copies; the pill answers the one they didn't ask for.
+
 ### Keyboard
 
 On Linux and Windows the app keybindings use Ctrl+Shift, so plain Ctrl keys still reach the shell. On macOS they
@@ -253,7 +262,9 @@ dev-dependency):
 - dragging `("handle", id)` resizes it, and its terminal's grid size changes;
 - a selection dragged or double-clicked in a terminal lands in the test harness's clipboard as the button is let go,
   not while it moves, and at the next move after a release the window never heard; a click copies nothing; with `terminal.copy_on_select` off nothing is copied; it is on by
-  default;
+  default; each copy shows `("copied", id)` inside the body by where it was let go (above the pointer at the bottom
+  right, below it at the top left), with the count of lines with text, gone after `motion::COPIED` on the test
+  clock and started over by the next copy; a click or a copy turned off shows none;
 - scrolling over empty canvas pans the camera;
 - the zoom keybindings change the zoom step, and fit-all frames every block.
 

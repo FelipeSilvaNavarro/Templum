@@ -20,7 +20,7 @@ use crate::keys::{self, Command};
 use crate::menu;
 
 use super::{
-    CLICK_SLOP, Drag, QUIT_AGAIN, Tool, Workspace, effective, option_types_text, secondary,
+    CLICK_SLOP, Copied, Drag, QUIT_AGAIN, Tool, Workspace, effective, option_types_text, secondary,
     show_notification, undo_key, workspace_digit,
 };
 
@@ -569,17 +569,31 @@ impl Workspace {
         }
     }
 
-    /// The button let go on a selection the person made in a terminal (a drag, a double or triple
-    /// click): it is copied, once, with `terminal.copy_on_select` on.
-    pub(super) fn copy_on_select(&self, cx: &mut Context<Self>) {
+    /// The button let go at `pos` on a selection the person made in a terminal (a drag, a double
+    /// or triple click): it is copied, once, with `terminal.copy_on_select` on, and a quiet
+    /// "Copied" shows there.
+    pub(super) fn copy_on_select(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
         if let Some(Drag::Select(id)) = self.drag
             && self.config.terminal.copy_on_select
             && let Some(text) = self
                 .space
                 .terminal(id)
                 .and_then(|pane| pane.term.shared().selection_text())
+            && let Some(block) = self.space.canvas.get(id)
         {
+            let world = self.space.canvas.camera.to_world(self.local(pos));
+            self.space.copied = Some(Copied {
+                block: id,
+                at: Point::new(
+                    world.x - block.rect.x,
+                    world.y - block.rect.y - chrome::TITLE_H,
+                ),
+                // A drag past the output takes empty lines along: not counted.
+                lines: text.trim_end().lines().count(),
+                since: cx.background_executor().now(),
+            });
             cx.write_to_clipboard(ClipboardItem::new_string(text));
+            cx.notify();
         }
     }
 
@@ -631,7 +645,7 @@ impl Workspace {
                 }
             }
         }
-        self.copy_on_select(cx);
+        self.copy_on_select(pos, cx);
         if let Some(Drag::Ink(mut drawing)) = self.drag.take() {
             // The pen catches up with the pointer: the stroke ends where it was let go.
             drawing.push_point(self.space.canvas.camera.to_world(self.local(pos)), 0.0);

@@ -494,6 +494,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   never be typed. Fix: read the distribution's processes (`wsl.exe -e ps -o pid,args`, or
   `\\wsl.localhost\<distribution>\proc`) and match them to the block by the shell's session, then resume it with its
   resume command.
+- [ ] **A long "Copied 12 lines" can be cut in a narrow terminal.** `copied_pill` (`crates/templum/src/block.rs`)
+  grows the pill away from the nearer side of the body, which keeps a pill narrower than half the body inside it; in a
+  terminal of about 20 columns, "Copied 12 lines" let go just right of the middle passes the left edge, which clips
+  it. Fix: measure the label with `window.text_system()` and clamp `left` to the body's width minus it.
+- [ ] **Near the top, the pointer's I-beam covers the top of "Copied" when zoomed out.** Below the pointer the pill
+  sits `GAP × zoom` under it (`copied_pill`, `crates/templum/src/block.rs`), but the I-beam keeps its size: at 50%
+  its lower half overlaps the pill's top. Fix: keep that gap at least 10 screen pixels.
 
 ## Updates
 

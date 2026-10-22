@@ -625,6 +625,16 @@ pub(crate) struct Grid {
     pub slides: HashMap<BlockId, (Rect, Instant)>,
 }
 
+/// What a selection copied as the button was let go shows (`block.rs`): in which terminal,
+/// where it was let go (world units from the top-left of its body), how many lines with text went,
+/// and since when (the executor's clock).
+pub(crate) struct Copied {
+    pub block: BlockId,
+    pub at: Point,
+    pub lines: usize,
+    pub since: Instant,
+}
+
 /// One canvas and everything on it: its blocks, their terminals, the focus, and what is
 /// animating.
 #[derive(Default)]
@@ -672,6 +682,8 @@ pub(crate) struct Space {
     pub appearing: HashMap<BlockId, Instant>,
     /// Closed blocks still fading out.
     pub ghosts: Vec<Ghost>,
+    /// The "Copied" an automatic copy shows, until motion::COPIED is over.
+    pub copied: Option<Copied>,
     /// The block a double-click on its title framed, and the camera before: double-clicking it
     /// again goes back there.
     pub framed: Option<(BlockId, Camera)>,

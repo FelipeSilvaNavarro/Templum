@@ -497,7 +497,7 @@ impl Render for Workspace {
                                 // A release this window never heard still keeps the popup's size,
                                 // and copies a selection.
                                 if !ws.release_git_resize(window, cx) {
-                                    ws.copy_on_select(cx);
+                                    ws.copy_on_select(e.position, cx);
                                     ws.end_drag();
                                 }
                                 ws.hover_program(e.position, &e.modifiers);

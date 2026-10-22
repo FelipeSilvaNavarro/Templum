@@ -25,7 +25,7 @@ use crate::grid::{self, hsla};
 use crate::kanban;
 use crate::motion::{self, Look};
 use crate::note;
-use crate::workspace::{AgentState, Body, FindBar, Pane, Workspace};
+use crate::workspace::{AgentState, Body, Copied, FindBar, Pane, Workspace};
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
@@ -176,7 +176,14 @@ pub(crate) fn render(
         .glow
         .get(uid)
         .and_then(|at| crate::chat::glow(*at, now));
-    if glow.is_some() {
+    // An automatic copy's "Copied", fading in and out.
+    let copied = ws
+        .space
+        .copied
+        .as_ref()
+        .filter(|c| live && c.block == id)
+        .and_then(|c| Some((c, motion::copied(c.since, now)?)));
+    if glow.is_some() || copied.is_some() {
         window.request_animation_frame();
     }
     let title_text = div()
@@ -641,6 +648,9 @@ pub(crate) fn render(
                         .filter(|_| live && level != Level::Card),
                     |el, s| el.child(starting_cover(ws, n, s.title.clone(), z)),
                 )
+                .when_some(copied, |el, (c, opacity)| {
+                    el.child(copied_pill(ws, n, c, opacity, r, z))
+                })
         }
         // A fading kanban block is drawn empty: its board is still live elsewhere.
         Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, window, cx))),
@@ -804,6 +814,65 @@ fn starting_cover(ws: &Workspace, n: usize, title: SharedString, z: f32) -> impl
                 .child("Starting…"),
         )
         .test_support()
+}
+
+/// What an automatic copy shows where it was let go, inside the terminal's body: "Copied", or
+/// how many lines. It has no listener: clicks go through it to the grid.
+fn copied_pill(ws: &Workspace, n: usize, c: &Copied, opacity: f32, r: Rect, z: f32) -> AnyElement {
+    const H: f32 = 22.0;
+    const GAP: f32 = 8.0;
+    let ui = ws.ui;
+    // The body on screen, the pointer in it, kept there: a drag may end outside the block.
+    let (w, h) = (r.w - 2.0 * BORDER, r.h - chrome::TITLE_H * z);
+    let (x, y) = ((c.at.x * z).clamp(0.0, w), (c.at.y * z).clamp(0.0, h));
+    let (pad, gap) = (chrome::PAD * z, GAP * z);
+    let label = if c.lines > 1 {
+        format!("Copied {} lines", c.lines)
+    } else {
+        "Copied".to_string()
+    };
+    let pill = div()
+        .id(("copied", n))
+        .absolute()
+        .h(px(H * z))
+        .flex()
+        .items_center()
+        .gap(px(4.0 * z))
+        .px(px(8.0 * z))
+        .rounded(px(6.0 * z))
+        .bg(ui.surface.blend(ui.card))
+        .border_1()
+        .border_color(ui.hairline)
+        .shadow(vec![BoxShadow {
+            color: ui.shadow,
+            offset: point(px(0.0), px(2.0 * z)),
+            blur_radius: px(8.0 * z),
+            spread_radius: px(0.0),
+            inset: false,
+        }])
+        .opacity(opacity)
+        .whitespace_nowrap()
+        .text_size(px(TITLE_FONT * z))
+        .text_color(ui.title)
+        .child(
+            Icon::new(IconName::Check)
+                .size(px(12.0 * z))
+                .text_color(ui.accent),
+        )
+        .child(label);
+    // It grows away from the nearer side, so it stays in the body; above the pointer, or below
+    // it near the top.
+    let pill = if x <= w / 2.0 {
+        pill.left(px(x.max(pad)))
+    } else {
+        pill.right(px((w - x).max(pad)))
+    };
+    let pill = if y >= pad + H * z + gap {
+        pill.bottom(px(h - y + gap))
+    } else {
+        pill.top(px((y + gap).min(h - pad - H * z)))
+    };
+    pill.test_support().into_any_element()
 }
 
 /// A button on the left of a block's header (over the title: no move), `tip` its tooltip.
