@@ -605,6 +605,19 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   WSL agent Windows lacks would read "Yours · not found …" again and no test would fail. Fix: in
   `an_agent_that_runs_in_wsl_counts_as_installed`, open Settings ▸ Agents and check the row reads
   "Yours · templum-no-such-agent · in WSL".
+- [ ] **Settings opened right after Templum starts may call an agent "Not installed".** `find_programs`
+  (`crates/templum/src/workspace/blocks.rs`) looks for each agent's program when the panel opens and when the agents
+  change. Before the login shell's PATH arrives (`read_shell_path`, a second or so after start), an agent only that
+  PATH has (a mise install folder) isn't found, and its row says "Not installed · …" until the panel opens again.
+  Fix: remember the look was early (`shell_path_pending()`, as `shells_early` does) and look again at the first frame
+  after the PATH arrives.
+- [ ] **Two Settings rows still look at the disk every frame.** Settings ▸ Templum Agent looks for `claude` at each
+  frame (`templum_terminal::installed("claude")`, `crates/templum/src/settings/templum_agent.rs:25`), and the
+  accounts' PATH note canonicalizes every PATH folder at each frame while an account has a command (`on_path` in
+  `path_note`, `crates/templum/src/settings/accounts.rs:101`, also drawn in the account dialog). A person sees
+  nothing on a local disk, but each frame there touches it (a slow or network folder on PATH stalls it). Fix: read
+  both when the panel opens and when the agents change, as `find_programs` does, and keep the answers on the
+  workspace.
 - [ ] **The agent dialog's WSL note repeats `Workspace::in_wsl`.** The note under the Shell list
   (`crates/templum/src/settings/agents.rs:267-274`) decides WSL on its own, beside `in_wsl`
   (`crates/templum/src/workspace/blocks.rs:389-394`): if one changes (how a label not found falls back), the note says

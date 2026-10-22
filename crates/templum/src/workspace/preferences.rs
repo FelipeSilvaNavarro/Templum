@@ -429,6 +429,7 @@ impl Workspace {
                 &agents::codex_models(),
                 self.data_dir.as_deref(),
             );
+            self.find_programs();
             let failures = self.sync_commands();
             for failure in failures {
                 tell_commands(Some(failure), window, cx);
@@ -872,6 +873,7 @@ impl Workspace {
             return;
         }
         self.load_lists(window);
+        self.find_programs();
         self.git_version = None;
         let program = self.config.git.program().to_string();
         cx.spawn_in(window, async move |ws, cx| {

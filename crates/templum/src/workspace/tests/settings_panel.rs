@@ -1576,3 +1576,45 @@ fn an_accounts_row_logs_in_and_its_dialog_deletes_it(cx: &mut TestAppContext) {
         assert!(!agents.contains_key("claude2"));
     });
 }
+
+/// Settings ▸ Agents and its Add an account dialog look for the agents' programs when they open
+/// or change, not at each frame: one PATH scan per agent per frame made the tab lag.
+#[gpui_kit::test]
+fn the_agents_tab_looks_for_programs_when_it_opens_not_each_frame(cx: &mut TestAppContext) {
+    let (_own, _commands) = account_dirs();
+    let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (handle, ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    open_accounts(handle, cx);
+    // The looks for a program made while it is drawn 10 times.
+    let drawn = |cx: &mut TestAppContext| {
+        let before = crate::agents::LOOKS.get();
+        cx.update_window(handle, |_, window, cx| {
+            for _ in 0..10 {
+                window.render_frame(cx);
+            }
+        })
+        .unwrap();
+        crate::agents::LOOKS.get() - before
+    };
+    assert_eq!(drawn(cx), 0, "the agents' rows");
+    add_account(handle, &ws, cx, "claudinho");
+    assert_eq!(drawn(cx), 0, "the dialog, with a name typed");
+    cx.update_window(handle, |_, window, cx| {
+        gpui_kit::component::WindowExt::close_all_dialogs(window, cx)
+    })
+    .unwrap();
+    let mine = crate::agents::Draft {
+        name: "Mine".into(),
+        command: "mine".into(),
+        resume: String::new(),
+        show: true,
+        ..Default::default()
+    };
+    ws.update(cx, |ws, cx| ws.save_agent(None, &mine, cx).unwrap());
+    frame(handle, cx);
+    assert_eq!(drawn(cx), 0, "an agent added while the tab shows");
+}

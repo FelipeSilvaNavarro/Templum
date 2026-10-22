@@ -393,10 +393,34 @@ impl Workspace {
             .is_some_and(|program| templum_terminal::is_shell(program, "wsl"))
     }
 
-    /// Whether the menus, Settings and the welcome list the agent `entry` as installed: WSL is
-    /// another system, whose programs aren't on Windows' PATH, so what runs there is trusted.
+    /// Whether the menus and the welcome list the agent `entry` as installed: WSL is another
+    /// system, whose programs aren't on Windows' PATH, so what runs there is trusted.
     pub(crate) fn agent_installed(&self, entry: &AgentEntry) -> bool {
         self.in_wsl(entry) || templum_terminal::installed(entry.program())
+    }
+
+    /// `agent_installed` as Settings ▸ Agents asks it, every frame: from what `find_programs`
+    /// found (looked for now only for a program it hasn't seen).
+    pub(crate) fn agent_found(&self, entry: &AgentEntry) -> bool {
+        self.in_wsl(entry)
+            || self
+                .found
+                .get(entry.program())
+                .copied()
+                .unwrap_or_else(|| crate::agents::locate(entry.program()).is_some())
+    }
+
+    /// Looks for every agent's program again, for `agent_found`.
+    pub(crate) fn find_programs(&mut self) {
+        self.found = self
+            .agents
+            .iter()
+            .map(|a| {
+                let program = a.program().to_string();
+                let found = crate::agents::locate(&program).is_some();
+                (program, found)
+            })
+            .collect();
     }
 
     /// Why `spawn_agent` and the Templum Agent can't open the agent `entry`: it runs in WSL,

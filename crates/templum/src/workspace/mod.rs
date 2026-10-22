@@ -1330,6 +1330,10 @@ pub struct Workspace {
     pub(crate) agents: Vec<AgentEntry>,
     /// Each account's command: the file that runs it, or why it has none.
     pub(crate) commands: BTreeMap<String, Result<PathBuf, String>>,
+    /// Whether each agent's program was found, by program, for Settings ▸ Agents: read when the
+    /// panel opens and when the agents change, not each frame (finding a program looks in many
+    /// folders).
+    pub(crate) found: BTreeMap<String, bool>,
     /// The agent Generate ✨ runs, and whether it is ready; read when the config changes, not
     /// each frame (finding a program looks in many folders).
     // ponytail: an agent installed while Templum runs shows its ✨ after the next config change
@@ -1798,6 +1802,7 @@ impl Workspace {
             keymap,
             agents: effective_agents,
             commands: BTreeMap::new(),
+            found: BTreeMap::new(),
             commit_agent,
             bus,
             bus_env,
