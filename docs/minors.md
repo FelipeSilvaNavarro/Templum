@@ -1656,11 +1656,12 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
 
 Left by kanban card 127 (Claude Code's subagents, `docs/specs/claude-subagents.md`).
 
-- [ ] **A task handed to a Claude Code whose earlier subagents still work waits for them too.** `Pane::subagents`
-  (`crates/templum/src/workspace/mod.rs`) counts every subagent of the session, also ones an earlier task or the
-  person started: a task handed meanwhile isn't answered by its own turn's end while they work, and is answered by
-  the turn that takes their last report, whose message may be about that earlier work. A master gets a late or
-  unrelated answer. Fix: keep, on `Handed`, the subagents started since the task was taken, and await only those.
+- [ ] **A task whose turn resumes a subagent started before it is answered too early.** `Handed::subagents`
+  (`crates/templum/src/workspace/mod.rs`) keeps the subagents there when the task was taken, and a turn's end with
+  only those left answers it (`turn_ended`, `crates/templum/src/workspace/bus.rs`); one of them resumed for the task
+  (`SendMessage`, a `SubagentStart` with its id) still counts as not the task's. A master gets the interim message
+  ("I asked the reviewer again…") and the real answer comes to no one. Fix: on `SubagentStarted` for an id among a
+  taken task's `subagents`, take it off that list.
 - [ ] **Two subagents' dialogs at once: answering the later one turns the parent back to Working.** `asked_by`
   (`Pane`) holds only the subagent that asked last; once its tool ends, the parent's dot leaves yellow although the
   first one's dialog is still open in Claude Code's screen. A person sees Working and doesn't look. Fix: keep the ids

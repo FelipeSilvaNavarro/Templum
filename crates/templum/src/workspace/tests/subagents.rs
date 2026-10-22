@@ -239,6 +239,39 @@ fn an_unknown_subagents_stop_awaits_no_report(cx: &mut TestAppContext) {
     assert_eq!(answered(&answers), (false, "Done.".to_string()));
 }
 
+/// A task handed while subagents started before it still work is answered by its own turn's end
+/// once only those are left: their reports aren't its own. One it started keeps it open.
+#[gpui_kit::test]
+fn a_task_isnt_held_by_subagents_started_before_it(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    hook(handle, &ws, cx, &worker, started("s1", "general-purpose"));
+    hook(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        stop("Started a reviewer.", &["s1"]),
+    );
+    let task = json!({ "block": them, "task": "review the parser", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    let prompt = json!({ "hook_event_name": "UserPromptSubmit", "prompt": "[from …] review" });
+    hook(handle, &ws, cx, &worker, prompt);
+    hook(handle, &ws, cx, &worker, started("s2", "Explore"));
+    hook(handle, &ws, cx, &worker, stop("Started s2.", &["s1", "s2"]));
+    assert!(answers.try_recv().is_err(), "its own subagent works");
+    hook(handle, &ws, cx, &worker, stopped("s2", &["s1"]));
+    hook(handle, &ws, cx, &worker, report("s2"));
+    hook(handle, &ws, cx, &worker, stop("Review: ok", &["s1"]));
+    assert_eq!(answered(&answers), (false, "Review: ok".to_string()));
+    assert_eq!(
+        dot(&ws, cx, theirs).as_deref(),
+        Some("Working: 1 subagent"),
+        "it still awaits the earlier one"
+    );
+}
+
 /// A subagent's report starts a turn of Claude Code's own: a task typed a moment before it isn't
 /// taken by it (it waits for its own prompt's hook).
 #[gpui_kit::test]

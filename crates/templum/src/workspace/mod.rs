@@ -165,6 +165,10 @@ pub(crate) struct Handed {
     pub quiet: bool,
     /// Its agent's usage when it was handed over: what its end says it spent counts from it.
     pub usage: Option<templum_usage::Session>,
+    /// The Claude Code subagents its agent had when it took it: their reports come in turns of
+    /// their own, so a turn's end with only them left is its answer
+    /// (docs/specs/claude-subagents.md).
+    pub subagents: Vec<String>,
 }
 
 impl Handed {
@@ -180,6 +184,7 @@ impl Handed {
             behind: false,
             quiet: false,
             usage: None,
+            subagents: Vec::new(),
         }
     }
 }

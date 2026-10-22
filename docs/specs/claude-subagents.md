@@ -107,6 +107,10 @@ task's. Otherwise the turn's end is as before ([agent-protocol.md](agent-protoco
 the race the probe saw: a subagent that stops while the turn taking another's report runs leaves its report to come,
 so that turn's `Stop` (no subagent at work, an interim message) answers nothing yet.
 
+A task taken while subagents were already there (an earlier task's, the person's) keeps their ids
+(`Handed::subagents`): their reports aren't its own, so a turn's end with only those left answers it at once, while
+the agent still awaits them (its dot, `list_blocks`).
+
 A report may also never come as a turn of its own: Claude Code hands a background task's report to the turn under way
 at its next tool's end (CHANGELOG 2.1.234), a nested subagent reports to the subagent that started it (2.1.259), and
 one stopped from Claude Code's panel or with `TaskStop` reports nothing. So a turn's end that leaves only reported ones
@@ -151,7 +155,7 @@ parent's folder.
 - `crates/templum/src/workspace/tests/subagents.rs`, each hook input turned into its event as `templum hook claude`
   does: a task answered by the turn after the last report, the race included, an idle prompt ending nothing; a report
   taken inside a turn, settled by the grace or the idle prompt; a turn an Esc ended with reports left; an unknown
-  subagent's stop; a report that doesn't take a task in; a subagent's dialog that only its own tool ends, or its
+  subagent's stop; a task not held by subagents started before it; a report that doesn't take a task in; a subagent's dialog that only its own tool ends, or its
   leaving; a subagent's tool that doesn't take a queued task into the turn; one gone without a word that doesn't
   keep its parent busy; a still screen that neither ends nor sticks a parent awaiting its subagents; a block opened beside its parent, wired, overlapping nothing,
   outside Ctrl+Z and outside the saved canvas; one finished that closes a minute later, and not while read; its dot

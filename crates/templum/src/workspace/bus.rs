@@ -284,8 +284,10 @@ impl Workspace {
                 pane.submitted += 1;
                 // Its task, once typed: a spawn's prompt waits in `prompt` until then.
                 let typed = pane.prompt.is_none();
+                let earlier = pane.subagents.iter().map(|s| s.id.clone()).collect();
                 if let Some(handed) = pane.handed.as_mut().filter(|h| typed && !h.taken) {
                     handed.taken = true;
+                    handed.subagents = earlier;
                     // Claude Code says so at its Enter, also for a prompt it queues behind its turn.
                     handed.behind = turn && at_enter;
                 }
@@ -404,7 +406,7 @@ impl Workspace {
     /// The turn of the agent in `terminal` ended, with `message` (None: without an answer, or
     /// Claude Code's prompt sat idle). With no subagent of its left, that end answers what waited
     /// on it. While one works, nothing: their reports come in turns of their own, the last one's
-    /// end is the answer; but a task handed while only these work is answered now. With only
+    /// end is the answer; but a task taken while only these were there is answered now. With only
     /// reported ones left, their reports may never come as a turn (Claude Code took them inside
     /// this one, at a tool's end; a nested one's went to its own parent; one stopped from Claude
     /// Code's panel): unless a turn starts within GRACE, or at once when its prompt sat idle,
@@ -430,7 +432,18 @@ impl Workspace {
             self.settle(terminal, kept, cx);
             return;
         }
+        // A task taken while only these were there: their reports aren't its own, and this end
+        // is its answer. The agent still awaits them.
+        let earlier = pane.handed.as_ref().is_some_and(|h| {
+            h.taken && !h.behind && pane.subagents.iter().all(|s| h.subagents.contains(&s.id))
+        });
         pane.await_subagents();
+        if earlier {
+            self.answer_turn(terminal, message.clone(), cx);
+        }
+        let Some(pane) = self.pane_mut(terminal) else {
+            return;
+        };
         if !at_work {
             let at = cx.background_executor().now() + GRACE;
             pane.settles = Some(at);
