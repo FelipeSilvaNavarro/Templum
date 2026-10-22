@@ -7,10 +7,10 @@ use serde_json::json;
 use templum_canvas::Wire;
 
 use super::bus::{
-    after, answered, call, call_later, event, has_server, me, result_of, screen_with,
+    after, answered, call, call_later, event, has_server, me, result_of, screen_until, screen_with,
 };
 #[cfg(unix)]
-use super::bus::{bus_note, history_with, screen_until, server_gone};
+use super::bus::{bus_note, history_with, server_gone};
 use super::*;
 
 /// Two terminals side by side and wired: mine at (40, 100) and theirs at (900, 100), 700 × 300
@@ -115,15 +115,26 @@ pub(super) fn snapshot(
     .unwrap();
 }
 
-/// The Enter of what Templum just typed into the terminal block `id`: its looks go a short while
-/// apart (its screen is drawn in real time) until its paste shows and stood still, and the Enter
-/// went.
+/// The Enter of what Templum just typed into the terminal block `id`: once its program printed
+/// since (in real time: a slow one would see its looks give up on a screen that hasn't moved yet),
+/// its looks go a short while apart until its paste shows and stood still, and the Enter went.
 pub(super) fn entered(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let (sent, printed) = ws.read_with(cx, |ws, _| {
+            let pane = ws.space.terminal(id).unwrap();
+            (pane.sent, pane.term.status().output)
+        });
+        if printed > sent {
+            break;
+        }
+        assert!(Instant::now() < deadline, "nothing printed since");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let inputs = |cx: &mut TestAppContext| {
         ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.inputs())
     };
     let typed = inputs(cx);
-    let deadline = Instant::now() + std::time::Duration::from_secs(10);
     while inputs(cx) == typed {
         assert!(Instant::now() < deadline, "no Enter");
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -135,9 +146,9 @@ pub(super) fn entered(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: Block
 }
 
 /// `delegate` from the terminal `from` with `args`, answered once given: at once when refused,
-/// else once the agent of block `theirs` took the task. Its looks go a short while apart (its
-/// screen is drawn in real time): its paste shows, its Enter goes, then its hooks say it took it
-/// (`hooks`), or its screen tells.
+/// else once the agent of block `theirs` took the task. Its screen is drawn in real time: once it
+/// changed (Windows' `cmd` may start late), its looks go a short while apart: its paste shows, its
+/// Enter goes, then its hooks say it took it (`hooks`), or its screen tells.
 pub(super) fn hand_over(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
@@ -147,10 +158,12 @@ pub(super) fn hand_over(
     hooks: bool,
 ) -> (bool, String) {
     let (worker, _) = me(ws, cx, theirs);
+    let before = screen_until(ws, cx, theirs, |_| true);
     let answers = call_later(handle, ws, cx, from, 99, "delegate", args);
     if let Ok(line) = answers.try_recv() {
         return result_of(&line);
     }
+    screen_until(ws, cx, theirs, |shown| shown != before);
     if hooks {
         entered(ws, cx, theirs);
         event(handle, ws, cx, &worker, json!({ "event": "submitted" }));
