@@ -462,11 +462,15 @@ impl Pane {
         self.takes_typing(uid)
     }
 
-    /// The agent Templum started in it may not take typing yet: no snapshot found it yet, or its
-    /// screen hasn't shown it (its cover is still on). A task handed to it waits, as a spawn's
-    /// prompt does (docs/specs/connections.md, Delegating 5).
+    /// The agent Templum started in it may not take typing yet: its screen hasn't shown it (its
+    /// cover is still on), or no snapshot found it yet, though STARTS_WITHIN hasn't passed since
+    /// its command was typed (after that, it never started). A task handed to it waits, as a
+    /// spawn's prompt does (docs/specs/connections.md, Delegating 5).
     fn agent_starting(&self) -> bool {
-        self.agent().is_some() && (self.seen.pid.is_none() || self.starting.is_some())
+        let young = self
+            .typed_agent
+            .is_some_and(|at| at.elapsed() < super::spawn::STARTS_WITHIN);
+        self.agent().is_some() && (self.starting.is_some() || self.seen.pid.is_none() && young)
     }
 }
 

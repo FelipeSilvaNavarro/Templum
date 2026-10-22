@@ -243,9 +243,11 @@ later starts with none.
    into an agent no snapshot has found yet (one Templum just typed may not have started at all; the caller is told
    to try again in a few seconds), and into an agent already on another agent's task (`wait_for_idle` waits for its
    end; the agent whose task it is changes it instead, 11). From card 118 a task handed to an agent Templum started
-   that may not take typing yet, no snapshot found it or its screen hasn't shown it (its cover is still on), isn't
-   refused: it waits as a spawn's prompt does, typed once the agent is ready ([Spawning](#spawning)), its task ended
-   with its screen when it isn't within a minute. A `delegate` right after `spawn_agent` was refused there (Codex on
+   that may not take typing yet, its screen hasn't shown it (its cover is still on) or no snapshot found it within a
+   minute of its command (after that it never started, and the task is refused as for a terminal running no agent),
+   isn't refused: it waits as a spawn's prompt does, typed once the agent is ready ([Spawning](#spawning)), its task
+   ended with its screen when it isn't within a minute. A `delegate` right after `spawn_agent` was refused there
+   (Codex on
    Windows, which a snapshot didn't find yet), or typed into an input not up yet and lost (OpenCode, Kilo Code; Copilot
    CLI showed it later). A reply is still refused until a snapshot found the agent.
 6. An agent Templum gets no events from (see the table under [Hooks](#hooks-and-agent-state)) answers through

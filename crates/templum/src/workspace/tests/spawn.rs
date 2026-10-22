@@ -712,6 +712,38 @@ fn a_task_for_an_agent_still_starting_is_typed_once_it_is_ready(cx: &mut TestApp
     assert_eq!(task, Some((1, true)), "its task, taken");
 }
 
+/// An agent spawned without a prompt that no snapshot found within a minute of its start never
+/// started: a task handed to it is refused, as in a terminal running no agent, not kept for an
+/// agent that will never be ready.
+#[gpui_kit::test]
+fn a_task_for_an_agent_that_never_started_is_refused(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path() });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    let (_, uid) = me(&ws, cx, new);
+    snapshot(
+        handle,
+        &ws,
+        cx,
+        new,
+        templum_terminal::Inspection::default(),
+    );
+    // Its cover came off; its command was typed a minute ago.
+    ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(new).unwrap();
+        pane.starting = None;
+        pane.typed_agent = pane
+            .typed_agent
+            .map(|at| at - crate::workspace::spawn::STARTS_WITHIN);
+    });
+    let task = json!({ "block": uid, "task": "say hi" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert!(failed && text.contains("runs no agent"), "{text}");
+}
+
 /// A spawned agent no snapshot found a while after its spawn never started: its prompt and its
 /// task go, whoever waits on it hears so, and an agent started there later by hand gets no prompt.
 #[gpui_kit::test]

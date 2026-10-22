@@ -743,6 +743,7 @@ impl Workspace {
                         sent: None,
                         transcript: None,
                         starting: None,
+                        typed_agent: None,
                         restored: false,
                         resuming: None,
                         account: None,
