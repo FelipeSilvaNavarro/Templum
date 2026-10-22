@@ -34,10 +34,12 @@ pub(super) const CONFIRM: Duration = Duration::from_secs(3);
 /// first only reads the screen the next ones are compared to.
 const CHECKS: u32 = (CONFIRM.as_millis() / ENTER_AFTER.as_millis()) as u32 - 1;
 /// How long after Templum typed into an agent a notice waits: that text's first Enter may come
-/// ENTER_LOOKS looks after it was typed, its second CONFIRM after that, and a notice typed before
-/// then would go with it.
-pub(super) const NOTICE_GAP: Duration =
-    CONFIRM.saturating_add(ENTER_AFTER.saturating_mul(ENTER_LOOKS + 1));
+/// ENTER_LOOKS looks after it was typed, its second CONFIRM after that, and the looks after the
+/// second go on CONFIRM more; a notice typed before then would go with it, or move the screen
+/// they read.
+pub(super) const NOTICE_GAP: Duration = CONFIRM
+    .saturating_mul(2)
+    .saturating_add(ENTER_AFTER.saturating_mul(ENTER_LOOKS + 1));
 /// The person typed into an agent this recently: they are still typing, and a second Enter for a
 /// task would send their half-written line.
 pub(super) const TYPING: Duration = Duration::from_secs(3);
@@ -1838,5 +1840,13 @@ mod tests {
             w.look("› fix".into(), SIZE, (true, false, true)),
             Step::Typing
         );
+    }
+
+    /// A notice waits until the looks after a task's second Enter are over: its first Enter, the
+    /// looks after it (the first reads the screen), the second's.
+    #[test]
+    fn a_notice_waits_for_the_looks_after_both_enters() {
+        let looks = ENTER_AFTER * (CHECKS + 1);
+        assert!(NOTICE_GAP >= ENTER_AFTER * (ENTER_LOOKS + 1) + looks * 2);
     }
 }

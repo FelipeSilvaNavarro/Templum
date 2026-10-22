@@ -300,9 +300,9 @@ later starts with none.
     timeout, which only the asker's call that waits for it tells (the agent may still work, and its end comes then).
     While the asker waits for its person, its agent is starting
     (no snapshot found it yet), its person typed into it in the last 3 seconds, or Templum typed into it (a task, a
-    reply, a notice) in the last 5.1 seconds (that text's Enter, up to 2 s after it, and a second one 3 seconds later,
-    may still be due), a notice waits, oldest first. Into a terminal whose agent is gone (its shell is in front, as when
-    `templum delegate` ran from a script), never: the notice is dropped.
+    reply, a notice) in the last 8.1 seconds (that text's Enter, up to 2 s after it, a second one 3 seconds later, and
+    the looks after it 3 seconds more, may still be due), a notice waits, oldest first. Into a terminal whose agent is
+    gone (its shell is in front, as when `templum delegate` ran from a script), never: the notice is dropped.
 11. **A change** (batch 8). `delegate` from the agent whose task it is changes that task: typed at once under
     `[from Claude Code · api (b7k2m), a change to task t7] The change is in the pasted text: do it, then answer the task with
     reply.` (and how, as 2), even while it
@@ -1405,7 +1405,7 @@ and is typed once it is ready.
 **Batch 8:** a task handed without `wait` comes back typed, with its id and time; what it spent is its cost, else its
 tokens, read again after its end, and its transcript is the one its hooks named, on one line; a waiting call gets the
 answer and no notice, one its client cancelled gets the notice; a notice waits while its asker asks its person, is
-starting or its person types, goes at least 5.1 s after anything Templum typed into the same agent, oldest first, and
+starting or its person types, goes at least 8.1 s after anything Templum typed into the same agent, oldest first, and
 never goes into a shell (also when its agent quit while it waited); a task whose agent left or whose block closed comes
 back as failed, one its asker interrupts or closes doesn't; a dialog in a task is told once per wait, seeming stuck too,
 and not while a call waits for the task, and a balloon isn't told; a change from the asker goes into its task and
