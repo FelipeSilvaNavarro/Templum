@@ -652,9 +652,15 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 - [ ] **Esc or Enter in the title saving a comment edit's draft is untested, and Esc is unspecified.** `on_close`
   (`crates/templum/src/kanban.rs`) saves the edit's draft when the card dialog closes by Escape from another field or
-  Enter in the title; `docs/specs/kanban.md` lists only "Done, Enter in the title", and no test covers `on_close`
-  (the tests use Done and `window.close_dialog`, which skips it). Fix: add "Escape outside the edit's field" to the
-  spec, and a test that types a draft, focuses the title, presses Escape (and Enter) and checks the saved text.
+  Enter in the title; `docs/specs/kanban.md` lists only "Done, Enter in the title, a press outside it", and only the
+  press outside has a test (`a_press_outside_the_open_card_closes_it_and_keeps_what_was_typed`; the others use Done
+  and `window.close_dialog`, which skips `on_close`). Fix: add "Escape outside the edit's field" to the spec, and a
+  test that types a draft, focuses the title, presses Escape (and Enter) and checks the saved text.
+- [ ] **A press outside the open card with its assignee menu open closes the card too.** The menu's own outside press
+  (gpui-kit's `PopupMenu`) closes it, and the same press reaches the dialog's overlay (`open_card` in
+  `crates/templum/src/kanban.rs`, card 116). A person who only meant to close the menu sees the card close; nothing
+  is lost (its fields apply as typed). Fix: veto the close in the dialog's `on_cancel` (a press on the overlay asks it
+  first) when the menu was open at the press (the dropdown's `on_open_change` kept in a `Cell`), with a test.
 - [ ] **Two deleted comments undone in the order they were deleted come back in the wrong order.** `deleted` keeps
   each comment's index at deletion (`crates/templum/src/kanban.rs`) and `restore_comment` (`board.rs`) inserts at it:
   delete B then C from [A,B,C], Undo B then C, and the thread reads [A,C,B]; the same when an agent removes an earlier

@@ -92,7 +92,7 @@ A dialog in the middle of the window, at the window's scale:
 - **Comments**, oldest first, each with its author (an agent's block title, or "You") and how long ago it was written;
   a text field under them and **Add comment**, which adds the person's. An agent that finishes its card says there
   what it did and what the next one needs to know (`comment_card`, [connections.md](connections.md#tools));
-- **Delete card**, and **Done** (or Esc) to close.
+- **Delete card**, and **Done** (or Esc, or a press outside the dialog) to close.
 
 Every change applies as it is typed or clicked, so every block showing the board updates at once.
 
@@ -389,7 +389,7 @@ header and the footer stay). Sizes in pixels; every color comes from the theme.
   (`delete-card`), a ghost button: no fill, gpui-kit's `trash` icon at 14 and the words at 12.5, both in the theme's
   red (ANSI 1), 30 high, rounded 8, red at 12% under the pointer; it deletes the card and closes the dialog, as before
   (Ctrl+Z brings it back). At the right **Done** (`card-done`), the Git popup's solid accent button (30 high, rounded
-  8, `ui.surface` text), which closes it. Esc closes it too.
+  8, `ui.surface` text), which closes it. Esc closes it too, and so does a press outside it (card 116).
 
 Version 2 first drew the dialog in gpui-kit's own colors (the canvas's color, a white primary button, a row of dim
 bare swatches, comments as bare lines under a bare field). The redesign changes no behavior: the same ids, the same
@@ -495,7 +495,7 @@ menu with two Claude Code blocks and a Codex one, one of them in another workspa
 
 - **A menu inside a dialog:** gpui-kit's dropdown opens over the dialog; if a click on its item reaches the dialog's
   overlay, the menu is the first thing to check by hand. The ✕ and the tools still set the assignee.
-- **Enter in the "Add an item" field:** gpui-kit's single-line input propagates Enter, which confirms (closes) an alert
+- **Enter in the "Add an item" field:** gpui-kit's single-line input propagates Enter, which confirms (closes) the
   dialog. The field's wrapper takes the dialog's `Confirm` action so Enter only adds; a test holds it.
 - **Scrolling and drop targets:** GPUI highlights drop targets from the last frame's hit boxes; scrolling moves them
   every frame, so the highlight may trail by a frame. Harmless.
@@ -613,9 +613,9 @@ add one.
   a `check`; a faint `ui.hover` fill while the text is empty, as Comment is). **Enter** saves (Shift+Enter adds a line)
   and **Escape** or Cancel ends the edit and changes nothing; Escape ends only the edit, not the dialog, and Enter only
   saves, not confirms it (the field's wrapper takes the dialog's cancel and confirm). One comment is edited at a
-  time: starting another, or closing the dialog (Done, Enter in the title), **saves the draft** of the first if it
-  holds text, and drops an empty one; a comment gone meanwhile (an agent, Ctrl+Z) ends its edit. When it ends, the
-  keyboard goes to the comment field.
+  time: starting another, or closing the dialog (Done, Enter in the title, a press outside it), **saves the draft** of
+  the first if it holds text, and drops an empty one; a comment gone meanwhile (an agent, Ctrl+Z) ends its edit. When
+  it ends, the keyboard goes to the comment field.
 - **A comment needs text:** Save does nothing while the field is empty (the trash is how to remove one). The text is
   trimmed at both ends, as a new comment's is. Saving the same words changes nothing: no "edited", no step of Ctrl+Z.
 - **The model is card 77's:** `Boards::edit_comment` and `remove_comment`; an edited comment keeps its author, its
@@ -648,3 +648,20 @@ words takes no step (one Ctrl+Z undoes the edit before); an empty field can't be
 ends and Shift+Enter adds a line; another comment's pencil, and Done, save a draft with text and drop an empty one;
 a dialog closed in the middle of an edit lets go of the edit's field; a comment removed meanwhile
 ends its edit. **Not seen in a window:** the buttons' look on hover and the editor's box ([minors.md](../minors.md)).
+
+## A press outside closes the open card (kanban card 116)
+
+A press outside the open card closes it, as Done does: its fields already apply as typed, and an edit's draft is
+saved (the dialog's `on_close`; Done, Enter in the title and Esc save it too). A press inside it or on its own menus
+(the assignee's dropdown and submenu) keeps it open, and so does a drag that starts inside (selecting a field's text)
+and ends outside: only a press closes it, not a release.
+
+The card is gpui-kit's `Dialog`, no longer its `AlertDialog`: an alert never closes from a press on its overlay (its
+`overlay_closable` does nothing), a dialog does by default. Its ✕ is turned off: Done is the way out it shows. A press
+outside while the assignee's menu is open closes both.
+
+### Testing
+
+**Headless UI:** with a typed title and a comment's draft, a press on the card's number and a drag from it to the
+window's edge keep the dialog open; a press at the window's edge closes it, the title keeps what was typed and the
+draft is saved; a session chosen in the assignee menu keeps the dialog open (card 40's test).

@@ -1330,7 +1330,8 @@ pub(crate) fn open_card(
     };
     // A card gone meanwhile (an agent, another block, Ctrl+Z) draws its last values.
     let last = RefCell::new((current, String::new()));
-    window.open_alert_dialog(cx, move |alert, _, cx| {
+    // A dialog, not an alert: a press outside it closes it, as Done does.
+    window.open_dialog(cx, move |dialog, _, cx| {
         let ws_now = ws.read(cx);
         let ui = ws_now.ui;
         let palette = ws_now.theme.palette;
@@ -1851,10 +1852,12 @@ pub(crate) fn open_card(
                     })
                     .test_support(),
             );
-        alert
+        dialog
             .title(header)
-            // Enter in the title confirms the dialog, Escape cancels it: an edit in the middle
-            // keeps what was typed (Done, which closes it by itself, does the same).
+            .close_button(false)
+            // Enter in the title confirms the dialog, Escape or a press outside it cancels it: an
+            // edit in the middle keeps what was typed (Done, which closes it by itself, does the
+            // same).
             .on_close({
                 let (ws, editing) = (ws.clone(), editing.clone());
                 move |_, _, cx| save_draft(&ws, &editing, board, card, cx)

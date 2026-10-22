@@ -907,6 +907,71 @@ fn a_draft_is_saved_when_another_pencil_or_done_is_pressed(cx: &mut TestAppConte
     .unwrap();
 }
 
+/// A press outside the open card closes it, as Done does: what was typed in its fields stays, and
+/// an edit's draft is saved. A press inside it, or a drag from inside that ends outside, keeps it.
+#[gpui_kit::test]
+fn a_press_outside_the_open_card_closes_it_and_keeps_what_was_typed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, _) = card_open_with_two_comments(handle, &ws, cx);
+    // The title has the keyboard when the dialog opens.
+    cx.simulate_input(handle, " typed");
+    draft(handle, cx, person, "changed");
+    let open = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("card-done").is_some()
+        })
+        .unwrap()
+    };
+    // Outside: the window's left edge, beside the dialog, under the title bar.
+    let outside = cx
+        .update_window(handle, |_, window, _| {
+            (8.0, f32::from(window.viewport_size().height) / 2.0)
+        })
+        .unwrap();
+    let inside = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let at = window.find("card-number").bounds().center();
+            (f32::from(at.x), f32::from(at.y))
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, inside, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(open(cx), "a press inside keeps it");
+    hold_drag(
+        handle,
+        cx,
+        point(px(inside.0), px(inside.1)),
+        point(px(outside.0), px(outside.1)),
+    );
+    release(handle, cx, point(px(outside.0), px(outside.1)));
+    assert!(open(cx), "a drag from inside that ends outside keeps it");
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, outside, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!open(cx), "a press outside closes it");
+    assert!(
+        ws.read_with(cx, |ws, _| ws
+            .boards
+            .card(board, card)
+            .unwrap()
+            .title
+            .contains("typed")),
+        "the title keeps what was typed"
+    );
+    assert_eq!(
+        thread(&ws, cx, board, card)[0].2,
+        "changed",
+        "the draft is saved"
+    );
+}
+
 /// A dialog that closes in the middle of an edit lets go of the edit's field: the field's
 /// subscription holds the edit weakly.
 #[gpui_kit::test]
