@@ -331,6 +331,26 @@ impl Pane {
         }
     }
 
+    /// Its agent's subagents but those `keep` keeps: a dialog one of those gone asked is over.
+    pub fn keep_subagents(&mut self, keep: impl Fn(&Subagent) -> bool) {
+        self.subagents.retain(|s| keep(s));
+        if let Some(by) = self.asked_by.clone()
+            && !self.subagents.iter().any(|s| s.id == by)
+        {
+            self.dialog_over(&by);
+        }
+    }
+
+    /// The dialog its agent's subagent `id` asked its person is over, if it asked one.
+    pub fn dialog_over(&mut self, id: &str) {
+        if self.asked_by.as_deref() == Some(id) {
+            if self.asks(Some(id)) {
+                self.state = Some(AgentState::Working);
+            }
+            self.asked_by = None;
+        }
+    }
+
     /// Its agent's subagent `id` is at work, as one heard to start or one a turn's end names.
     pub fn add_subagent(&mut self, id: String) {
         match self.subagents.iter_mut().find(|s| s.id == id) {

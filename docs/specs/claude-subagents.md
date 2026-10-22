@@ -113,7 +113,8 @@ Between that turn's end and the next turn (`Pane::awaits_subagents`):
   subagents' hooks tell. Claude Code's `idle_prompt` meanwhile (a `Stopped` without an answer) ends nothing.
 
 The dialog a subagent opens (`SubagentNeedsYou`) is remembered with its id (`Pane::asked_by`): only that subagent's
-`SubagentWorking` or `SubagentStopped` ends the wait, never another's tool nor the parent's own `Working`; the
+`SubagentWorking` or `SubagentStopped`, or that subagent leaving the list without a word of its own (its report taken,
+a turn's end that no longer names it), ends the wait, never another's tool nor the parent's own `Working`; the
 parent's own dialog is ended by its own `Working`, as before.
 
 ## The follower
@@ -137,7 +138,7 @@ parent's folder.
 - `hooks.rs`: `claude_codes_subagents_are_told_apart_from_its_own_turn`, on the probe's shapes.
 - `crates/templum/src/workspace/tests/subagents.rs`, each hook input turned into its event as `templum hook claude`
   does: a task answered by the turn after the last report, the race included, an idle prompt ending nothing; a report
-  that doesn't take a task in; a subagent's dialog that only its own tool ends; a subagent's tool that doesn't take a
+  that doesn't take a task in; a subagent's dialog that only its own tool ends, or its leaving; a subagent's tool that doesn't take a
   queued task into the turn; one gone without a word that doesn't keep its parent busy; a still screen that neither
   ends nor sticks a parent awaiting its subagents; a block opened beside its parent, wired, overlapping nothing,
   outside Ctrl+Z and outside the saved canvas; one finished that closes a minute later, and not while read; its dot

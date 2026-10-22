@@ -264,7 +264,7 @@ impl Workspace {
             message: Some(_), ..
         } = &event
         {
-            pane.subagents.retain(|s| s.reported);
+            pane.keep_subagents(|s| s.reported);
         }
         match event {
             AgentEvent::Submitted { at_enter } => {
@@ -297,7 +297,7 @@ impl Workspace {
                 pane.state = Some(AgentState::Idle);
                 // A new session: the last one's transcript isn't its own, nor its subagents.
                 pane.transcript = None;
-                pane.subagents.clear();
+                pane.keep_subagents(|_| false);
                 pane.awaits_subagents = false;
                 self.subagents_done(terminal, None, window, cx);
             }
@@ -311,8 +311,7 @@ impl Workspace {
                     pane.transcript = transcript;
                 }
                 // The list is whole: one gone without a word (stopped from its panel) is gone.
-                pane.subagents
-                    .retain(|s| s.reported || subagents.contains(&s.id));
+                pane.keep_subagents(|s| s.reported || subagents.contains(&s.id));
                 for id in subagents {
                     pane.add_subagent(id);
                 }
@@ -383,7 +382,7 @@ impl Workspace {
             // task and takes none in. A report ends that subagent, also one stopped without a
             // word.
             AgentEvent::Reports { subagents } => {
-                pane.subagents.retain(|s| !subagents.contains(&s.id));
+                pane.keep_subagents(|s| !subagents.contains(&s.id));
                 pane.awaits_subagents = false;
                 if !matches!(pane.state, Some(AgentState::NeedsYou(_))) {
                     pane.state = Some(AgentState::Working);
@@ -398,11 +397,7 @@ impl Workspace {
                 self.open_subagent(terminal, (&id, &kind), transcript.as_deref(), window, cx);
             }
             // The dialog it asked its person is over: its tool ran, or it stopped.
-            AgentEvent::SubagentWorking { id } => {
-                if pane.asks(Some(&id)) {
-                    pane.state = Some(AgentState::Working);
-                }
-            }
+            AgentEvent::SubagentWorking { id } => pane.dialog_over(&id),
             AgentEvent::SubagentNeedsYou { id, message } => {
                 let new = !matches!(pane.state, Some(AgentState::NeedsYou(_)));
                 pane.dialogs += 1;
@@ -411,9 +406,7 @@ impl Workspace {
                 self.needs_you(terminal, message.as_deref(), new, cx);
             }
             AgentEvent::SubagentStopped { id, reports } => {
-                if pane.asks(Some(&id)) {
-                    pane.state = Some(AgentState::Working);
-                }
+                pane.dialog_over(&id);
                 pane.subagents.retain(|s| s.id != id);
                 if reports {
                     pane.subagents.push(Subagent {

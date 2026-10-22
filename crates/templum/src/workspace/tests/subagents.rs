@@ -203,6 +203,36 @@ fn a_subagents_dialog_stays_until_its_own_tool_ends(cx: &mut TestAppContext) {
     );
 }
 
+/// A dialog a subagent asked is over once that subagent leaves its parent's list without a word of
+/// its own: a turn's end that no longer names it (stopped from Claude Code's panel), or its report
+/// taken. Its parent doesn't stay waiting for its person.
+#[gpui_kit::test]
+fn a_gone_subagents_dialog_doesnt_keep_its_parent_waiting(cx: &mut TestAppContext) {
+    let (handle, ws, _, theirs) = two_agents(cx);
+    let (worker, _) = me(&ws, cx, theirs);
+    let prompt = json!({ "hook_event_name": "UserPromptSubmit", "prompt": "go" });
+    hook(handle, &ws, cx, &worker, prompt);
+    hook(handle, &ws, cx, &worker, started("a1", "Explore"));
+    hook(handle, &ws, cx, &worker, started("a2", "Plan"));
+    let asks = |id: &str| {
+        json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash", "agent_id": id,
+            "agent_type": "Explore" })
+    };
+    hook(handle, &ws, cx, &worker, asks("a1"));
+    let waiting = Some("Waiting for you: Allow Bash?".to_string());
+    assert_eq!(dot(&ws, cx, theirs), waiting);
+    hook(handle, &ws, cx, &worker, stop("Started two.", &["a2"]));
+    assert_eq!(
+        dot(&ws, cx, theirs).as_deref(),
+        Some("Working: 1 subagent"),
+        "a1 is gone, and its dialog with it"
+    );
+    hook(handle, &ws, cx, &worker, asks("a2"));
+    assert_eq!(dot(&ws, cx, theirs), waiting);
+    hook(handle, &ws, cx, &worker, report("a2"));
+    assert_eq!(dot(&ws, cx, theirs).as_deref(), Some("Working"), "its report taken");
+}
+
 /// A subagent's tool end doesn't take a task Claude Code queued behind its turn into that turn:
 /// the turn's end is still not the task's answer.
 #[gpui_kit::test]
