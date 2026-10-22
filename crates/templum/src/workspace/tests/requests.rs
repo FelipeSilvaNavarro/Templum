@@ -1185,6 +1185,36 @@ fn a_double_click_answers_one_request(cx: &mut TestAppContext) {
     assert_eq!(answered(&request), (false, format!("Connected to {k}.")));
 }
 
+/// A double click on an option under tabs picks it and shows the next question: the second click
+/// mustn't pick the option of that question drawn under the pointer.
+#[gpui_kit::test]
+fn a_double_click_picks_one_option_under_tabs(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    roomy(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let _answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", singles(3));
+    shown(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let a = window
+            .find(crate::balloon::part(n, "q0-option-0"))
+            .bounds()
+            .center();
+        let at = (f32::from(a.x), f32::from(a.y));
+        click(window, cx, at, 1);
+        window.render_frame(cx);
+        let next = window.find(crate::balloon::part(n, "q1-option-0")).bounds();
+        assert!(next.contains(&a), "Q1's A is under the pointer");
+        click(window, cx, at, 2);
+    })
+    .unwrap();
+    assert_eq!(tab_of(&ws, cx), 1);
+    assert!(drawn(handle, cx, n, "tab-0-answered"));
+    assert!(!drawn(handle, cx, n, "tab-1-answered"), "Q1 has no answer");
+}
+
 /// A request withdrawn between a button's press and its release: the next one's button, drawn in
 /// its place, isn't clicked by the release.
 #[gpui_kit::test]
