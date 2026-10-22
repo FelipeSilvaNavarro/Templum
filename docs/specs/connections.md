@@ -213,10 +213,11 @@ later starts with none.
    Enter. Before card 118 they got no confirmation, and a task whose Enter became a new line sat in their input until
    its timeout. A screen that didn't change since 150 ms after the Enter gets the Enter once more, as above: the Enter
    changed nothing, or the paste went as keys; with still nothing moving 3 seconds later, the task ends untaken if
-   neither Enter changed the screen: "typed but not submitted". One an Enter changed, then nothing moved, took it and
-   works drawing nothing. A screen that changed and stopped without a second Enter (a dialog no hook tells of, drawn
-   at once, as Aider's "Add file to the chat? [Yes]" for a task naming a file, or work that draws nothing) took it
-   too: Templum can't tell, and presses nothing more into it.
+   neither Enter changed the screen: "typed but not submitted", whose answer asks to clear the agent's input before
+   trying again (the task may still sit there). One an Enter changed, then nothing moved, took it and works drawing
+   nothing. A screen that changed and stopped without a second Enter (a dialog no hook tells of, drawn at once, as
+   Aider's "Add file to the chat? [Yes]" for a task naming a file, or work that draws nothing) took it too: Templum
+   can't tell, and presses nothing more into it.
 3. The wire's dot travels from Claude Code to Codex while Codex works.
 4. When Codex answers the task with `reply` (it is asked to: 2), that text, whole, ends the task and becomes the
    result of Claude Code's `delegate` (when it asked to wait), or of a later `wait_for_idle`. Without a `reply`, its

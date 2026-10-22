@@ -212,6 +212,17 @@ impl NotTaken {
             }
         }
     }
+
+    /// What its asker should do next.
+    fn then(&self) -> &'static str {
+        match self {
+            NotTaken::Unseen | NotTaken::Unheard => "Look at its block, then try again.",
+            NotTaken::Unsent => {
+                "Look at its block, and clear its input (send_keys) before you try again: else the \
+                 task goes in twice."
+            }
+        }
+    }
 }
 
 /// What a look at an agent's screen after a typed task's Enter says.
@@ -842,9 +853,9 @@ impl Workspace {
         };
         let uid = self.uid_of(terminal);
         let reply = Reply::err(format!(
-            "{uid} didn't take the task: {}. Look at its block, then try again. The last lines of \
-             its screen:\n{}",
+            "{uid} didn't take the task: {}. {} The last lines of its screen:\n{}",
             why.why(),
+            why.then(),
             tools::tail(&tail, tools::MAX_TEXT)
         ));
         match told.filter(|t| !t.is_canceled()) {

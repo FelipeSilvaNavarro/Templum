@@ -3624,6 +3624,8 @@ fn a_task_no_hook_confirms_gets_its_enter_again_then_ends(cx: &mut TestAppContex
         failed && text.contains("didn't take the task") && text.contains("think"),
         "{text}"
     );
+    // Its input may still hold the task: typed again, it would go in twice.
+    assert!(text.contains("clear its input (send_keys)"), "{text}");
 }
 
 /// A turn's end (Claude Code's idle prompt comes a minute after its last turn) and a screen its
