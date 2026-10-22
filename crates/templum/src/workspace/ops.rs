@@ -436,13 +436,13 @@ impl Workspace {
         enter: bool,
         cx: &mut Context<Self>,
     ) -> Outcome {
-        let Some(worker) = self
-            .space_named(space)
-            .and_then(|s| s.terminal(id))
-            .map(|pane| pane.term.id().to_string())
-        else {
+        let Some(pane) = self.space_named(space).and_then(|s| s.terminal(id)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
+        if let Err(refused) = pane.read_only(block) {
+            return Outcome::Now(refused);
+        }
+        let worker = pane.term.id().to_string();
         self.asker_wrote(&worker, asker);
         if !enter {
             if let Some(pane) = self.pane(&worker) {

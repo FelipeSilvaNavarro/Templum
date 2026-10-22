@@ -873,7 +873,8 @@ pub struct Terminal {
     #[cfg(unix)]
     master: Option<std::fs::File>,
     shared: Arc<Shared>,
-    pty: EventLoopSender,
+    /// Its PTY's input; None for a viewer, which runs nothing ([`Terminal::viewer`]).
+    pty: Option<EventLoopSender>,
     cols: u16,
     rows: u16,
     shell_name: String,
@@ -906,12 +907,7 @@ impl Terminal {
             // Not the terminal Templum was started from.
             ("TERM_PROGRAM".into(), "templum".into()),
         ]);
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let id = format!(
-            "{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
+        let id = next_id();
         env.insert("TEMPLUM_TERMINAL".into(), id.clone());
         // Read again for each terminal: a program installed since Templum started is found.
         if let Some(path) = crate::path_var().and_then(|p| p.into_string().ok()) {
@@ -974,7 +970,7 @@ impl Terminal {
             #[cfg(unix)]
             master,
             shared,
-            pty,
+            pty: Some(pty),
             cols: opts.cols,
             rows: opts.rows,
             shell_name,
@@ -982,6 +978,52 @@ impl Terminal {
             input: AtomicBool::new(false),
             inputs: AtomicU64::new(0),
         })
+    }
+
+    /// A terminal that runs nothing: it shows what Templum feeds it ([`Terminal::feed`]), and
+    /// keys, pastes and resizes reach no program. `name` is its title until what it shows sets
+    /// one.
+    pub fn viewer(
+        name: &str,
+        (cols, rows): (u16, u16),
+        palette: Palette,
+        options: TermOptions,
+        notify: Notify,
+    ) -> Self {
+        let shared = Arc::new(Shared::new(
+            notify,
+            window_size(cols, rows, (0, 0)),
+            palette,
+        ));
+        let term = Term::new(
+            options.config(),
+            &TermSize::new(cols as usize, rows as usize),
+            Listener(shared.clone()),
+        );
+        Self {
+            term: SharedTerm(Arc::new(FairMutex::new(term)), shared.clone()),
+            pid: None,
+            #[cfg(unix)]
+            master: None,
+            shared,
+            pty: None,
+            cols,
+            rows,
+            shell_name: name.to_string(),
+            id: next_id(),
+            input: AtomicBool::new(false),
+            inputs: AtomicU64::new(0),
+        }
+    }
+
+    /// Shows `bytes` in a viewer, as a program's output: whole lines, escape sequences and all.
+    /// Its watches hear them.
+    pub fn feed(&self, bytes: &[u8]) {
+        crate::tap::Scanner::new().scan(bytes, &self.shared);
+        let mut parser: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut *self.term.0.lock(), bytes);
+        self.shared.wake();
     }
 
     /// The terminal's `TEMPLUM_TERMINAL`.
@@ -1144,16 +1186,22 @@ impl Terminal {
         *self.shared.palette.lock().unwrap() = palette;
     }
 
-    /// Sends raw input (scrolling the view back to the bottom, like any typing).
+    /// Sends raw input (scrolling the view back to the bottom, like any typing). A viewer takes
+    /// none.
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
+        if self.pty.is_none() {
+            return;
+        }
         self.term.0.lock_unfair().scroll_display(Scroll::Bottom);
         self.term.touched();
         self.send(bytes);
     }
 
     fn send(&self, bytes: impl Into<Cow<'static, [u8]>>) {
-        self.inputs.fetch_add(1, Ordering::Relaxed);
-        let _ = self.pty.send(Msg::Input(bytes.into()));
+        if let Some(pty) = &self.pty {
+            self.inputs.fetch_add(1, Ordering::Relaxed);
+            let _ = pty.send(Msg::Input(bytes.into()));
+        }
     }
 
     /// How many times input reached its program: a key, text, a paste, what the app wrote, a
@@ -1166,6 +1214,9 @@ impl Terminal {
     /// `write`, for input someone gave: a key, a paste, typed text ([`Terminal::had_input`]).
     /// Once the shell ended, input reaches nothing and ends nothing: it doesn't count.
     fn input(&self, bytes: impl Into<Cow<'static, [u8]>>) {
+        if self.pty.is_none() {
+            return;
+        }
         if !self.exited() {
             self.input.store(true, Ordering::Relaxed);
         }
@@ -1219,7 +1270,9 @@ impl Terminal {
                 true
             }
             Some(bytes) => {
-                let _ = self.pty.send(Msg::Input(bytes.into()));
+                if let Some(pty) = &self.pty {
+                    let _ = pty.send(Msg::Input(bytes.into()));
+                }
                 true
             }
             None => false,
@@ -1261,7 +1314,9 @@ impl Terminal {
             .lock_unfair()
             .resize(TermSize::new(cols as usize, rows as usize));
         self.term.touched();
-        let _ = self.pty.send(Msg::Resize(size));
+        if let Some(pty) = &self.pty {
+            let _ = pty.send(Msg::Resize(size));
+        }
     }
 
     /// Scrolls to the previous (`up`) or the next prompt (shell integration marks them): the one
@@ -1325,8 +1380,20 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         // Ends the event loop, which drops the PTY and kills the shell.
-        let _ = self.pty.send(Msg::Shutdown);
+        if let Some(pty) = &self.pty {
+            let _ = pty.send(Msg::Shutdown);
+        }
     }
+}
+
+/// A new terminal's id, unique among the terminals of every Templum running: `<pid>-<n>`.
+fn next_id() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 fn window_size(cols: u16, rows: u16, (cell_width, cell_height): (u16, u16)) -> WindowSize {
@@ -1415,6 +1482,55 @@ mod tests {
         assert_ne!(read, 0, "{}", io::Error::last_os_error());
         // Windows ends the higher levels first; a shell or an agent starts at 0x280.
         assert!(level > 0x280, "level {level:#x}");
+    }
+
+    /// A viewer shows what it is fed, as a program's output, and runs nothing: no input reaches
+    /// anything, and it closes with nothing to end.
+    #[test]
+    fn a_viewer_shows_what_it_is_fed_and_takes_no_input() {
+        let woke = Arc::new(AtomicBool::new(false));
+        let wake = woke.clone();
+        let notify: Notify = Arc::new(move || wake.store(true, Ordering::SeqCst));
+        let options = TermOptions::default();
+        let mut term = Terminal::viewer("Explore", (30, 4), Palette::default(), options, notify);
+        assert_eq!(term.title(), "Explore");
+        let watch = term.watch(Pattern::new("Done").unwrap());
+        term.feed("\x1b]2;Explore · List\x07\x1b[1mTask\x1b[0m\r\nList the files.\r\n".as_bytes());
+        term.feed(b"\x1b[2m- Done\x1b[0m\r\n");
+        assert!(woke.load(Ordering::SeqCst), "the UI hears it");
+        assert_eq!(term.title(), "Explore · List");
+        assert_eq!(
+            term.shared().lines(3),
+            ["Task", "List the files.", "- Done"]
+        );
+        assert_eq!(term.hit(watch).as_deref(), Some("- Done"));
+        term.text("x");
+        term.paste("y");
+        term.press(&KeyInput {
+            key: "enter",
+            ..KeyInput::default()
+        });
+        term.write(&b"z"[..]);
+        term.resize(40, 5, (8, 16));
+        assert_eq!(term.grid_size(), (40, 5));
+        assert!(
+            !term.had_input() && term.inputs() == 0,
+            "nothing takes input"
+        );
+        assert!(!term.exited());
+        assert_eq!(term.processes(), Processes::default());
+        assert!(term.shells().is_empty());
+        assert_ne!(
+            term.id(),
+            Terminal::viewer(
+                "x",
+                (1, 1),
+                Palette::default(),
+                TermOptions::default(),
+                Arc::new(|| {})
+            )
+            .id()
+        );
     }
 
     #[test]

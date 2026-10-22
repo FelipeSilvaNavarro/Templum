@@ -1677,17 +1677,10 @@ Left by kanban card 127 (Claude Code's subagents, `docs/specs/claude-subagents.m
 - [ ] **A Claude Code moved to another workspace leaves its subagents' blocks behind.** Moving a block
   (`take_block`, `crates/templum/src/workspace/blocks.rs`) doesn't take the blocks of its subagents along; they stay,
   unwired, until they finish and close. Fix: move them with it, wired again.
-- [ ] **On Windows a release Templum's subagent block may stay empty.** The block runs `templum.exe follow …` as its
-  program (`follow`, `crates/templum/src/workspace/subagents.rs`), and the release `templum.exe` is a GUI program
-  (`windows_subsystem`, `crates/templum/src/main.rs`): such a program isn't known to be attached to the pseudoconsole
-  it is started in, so its output may go nowhere (debug builds are console programs, and Linux and macOS have no such
-  split). Not checked: no Windows here. A person on Windows would see a subagent's block with its dot and its title
-  "templum", and nothing in it. Fix: check on Windows; if it is so, start the block as `cmd.exe /d /c` the follower
-  and have the follower `AttachConsole(ATTACH_PARENT_PROCESS)`, write to `CONOUT$` and turn on
-  `ENABLE_VIRTUAL_TERMINAL_PROCESSING`.
 - [ ] **No bench was run with subagent blocks on the canvas.** The study asks for `--bench-mixed` with a dozen of
-  them; card 127's build ran none (its blocks are ordinary terminals, and the bench opens a window). Fix: add a dozen
-  `templum follow` terminals to `--bench-mixed`'s cockpit and paste its line in the pull request.
+  them; card 127's build ran none (its blocks are terminals that run nothing, `Terminal::viewer`, and the bench opens
+  a window). Fix: add a dozen viewers fed a synthetic transcript to `--bench-mixed`'s cockpit and paste its line in the
+  pull request.
 
 ## Placing new blocks
 

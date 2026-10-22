@@ -1,16 +1,13 @@
-//! `templum follow <transcript> [<type>]` (docs/specs/claude-subagents.md): a Claude Code
-//! subagent's transcript printed as it grows, in its block on the canvas. It reads, never writes.
+//! A Claude Code subagent's transcript read as it grows, into the text its block on the canvas
+//! shows (docs/specs/claude-subagents.md). It reads, never writes.
 
-use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
+use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::ChatEvent;
 
-/// How often the transcript is read again.
-const EVERY: Duration = Duration::from_millis(250);
 /// The most characters of a tool call's summary, a result's line, or a title's description.
 const WIDE: usize = 100;
 const DIM: &str = "\x1b[2m";
@@ -166,27 +163,6 @@ impl Follower {
     }
 }
 
-/// Follows the transcript at `path` until the process is killed (its block closing): a read
-/// every EVERY, printed to standard output. Returns when that output is gone.
-pub fn run(path: &Path, kind: &str) -> std::io::Result<()> {
-    let mut follower = Follower::new(path.to_path_buf(), kind);
-    let mut out = std::io::stdout();
-    writeln!(
-        out,
-        "{DIM}A subagent of Claude Code, read-only: what it asks is answered in its Claude \
-         Code's block.{RESET}\r"
-    )?;
-    loop {
-        let text = follower.read();
-        if !text.is_empty() {
-            // The terminal's new lines, also where it doesn't turn \n into \r\n.
-            out.write_all(text.replace('\n', "\r\n").as_bytes())?;
-            out.flush()?;
-        }
-        std::thread::sleep(EVERY);
-    }
-}
-
 /// The description in the `meta.json` Claude Code writes beside a subagent's transcript
 /// (observed, not documented: none when it isn't there).
 fn meta_description(transcript: &Path) -> Option<String> {
@@ -242,6 +218,7 @@ fn cut(text: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::Write as _;
 
     /// A transcript line of the shape Claude Code 2.1.286 wrote (docs/plans/
     /// 2026-10-22-claude-subagents.md, The probe), its content `content`.

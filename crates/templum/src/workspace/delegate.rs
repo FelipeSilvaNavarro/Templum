@@ -410,6 +410,7 @@ impl Pane {
     /// person (a permission dialog would take the text as its answer). Never a shell, where the
     /// text would run as a command.
     fn takes_typing(&self, uid: &str) -> Result<(), Reply> {
+        self.read_only(uid)?;
         if self.seen.agent.is_none() || self.shell_in_front() {
             return Err(Reply::err(format!(
                 "{uid} runs no agent: send_to_terminal types into a terminal."
@@ -523,6 +524,9 @@ impl Workspace {
         let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
+        if let Err(refused) = pane.read_only(block) {
+            return Outcome::Now(refused);
+        }
         if let Some(bad) = keys.iter().find(|k| named_key(k).is_none()) {
             return Outcome::Now(Reply::err(format!(
                 "{bad:?} isn't a key Templum knows. Keys: {KEY_NAMES}."
@@ -593,6 +597,9 @@ impl Workspace {
         let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
+        if let Err(refused) = pane.read_only(block) {
+            return Outcome::Now(refused);
+        }
         if pane.seen.agent.is_none() || pane.shell_in_front() {
             return Outcome::Now(Reply::err(format!(
                 "{block} runs no agent: send_keys presses keys in a terminal."
@@ -664,6 +671,9 @@ impl Workspace {
         let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Reply::err(format!("{block} isn't a terminal."));
         };
+        if let Err(refused) = pane.read_only(block) {
+            return refused;
+        }
         let worker = pane.term.id().to_string();
         let stopped = match self.stop_in(space_id, to, cx) {
             Ok(stopped) => stopped,

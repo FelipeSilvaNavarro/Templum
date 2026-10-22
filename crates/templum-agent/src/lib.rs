@@ -1,6 +1,6 @@
 //! The Templum Agent (docs/specs/templum-agent.md): the headless CLI agent the person talks to
-//! in the chat, its stream read into events, and the conversation they make; and `templum
-//! follow`, a Claude Code subagent's transcript printed in its block. No UI.
+//! in the chat, its stream read into events, and the conversation they make; and a Claude Code
+//! subagent's transcript read into the text its block shows. No UI.
 
 use std::path::Path;
 

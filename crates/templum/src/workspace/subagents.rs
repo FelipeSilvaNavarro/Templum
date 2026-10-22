@@ -1,14 +1,16 @@
 //! Claude Code's subagents in blocks of their own (docs/specs/claude-subagents.md): one opens
-//! beside its parent as it starts, wired to it, `templum follow` printing its transcript; it
-//! closes a minute after it finished, unless the person reads it. Never saved: it belongs to a
-//! live session.
+//! beside its parent as it starts, wired to it, a terminal that runs nothing and shows its
+//! transcript as it grows; it closes a minute after it finished, unless the person reads it.
+//! Never saved: it belongs to a live session.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui_kit::{Context, Window};
+use templum_agent::follow::Follower;
 use templum_canvas::chrome;
-use templum_terminal::ShellOption;
+use templum_mcp::Reply;
+use templum_terminal::Terminal;
 
 use super::ops::Place;
 use super::{Pane, Workspace};
@@ -16,6 +18,11 @@ use super::{Pane, Workspace};
 /// A subagent block's size, in cells.
 const COLS: u16 = 90;
 const ROWS: u16 = 22;
+/// How often its transcript is read again.
+const EVERY: Duration = Duration::from_millis(250);
+/// Its first line, dim.
+const INTRO: &str = "\x1b[2mA subagent of Claude Code, read-only: what it asks is answered in its \
+                     Claude Code's block.\x1b[0m\r\n";
 /// How long a finished subagent's block stays once the person no longer reads it.
 pub(super) const CLOSES_AFTER: Duration = Duration::from_secs(60);
 /// How often a finished subagent's block is looked at.
@@ -46,24 +53,23 @@ pub(super) fn transcript_of(transcript: &str, id: &str) -> Option<PathBuf> {
     })
 }
 
-/// What a subagent's block runs: this Templum (`exe`) following its transcript `file`, its type
-/// `kind` for its title. Run as the block's program, never typed into a shell.
-pub(super) fn follow(exe: &Path, file: &Path, kind: &str) -> ShellOption {
-    ShellOption {
-        label: "templum follow".to_string(),
-        program: exe.to_string_lossy().into_owned(),
-        args: vec![
-            "follow".to_string(),
-            file.to_string_lossy().into_owned(),
-            kind.to_string(),
-        ],
-    }
-}
-
 impl Pane {
     /// It shows a subagent of the agent in `parent` (its terminal).
     pub fn follows_of(&self, parent: &str) -> bool {
         self.follows.as_ref().is_some_and(|f| f.parent == parent)
+    }
+
+    /// Nothing typed, pasted or pressed reaches it (its block `uid`): it shows a subagent, which
+    /// has no terminal of its own.
+    pub fn read_only(&self, uid: &str) -> Result<(), Reply> {
+        match self.follows {
+            Some(_) => Err(Reply::err(format!(
+                "{uid} shows a Claude Code subagent's transcript, read-only: nothing typed or \
+                 pressed there reaches the subagent. Its dialogs are answered in its Claude Code's \
+                 block; read_terminal reads it."
+            ))),
+            None => Ok(()),
+        }
     }
 }
 
@@ -105,21 +111,26 @@ impl Workspace {
         let Some((space, me)) = self.caller(parent) else {
             return;
         };
-        // The tests' terminals run their own program.
-        let shell = match (&self.command, super::usage::program()) {
-            (None, Some(exe)) => Some(follow(&exe, &file, kind)),
-            (None, None) => return,
-            (Some(_), _) => None,
-        };
         let folder = self
             .space_named(&space)
             .and_then(|s| s.terminal(me))
             .and_then(|p| p.seen.folder.clone());
         let (parent, id) = (parent.to_string(), id.to_string());
-        self.in_space(&space, |ws| {
+        let opened = self.in_space(&space, |ws| {
             let size = chrome::block_size(COLS, ROWS, ws.cell.size);
             let center = ws.space.camera().to_world(ws.center(window));
             let rect = ws.space.spot(&Place::Near(me), size, center)?;
+            let grid = chrome::grid_size(chrome::content_rect(rect).size(), ws.cell.size);
+            let name = if kind.is_empty() { "Subagent" } else { kind };
+            let term = Terminal::viewer(
+                name,
+                grid,
+                ws.theme.palette,
+                ws.config.term_options(),
+                ws.notify.clone(),
+            );
+            term.feed(INTRO.as_bytes());
+            let terminal = term.id().to_string();
             let kept = (
                 ws.space.focused,
                 ws.space.selected.clone(),
@@ -128,24 +139,54 @@ impl Workspace {
             // In grid mode it takes half of its parent's tile.
             ws.space.focused = Some(me);
             ws.quiet = true;
-            let block = ws.spawn_block_with(rect, folder, Vec::new(), shell, window, cx);
+            let block = ws.add_pane(rect, term, folder, None);
             ws.quiet = false;
             (ws.space.focused, ws.space.selected, ws.space.selected_wire) = kept;
-            let block = block?;
             ws.space.add_wire(me, block);
             let opener = ws.space.uids.get(&me).cloned();
             let pane = ws.space.terminal_mut(block)?;
-            // Not a shell to open again elsewhere.
-            pane.shell = None;
             pane.opened_by = opener;
             pane.follows = Some(Follows {
                 parent,
                 id,
                 done: None,
             });
-            Some(())
+            Some(terminal)
         });
+        if let Some(terminal) = opened.flatten() {
+            self.follow(terminal, Follower::new(file, kind), cx);
+        }
         cx.notify();
+    }
+
+    /// The block of the terminal `terminal` shows what `follower` reads of its transcript, EVERY
+    /// once more, off the UI thread, until it closes.
+    fn follow(&self, terminal: String, mut follower: Follower, cx: &mut Context<Self>) {
+        cx.spawn(async move |ws, cx| {
+            loop {
+                let read = cx.background_executor().spawn(async move {
+                    let text = follower.read();
+                    (follower, text)
+                });
+                let text;
+                (follower, text) = read.await;
+                let open = ws.update(cx, |ws, _| {
+                    let Some(pane) = ws.pane(&terminal) else {
+                        return false;
+                    };
+                    if !text.is_empty() {
+                        // The terminal's new lines: it doesn't turn \n into \r\n.
+                        pane.term.feed(text.replace('\n', "\r\n").as_bytes());
+                    }
+                    true
+                });
+                if !open.unwrap_or(false) {
+                    break;
+                }
+                cx.background_executor().timer(EVERY).await;
+            }
+        })
+        .detach();
     }
 
     /// The subagent `id` of the agent in the terminal `parent` finished, or every one of its

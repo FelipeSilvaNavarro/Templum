@@ -1240,9 +1240,6 @@ A verb stays connected until its answer: stopped with Ctrl+C, what it waited for
 not be in the agent's); `templum open` takes `<path>:<line>:<column>` as compilers and grep print it, the column
 ignored.
 
-`templum follow <transcript> [<type>]` is no tool: the program of a Claude Code subagent's block, which prints that
-subagent's transcript as it grows ([claude-subagents.md](claude-subagents.md#its-block)).
-
 Any other first argument opens Templum, as today. On Windows the release program has no console, so the verbs'
 output reaches a pipe (`templum blocks | more`) but not a console directly.
 

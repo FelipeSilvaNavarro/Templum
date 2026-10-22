@@ -709,57 +709,7 @@ impl Workspace {
         };
         let start = folder.or_else(std::env::home_dir);
         let id = match Terminal::spawn(opts, self.notify.clone()) {
-            Ok(term) => {
-                let id = self.space.canvas.add(rect);
-                self.space.blocks.insert(
-                    id,
-                    Body::Terminal(Box::new(Pane {
-                        term,
-                        snapshot: Rc::default(),
-                        heard: (0, 0),
-                        alert: None,
-                        seen: templum_terminal::Inspection {
-                            folder: start,
-                            ..Default::default()
-                        },
-                        usage: None,
-                        find: None,
-                        state: None,
-                        handed: None,
-                        answer: None,
-                        prompt: None,
-                        looks: Default::default(),
-                        typed: Default::default(),
-                        keyed: Default::default(),
-                        scrolled: Default::default(),
-                        submitted: 0,
-                        dialogs: 0,
-                        speaks: false,
-                        keys_from: None,
-                        opened_by: None,
-                        model: None,
-                        effort: None,
-                        flags_for: None,
-                        sent: None,
-                        transcript: None,
-                        starting: None,
-                        typed_agent: None,
-                        restored: false,
-                        resuming: None,
-                        account: None,
-                        role: None,
-                        quit: None,
-                        shell,
-                        subagents: Vec::new(),
-                        awaits_subagents: false,
-                        asked_by: None,
-                        settles: None,
-                        follows: None,
-                    })),
-                );
-                self.added(id);
-                Some(id)
-            }
+            Ok(term) => Some(self.add_pane(rect, term, start, shell)),
             Err(err) => {
                 eprintln!("templum: couldn't start a shell: {err}");
                 let message = format!("Couldn't start a shell: {err}");
@@ -768,6 +718,66 @@ impl Workspace {
             }
         };
         cx.notify();
+        id
+    }
+
+    /// A new terminal block at `rect` showing `term`, its folder `start`, keeping `shell`: focused,
+    /// and a step of Ctrl+Z unless `quiet` (`added`).
+    pub(super) fn add_pane(
+        &mut self,
+        rect: Rect,
+        term: Terminal,
+        start: Option<PathBuf>,
+        shell: Option<ShellOption>,
+    ) -> BlockId {
+        let id = self.space.canvas.add(rect);
+        self.space.blocks.insert(
+            id,
+            Body::Terminal(Box::new(Pane {
+                term,
+                snapshot: Rc::default(),
+                heard: (0, 0),
+                alert: None,
+                seen: templum_terminal::Inspection {
+                    folder: start,
+                    ..Default::default()
+                },
+                usage: None,
+                find: None,
+                state: None,
+                handed: None,
+                answer: None,
+                prompt: None,
+                looks: Default::default(),
+                typed: Default::default(),
+                keyed: Default::default(),
+                scrolled: Default::default(),
+                submitted: 0,
+                dialogs: 0,
+                speaks: false,
+                keys_from: None,
+                opened_by: None,
+                model: None,
+                effort: None,
+                flags_for: None,
+                sent: None,
+                transcript: None,
+                starting: None,
+                typed_agent: None,
+                restored: false,
+                resuming: None,
+                account: None,
+                role: None,
+                quit: None,
+                shell,
+                subagents: Vec::new(),
+                awaits_subagents: false,
+                asked_by: None,
+                settles: None,
+                follows: None,
+            })),
+        );
+        self.added(id);
         id
     }
 

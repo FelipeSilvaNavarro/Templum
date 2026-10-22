@@ -816,6 +816,9 @@ impl Workspace {
                 };
                 let state = agent_state(space, b.id);
                 let tools = match space.terminal(b.id) {
+                    Some(pane) if pane.follows.is_some() => {
+                        ", a Claude Code subagent's transcript, read-only"
+                    }
                     Some(pane) if pane.seen.agent.is_some() && !self.has_tools(pane.term.id()) => {
                         ", no Templum tools"
                     }

@@ -64,14 +64,6 @@ fn main() {
     // `templum mcp`, `templum hook claude`, `templum read <block>`…: no window
     // (docs/specs/connections.md).
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // A Claude Code subagent's block (docs/specs/claude-subagents.md): its transcript, followed.
-    if let [verb, transcript, rest @ ..] = &args[..]
-        && verb == "follow"
-    {
-        let kind = rest.first().map_or("", String::as_str);
-        let _ = templum_agent::follow::run(std::path::Path::new(transcript), kind);
-        return;
-    }
     if args.first().is_some_and(|a| templum_mcp::cli::is_verb(a)) {
         let code = templum_mcp::cli::run(
             &args,

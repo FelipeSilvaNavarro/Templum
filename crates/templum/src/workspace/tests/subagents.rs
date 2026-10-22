@@ -451,8 +451,8 @@ fn followers(
 }
 
 #[test]
-fn a_subagents_block_follows_its_transcript_beside_the_sessions() {
-    use crate::workspace::subagents::{follow, transcript_of};
+fn a_subagents_transcript_is_beside_the_sessions() {
+    use crate::workspace::subagents::transcript_of;
     use std::path::Path;
     let main = Path::new("/home/u/.claude/projects/p").join("s1.jsonl");
     let theirs = transcript_of(main.to_str().unwrap(), "a80a32db516c45194").unwrap();
@@ -469,13 +469,101 @@ fn a_subagents_block_follows_its_transcript_beside_the_sessions() {
             "{id:?} names no file of its"
         );
     }
-    let shell = follow(Path::new("/opt/templum"), &theirs, "Explore");
-    assert_eq!(shell.program, "/opt/templum");
-    assert_eq!(
-        shell.args,
-        ["follow", theirs.to_str().unwrap(), "Explore"],
-        "what main.rs reads"
+}
+
+/// A subagent's block runs nothing: it shows its transcript's lines as they are appended, what is
+/// typed or pressed into it is refused, and it closes with nothing left to end.
+#[gpui_kit::test]
+fn a_subagents_block_shows_its_transcript_as_it_grows(cx: &mut TestAppContext) {
+    use super::bus::call;
+    use std::io::Write as _;
+    let (handle, ws, _, theirs) = two_agents(cx);
+    let (worker, _) = me(&ws, cx, theirs);
+    let dir = tempfile::tempdir().unwrap();
+    let main = dir.path().join("s1.jsonl");
+    let start = json!({ "hook_event_name": "SubagentStart", "agent_id": "a1",
+        "agent_type": "Explore", "transcript_path": main });
+    hook(handle, &ws, cx, &worker, start);
+    let block = followers(&ws, cx, &worker)[0].0;
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&block].clone());
+    let shown = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let term = &ws.space.terminal(block).unwrap().term;
+            (term.shared().lines(20).join("\n"), term.title())
+        })
+    };
+    ws.read_with(cx, |ws, _| {
+        let term = &ws.space.terminal(block).unwrap().term;
+        assert_eq!(term.processes(), Default::default(), "no process");
+        assert!(term.shells().is_empty());
+    });
+    let (text, title) = shown(cx);
+    assert!(
+        text.starts_with("A subagent of Claude Code, read-only"),
+        "{text}"
     );
+    assert_eq!(title, "Explore");
+    let file = dir
+        .path()
+        .join("s1")
+        .join("subagents")
+        .join("agent-a1.jsonl");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let append = |line: Value| {
+        let mut f = std::fs::File::options()
+            .create(true)
+            .append(true)
+            .open(&file)
+            .unwrap();
+        writeln!(f, "{line}").unwrap();
+    };
+    append(json!({ "type": "user", "message": { "role": "user", "content": "List the files." } }));
+    after(cx, 300);
+    let (text, title) = shown(cx);
+    assert!(text.contains("Task\nList the files."), "{text}");
+    assert_eq!(title, "Explore · List the files.");
+    append(
+        json!({ "type": "assistant", "message": { "role": "assistant",
+        "stop_reason": "end_turn", "content": [{ "type": "text", "text": "Two files." }] } }),
+    );
+    after(cx, 300);
+    let (text, _) = shown(cx);
+    assert!(
+        text.contains("Two files.") && text.ends_with("─ Done"),
+        "{text}"
+    );
+    let (_, read) = call(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        "read_terminal",
+        json!({ "block": uid }),
+    );
+    assert!(read.contains("Two files."), "{read}");
+    let (_, listed) = call(handle, &ws, cx, &worker, "list_blocks", json!({}));
+    let line = listed.lines().find(|l| l.starts_with(&uid)).unwrap();
+    assert!(
+        line.ends_with("a Claude Code subagent's transcript, read-only"),
+        "{line}"
+    );
+    for (tool, args) in [
+        (
+            "send_to_terminal",
+            json!({ "block": uid, "text": "hi", "enter": true }),
+        ),
+        ("send_keys", json!({ "block": uid, "keys": ["enter"] })),
+        ("interrupt", json!({ "block": uid })),
+        ("stop_agent", json!({ "block": uid })),
+    ] {
+        let (failed, text) = call(handle, &ws, cx, &worker, tool, args);
+        assert!(failed && text.contains("read-only"), "{tool}: {text}");
+    }
+    hook(handle, &ws, cx, &worker, stopped("a1", &[]));
+    after(cx, 61_000);
+    assert!(followers(&ws, cx, &worker).is_empty(), "closed");
+    append(json!({ "type": "user", "message": { "role": "user", "content": "Again." } }));
+    after(cx, 1_000);
 }
 
 /// Each subagent opens a block beside its parent, wired to it, overlapping nothing; the
