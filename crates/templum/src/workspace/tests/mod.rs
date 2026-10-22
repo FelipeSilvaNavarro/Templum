@@ -743,6 +743,7 @@ mod shortcuts;
 mod schedules;
 #[cfg(unix)]
 mod spawn;
+mod subagents;
 mod templum_agent;
 mod terminals;
 mod themes;

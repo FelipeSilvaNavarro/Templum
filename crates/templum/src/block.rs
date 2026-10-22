@@ -1086,7 +1086,7 @@ pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedStr
                         |a| format!("Waiting for you: {a}"),
                     ),
                 ),
-                Some(AgentState::Working) => (ws.ui.accent, "Working".to_string()),
+                Some(AgentState::Working) => (ws.ui.accent, pane.working()),
                 Some(AgentState::Idle) => return None,
                 None => {
                     let status = pane.term.status();

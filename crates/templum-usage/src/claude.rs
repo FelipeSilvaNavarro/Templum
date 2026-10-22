@@ -26,7 +26,7 @@ const MCP: &str = "mcp.json";
 /// What each hook runs after Templum's program (docs/specs/connections.md, Hooks).
 const HOOK: &str = "hook claude";
 /// The Claude Code hooks Templum follows a session's turns with.
-const HOOKED: [&str; 9] = [
+const HOOKED: [&str; 11] = [
     "SessionStart",
     "UserPromptSubmit",
     "PermissionRequest",
@@ -36,6 +36,9 @@ const HOOKED: [&str; 9] = [
     "StopFailure",
     "Notification",
     "SessionEnd",
+    // Its subagents (docs/specs/claude-subagents.md).
+    "SubagentStart",
+    "SubagentStop",
 ];
 
 /// A relay file older than this when Templum starts is deleted (a week's window, and a day).
@@ -991,6 +994,13 @@ mod tests {
             hooks["PostToolUseFailure"][0]["hooks"][0]["command"],
             "/opt/templum hook claude"
         );
+        // Its subagents open blocks of their own (docs/specs/claude-subagents.md).
+        for hook in ["SubagentStart", "SubagentStop"] {
+            assert_eq!(
+                hooks[hook][0]["hooks"][0]["command"],
+                "/opt/templum hook claude"
+            );
+        }
         // `reply` asks no permission where the server comes with the hooks, and only `reply`
         // (docs/specs/agent-protocol.md, 9).
         assert_eq!(

@@ -750,6 +750,9 @@ impl Workspace {
                         role: None,
                         quit: None,
                         shell,
+                        subagents: Vec::new(),
+                        awaits_subagents: false,
+                        asked_by: None,
                     })),
                 );
                 self.added(id);

@@ -1269,6 +1269,8 @@ impl Workspace {
         );
         if let Some(pane) = self.pane_mut(terminal) {
             pane.transcript = None;
+            pane.subagents.clear();
+            pane.awaits_subagents = false;
         }
     }
 

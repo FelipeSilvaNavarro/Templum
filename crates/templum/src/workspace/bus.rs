@@ -14,7 +14,7 @@ use templum_mcp::{Bus, Call, Incoming, Message, Reply, rpc, tools};
 
 use super::delegate::ENTER_AFTER;
 use super::waits::{Asked, Waiting, deadline};
-use super::{AgentState, Body, Pane, Space, Workspace, show_notification};
+use super::{AgentState, Body, Pane, Space, Subagent, Workspace, show_notification};
 
 /// A tool call's answer while connections are off.
 pub(super) const CONNECTIONS_OFF: &str = "Connections are off: turn on Agents in Templum (Settings ▸ Connections) to use Templum's tools.";
@@ -257,9 +257,20 @@ impl Workspace {
         if !matches!(event, AgentEvent::Stopped { .. }) {
             pane.speaks = true;
         }
+        // Claude Code's `Stop` with its answer names the subagents still at work
+        // (`AwaitsSubagents` otherwise): none. One counted as such stopped without a word.
+        if let AgentEvent::Stopped {
+            message: Some(_), ..
+        } = &event
+        {
+            pane.subagents.retain(|s| s.reported);
+        }
         match event {
             AgentEvent::Submitted { at_enter } => {
-                let turn = pane.state == Some(AgentState::Working);
+                // A turn under way, not one that ended while its subagents work: a prompt then
+                // starts the next at once.
+                let turn = pane.state == Some(AgentState::Working) && !pane.awaits_subagents;
+                pane.awaits_subagents = false;
                 pane.state = Some(AgentState::Working);
                 pane.submitted += 1;
                 // Its task, once typed: a spawn's prompt waits in `prompt` until then.
@@ -272,11 +283,8 @@ impl Workspace {
             }
             AgentEvent::Working => {
                 // At work again after a permission. Never a new turn: a command an interrupt left
-                // running ends later (Codex).
-                if matches!(
-                    pane.state,
-                    Some(AgentState::Working | AgentState::NeedsYou(_))
-                ) {
+                // running ends later (Codex). A subagent's dialog stays open.
+                if pane.state == Some(AgentState::Working) || pane.asks(None) {
                     pane.state = Some(AgentState::Working);
                 }
                 // A tool's end takes the prompt Claude Code queued into the turn under way.
@@ -286,8 +294,35 @@ impl Workspace {
             }
             AgentEvent::Started => {
                 pane.state = Some(AgentState::Idle);
-                // A new session: the last one's transcript isn't its own.
+                // A new session: the last one's transcript isn't its own, nor its subagents.
                 pane.transcript = None;
+                pane.subagents.clear();
+                pane.awaits_subagents = false;
+            }
+            // Its turn ended while its subagents work: the reports they send start its next
+            // turns, and the last one's end is its answer (docs/specs/claude-subagents.md).
+            AgentEvent::AwaitsSubagents {
+                transcript,
+                subagents,
+            } => {
+                if transcript.is_some() {
+                    pane.transcript = transcript;
+                }
+                // The list is whole: one gone without a word (stopped from its panel) is gone.
+                pane.subagents
+                    .retain(|s| s.reported || subagents.contains(&s.id));
+                for id in subagents {
+                    pane.add_subagent(id);
+                }
+                pane.await_subagents();
+            }
+            // A report is still to come (its subagent stopped during this turn), or Claude Code's
+            // prompt sat idle while they work: no answer yet.
+            AgentEvent::Stopped { transcript, .. } if !pane.subagents.is_empty() => {
+                if transcript.is_some() {
+                    pane.transcript = transcript;
+                }
+                pane.await_subagents();
             }
             AgentEvent::Stopped {
                 message,
@@ -333,12 +368,48 @@ impl Workspace {
                     pane.dialogs += 1;
                 }
                 pane.state = Some(AgentState::NeedsYou(message.clone()));
+                pane.asked_by = None;
                 self.needs_you(terminal, message.as_deref(), new, cx);
             }
             AgentEvent::Ended => {
                 pane.state = None;
                 pane.speaks = false;
                 self.agent_left(terminal, cx);
+            }
+            // Claude Code's own prompt, its subagents' reports: a turn starts that answers no
+            // task and takes none in. A report ends that subagent, also one stopped without a
+            // word.
+            AgentEvent::Reports { subagents } => {
+                pane.subagents.retain(|s| !subagents.contains(&s.id));
+                pane.awaits_subagents = false;
+                if !matches!(pane.state, Some(AgentState::NeedsYou(_))) {
+                    pane.state = Some(AgentState::Working);
+                }
+            }
+            AgentEvent::SubagentStarted { id, .. } => {
+                pane.add_subagent(id);
+            }
+            // The dialog it asked its person is over: its tool ran, or it stopped.
+            AgentEvent::SubagentWorking { id } => {
+                if pane.asks(Some(&id)) {
+                    pane.state = Some(AgentState::Working);
+                }
+            }
+            AgentEvent::SubagentNeedsYou { id, message } => {
+                let new = !matches!(pane.state, Some(AgentState::NeedsYou(_)));
+                pane.dialogs += 1;
+                pane.state = Some(AgentState::NeedsYou(message.clone()));
+                pane.asked_by = Some(id);
+                self.needs_you(terminal, message.as_deref(), new, cx);
+            }
+            AgentEvent::SubagentStopped { id, reports } => {
+                if pane.asks(Some(&id)) {
+                    pane.state = Some(AgentState::Working);
+                }
+                pane.subagents.retain(|s| s.id != id);
+                if reports {
+                    pane.subagents.push(Subagent { id, reported: true });
+                }
             }
         }
         cx.notify();
@@ -821,9 +892,9 @@ pub(super) fn agent_state(space: &Space, id: BlockId) -> String {
     space
         .terminal(id)
         .filter(|pane| pane.seen.agent.is_some())
-        .and_then(|pane| pane.state.as_ref())
-        .map(|state| match state {
-            AgentState::Working => ", working".to_string(),
+        .and_then(|pane| Some((pane, pane.state.as_ref()?)))
+        .map(|(pane, state)| match state {
+            AgentState::Working => format!(", {}", pane.working().to_lowercase()),
             AgentState::Idle => ", idle".to_string(),
             AgentState::NeedsYou(Some(what)) if !what.is_empty() => {
                 format!(", waiting for its person: {}", clean_title(what))

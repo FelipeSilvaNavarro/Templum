@@ -183,6 +183,14 @@ impl Handed {
     }
 }
 
+/// One of Claude Code's subagents, which Templum heard start (docs/specs/claude-subagents.md).
+pub(crate) struct Subagent {
+    pub id: String,
+    /// It finished in the background: its report comes to its agent in a turn of its own,
+    /// not yet begun.
+    pub reported: bool,
+}
+
 /// A prompt `spawn_agent` types into its agent once the agent is ready
 /// (docs/specs/connections.md, Spawning).
 pub(crate) struct Prompt {
@@ -293,9 +301,58 @@ pub(crate) struct Pane {
     /// The shell chosen for it in a menu (docs/specs/shells.md, The block keeps its shell); none:
     /// it runs the default, and follows it.
     pub shell: Option<templum_terminal::ShellOption>,
+    /// Its agent's subagents at work, or done with a report its agent hasn't taken yet
+    /// (docs/specs/claude-subagents.md): while there are any, a turn's end isn't its answer.
+    pub subagents: Vec<Subagent>,
+    /// Its agent's last turn ended while it had subagents, and none started since: a prompt
+    /// typed now starts a turn, it isn't queued behind one.
+    pub awaits_subagents: bool,
+    /// The subagent whose dialog its agent waits on its person for (`NeedsYou`), by id; None:
+    /// its own. Another's tool ending doesn't close that dialog.
+    pub asked_by: Option<String>,
 }
 
 impl Pane {
+    /// Its agent waits on its person for a dialog of `by`: one of its subagents, by id, or
+    /// itself (None).
+    pub fn asks(&self, by: Option<&str>) -> bool {
+        matches!(self.state, Some(AgentState::NeedsYou(_))) && self.asked_by.as_deref() == by
+    }
+
+    /// What its dot says while its agent works: how many of its subagents do too.
+    pub fn working(&self) -> String {
+        match self.subagents.iter().filter(|s| !s.reported).count() {
+            0 => "Working".to_string(),
+            1 => "Working: 1 subagent".to_string(),
+            n => format!("Working: {n} subagents"),
+        }
+    }
+
+    /// Its agent's subagent `id` is at work, as one heard to start or one a turn's end names.
+    pub fn add_subagent(&mut self, id: String) {
+        match self.subagents.iter_mut().find(|s| s.id == id) {
+            // Resumed: at work again.
+            Some(subagent) => subagent.reported = false,
+            None => self.subagents.push(Subagent {
+                id,
+                reported: false,
+            }),
+        }
+    }
+
+    /// Its agent's turn ended while its subagents work or a report of one is still to come: it
+    /// works on, and the turn's end answers nothing (docs/specs/claude-subagents.md). A task
+    /// queued behind that turn starts now: the next turn's end is its own.
+    pub fn await_subagents(&mut self) {
+        if !matches!(self.state, Some(AgentState::NeedsYou(_))) {
+            self.state = Some(AgentState::Working);
+        }
+        match self.handed.as_mut().filter(|h| h.behind) {
+            Some(handed) => handed.behind = false,
+            None => self.awaits_subagents = true,
+        }
+    }
+
     /// The agent it runs, by id: the one Templum sees running in it, else the one Templum
     /// started there (before the first snapshot read it).
     pub fn agent(&self) -> Option<&str> {

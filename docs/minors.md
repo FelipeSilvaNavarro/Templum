@@ -808,12 +808,6 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   once with "Its turn ended without an answer". Fix: confirm it with the plan's manual check 14, saving both hook
   inputs; if a field tells Esc from Ctrl+B, end the turn on Esc's only; if none does, keep Working on an interrupt and
   let the screen going still end it.
-- [ ] **Parallel subagents can turn a waiting Claude Code's dot back to Working.** With subagents running side by side,
-  one subagent's `PostToolUse` or `PostToolUseFailure` (`crates/templum-mcp/src/hooks.rs:34`, at 11a2fb0) arrives
-  while another waits at a permission dialog, and the yellow "Waiting for you" turns back to Working although the
-  dialog is still open. A person sees Working and doesn't look. Fix: keep the `tool_use_id` of the
-  `PermissionRequest` with the wait, and clear the yellow only on the `PostToolUse` or `PostToolUseFailure` with that
-  id.
 - [ ] **Each hook runs the AppImage again.** The hooks, the status line and the MCP server run Templum's program,
   which is `$APPIMAGE` when Templum runs from one (`program`, `crates/templum/src/workspace/usage.rs:331`, at
   11a2fb0), and each run mounts the image; Claude Code waits for its `PostToolUse` hook after every tool. A person
@@ -1125,8 +1119,8 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
   `crates/templum/src/workspace/bus.rs`) marks the task taken and not `behind`, the task's own `Submitted` is
   ignored, and the person's turn's `Stop` answers the task with the person's answer. Fix: carry the hook's `prompt`
   in `Submitted` (`hooks::claude`, `crates/templum-mcp/src/hooks.rs`) and count one toward the task only if it comes
-  after the task's Enter and starts with `[from `. Claude Code's `UserPromptSubmit` also fires for a scheduled task, a
-  `/loop` iteration and a background subagent reporting back: one of those in the second or two before the task's
+  after the task's Enter and starts with `[from `. Claude Code's `UserPromptSubmit` also fires for a scheduled task and
+  a `/loop` iteration (a background subagent's or command's report no longer counts: card 127): one of those in the second or two before the task's
   Enter is taken marks the task taken (and satisfies `confirm`, `delegate.rs`, even if its Enter was lost), and that
   turn's `Stop` answers it with, say, the subagent's summary, while the task runs later for no one. The same fix
   covers it.
@@ -1168,11 +1162,6 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
   ungated agent at a dialog a hook told of gets the paste too. Fix: check by hand (once logged in) whether Gemini CLI
   hides its cursor in that question; if so, gate `Agent::GEMINI` too; and have `look_ready` wait while `takes_typing`
   fails.
-- [ ] **A Claude Code subagent's tool end may take a queued task into the wrong turn.** The `Working` arm (`bus.rs`)
-  clears `behind` on any `PostToolUse`, as the spikes saw a tool's end take a queued prompt into the turn under way
-  (S2); whether a subagent's tool end does too wasn't checked. If not, the main turn's `Stop` answers the task with
-  its own answer. Fix: check by hand (a task delegated while Claude Code runs a subagent); if a subagent's tool end
-  doesn't take it, leave `behind` alone for a subagent's `PostToolUse`, if its payload tells one apart.
 - [ ] **A dialog's 300 ms wait may answer a `wait_for(needs_you)` that came after the agent stopped asking.**
   `needs_you` (`crates/templum/src/workspace/waits.rs`) answers, `DRAWN` after the hook, every `needs_you` wait on the
   terminal then, also one registered meanwhile after the dialog closed (a hook that answered it at once). The agent
@@ -1664,16 +1653,18 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   it again. Rare: the person must type in the 150–300 ms between the paste and its Enter (a notice already waits until
   they stopped typing for 3 s). Fix: put a notice back in `notices` (its text cleared from the input first is the
   hard part), and answer a reply with what `send_task` says, as the reply minor above asks.
-- [ ] **A Claude Code that leaves background subagents running ends its task with an interim answer.** Found by the
-  study of card 127 ([docs/plans/2026-10-22-claude-subagents.md](plans/2026-10-22-claude-subagents.md), inferred from
-  Claude Code's documented default, not yet seen by hand): Claude Code runs the subagents it starts in the background,
-  so its turn's `Stop` comes while they work, and the `Stopped` arm of `agent_event`
-  (`crates/templum/src/workspace/bus.rs:292`, at 0a11995) ends the task handed to it with that turn's last message
-  ("I've started three reviewers…") and puts its dot at rest. The master gets the interim message as the answer, and
-  the subagents' report comes in a later turn that answers nothing. Fix: carry how many `subagent` entries the `Stop`
-  input's `background_tasks` lists in `Stopped` (`hooks::claude`, `crates/templum-mcp/src/hooks.rs`), and treat such a
-  turn's end as one that ends while the agent waits on its own task (agent-protocol.md §4): the task stays open and the
-  dot Working.
+
+Left by kanban card 127 (Claude Code's subagents, `docs/specs/claude-subagents.md`).
+
+- [ ] **A task handed to a Claude Code whose earlier subagents still work waits for them too.** `Pane::subagents`
+  (`crates/templum/src/workspace/mod.rs`) counts every subagent of the session, also ones an earlier task or the
+  person started: a task handed meanwhile isn't answered by its own turn's end while they work, and is answered by
+  the turn that takes their last report, whose message may be about that earlier work. A master gets a late or
+  unrelated answer. Fix: keep, on `Handed`, the subagents started since the task was taken, and await only those.
+- [ ] **Two subagents' dialogs at once: answering the later one turns the parent back to Working.** `asked_by`
+  (`Pane`) holds only the subagent that asked last; once its tool ends, the parent's dot leaves yellow although the
+  first one's dialog is still open in Claude Code's screen. A person sees Working and doesn't look. Fix: keep the ids
+  of every subagent asking (a set), and leave the wait when it is empty.
 
 ## Placing new blocks
 
