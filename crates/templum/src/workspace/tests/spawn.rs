@@ -9,7 +9,7 @@ use templum_canvas::Wire;
 use super::bus::{
     after, answer_soon, answered, call, call_later, event, me, result_of, screen_until, screen_with,
 };
-use super::delegate::{found, prints, snapshot};
+use super::delegate::{entered, found, prints, snapshot};
 use super::*;
 
 /// The prompt "say hi" went with its Enter: the terminal echoed it and `cat` printed it back,
@@ -374,7 +374,7 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
             ),
         );
         screen_with(&ws, cx, new, "say hi");
-        enter(cx);
+        entered(&ws, cx, new);
         said_twice(&ws, cx, new);
         event(
             handle,
@@ -429,7 +429,7 @@ fn a_spawns_task_past_its_timeout_isnt_told(cx: &mut TestAppContext) {
         looks += 1;
     }
     screen_with(&ws, cx, new, "say hi");
-    enter(cx);
+    entered(&ws, cx, new);
     event(handle, &ws, cx, &theirs, json!({ "event": "submitted" }));
     after(cx, templum_mcp::tools::TASK_WAIT * 1000);
     let told: Vec<String> = ws.read_with(cx, |ws, _| {
@@ -584,7 +584,7 @@ fn a_snapshot_before_the_agent_started_doesnt_stop_its_prompt(cx: &mut TestAppCo
         looks += 1;
     }
     screen_with(&ws, cx, new, "say hi");
-    enter(cx);
+    entered(&ws, cx, new);
     ws.read_with(cx, |ws, _| {
         let pane = ws.space.terminal(new).unwrap();
         assert!(pane.handed.is_some(), "not taken: {:?}", pane.screen());
@@ -738,7 +738,7 @@ fn another_agents_prompt_waits_for_its_process_and_a_still_screen(cx: &mut TestA
     }
     assert!(looks >= 2, "typed once two looks saw the same screen");
     screen_with(&ws, cx, new, "say hi");
-    enter(cx);
+    entered(&ws, cx, new);
     said_twice(&ws, cx, new);
 }
 

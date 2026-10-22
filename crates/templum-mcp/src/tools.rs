@@ -699,11 +699,12 @@ pub fn list() -> Value {
             "description": "Hands a task to an agent connected to you: Templum types it into its terminal, after \
                             a line saying it is from you and its id (t7), and sends it. Its answer is what it \
                             sends with reply (Templum asks it to), else its last message when its turn ends. With wait, waits \
-                            for that answer (it may take minutes); without, says its id at once, and its end comes \
-                            back typed into your terminal as [task t7 …] with its time, what it spent and its \
-                            transcript, as does a dialog it waits on. To the agent on your task, it is a change to \
-                            that task, typed at once. Refused while the agent waits for its person or is on \
-                            another agent's task.",
+                            for that answer (it may take minutes); without, says its id once the agent took it \
+                            (a few seconds), or why it didn't, and its end \
+                            comes back typed into your terminal as [task t7 …] with its time, what it spent and \
+                            its transcript, as does a dialog it waits on. To the agent on your task, it is a \
+                            change to that task, typed at once. Refused while the agent waits for its person or \
+                            is on another agent's task.",
             "_meta": always_load,
             "inputSchema": {
                 "type": "object",

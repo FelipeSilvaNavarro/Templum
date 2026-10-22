@@ -2850,6 +2850,15 @@ fn delegate_hands_a_task_under_the_templum_agents_line(cx: &mut TestAppContext) 
         assert_eq!(approval.details, "fix the tests");
     });
     answer(handle, &ws, cx, crate::chat::Answer::Conversation);
+    // Answered once its agent took the task.
+    assert!(answers.try_recv().is_err(), "not taken yet");
+    screen_with(&ws, cx, theirs, "[from Templum Agent, task t1]");
+    super::delegate::entered(&ws, cx, theirs);
+    super::bus::event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    super::bus::after(
+        cx,
+        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+    );
     let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
     assert_eq!(
         (failed, text),
@@ -2866,12 +2875,6 @@ fn delegate_hands_a_task_under_the_templum_agents_line(cx: &mut TestAppContext) 
             .clone()
     });
     assert_eq!(by, ::templum_agent::ASKER);
-    screen_with(&ws, cx, theirs, "fix the tests");
-    super::bus::after(
-        cx,
-        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
-    );
-    screen_with(&ws, cx, theirs, "[from Templum Agent, task t1]");
     // With wait, the call waits for its end, which answers it.
     let (worker, _) = me(&ws, cx, theirs);
     ws.update(cx, |ws, cx| {

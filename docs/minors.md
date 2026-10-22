@@ -1618,6 +1618,17 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   called and `quiet` stays true. B's turn ending with "waiting for C" then ends B's own task, and its master gets B's
   interim words as the answer. Rare: C has no hooks, waits on its own master, and is still during that call. Fix: call
   `asker_wrote(&asker, from)` in the waits branch too, and drop the spec's "not one that a waiting call takes".
+- [ ] **A dialog over an agent's input isn't dismissed before its task.** Left by card 118 (`EnterWait`,
+  `crates/templum/src/workspace/delegate.rs`): Cline's "Introducing Cline Desktop – Press Enter to open, any other key
+  to close" takes the paste's first key, or ignores the paste. The master now hears that the agent didn't take the task
+  (its screen never showed it, or two Enters sent nothing), and Esc then delegating again works. A master sees one
+  failed `delegate` before it. Fix: a per-agent pattern of such dialogs in the agent table (`templum_terminal::Agent`),
+  and Esc pressed once before the paste when the screen shows one.
+- [ ] **A `reply` typed into an agent says "Typed into" before its Enter went.** Left by card 118 (`reply_to`,
+  `crates/templum/src/workspace/delegate.rs`): with no call of the agent waiting, the reply is typed and the call
+  answers at once; it gets its second Enter like a task, but one that still isn't sent is lost silently. A master sees
+  "Typed into k9x1d." for a reply sitting in that agent's input. Fix: answer `reply` with `Outcome::Later` on what
+  `send_task` says, as `hand_task` does.
 
 ## Placing new blocks
 

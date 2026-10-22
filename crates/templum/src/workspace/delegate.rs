@@ -3,6 +3,7 @@
 
 use std::time::{Duration, Instant};
 
+use futures::channel::oneshot;
 use gpui_kit::{App, Context, Task};
 use templum_agent::NoticeLevel;
 use templum_canvas::BlockId;
@@ -15,8 +16,8 @@ use super::bus::{Outcome, clean_title, flat, target};
 use super::waits::{LAST_LINES, Waiting};
 use super::{AgentState, Handed, Pane, Space, Workspace};
 
-/// How long after a task is typed its Enter goes: an agent may take keys that come in one burst
-/// for a paste, where Enter is a new line.
+/// How long apart Templum looks at an agent's screen while a typed task waits for its Enter, and
+/// after it: an agent may take keys that come in one burst for a paste, where Enter is a new line.
 pub(super) const ENTER_AFTER: Duration = Duration::from_millis(150);
 /// How many times, ENTER_AFTER apart, Templum looks for the typed task on the agent's screen
 /// before it gives up on its Enter: about 2 s, for an agent slow to draw.
@@ -27,8 +28,11 @@ const SCREEN_LINES: usize = 100;
 /// redrawn at its new size, and read what was typed meanwhile.
 const SETTLED: u32 = 2;
 /// How long after a task's Enter an agent whose hooks speak must say it took it (`Submitted`), or
-/// open a dialog: only a prompt taken confirms it.
+/// open a dialog: only a prompt taken confirms it. Another's screen must have moved by then.
 pub(super) const CONFIRM: Duration = Duration::from_secs(3);
+/// The looks after a task's Enter, ENTER_AFTER apart, that tell whether its agent took it; the
+/// first only reads the screen the next ones are compared to.
+const CHECKS: u32 = (CONFIRM.as_millis() / ENTER_AFTER.as_millis()) as u32 - 1;
 /// How long after Templum typed into an agent a notice waits: that text's first Enter may come
 /// ENTER_LOOKS looks after it was typed, its second CONFIRM after that, and a notice typed before
 /// then would go with it.
@@ -105,14 +109,17 @@ enum Step {
     GiveUp,
 }
 
-/// The wait for a typed task's Enter (`send_task`): the agent's screen must show the paste. A
-/// resize meanwhile redraws it at its new size, which shows nothing of the paste.
+/// The wait for a typed task's Enter (`send_task`): the agent's screen must show the paste, then
+/// stand still a look. A resize meanwhile redraws it at its new size, which shows nothing of the
+/// paste.
 struct EnterWait {
     /// The screen the paste must change.
     before: String,
     size: (u16, u16),
     /// Since a resize: the last screen, and how many looks in a row saw it.
     settling: Option<(String, u32)>,
+    /// The screen the last look saw showing the paste.
+    shown: Option<String>,
     looks: u32,
 }
 
@@ -122,6 +129,7 @@ impl EnterWait {
             before,
             size,
             settling: None,
+            shown: None,
             looks: 0,
         }
     }
@@ -149,6 +157,7 @@ impl EnterWait {
                     return Step::Enter;
                 }
                 self.before = screen;
+                self.shown = None;
                 self.looks = 0;
                 return Step::Wait;
             }
@@ -160,13 +169,149 @@ impl EnterWait {
                 (false, false) => Step::GiveUp,
             };
         }
-        if screen != self.before {
-            Step::Enter
-        } else if self.looks < ENTER_LOOKS {
-            Step::Wait
-        } else {
-            Step::GiveUp
+        if screen == self.before {
+            return if self.looks < ENTER_LOOKS {
+                Step::Wait
+            } else {
+                Step::GiveUp
+            };
         }
+        // The paste shows. An agent that reads it as keys (Codex and Copilot CLI on Windows,
+        // whose console passes no bracketed paste on) takes an Enter that comes while they still
+        // arrive, or just after, for a new line in it: the Enter waits until the screen stood
+        // still a look. One that keeps moving (at work) gets it after ENTER_LOOKS.
+        if self.shown.as_ref() == Some(&screen) || self.looks >= ENTER_LOOKS {
+            return Step::Enter;
+        }
+        self.shown = Some(screen);
+        Step::Wait
+    }
+}
+
+/// Why an agent didn't take the task typed into it, as its asker is told.
+#[derive(Debug, PartialEq)]
+enum NotTaken {
+    /// Its screen never showed the paste: no Enter went.
+    Unseen,
+    /// Its hooks speak, and none said it took the task, though its screen changed.
+    Unheard,
+    /// Two Enters changed nothing on its screen.
+    Unsent,
+}
+
+impl NotTaken {
+    fn why(&self) -> &'static str {
+        match self {
+            NotTaken::Unseen => {
+                "its screen never showed it: it may be showing a dialog, or its input wasn't ready"
+            }
+            NotTaken::Unheard => "it may be showing a dialog",
+            NotTaken::Unsent => {
+                "typed but not submitted: two Enters changed nothing on its screen, and its input \
+                 may still hold it"
+            }
+        }
+    }
+}
+
+/// What a look at an agent's screen after a typed task's Enter says.
+#[derive(Debug, PartialEq)]
+enum Check {
+    Wait,
+    Taken,
+    /// Press Enter once more: the first may have joined the paste as a new line.
+    Again,
+    Not(NotTaken),
+}
+
+/// The looks after a typed task's Enter (`send_task`), ENTER_AFTER apart for CONFIRM: did its
+/// agent take it? One whose hooks speak says so (`Submitted`); another's screen moves (a spinner,
+/// a timer). A screen that didn't change since just after the Enter gets the Enter once more: no
+/// dialog drew, and the text may still sit in its input, the first Enter a new line in it.
+struct EnterCheck {
+    /// Its hooks spoke before the Enter.
+    spoke: bool,
+    /// The prompts it had taken at the Enter.
+    submitted: u64,
+    /// Its screen when the Enter went.
+    before: String,
+    /// An Enter changed it: a new line in its input, or the task taken.
+    moved: bool,
+    /// Its screen ENTER_AFTER after the Enter, once read, and at the last look.
+    after: Option<String>,
+    last: String,
+    /// Looks in a row that saw the screen change.
+    moving: u32,
+    looks: u32,
+    /// The Enter was the second.
+    second: bool,
+}
+
+impl EnterCheck {
+    fn new(spoke: bool, submitted: u64, before: String) -> Self {
+        Self {
+            spoke,
+            submitted,
+            before,
+            moved: false,
+            after: None,
+            last: String::new(),
+            moving: 0,
+            looks: 0,
+            second: false,
+        }
+    }
+
+    /// A look at the agent's `screen`; `submitted`: the prompts it has taken now; `takes`:
+    /// Templum may still type into it (no dialog its hooks told of, its shell not back in front);
+    /// `typing`: its person typed into it lately.
+    fn look(&mut self, screen: String, submitted: u64, takes: bool, typing: bool) -> Check {
+        // A prompt taken, or a dialog it opened: what comes next tells the rest.
+        if submitted != self.submitted || !takes {
+            return Check::Taken;
+        }
+        let Some(after) = &self.after else {
+            self.moved |= screen != self.before;
+            self.after = Some(screen.clone());
+            self.last = screen;
+            return Check::Wait;
+        };
+        let still = screen == *after;
+        self.moving = if screen != self.last {
+            self.moving + 1
+        } else {
+            0
+        };
+        self.last = screen;
+        self.looks += 1;
+        // At work: no hook says so, its screen moving does.
+        if !self.spoke && self.moving >= 2 {
+            return Check::Taken;
+        }
+        if self.looks < CHECKS {
+            return Check::Wait;
+        }
+        match (still && !typing, self.second, self.spoke) {
+            (true, false, _) => Check::Again,
+            // An Enter did something, then nothing moved: it took the task, and works drawing
+            // nothing.
+            (true, true, false) if self.moved => Check::Taken,
+            (true, true, _) => Check::Not(NotTaken::Unsent),
+            // It changed, then stopped: a dialog no hook tells of, or work that draws nothing
+            // more. Templum can't tell, and presses nothing more into it.
+            (false, _, false) => Check::Taken,
+            (false, _, true) => Check::Not(NotTaken::Unheard),
+        }
+    }
+
+    /// The second Enter went, into the screen the last look saw: the looks start over.
+    fn again(&mut self) {
+        let before = std::mem::take(&mut self.last);
+        *self = Self {
+            second: true,
+            moved: self.moved,
+            ..Self::new(self.spoke, self.submitted, before)
+        };
     }
 }
 
@@ -550,22 +695,25 @@ impl Workspace {
     }
 
     /// Types `text` into the agent in terminal `terminal`, its first line and the rest as two
-    /// pastes, then Enter a moment later,
-    /// once its screen shows the paste (`EnterWait`), if Templum still may type into it. A screen
-    /// that doesn't (a dialog that ignores pastes, as Codex's approval does, which Templum hears
-    /// nothing of), or an agent that started asking its person meanwhile (a working agent's
-    /// screen changes all along), gets no Enter: it would pick the dialog's answer for the
-    /// person. A `task` (not a reply) then ends at once, untaken. An agent whose hooks speak
-    /// confirms its Enter (`confirm`). A notice waits for its Enters (`Pane::sent`).
+    /// pastes, then Enter once its screen shows the paste and stood still a look (`EnterWait`), if
+    /// Templum still may type into it. A screen that doesn't (a dialog that ignores pastes, as
+    /// Codex's approval does, which Templum hears nothing of), or an agent that started asking its
+    /// person meanwhile (a working agent's screen changes all along), gets no Enter: it would pick
+    /// the dialog's answer for the person. Then its looks tell whether it took it (`EnterCheck`),
+    /// with a second Enter when nothing changed; an agent at work when it was typed queues it. A
+    /// `task` (not a reply) not taken ends at once. The answer says how it went, once known: Ok,
+    /// or why not, the task then ended without a notice besides (`not_taken`). A notice waits for
+    /// its Enters (`Pane::sent`).
     pub(super) fn send_task(
         &mut self,
         terminal: &str,
         text: &str,
         task: bool,
         cx: &mut Context<Self>,
-    ) {
+    ) -> oneshot::Receiver<Result<(), Reply>> {
+        let (told, answer) = oneshot::channel();
         let Some(pane) = self.pane_mut(terminal) else {
-            return;
+            return answer;
         };
         pane.sent = Some(Instant::now());
         // At work, it queues the task: Codex says it took it only once a turn takes it in.
@@ -582,93 +730,67 @@ impl Workspace {
         }
         let terminal = terminal.to_string();
         cx.spawn(async move |ws, cx| {
-            // Some(the prompts it had taken at its Enter, when its hooks speak) once done looking.
-            let entered = loop {
+            let mut told = Some(told);
+            // Once its Enter went.
+            let mut check: Option<EnterCheck> = None;
+            loop {
                 cx.background_executor().timer(ENTER_AFTER).await;
-                let step = ws.update(cx, |ws, cx| {
+                let done = ws.update(cx, |ws, cx| {
                     let Some(pane) = ws.pane(&terminal) else {
-                        return Some(None);
+                        return true;
                     };
                     let takes = pane.takes_typing("").is_ok();
-                    let size = pane.term.grid_size();
-                    match wait.look(pane.screen(), size, takes, pane.speaks) {
-                        Step::Wait => None,
-                        Step::Enter => {
-                            pane.term.write(&b"\r"[..]);
-                            Some(pane.speaks.then_some(pane.submitted))
-                        }
-                        Step::GiveUp => {
-                            if task {
-                                ws.not_taken(&terminal, cx);
+                    let screen = pane.screen();
+                    let took = match check.as_mut() {
+                        None => {
+                            let size = pane.term.grid_size();
+                            match wait.look(screen.clone(), size, takes, pane.speaks) {
+                                Step::Wait => return false,
+                                Step::GiveUp => Err(NotTaken::Unseen),
+                                Step::Enter if queued => {
+                                    pane.term.write(&b"\r"[..]);
+                                    Ok(())
+                                }
+                                Step::Enter => {
+                                    pane.term.write(&b"\r"[..]);
+                                    let (speaks, submitted) = (pane.speaks, pane.submitted);
+                                    check = Some(EnterCheck::new(speaks, submitted, screen));
+                                    return false;
+                                }
                             }
-                            Some(None)
                         }
+                        Some(check) => {
+                            let typing = pane.keyed.get().is_some_and(|at| at.elapsed() < TYPING);
+                            match check.look(screen, pane.submitted, takes, typing) {
+                                Check::Wait => return false,
+                                Check::Again => {
+                                    pane.term.write(&b"\r"[..]);
+                                    check.again();
+                                    return false;
+                                }
+                                Check::Taken => Ok(()),
+                                Check::Not(why) => Err(why),
+                            }
+                        }
+                    };
+                    match took {
+                        Ok(()) => {
+                            if let Some(told) = told.take() {
+                                let _ = told.send(Ok(()));
+                            }
+                        }
+                        Err(why) if task => ws.not_taken(&terminal, why, told.take(), cx),
+                        Err(_) => {}
                     }
+                    true
                 });
-                match step {
-                    Ok(None) => {}
-                    Ok(Some(entered)) => break entered,
-                    Err(_) => return,
+                if done.unwrap_or(true) {
+                    return;
                 }
-            };
-            let Some(submitted) = entered else {
-                return;
-            };
-            // Its screen just after the Enter: a second one goes only into the same.
-            cx.background_executor().timer(ENTER_AFTER).await;
-            let Ok(Some(screen)) = ws.update(cx, |ws, _| ws.pane(&terminal).map(Pane::screen))
-            else {
-                return;
-            };
-            cx.background_executor().timer(CONFIRM - ENTER_AFTER).await;
-            let again = Some(screen.as_str());
-            let done = ws
-                .update(cx, |ws, cx| {
-                    ws.confirm(&terminal, submitted, queued, again, task, cx)
-                })
-                .unwrap_or(true);
-            if !done {
-                cx.background_executor().timer(CONFIRM).await;
-                let _ = ws.update(cx, |ws, cx| {
-                    ws.confirm(&terminal, submitted, queued, None, task, cx)
-                });
             }
         })
         .detach();
-    }
-
-    /// A look, CONFIRM after its Enter, at the agent in `terminal` that was typed a task or a reply
-    /// (docs/specs/connections.md, Delegating 2, **Confirmed**; `submitted`: the prompts it had
-    /// taken then). One more prompt taken confirms it, and so does a dialog it opened; an agent at
-    /// work when it was typed (`queued`) took it into its queue. Nothing else does: not a turn's
-    /// end, nor a moving screen. Otherwise it gets its Enter once more (the first may have joined
-    /// the paste as a new line), only while its screen is still `again` (a dialog no hook tells of
-    /// would have drawn) and the person hasn't typed into it for TYPING; else a `task` ends
-    /// untaken. True when done.
-    fn confirm(
-        &mut self,
-        terminal: &str,
-        submitted: u64,
-        queued: bool,
-        again: Option<&str>,
-        task: bool,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(pane) = self.pane(terminal) else {
-            return true;
-        };
-        if pane.submitted != submitted || queued || pane.takes_typing("").is_err() {
-            return true;
-        }
-        let typing = pane.keyed.get().is_some_and(|at| at.elapsed() < TYPING);
-        if !typing && again.is_some_and(|screen| screen == pane.screen()) {
-            pane.term.write(&b"\r"[..]);
-            return false;
-        }
-        if task {
-            self.not_taken(terminal, cx);
-        }
-        true
+        answer
     }
 
     /// The block id of the terminal `terminal`, as agents name it; empty when it is gone.
@@ -685,9 +807,17 @@ impl Workspace {
             .unwrap_or_default()
     }
 
-    /// The agent in the terminal `terminal` didn't take the task typed into it: the task, if it is
-    /// still handed over, ends, and the calls waiting on it hear so, with its screen.
-    fn not_taken(&mut self, terminal: &str, cx: &mut Context<Self>) {
+    /// The agent in the terminal `terminal` didn't take the task typed into it (`why`): the task,
+    /// if it is still handed over, ends, and the calls waiting on it hear so, with its screen. The
+    /// call that handed it over and still waits to say how that went (`told`) says so instead of
+    /// a notice.
+    fn not_taken(
+        &mut self,
+        terminal: &str,
+        why: NotTaken,
+        told: Option<oneshot::Sender<Result<(), Reply>>>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(tail) = self
             .pane(terminal)
             .filter(|p| p.handed.is_some())
@@ -696,12 +826,22 @@ impl Workspace {
             return;
         };
         let uid = self.uid_of(terminal);
-        let why = format!(
-            "{uid} didn't take the task: it may be showing a dialog. Look at its block, then try \
-             again. The last lines of its screen:\n{}",
+        let reply = Reply::err(format!(
+            "{uid} didn't take the task: {}. Look at its block, then try again. The last lines of \
+             its screen:\n{}",
+            why.why(),
             tools::tail(&tail, tools::MAX_TEXT)
-        );
-        self.end_turn(terminal, Reply::err(why), cx);
+        ));
+        match told.filter(|t| !t.is_canceled()) {
+            Some(told) => {
+                if let Some(pane) = self.pane_mut(terminal) {
+                    pane.handed = None;
+                }
+                self.end_turn(terminal, reply.clone(), cx);
+                let _ = told.send(Err(reply));
+            }
+            None => self.end_turn(terminal, reply, cx),
+        }
     }
 
     /// `delegate` from the terminal `from`: `task` typed into the agent `block` under a line
@@ -808,7 +948,7 @@ impl Workspace {
                 )
             }
         };
-        self.send_task(&worker, &line, true, cx);
+        let sent = self.send_task(&worker, &line, true, cx);
         let until = Instant::now() + Duration::from_secs(timeout);
         if let Some(pane) = self.pane_mut(&worker) {
             match (mine, pane.handed.as_mut()) {
@@ -836,16 +976,22 @@ impl Workspace {
                 of: worker,
                 uid: block.to_string(),
             };
-            Outcome::Wait(Box::new(what), Some(timeout))
-        } else {
-            Outcome::Now(Reply::ok(match mine {
-                Some(_) => format!("Typed into {block} as a change to task t{id}."),
-                None => format!(
-                    "Handed to {block} as task t{id}.{}",
-                    no_tools.unwrap_or_default()
-                ),
-            }))
+            return Outcome::Wait(Box::new(what), Some(timeout));
         }
+        let said = match mine {
+            Some(_) => format!("Typed into {block} as a change to task t{id}."),
+            None => format!(
+                "Handed to {block} as task t{id}.{}",
+                no_tools.unwrap_or_default()
+            ),
+        };
+        // Answered once the agent took the task, or with why not.
+        let gone = format!("{block} closed, or its task ended, before it took the task.");
+        Outcome::Later(cx.spawn(async move |_, _| match sent.await {
+            Ok(Ok(())) => Reply::ok(said),
+            Ok(Err(why)) => why,
+            Err(_) => Reply::err(gone),
+        }))
     }
 
     /// `reply` from the terminal `from`: without a `block`, or to the agent that handed the caller
@@ -904,7 +1050,7 @@ impl Workspace {
                 "[reply from {}] Its reply is in the pasted text.\n{text}",
                 self.signature(space, me, cx)
             );
-            self.send_task(&asker, &reply, false, cx);
+            drop(self.send_task(&asker, &reply, false, cx));
             self.asker_wrote(&asker, from);
         }
         if let Some(mine) = self.pane_mut(from) {
@@ -1286,7 +1432,7 @@ impl Workspace {
                 Some(true) => {
                     let notice = self.notices.remove(i);
                     // Its next notice waits, also in this pass: two never share an Enter.
-                    self.send_task(&notice.to, &notice.text, false, cx);
+                    drop(self.send_task(&notice.to, &notice.text, false, cx));
                 }
             }
         }
@@ -1337,13 +1483,35 @@ mod tests {
     }
 
     #[test]
-    fn enter_goes_once_the_screen_shows_the_paste() {
+    fn enter_goes_once_the_screen_shows_the_paste_and_stood_still() {
         let mut w = wait();
         assert_eq!(w.look("› ".into(), SIZE, true, false), Step::Wait);
+        // Codex and Copilot CLI on Windows read the paste as keys: an Enter among them, or right
+        // after, is a new line in it.
+        assert_eq!(w.look("› fix the".into(), SIZE, true, false), Step::Wait);
+        assert_eq!(
+            w.look("› fix the tests".into(), SIZE, true, false),
+            Step::Wait,
+            "still arriving"
+        );
         assert_eq!(
             w.look("› fix the tests".into(), SIZE, true, false),
             Step::Enter
         );
+    }
+
+    /// An agent at work (a spinner) never stands still: it gets its Enter once Templum stopped
+    /// looking, as it queues the task.
+    #[test]
+    fn a_moving_screen_that_shows_the_paste_gets_its_enter_at_last() {
+        let mut w = wait();
+        let mut step = Step::Wait;
+        let mut looks = 0;
+        while step == Step::Wait {
+            looks += 1;
+            step = w.look(format!("› fix ⠋{looks}"), SIZE, true, true);
+        }
+        assert_eq!((step, looks), (Step::Enter, ENTER_LOOKS));
     }
 
     #[test]
@@ -1380,6 +1548,7 @@ mod tests {
             assert_eq!(w.look("redrawn".into(), BIG, true, false), Step::Wait);
         }
         assert_eq!(w.look("redrawn".into(), BIG, true, false), Step::Wait);
+        assert_eq!(w.look("redrawn › fix".into(), BIG, true, false), Step::Wait);
         assert_eq!(
             w.look("redrawn › fix".into(), BIG, true, false),
             Step::Enter
@@ -1416,5 +1585,124 @@ mod tests {
             "alive, and its Enter is confirmed"
         );
         assert_eq!(moving(&mut wait(), false), Step::GiveUp);
+    }
+
+    /// The looks after an Enter, the screen ENTER_AFTER after it first, until one says more than
+    /// Wait: what it says, and after how many looks.
+    fn checked(
+        c: &mut EnterCheck,
+        screens: impl Fn(u32) -> String,
+        submitted: u64,
+    ) -> (Check, u32) {
+        for n in 0..=CHECKS + 1 {
+            let check = c.look(screens(n), submitted, true, false);
+            if check != Check::Wait {
+                return (check, n);
+            }
+        }
+        (Check::Wait, CHECKS + 1)
+    }
+
+    /// Codex and Copilot CLI took the first Enter for a new line in the paste: its screen moved
+    /// no more after it. A second Enter goes, and takes it.
+    #[test]
+    fn an_enter_taken_for_a_new_line_goes_again() {
+        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        assert_eq!(
+            checked(&mut c, |_| "› fix\n".into(), 0),
+            (Check::Again, CHECKS)
+        );
+        c.again();
+        assert_eq!(
+            checked(&mut c, |n| format!("Working ⠋{n}"), 0),
+            (Check::Taken, 2)
+        );
+    }
+
+    /// Two Enters that changed nothing at all (an input not ready, a task lost): typed but not
+    /// submitted.
+    #[test]
+    fn two_enters_that_changed_nothing_dont_take_the_task() {
+        for spoke in [false, true] {
+            let mut c = EnterCheck::new(spoke, 4, "› fix".into());
+            assert_eq!(
+                checked(&mut c, |_| "› fix".into(), 4),
+                (Check::Again, CHECKS)
+            );
+            c.again();
+            let not = Check::Not(NotTaken::Unsent);
+            assert_eq!(checked(&mut c, |_| "› fix".into(), 4), (not, CHECKS));
+        }
+        // Its first Enter did something (an agent that took it and draws nothing while it works):
+        // only its hooks, when they speak, would say it didn't take it.
+        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        assert_eq!(
+            checked(&mut c, |_| "> fix".into(), 0),
+            (Check::Again, CHECKS)
+        );
+        c.again();
+        assert_eq!(
+            checked(&mut c, |_| "> fix".into(), 0),
+            (Check::Taken, CHECKS)
+        );
+        let mut c = EnterCheck::new(true, 0, "› fix".into());
+        checked(&mut c, |_| "> fix".into(), 0);
+        c.again();
+        let not = Check::Not(NotTaken::Unsent);
+        assert_eq!(checked(&mut c, |_| "> fix".into(), 0), (not, CHECKS));
+        // Its second did, at once, and nothing moved after.
+        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        checked(&mut c, |_| "› fix".into(), 0);
+        c.again();
+        assert_eq!(
+            checked(&mut c, |_| "Sent.".into(), 0),
+            (Check::Taken, CHECKS)
+        );
+    }
+
+    /// An agent no hook speaks for took it: its screen moves. One whose hooks speak says so.
+    #[test]
+    fn a_task_is_taken_when_its_screen_moves_or_its_hooks_say_so() {
+        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        assert_eq!(
+            checked(&mut c, |n| format!("Working ⠋{n}"), 0),
+            (Check::Taken, 2)
+        );
+        // A moving screen isn't a prompt taken for an agent whose hooks speak.
+        let mut c = EnterCheck::new(true, 3, "› fix".into());
+        let unheard = Check::Not(NotTaken::Unheard);
+        assert_eq!(
+            checked(&mut c, |n| format!("Working ⠋{n}"), 3),
+            (unheard, CHECKS)
+        );
+        let mut c = EnterCheck::new(true, 3, "› fix".into());
+        assert_eq!(c.look("› fix".into(), 4, true, false), Check::Taken);
+        // A dialog its hooks told of: Templum may not type into it, and what comes next tells.
+        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        assert_eq!(c.look("Allow?".into(), 0, false, false), Check::Taken);
+    }
+
+    /// A screen that changed once and stood still (a dialog no hook tells of, or work that draws
+    /// nothing more) gets no Enter that would answer the dialog; nor one the person types into.
+    #[test]
+    fn no_second_enter_into_a_changed_screen_or_while_the_person_types() {
+        let changed = |n: u32| {
+            if n < 3 {
+                "› fix"
+            } else {
+                "Trust this folder? › Yes"
+            }
+            .to_string()
+        };
+        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        assert_eq!(checked(&mut c, changed, 0), (Check::Taken, CHECKS));
+        let mut c = EnterCheck::new(true, 0, "› fix".into());
+        let unheard = Check::Not(NotTaken::Unheard);
+        assert_eq!(checked(&mut c, changed, 0), (unheard, CHECKS));
+        let mut c = EnterCheck::new(false, 0, "› fix".into());
+        for _ in 0..CHECKS {
+            assert_eq!(c.look("› fix".into(), 0, true, true), Check::Wait);
+        }
+        assert_eq!(c.look("› fix".into(), 0, true, true), Check::Taken);
     }
 }

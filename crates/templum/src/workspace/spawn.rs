@@ -438,7 +438,8 @@ impl Workspace {
             return true;
         }
         let text = pane.prompt.take().map(|p| p.text).unwrap_or_default();
-        self.send_task(terminal, &text, true, cx);
+        // No call waits to say how it went: a task not taken comes back as its end does.
+        drop(self.send_task(terminal, &text, true, cx));
         false
     }
 }
