@@ -569,6 +569,20 @@ impl Workspace {
         }
     }
 
+    /// The button let go on a selection the person made in a terminal (a drag, a double or triple
+    /// click): it is copied, once, with `terminal.copy_on_select` on.
+    pub(super) fn copy_on_select(&self, cx: &mut Context<Self>) {
+        if let Some(Drag::Select(id)) = self.drag
+            && self.config.terminal.copy_on_select
+            && let Some(text) = self
+                .space
+                .terminal(id)
+                .and_then(|pane| pane.term.shared().selection_text())
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
     pub(crate) fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
@@ -617,6 +631,7 @@ impl Workspace {
                 }
             }
         }
+        self.copy_on_select(cx);
         if let Some(Drag::Ink(mut drawing)) = self.drag.take() {
             // The pen catches up with the pointer: the stroke ends where it was let go.
             drawing.push_point(self.space.canvas.camera.to_world(self.local(pos)), 0.0);

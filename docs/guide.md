@@ -19,7 +19,7 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 | Scroll over a terminal | Scroll its history |
 | Click, drag or scroll in a program that uses the mouse (htop, vim, Claude Code full screen) | The program gets it; hold Shift to select text instead |
 | Ctrl+scroll, or pinch | Zoom |
-| Drag in a terminal (double-click: word, triple-click: line) | Select text |
+| Drag in a terminal (double-click: word, triple-click: line) | Select text, copied to the clipboard as you let go (Settings ▸ Terminal turns that off) |
 | Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note, Checklist or Editor, where you clicked |
 | Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, move to another workspace, edit, stop, delete, close…) |
 | With a drawing tool on, drag the canvas | Draw; Shift keeps lines at 45° and makes squares and circles |
@@ -112,7 +112,7 @@ dark = "Catppuccin Mocha"
 
 Press **Ctrl+,** (**Cmd+,** on macOS), or the ⚙ in the title bar, to open the settings panel on the right. It has
 Appearance (light/dark mode and themes), Font (with a preview), Terminal (cursor and
-scrollback, system notifications), Shell (for new terminals: pick one of the shells found on your computer, shell
+scrollback, system notifications, copying a selection as you make it), Shell (for new terminals: pick one of the shells found on your computer, shell
 integration), Tools (the `git` program), Agents, Usage (notifications about agents' plan limits) and Shortcuts. The terminals stay usable next to it, so you see each change
 as you make it.
 
@@ -323,6 +323,7 @@ blink = false
 [terminal]
 scrollback = 10000
 notifications = true   # system notifications while Templum is in the background
+copy_on_select = true   # text selected with the mouse goes to the clipboard as you let go
 
 [canvas]
 focus_follows_pointer = true   # the block under the pointer takes the keyboard, no click needed

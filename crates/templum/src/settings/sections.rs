@@ -81,8 +81,10 @@ pub(super) fn rows(
         Section::Terminal => {
             let blink = ws.config.cursor.blink;
             let notifications = ws.config.terminal.notifications;
+            let copy = ws.config.terminal.copy_on_select;
             let e = entity.clone();
             let n = entity.clone();
+            let c = entity.clone();
             vec![
                 choice_row(ws, entity, &CURSOR, "Cursor").description("Block, bar or underline"),
                 Row::new("cursor.blink", "Blink")
@@ -128,6 +130,26 @@ pub(super) fn rows(
                         !notifications,
                         remove(entity, "terminal", "notifications", |c| {
                             c.terminal.notifications = true
+                        }),
+                    ),
+                Row::new("terminal.copy_on_select", "Copy selection automatically")
+                    .description("Text selected with the mouse goes to the clipboard as you let go")
+                    .control(Switch::new("copy-on-select-switch").checked(copy).on_click(
+                        move |on: &bool, _, cx| {
+                            let on = *on;
+                            c.update(cx, |ws, cx| {
+                                ws.edit(
+                                    Edit::set("terminal", "copy_on_select", on),
+                                    |c| c.terminal.copy_on_select = on,
+                                    cx,
+                                )
+                            })
+                        },
+                    ))
+                    .reset(
+                        !copy,
+                        remove(entity, "terminal", "copy_on_select", |c| {
+                            c.terminal.copy_on_select = true
                         }),
                     ),
             ]

@@ -494,8 +494,10 @@ impl Render for Workspace {
                             if e.pressed_button.is_some() {
                                 ws.drag_to(e.position, e.modifiers.shift, cx);
                             } else {
-                                // A release this window never heard still keeps the popup's size.
+                                // A release this window never heard still keeps the popup's size,
+                                // and copies a selection.
                                 if !ws.release_git_resize(window, cx) {
+                                    ws.copy_on_select(cx);
                                     ws.end_drag();
                                 }
                                 ws.hover_program(e.position, &e.modifiers);

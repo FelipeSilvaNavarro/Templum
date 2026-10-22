@@ -207,6 +207,122 @@ fn mouse_down_in_a_body_starts_a_selection(cx: &mut TestAppContext) {
     });
 }
 
+/// A selection the person drags in a terminal goes to the clipboard once, as the button is let go
+/// (not while it moves), or as the next move shows it up when the window never heard the release,
+/// unless `terminal.copy_on_select` is off; a click selects nothing and copies nothing.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_selection_is_copied_when_the_button_is_let_go(cx: &mut TestAppContext) {
+    use gpui_kit::{ClipboardItem, MouseMoveEvent};
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    shown_in(&ws, cx, id, "hello\r", "hello\nhello");
+    let clipboard = |cx: &mut TestAppContext| cx.read_from_clipboard().and_then(|c| c.text());
+    let before =
+        |cx: &mut TestAppContext| cx.write_to_clipboard(ClipboardItem::new_string("before".into()));
+    let body = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(("body", id.0 as usize)).bounds()
+        })
+        .unwrap();
+    // From the first line's first letters to the body's bottom right: every line.
+    let from = point(body.origin.x + px(6.), body.origin.y + px(8.));
+    let to = point(
+        body.origin.x + body.size.width - px(2.),
+        body.origin.y + body.size.height - px(2.),
+    );
+    let press = |cx: &mut TestAppContext, count| {
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: from,
+                    modifiers: Modifiers::default(),
+                    click_count: count,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+        })
+        .unwrap();
+    };
+    let release = |cx: &mut TestAppContext, at| {
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: at,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    let drag = |cx: &mut TestAppContext| {
+        press(cx, 1);
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: to,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+        })
+        .unwrap();
+    };
+    assert!(
+        ws.read_with(cx, |ws, _| ws.config.terminal.copy_on_select),
+        "on by default"
+    );
+    before(cx);
+    drag(cx);
+    assert_eq!(
+        clipboard(cx).as_deref(),
+        Some("before"),
+        "not while it moves"
+    );
+    release(cx, to);
+    let copied = clipboard(cx).unwrap_or_default();
+    assert!(copied.contains("hello"), "clipboard: {copied:?}");
+    // A click: an empty selection.
+    before(cx);
+    press(cx, 1);
+    release(cx, from);
+    assert_eq!(clipboard(cx).as_deref(), Some("before"), "nothing selected");
+    // A double click: the word.
+    press(cx, 2);
+    release(cx, from);
+    assert_eq!(clipboard(cx).as_deref(), Some("hello"));
+    // A release the window never heard: the next move has no button.
+    before(cx);
+    drag(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: to,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    let copied = clipboard(cx).unwrap_or_default();
+    assert!(copied.contains("hello"), "unheard release: {copied:?}");
+    // Off.
+    before(cx);
+    ws.update(cx, |ws, _| ws.config.terminal.copy_on_select = false);
+    drag(cx);
+    release(cx, to);
+    assert_eq!(clipboard(cx).as_deref(), Some("before"), "turned off");
+}
+
 // gpui-kit's Root binds tab to focus navigation; the shell must get it (completion).
 #[cfg(unix)]
 #[gpui_kit::test]

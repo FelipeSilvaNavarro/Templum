@@ -159,7 +159,7 @@ Painting (in `grid.rs`):
 | Drag the title bar | Move the block |
 | Drag the bottom-right handle | Resize the block. The PTY gets the new grid size, clamped to 20×4 |
 | Drag empty canvas | Pan |
-| Drag in a terminal body | Select text. Double-click selects a word, triple-click selects a line |
+| Drag in a terminal body | Select text. Double-click selects a word, triple-click selects a line. Letting go copies the selection to the clipboard (`terminal.copy_on_select`, on by default) |
 | Wheel or two-finger scroll over a body | Scroll that terminal (see `Terminal::scroll`) |
 | Two-finger scroll over empty canvas or a title bar | Pan |
 | A mouse's wheel over empty canvas or a title bar | Zoom one step around the pointer (pans with a drawing tool) |
@@ -167,6 +167,12 @@ Painting (in `grid.rs`):
 | × button | Close the block, killing its shell |
 
 Drags keep working when the pointer leaves the window, until the button is released.
+
+**Copy on select** (kanban card 119): the selection is copied once per gesture, as the button is let go (not while
+it moves; a release the window never heard, at the next move), through the same clipboard as Ctrl+Shift+C; a click that selects nothing copies nothing, and a selection
+made otherwise (Find's match, an agent's output) isn't copied. Only the clipboard: Templum writes no PRIMARY
+selection on Linux (its middle button pans the canvas, it doesn't paste). Settings ▸ Terminal ▸ Copy selection
+automatically turns it off.
 
 ### Keyboard
 
@@ -245,6 +251,9 @@ dev-dependency):
 - clicking `("close", id)` removes the block, and so does Ctrl+Shift+W;
 - dragging `("title", id)` moves the block;
 - dragging `("handle", id)` resizes it, and its terminal's grid size changes;
+- a selection dragged or double-clicked in a terminal lands in the test harness's clipboard as the button is let go,
+  not while it moves, and at the next move after a release the window never heard; a click copies nothing; with `terminal.copy_on_select` off nothing is copied; it is on by
+  default;
 - scrolling over empty canvas pans the camera;
 - the zoom keybindings change the zoom step, and fit-all frames every block.
 

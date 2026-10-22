@@ -120,6 +120,7 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 | Cursor | Dropdown: Block, Bar, Underline | `cursor.shape` |
 | Blink | Switch | `cursor.blink` |
 | Scrollback | Number 0–100000, step 1000 | `terminal.scrollback` |
+| Copy selection automatically | Switch, on by default: text selected with the mouse goes to the clipboard as the button is let go ([walking-skeleton.md](walking-skeleton.md#mouse-and-trackpad)). Not in the welcome | `terminal.copy_on_select` |
 
 **Shell** (applies to new terminals)
 

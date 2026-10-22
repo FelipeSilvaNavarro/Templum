@@ -254,6 +254,7 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             ws.config.connections.enabled,
             ws.config.connections.sound,
             ws.config.canvas.focus_follows_pointer,
+            ws.config.terminal.copy_on_select,
         )
     };
     for (tab, field, reset, line) in [
@@ -293,6 +294,12 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             "reset-canvas.focus_follows_pointer",
             "focus_follows_pointer = false",
         ),
+        (
+            "settings-tab-terminal",
+            "field-terminal.copy_on_select",
+            "reset-terminal.copy_on_select",
+            "copy_on_select = false",
+        ),
     ] {
         cx.update_window(handle, |_, window, cx| {
             window.click(tab, cx);
@@ -322,7 +329,7 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
     }
     assert_eq!(
         ws.read_with(cx, |ws, _| on(ws)),
-        (true, true, true, true, true, true),
+        (true, true, true, true, true, true, true),
         "back on"
     );
     ws.update(cx, |ws, _| ws.save());
@@ -333,7 +340,8 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             && !text.contains("claude_limits")
             && !text.contains("enabled")
             && !text.contains("sound")
-            && !text.contains("focus_follows_pointer"),
+            && !text.contains("focus_follows_pointer")
+            && !text.contains("copy_on_select"),
         "{text}"
     );
 }
