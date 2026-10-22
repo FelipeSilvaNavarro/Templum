@@ -500,7 +500,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | Tool | Arguments | Does | Needs | Batch |
 |---|---|---|---|---|
 | `whoami` | — | The caller's id, title, kind, folder and workspace | — | 1 |
-| `list_blocks` | — | Every block of the caller's workspace: id, kind, title, folder, agent and its state (from batch 7 with what it asks), connected or not; `, no Templum tools` after an agent's state when its terminal has none (card 69) | — | 1, card 69 |
+| `list_blocks` | — | Every block of the caller's workspace: id, kind, title, folder, agent and its state (from batch 7 with what it asks), connected or not; `, no Templum tools` after an agent's state when its terminal has none (card 69); `, a Claude Code subagent's transcript, read-only` after a subagent's block, which the tools that type or press refuse ([claude-subagents.md](claude-subagents.md#its-block)) | — | 1, card 69, card 127 |
 | `read_terminal` | `block`, `lines` (200, at most 2000), `last_command` (false) | The last lines of the terminal's history and screen, or its last finished command and its output (needs [shell integration](shell-integration.md)) | wired | 1 |
 | `send_to_terminal` | `block`, `text`, `enter` (false) | Types the text, as a paste; Enter after it when asked | wired | 1 |
 | `notify` | `text` | A notification from the caller ([Requests](#requests-from-agents)) | — | 1 |
