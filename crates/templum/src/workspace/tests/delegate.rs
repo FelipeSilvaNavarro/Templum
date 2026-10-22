@@ -56,6 +56,26 @@ fn agents_running(
     (handle, ws, mine, theirs)
 }
 
+/// `two_agents`, theirs a `cat -v` that asked for bracketed pastes, as Claude Code does, and
+/// echoes nothing: its screen shows the bytes Templum wrote, in order, ESC as "^[" and Enter as
+/// "^M". The tty's echo would be a second writer, which `cat`'s lines cut into at any point.
+#[cfg(unix)]
+fn bracketed_cat(
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
+    // One job: `cat` takes the place of the `sh` that set its tty, in front from the start.
+    let cat = "sh -c 'stty -echo -icanon -icrnl; printf \"\\033[?2004h\"; exec cat -v'; true";
+    let (handle, ws, mine, theirs) = agents_running(cx, Some(jobs(cat)));
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while !ws.read_with(cx, |ws, _| {
+        ws.space.terminal(theirs).unwrap().term.bracketed()
+    }) {
+        assert!(Instant::now() < deadline, "no bracketed paste");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    (handle, ws, mine, theirs)
+}
+
 /// A third terminal at (40, 500), 700 × 300, running Codex as far as Templum knows, found in front
 /// of its shell (Unix) and wired to `to`.
 fn another_agent(
@@ -230,14 +250,11 @@ fn done_task(
 #[cfg(unix)]
 #[gpui_kit::test]
 fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
-    let (handle, ws, mine, theirs) = two_agents(cx);
+    // Its pastes take no Enter for a new line.
+    let (handle, ws, mine, theirs) = bracketed_cat(cx);
     let (terminal, uid) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
     has_server(handle, &ws, cx, &worker, 7);
-    // `cat` prints the sequence back: the terminal now brackets pastes, which take no Enter for a
-    // new line.
-    prints(&ws, cx, theirs, b"\x1b[?2004hon\r");
-    screen_with(&ws, cx, theirs, "2004honon");
     let inputs = |cx: &mut TestAppContext| {
         ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().term.inputs())
     };
@@ -262,21 +279,22 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
         assert_eq!(handed.by, terminal);
         assert_eq!(handed.id, 1);
     });
-    // The terminal echoes ESC as "^[": the header, a paste of its own, then the task's lines. The
-    // task is longer than the screen: its start is read in the history.
-    history_with(
-        &ws,
-        cx,
-        theirs,
-        &format!(
-            "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply.^[[201~^[[200~"
-        ),
+    // What `cat` was given, in order: the header, a paste of its own, then the task's lines and
+    // how to answer, then one Enter. The task is longer than the screen: its start is read in the
+    // history.
+    let given = format!(
+        "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply.\
+         ^[[201~^[[200~\nfix the tests\nthen push{}^[[201~^M",
+        crate::workspace::delegate::answer_how(1)
+    )
+    .replace('\n', "");
+    history_with(&ws, cx, theirs, &given);
+    let shown = ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().screen());
+    let shown = shown.replace('\n', "");
+    assert!(
+        shown.starts_with("^[[200~[from ") && shown.ends_with(&given),
+        "{shown}"
     );
-    screen_with(&ws, cx, theirs, "then push");
-    // Its last line, echoed, then printed once the Enter sent it.
-    screen_until(&ws, cx, theirs, |s| {
-        s.matches("standard input.)").count() >= 2
-    });
 }
 
 /// Claude Code takes a long paste alone for data it was shown, not for what it is asked: the
@@ -284,22 +302,20 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
 #[cfg(unix)]
 #[gpui_kit::test]
 fn a_task_goes_as_its_first_line_then_its_text(cx: &mut TestAppContext) {
-    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (handle, ws, mine, theirs) = bracketed_cat(cx);
     let (terminal, uid) = me(&ws, cx, mine);
     let (_, them) = me(&ws, cx, theirs);
-    // `cat` prints the sequence back: the terminal now brackets pastes, as Claude Code's does.
-    prints(&ws, cx, theirs, b"\x1b[?2004hon\r");
-    screen_with(&ws, cx, theirs, "2004honon");
     let task = json!({ "block": them, "task": "line 1\nline 2\nline 3\nline 4" });
     call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
-    // The terminal echoes ESC as "^[": two pastes, the first line alone. The task is longer than
-    // the screen: its start is read in the history.
+    // Two pastes, the first line alone. The task is longer than the screen: its start is read in
+    // the history.
     history_with(
         &ws,
         cx,
         theirs,
         &format!(
-            "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply.^[[201~^[[200~"
+            "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply.\
+             ^[[201~^[[200~line 1"
         ),
     );
 }
