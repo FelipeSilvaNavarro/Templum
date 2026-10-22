@@ -670,6 +670,36 @@ fn a_finished_subagent_closes_a_minute_later_unless_read(cx: &mut TestAppContext
     assert!(followers(&ws, cx, &worker).is_empty());
 }
 
+/// A finished subagent's block in a workspace not shown closes a minute later, though it was focused
+/// and selected there when the person left it: no one reads it.
+#[gpui_kit::test]
+fn a_finished_subagent_in_a_hidden_workspace_closes(cx: &mut TestAppContext) {
+    let (handle, ws, _, theirs) = two_agents(cx);
+    let (worker, _) = me(&ws, cx, theirs);
+    hook(handle, &ws, cx, &worker, started("a1", "Explore"));
+    let block = followers(&ws, cx, &worker)[0].0;
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.focus_block(block, window, cx);
+            ws.space.selected = vec![block];
+            ws.new_space(window, cx);
+        })
+    })
+    .unwrap();
+    hook(handle, &ws, cx, &worker, stopped("a1", &[]));
+    let open = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.spaces()
+                .flat_map(|s| s.terminals())
+                .any(|(_, p)| p.follows.is_some())
+        })
+    };
+    after(cx, 59_000);
+    assert!(open(cx), "a minute isn't over");
+    after(cx, 2_000);
+    assert!(!open(cx));
+}
+
 /// A subagent's dialog shows on its block too, with where to answer it.
 #[gpui_kit::test]
 fn a_subagents_block_says_where_its_dialog_is(cx: &mut TestAppContext) {

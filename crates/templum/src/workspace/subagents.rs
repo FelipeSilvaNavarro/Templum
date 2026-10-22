@@ -231,8 +231,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A look at the finished subagent block of the terminal `terminal`: read now (focused,
-    /// pointed at, selected, or scrolled back from its end), its minute starts over; unread for
+    /// A look at the finished subagent block of the terminal `terminal`: read now (on screen, and
+    /// focused, pointed at, selected, or scrolled back from its end), its minute starts over; unread for
     /// CLOSES_AFTER, it closes. False once there is nothing more to look for: it closed, it is
     /// gone, or it works again.
     fn close_unread(
@@ -245,14 +245,15 @@ impl Workspace {
             return false;
         };
         let now = cx.background_executor().now();
-        let reading = self.space_named(&space_id).is_some_and(|space| {
-            space.focused == Some(block)
+        // Only on screen: a hidden workspace keeps its focus and selection from when it was shown.
+        let space = &self.space;
+        let reading = space.id == space_id
+            && (space.focused == Some(block)
                 || space.hovered == Some(block)
                 || space.selected.contains(&block)
                 || space
                     .terminal(block)
-                    .is_some_and(|p| p.term.scrolled_back())
-        });
+                    .is_some_and(|p| p.term.scrolled_back()));
         let Some(follows) = self.pane_mut(terminal).and_then(|p| p.follows.as_mut()) else {
             return false;
         };

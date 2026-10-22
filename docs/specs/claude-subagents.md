@@ -65,8 +65,9 @@ comes from the hook.
 - **Resumed.** A subagent started again (`SubagentStart` with the same id) works again in the same block.
 - **Closing itself.** A minute after it finished (`SubagentStop`), or after its parent's session ended (`SessionEnd`,
   a new session, or the agent gone), its block closes without a question and without a Ctrl+Z step. **While the
-  person reads it** (it is focused, the pointer is over it, it is selected, or its view is scrolled back from the
-  end), it stays, and its minute starts over once they stop: nothing closes under the person's eyes.
+  person reads it** (its workspace is on screen, and it is focused, the pointer is over it, it is selected, or its
+  view is scrolled back from the end), it stays, and its minute starts over once they stop: nothing closes under the
+  person's eyes. In a workspace not shown no one reads it, whatever focus or selection that workspace kept.
 - **Closing its parent** closes its subagents' blocks with it; undoing that close brings back only the parent.
 - **Never saved.** A subagent's block belongs to a live session: the canvas is saved without it and its wires
   (`Space::kept`), so a restart doesn't bring it back, and the snapshot doesn't look at it.
@@ -168,9 +169,9 @@ ConPTY doesn't give the block's console) would have shown nothing and outlived i
   dialog that only its own tool ends, or its leaving; a subagent's tool that doesn't take a queued task into the turn;
   one gone without a word that doesn't keep its parent busy; a still screen that neither ends nor sticks a parent
   awaiting its subagents; a block opened beside its parent, wired, overlapping nothing, outside Ctrl+Z and outside the
-  saved canvas; one finished that closes a minute later, and not while read; its dot for its dialog; its blocks closed
-  with its parent and finished with its session; keys that don't reach it; what it shows of a transcript as it grows,
-  with no process, and the tools that refuse it.
+  saved canvas; one finished that closes a minute later, and not while read (on screen only); its dot for its dialog;
+  its blocks closed with its parent and finished with its session; keys that don't reach it; what it shows of a
+  transcript as it grows, with no process, and the tools that refuse it.
 - `follow.rs`: a synthetic transcript, written in pieces, read as its task, its tools and its report, its title
   from its task or its `meta.json`; escapes in a tool's output never reach the terminal.
 - `templum-terminal`'s `terminal.rs`: a viewer shows what it is fed, its title and watches included, and takes no
