@@ -566,8 +566,9 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The gallery test failed once in a full run.** `the_gallery_previews_restores_and_installs`
   (`crates/templum/src/workspace/tests/themes.rs:661`) found "Catppuccin Latte" where it expected "Paper" after
   clicking "gallery-theme-Paper", in one run of `cargo test -p templum` (card 69's, under load); alone, three times, and in
-  the next full run, it passed. Fix: find what the click raced with (a frame not rendered before the read) and wait for
-  it, as the neighbouring tests do.
+  the next full run, it passed. Its neighbour `an_install_that_fails_puts_the_theme_back` (`themes.rs:817`, "not the
+  preview") failed the same way once in card 115's first full run, and passed alone three times and in the next. Fix:
+  find what the click raced with (a frame not rendered before the read) and wait for it, as the neighbouring tests do.
 - [ ] **The X of a dialog reads less than `Theme::on_accent` counts on.** It picks the hover color over the theme's
   background (`crates/templum/src/theme.rs:155`), which is where a notification's X sits, but gpui-kit paints a
   dialog with `tokens.background`, which Templum sets to `ui.canvas`, 30% darker in dark themes: under the pointer
