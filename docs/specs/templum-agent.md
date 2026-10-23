@@ -128,7 +128,7 @@ The chat is a floating card that rises from the pill: the pill becomes its foote
 |---|---|---|
 | The person's message | Right-aligned bubble, at most 80% wide, `hover` fill, radius 12, plain text | yes |
 | The agent's text | Full width, Markdown through gpui-kit's `TextView` at the window's scale, growing as it streams | yes |
-| Thinking | "Thinking" in `title_dim` with a light band sweeping across it, while the engine thinks before its first text or tool | no |
+| Thinking | "Thinking" in `title_dim` with a light band sweeping across it, while the engine thinks before its first text or tool; a message or notice that comes meanwhile goes above it | no |
 | An action | One line: an icon for the tool's kind, then a sentence. Running: a spinner and the tool's title ("Creating a workspace…"). Done: the first line of the tool's answer, which Templum writes ("Created workspace API (w3)."). Failed: a red icon and the refusal under it in dim red. Denied: "You denied this." in `title_dim`. A click shows what it touched (the workspace, then the block: `reveal`) | yes |
 | Reads | Consecutive reads (`overview`, `list_*`, `read_*`, and the engine's own Read, Glob, Grep) fold into one dim row, "Looked at the canvas (4)" | yes |
 | An approval | The popup's record once answered: its sentence and "Allowed once", "Allowed for this conversation" or "Denied" | yes |
@@ -294,8 +294,11 @@ isn't the person writing. Hand tasks without waiting, end your turn, and go on w
   `user` line with the `tool_result` (its `content` a string for a built-in tool, a list of `{"type":"text"}` for an
   MCP tool; `is_error` absent when false), `rate_limit_event`, and the `result` (`subtype` `success`, `duration_ms`,
   `total_cost_usd`, `result`). Other `system` subtypes (`commands_changed`, `thinking_tokens`) come and are skipped.
-- Every message is replayed, the first too. A message written during a turn isn't taken into it: it waits, and once
-  the turn's `result` is out a new turn starts with its `init` and its replayed `user` line.
+- Every message is replayed, the first too, once, when a turn takes it. A message written during a turn without tools
+  waits, and once the turn's `result` is out a new turn starts with its `init` and its replayed `user` line. Written
+  during a turn with tools (Claude Code 2.1.309, `claude-taken.jsonl`), it is taken into that turn at the next tool
+  answer: its replayed `user` line comes then, with no `init` of its own, and one `result` ends the turn for every
+  message it took. So Templum counts what waits for a turn by the replays, not by the `init`s.
 - The interrupt request, `{"type":"control_request","request_id":"<id>","request":{"subtype":"interrupt"}}` on stdin,
   stops the turn and keeps the process: a `control_response` `success`, a `user` line "[Request interrupted by
   user]", then a `result` with `subtype` `error_during_execution`, `is_error` true and no `result`; the next message
@@ -313,8 +316,8 @@ Each stdout line is one JSON object. Templum reads these and ignores every other
 | `stream_event` `content_block_start` with `content_block.type` `tool_use` (`id`, `name`) | an action row, running |
 | `{"type":"assistant","message":{"content":[…]}}` | a `text` block replaces the streamed text with its whole text; a `tool_use` block (`id`, `name`, `input`) gives its action row its call |
 | `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id","content","is_error"}]}}` | the action is done or failed |
-| a `user` line with the text of a message Templum wrote (the replay) | that message loses its "Queued" |
-| `{"type":"result","subtype","is_error","duration_ms","total_cost_usd","result"}` | the turn ends: its end row; `is_error` adds a failure row |
+| a `user` line with the text of a message Templum wrote (the replay) | that message loses its "Queued" and waits for no turn |
+| `{"type":"result","subtype","is_error","duration_ms","total_cost_usd","result"}` | the turn ends: its end row; `is_error` adds a failure row; an action still running fails; the chat works on only while a message waits for a turn |
 
 - Tool names arrive as `mcp__templum-control__<tool>`; the row strips the prefix. Read, Glob and Grep fold into a reads
   row ("Read `src/main.rs`" in its tooltip).
