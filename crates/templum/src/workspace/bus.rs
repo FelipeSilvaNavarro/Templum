@@ -412,6 +412,10 @@ impl Workspace {
     /// Code's panel): unless a turn starts within GRACE, or at once when its prompt sat idle,
     /// they are forgotten and this end answers (docs/specs/claude-subagents.md).
     fn turn_ended(&mut self, terminal: &str, message: Option<String>, cx: &mut Context<Self>) {
+        // Its usage changed with the turn: a Claude Code account's limits are asked again.
+        if let Some(agent) = self.pane(terminal).and_then(|p| p.seen.agent.clone()) {
+            self.ask_claude(Some(&agent), super::usage::CLAUDE_MIN, cx);
+        }
         let Some(pane) = self.pane_mut(terminal) else {
             return;
         };

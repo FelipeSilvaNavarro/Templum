@@ -1295,9 +1295,14 @@ pub struct Workspace {
     /// The plan's limits as Claude Code's `/usage` last told them, by account (the agent's id
     /// for its own folder).
     pub(crate) claude_polled: HashMap<String, templum_usage::Limits>,
-    /// The accounts a snapshot found running since Templum started: `/usage` asks theirs too.
-    pub(crate) accounts_ran: std::collections::HashSet<String>,
-    /// Asks Claude Code for them every few minutes.
+    /// When `/usage` was last asked for each account (seconds since the epoch): it is never asked
+    /// again within `usage::CLAUDE_MIN`.
+    pub(crate) claude_asked: HashMap<String, u64>,
+    /// The `/usage` asks waiting their turn, the next first, and the account whose runs: Claude Code
+    /// runs one at a time, so its probes don't hold the background pool's threads.
+    pub(crate) claude_queue: std::collections::VecDeque<usage::Job>,
+    pub(crate) claude_probing: Option<String>,
+    /// Looks every few seconds for the accounts whose limits are due.
     _claude_poll: Task<()>,
     /// The title bar's meter shows the agents in turn: this one (an index among those shown),
     /// since `meter_turned` (seconds since the epoch); not while the pointer is over it.
@@ -1596,34 +1601,12 @@ impl Workspace {
         let claude_poll = if cfg!(test) {
             Task::ready(())
         } else {
-            cx.spawn_in(window, async move |ws, cx| {
+            cx.spawn(async move |ws, cx| {
                 loop {
-                    let Ok(jobs) = ws.update(cx, |ws, _| ws.claude_poll_jobs()) else {
+                    if ws.update(cx, |ws, cx| ws.ask_claude_due(cx)).is_err() {
                         break;
-                    };
-                    for (id, program, dir, config_dir) in jobs {
-                        let found = cx
-                            .background_executor()
-                            .spawn(async move {
-                                let now = crate::notes::now();
-                                templum_usage::claude::poll(
-                                    &program,
-                                    &dir,
-                                    config_dir.as_deref(),
-                                    now,
-                                )
-                            })
-                            .await;
-                        // A failed ask keeps what the last one found.
-                        if let Some(found) = found
-                            && ws
-                                .update(cx, |ws, _| ws.claude_polled.insert(id, found))
-                                .is_err()
-                        {
-                            return;
-                        }
                     }
-                    cx.background_executor().timer(usage::CLAUDE_EVERY).await;
+                    cx.background_executor().timer(usage::CLAUDE_LOOK).await;
                 }
             })
         };
@@ -1737,7 +1720,9 @@ impl Workspace {
             usage_open: false,
             git_open: false,
             claude_polled: HashMap::new(),
-            accounts_ran: Default::default(),
+            claude_asked: HashMap::new(),
+            claude_queue: Default::default(),
+            claude_probing: None,
             _claude_poll: claude_poll,
             meter_turn: 0,
             meter_turned: 0,

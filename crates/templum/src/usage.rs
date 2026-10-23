@@ -37,6 +37,22 @@ pub(crate) fn meter_agents(ws: &Workspace, now: u64) -> Vec<(&str, Vec<&Window>)
         .collect()
 }
 
+/// The longest name the meter shows, in characters.
+const NAME_MAX: usize = 12;
+
+/// An agent's name in the title bar's meter, which is narrow: "Claude Code" is "Claude" and
+/// "Claude Code 2" is "Claude 2"; any other name is its own, cut when long.
+fn meter_name(title: &str) -> String {
+    let title = match title.strip_prefix("Claude Code") {
+        Some(rest) => format!("Claude{rest}"),
+        None => title.to_string(),
+    };
+    if title.chars().count() <= NAME_MAX {
+        return title;
+    }
+    title.chars().take(NAME_MAX - 1).chain(['…']).collect()
+}
+
 /// The title bar's meter: one agent's limits at a time, each with when it resets ("Claude 5h 27%
 /// 4h 20m 7d 18% 3d 4h"), the next every few seconds, with a dot per agent. None when none is
 /// known.
@@ -49,13 +65,7 @@ pub(crate) fn meter(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyEl
     let turn = ws.meter_turn % agents.len();
     let (agent, windows) = &agents[turn];
     let ui = ws.ui;
-    let title = ws.agent_title(agent);
-    // "Claude Code" is "Claude" here: the title bar is narrow.
-    let name = title
-        .split_whitespace()
-        .next()
-        .unwrap_or(&title)
-        .to_string();
+    let name = meter_name(&ws.agent_title(agent));
     let content = div()
         .id(SharedString::from(format!("usage-meter-{agent}")))
         .flex()
@@ -425,6 +435,15 @@ mod tests {
         assert_eq!(window_name(43200), "30-day");
         assert_eq!(window_label(300), "5h");
         assert_eq!(window_label(10080), "7d");
+    }
+
+    #[test]
+    fn the_meter_tells_accounts_apart_by_name() {
+        assert_eq!(meter_name("Claude Code"), "Claude");
+        assert_eq!(meter_name("Claude Code 2"), "Claude 2");
+        assert_eq!(meter_name("Work"), "Work");
+        assert_eq!(meter_name("Codex"), "Codex");
+        assert_eq!(meter_name("My personal account"), "My personal…");
     }
 
     #[test]
