@@ -136,6 +136,7 @@ impl Workspace {
     pub(crate) fn edit_boards<R>(&mut self, f: impl FnOnce(&mut Boards) -> R) -> R {
         let before = self.boards.clone();
         let result = f(&mut self.boards);
+        self.boards.prune_drafts();
         if self.boards != before {
             self.boards_undo.push(before);
             if self.boards_undo.len() > BOARD_UNDO {
@@ -152,6 +153,8 @@ impl Workspace {
         };
         // Ids are never handed out twice: a block or a file may still name an undone board.
         before.next_id = before.next_id.max(self.boards.next_id);
+        // Drafts aren't board edits: the ones kept since stay.
+        before.drafts = std::mem::take(&mut self.boards.drafts);
         self.boards = before;
         cx.notify();
         true

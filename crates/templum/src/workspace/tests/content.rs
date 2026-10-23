@@ -220,8 +220,7 @@ fn an_agent_edits_and_deletes_only_its_own_comments(cx: &mut TestAppContext) {
     });
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            let current = ws.boards.card(board, card).cloned().unwrap();
-            crate::kanban::open_card(board, current, false, window, cx)
+            crate::kanban::open_card(ws, board, card, window, cx)
         });
     })
     .unwrap();

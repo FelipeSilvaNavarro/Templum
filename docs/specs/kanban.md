@@ -38,8 +38,8 @@ same board stay in sync.
   [Boards dialog](#the-boards-dialog) for the block.
 - **Everything inside scales with the zoom**, like a terminal's text.
 - **Undo:** with a kanban block focused, Ctrl+Z (Cmd+Z on macOS) undoes the last change to the boards (a card or a
-  column added, moved, renamed or deleted, a label, a board added or deleted), up to 50. Typing in a card's dialog
-  is undone in its fields. Delete card in a card's menu asks first. A comment added, an assignee freed, a comment the
+  column added, moved, renamed or deleted, a label, a board added or deleted), up to 50. A card's dialog changes
+  the board only at Done, which is one step; typing in it is undone in its fields. Delete card in a card's menu asks first. A comment added, an assignee freed, a comment the
   person edits or deletes in the card's dialog ([below](#the-person-edits-and-deletes-a-comment-kanban-card-83), whose Undo row
   is one more step), and an agent's change ([connections.md](connections.md#tools); a comment edited or deleted by its
   author among them) are steps of this Ctrl+Z too.
@@ -73,7 +73,9 @@ or a card's title, in any case; one row per board, in their order, with how many
   - A card shows its labels as small colored bars, its title, a line icon when it has a description, how many
     comments it has ("2 comments"), and its assignee's block title at the right. (Version 2 adds its id, priority
     and checklist: [its face](#a-cards-face).)
-  - **+ Add a card** at the bottom of a column adds "New card" there and opens it.
+  - **+ Add a card** at the bottom of a column opens the [card dialog](#the-open-card) for a new card, titled "New card"
+    and selected. Nothing is created until **Done**. While the column holds a [draft](#drafts) the button reads
+    "Continue draft" and reopens it.
   - **Dragging a card** onto another card puts it in that card's place; onto a column's empty space, at the end
     of that column. While dragged, the card follows the pointer and the drop target is highlighted.
   - **Clicking a card** opens it.
@@ -92,9 +94,10 @@ A dialog in the middle of the window, at the window's scale:
 - **Comments**, oldest first, each with its author (an agent's block title, or "You") and how long ago it was written;
   a text field under them and **Add comment**, which adds the person's. An agent that finishes its card says there
   what it did and what the next one needs to know (`comment_card`, [connections.md](connections.md#tools));
-- **Delete card**, and **Done** (or Esc, or a press outside the dialog) to close.
+- **Delete card**, and **Done** to close.
 
-Every change applies as it is typed or clicked, so every block showing the board updates at once.
+The dialog edits a working copy: nothing it changes reaches the board until Done, except comments (below). See
+[the open card](#the-open-card) and [drafts](#drafts).
 
 ## Files
 
@@ -388,8 +391,41 @@ header and the footer stay). Sizes in pixels; every color comes from the theme.
 - **Footer** (a hairline over it, 20 at the sides, 12 up and down), one row spread across: at the left **Delete card**
   (`delete-card`), a ghost button: no fill, gpui-kit's `trash` icon at 14 and the words at 12.5, both in the theme's
   red (ANSI 1), 30 high, rounded 8, red at 12% under the pointer; it deletes the card and closes the dialog, as before
-  (Ctrl+Z brings it back). At the right **Done** (`card-done`), the Git popup's solid accent button (30 high, rounded
-  8, `ui.surface` text), which closes it. Esc closes it too, and so does a press outside it (card 116).
+  (Ctrl+Z brings it back). On a card that doesn't exist yet it reads **Discard** (`discard-card`) and throws the work
+  away, the column's draft with it. At the right **Done** (`card-done`), the Git popup's solid accent button (30 high,
+  rounded 8, `ui.surface` text), which closes it and applies the work. Enter in the title is Done. Esc and a press
+  outside the dialog (card 116) close it when nothing changed since it opened; else they open a question, **Save
+  your changes?**, with **Save** (Done), **Save draft** and **Discard** (`leave-save`, `leave-save-draft`,
+  `leave-discard`); Esc in the question goes back to the card, with a comment edit in the middle still open. Save and
+Save draft take that edit in; Discard drops it. On a new card an edit with text counts as a change.
+
+**Done is one Ctrl+Z step**, and applies only what the person changed: the dialog keeps the card as it was opened
+and as the person made it, and Done sets the fields that differ, turns on or off the labels they toggled, and adds,
+removes or ticks the items they did. What an agent changed meanwhile (a priority the person didn't touch, an item
+it ticked or added, a move, a comment) stays, and the dialog shows it at once. On a new card Done adds it at the end
+of its column with everything typed. A click in the dialog acts on what it shows: before it changes the work, the
+work is rebased on the card as it is now (the person's changes stay over it), so unticking an item an agent just
+ticked, freeing a card it just claimed, or turning off a label or priority it just set does what the click says.
+A window closed with the dialog open keeps what was typed as a draft. A card deleted meanwhile is not brought back: Done closes the dialog and
+changes nothing.
+
+**Comments are sent at once**, like chat: Comment on a card that exists posts it, and editing or deleting one (with
+its Undo row) works as before, each its own step. On a new card the comments typed stay in the dialog, with the
+card, and are posted when Done creates it.
+
+### Drafts
+
+A draft is a card dialog's work, kept aside and not published. **Save draft**, in the question above, keeps it.
+
+- **A new card's** draft does not appear on the board. There is one per column; its "Add a card" reads "Continue
+  draft" (the column's menu says so too) and reopens the dialog with what was typed (comments too).
+- **An existing card's** draft keeps its pending edits. Its face shows a small pencil (`draft-{block}-{card}`,
+  `title_dim`, tooltip "Unsaved draft") in the meta row. Agents (the tools, `templum kanban`) and other blocks keep
+  seeing the published card until Done. Reopening the card shows the draft's changes over the card as it is now.
+- **Discard** (the question, or a new card's footer button) throws away what was typed and the kept draft with it.
+  Leaving a reopened draft untouched keeps it. Done drops it. A draft whose card or column is gone is dropped.
+- Saving or dropping a draft is not a board edit: no Ctrl+Z step (Ctrl+Z keeps the drafts kept since), but it is
+  saved like any board change.
 
 Version 2 first drew the dialog in gpui-kit's own colors (the canvas's color, a white primary button, a row of dim
 bare swatches, comments as bare lines under a bare field). The redesign changes no behavior: the same ids, the same
@@ -413,6 +449,12 @@ now hold:
   "checklist": [{ "id": 41, "text": "Model" }, { "id": 42, "text": "Tools", "done": true }],
   "comments": [] }
 ```
+
+A draft is kept in the file's `drafts` (only written while there are any, so older files and older Templums read
+it): each is `{ "at": 40, "base": {card}, "work": {card} }`, `at` the card it edits, or, with `"new": true`, the
+column a new card is for (ids are unique, so one key does for both). `base` is the card as the dialog opened it and
+`work` as the person left it; Done sets what differs. An existing card's draft carries no comments (they are
+on the board); a new card's carries the ones typed. An older Templum drops `drafts` on its next save.
 
 An older Templum shows `agent:codex` as an assignee it can't find, and refuses claims on it. It reads the file, but
 its next save drops every priority and checklist (it keeps only the keys it knows): going back to it, then forward
@@ -520,7 +562,7 @@ comment (`comment_card`) but not fix a wrong one.
   other agents' are refused, saying whose they are. The person's own changes, in the card's dialog, are
   [card 83's](#the-person-edits-and-deletes-a-comment-kanban-card-83).
 - **A step of Ctrl+Z each:** the kanban's, like a comment added.
-- **The open card** shows the change at once: it reads the card each frame. An edited comment keeps its author,
+- **The open card** shows the change at once: it reads the card each frame (with the person's unsaved changes over it). An edited comment keeps its author,
   its place in the thread and its time, and its age reads "3 min ago · edited" so the person can tell that what they
   read is not what was first said.
 
@@ -613,7 +655,7 @@ add one.
   a `check`; a faint `ui.hover` fill while the text is empty, as Comment is). **Enter** saves (Shift+Enter adds a line)
   and **Escape** or Cancel ends the edit and changes nothing; Escape ends only the edit, not the dialog, and Enter only
   saves, not confirms it (the field's wrapper takes the dialog's cancel and confirm). One comment is edited at a
-  time: starting another, or closing the dialog (Done, Enter in the title, a press outside it), **saves the draft** of
+  time: starting another, or closing the dialog (Done, Enter in the title, Esc or a press outside it), **saves the draft** of
   the first if it holds text, and drops an empty one; a comment gone meanwhile (an agent, Ctrl+Z) ends its edit. When
   it ends, the keyboard goes to the comment field.
 - **A comment needs text:** Save does nothing while the field is empty (the trash is how to remove one). The text is
@@ -651,8 +693,9 @@ ends its edit. **Not seen in a window:** the buttons' look on hover and the edit
 
 ## A press outside closes the open card (kanban card 116)
 
-A press outside the open card closes it, as Done does: its fields already apply as typed, and an edit's draft is
-saved (the dialog's `on_close`; Done, Enter in the title and Esc save it too). A press inside it or on its own menus
+A press outside the open card closes it when nothing changed since it opened, and else asks what to do with the
+changes ([the open card](#the-open-card)); an edit's draft is saved either way (the dialog's `on_cancel`; Done, Enter
+in the title and Esc save it too). A press inside it or on its own menus
 (the assignee's dropdown and submenu) keeps it open, and so does a drag that starts inside (selecting a field's text)
 and ends outside: only a press closes it, not a release.
 
@@ -663,5 +706,15 @@ outside while the assignee's menu is open closes both.
 ### Testing
 
 **Headless UI:** with a typed title and a comment's draft, a press on the card's number and a drag from it to the
-window's edge keep the dialog open; a press at the window's edge closes it, the title keeps what was typed and the
+window's edge keep the dialog open; a press at the window's edge asks, Save keeps what was typed in the title, and the
 draft is saved; a session chosen in the assignee menu keeps the dialog open (card 40's test).
+
+### Testing the card dialog's work and drafts
+
+`crates/templum/src/workspace/tests/card_draft.rs` (headless UI) and `board.rs`: Add a card and Esc with nothing typed
+creates nothing and keeps no draft; a title, an item and a comment typed, then Done, make one card with all of them,
+and one Ctrl+Z removes it; Esc with changes asks, Esc in the question goes back, Discard leaves the card, Save draft
+leaves the board as agents read it and puts the mark on the face, reopening and Done applies the draft, Save is Done;
+a new card's Save draft is not a card and "Continue draft" reopens it; an agent's change to what the person left
+alone survives Done; Done on a deleted card closes without bringing it back; the draft round-trips `boards.json` and
+an older file without `drafts` loads. **Not seen in a window:** the question's look and the pencil mark.

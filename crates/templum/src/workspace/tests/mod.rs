@@ -701,6 +701,7 @@ mod agents;
 mod block_ids;
 mod blocks;
 mod bus;
+mod card_draft;
 mod checklists;
 mod config_reload;
 mod content;

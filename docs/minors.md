@@ -676,16 +676,43 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Kanban
 
-- [ ] **Esc or Enter in the title saving a comment edit's draft is untested, and Esc is unspecified.** `on_close`
-  (`crates/templum/src/kanban.rs`) saves the edit's draft when the card dialog closes by Escape from another field or
-  Enter in the title; `docs/specs/kanban.md` lists only "Done, Enter in the title, a press outside it", and only the
-  press outside has a test (`a_press_outside_the_open_card_closes_it_and_keeps_what_was_typed`; the others use Done
-  and `window.close_dialog`, which skips `on_close`). Fix: add "Escape outside the edit's field" to the spec, and a
-  test that types a draft, focuses the title, presses Escape (and Enter) and checks the saved text.
+- [ ] **Ctrl+Z of a Done on a reopened draft loses the draft's content.** `Boards::finish_draft`
+  (`crates/templum/src/board.rs`) drops the draft inside the undo step, and `undo_boards`
+  (`crates/templum/src/workspace/blocks.rs`) keeps only the drafts kept now, so the card goes back as it was and the
+  typed work is gone. A person who presses Ctrl+Z after Done to get their draft back finds nothing. Fix: on undo,
+  also put back the drafts that `before` has and the current boards lack, unless the same card or column has a new
+  one, with a test.
+- [ ] **Unsent text in "Add an item" or the comment field doesn't count as a change.** `Work::changed`
+  (`crates/templum/src/kanban.rs`) compares the cards only: Esc closes at once over a half-typed item or comment,
+  and Save draft wouldn't keep it. A person loses the line they were typing. Fix: a non-empty field counts as a
+  change, and Save and Save draft take it in first (the item as a checklist item, the comment as a comment), with a
+  test.
+- [ ] **A comment edit in a card's dialog is a change when nothing changed, and is lost when the window closes.** On
+  a new card, a comment's pencil then Esc asks "Save your changes?" though the text is the same (`pending` in the
+  dialog's `on_cancel`, `crates/templum/src/kanban.rs`); and `Work::keep` (same file), run when the window closes,
+  ignores a comment edit in progress, so its text is neither kept in the draft nor posted. Fix: count the edit only
+  when its trimmed text differs from that comment's, and have `Work::keep` take it in the same way, with a test.
+- [ ] **Done on a card deleted meanwhile loses the person's work without saying so.** `Boards::finish_draft`
+  (`crates/templum/src/board.rs`) finds nothing to change and the dialog closes; a new card whose column was deleted
+  is lost the same way. Fix: keep the draft and say "That card is gone" in a notification, with a test.
+- [ ] **Discard in the Save question also drops the draft the person had kept.** After reopening a draft, typing more
+  and choosing Discard, the earlier draft goes too (`ask_to_leave`, `crates/templum/src/kanban.rs`); there is no way to
+  drop only the newest typing. A person who wanted to keep the old draft loses it. Fix: Discard reverts to the kept
+  state when the dialog was opened from a draft, and the footer's button drops the draft, with a test.
+- [ ] **A draft is dropped when its card or column is deleted, even if Ctrl+Z brings the card back.**
+  `Boards::prune_drafts` runs after every `edit_boards` (`crates/templum/src/board.rs`) and Ctrl+Z keeps the current
+  drafts, so the restored card has no draft. A person who deleted a card with a draft and undid it loses the draft.
+  Fix: keep pruned drafts in the undo snapshot and restore the ones whose card is back, with a test.
+- [ ] **Esc or Enter in the title saving a comment edit's draft is untested, and Esc is unspecified.** The dialog's
+  `on_cancel` and `on_ok` (`crates/templum/src/kanban.rs`) save the edit's draft when the card dialog closes by Escape
+  from another field or Enter in the title; `docs/specs/kanban.md` lists only "Done, Enter in the title, a press
+  outside it", and only the press outside has a test (`a_press_outside_the_open_card_asks_and_save_keeps_what_was_typed`;
+  the others use Done and `window.close_dialog`). Fix: add "Escape outside the edit's field" to the spec, and a test
+  that types a draft, focuses the title, presses Escape (and Enter) and checks the saved text.
 - [ ] **A press outside the open card with its assignee menu open closes the card too.** The menu's own outside press
   (gpui-kit's `PopupMenu`) closes it, and the same press reaches the dialog's overlay (`open_card` in
-  `crates/templum/src/kanban.rs`, card 116). A person who only meant to close the menu sees the card close; nothing
-  is lost (its fields apply as typed). Fix: veto the close in the dialog's `on_cancel` (a press on the overlay asks it
+  `crates/templum/src/kanban.rs`, card 116). A person who only meant to close the menu sees the card close, or, with
+  changes, the Save question open. Fix: veto the close in the dialog's `on_cancel` (a press on the overlay asks it
   first) when the menu was open at the press (the dropdown's `on_open_change` kept in a `Cell`), with a test.
 - [ ] **Two deleted comments undone in the order they were deleted come back in the wrong order.** `deleted` keeps
   each comment's index at deletion (`crates/templum/src/kanban.rs`) and `restore_comment` (`board.rs`) inserts at it:

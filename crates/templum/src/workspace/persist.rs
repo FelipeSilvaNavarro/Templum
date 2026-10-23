@@ -568,6 +568,10 @@ impl Workspace {
     /// When the window closes or Templum quits: the last snapshot of every workspace, read and
     /// written at once.
     pub(super) fn save_canvas_now(&mut self, cx: &App) {
+        // A card dialog still open: what was typed in it is kept as a draft.
+        if let Some(work) = &self.card_work {
+            work.borrow().keep(&mut self.boards);
+        }
         // A first run's welcome still open: the next start is a first run too.
         let Some(dir) = self.data_dir.clone().filter(|_| !self.first_run_welcome()) else {
             return;
