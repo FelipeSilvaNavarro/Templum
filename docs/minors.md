@@ -334,6 +334,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `crates/templum/src/workspace/selection.rs`): resuming it would put two agents on one conversation, so a copied
   Claude Code terminal pastes as a shell in its folder. Fix: type the agent's own command (not its resume command)
   into the pasted shell.
+- [ ] **A title click that slips nudges the group.** A press on a selected block's title (`block.rs`, the title's
+  `on_mouse_down` → `begin_group_move`) let go within the click slop moves the blocks by the pixels the pointer
+  moved (`MoveGroup` has no threshold) and `end_placing` keeps a Ctrl+Z step for it; a body's or the box's click puts
+  them back (`unplace()`, `workspace/input.rs` `release`). A person sees a selection shift by a pixel or two, and an
+  undo step that does nothing visible. Fix: `Drag::Held` for a title press also remembers it is a title (or `release`
+  asks `unplace()` whenever a `Held` is let go under the slop), with a test pressing a title, moving 2 px, and
+  checking the rects and `undo`.
 
 ## Notes
 

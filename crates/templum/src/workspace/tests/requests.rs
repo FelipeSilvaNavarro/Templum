@@ -1015,6 +1015,96 @@ fn the_balloons_buttons_answer_a_question_then_a_request(cx: &mut TestAppContext
     .unwrap();
 }
 
+/// With the terminal in a selection, its balloon still takes its presses: the selected body's
+/// group move leaves them alone.
+#[gpui_kit::test]
+fn the_balloons_buttons_answer_while_the_terminal_is_selected(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    roomy(&ws, cx, mine);
+    let k = ws.read_with(cx, |ws, _| ws.space.uids[&kanban].clone());
+    let n = mine.0 as usize;
+    let request = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "connect",
+        json!({ "block": k }),
+    );
+    shown(handle, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.focused = None;
+        ws.space.selected = vec![kanban, mine];
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(crate::balloon::part(n, "allow"), cx);
+    })
+    .unwrap();
+    assert_eq!(answered(&request), (false, format!("Connected to {k}.")));
+    ws.read_with(cx, |ws, _| assert!(ws.space.wired(mine, kanban)));
+}
+
+/// Far away the terminal is drawn without its balloon, so the selection's body keeps the press:
+/// a drag on it moves the group.
+#[gpui_kit::test]
+fn a_far_selected_terminal_with_a_pending_request_moves_the_group(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let k = ws.read_with(cx, |ws, _| ws.space.uids[&kanban].clone());
+    let _request = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "connect",
+        json!({ "block": k }),
+    );
+    shown(handle, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 0.3);
+        ws.space.flight = None;
+        ws.space.focused = None;
+        ws.space.selected = vec![kanban, mine];
+    });
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, _| {
+        assert!(window.try_find(("balloon", mine.0 as usize)).is_none());
+    })
+    .unwrap();
+    let rects = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            [kanban, mine].map(|id| ws.space.canvas.get(id).unwrap().rect)
+        })
+    };
+    let before = rects(&ws, cx);
+    // Well below the far label, in the terminal's body: 0.3 × (40 + 200, 400 + 150).
+    let body = at(&ws, cx, (72.0, 165.0));
+    cx.update_window(handle, |_, window, cx| {
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            Modifiers::default(),
+            body,
+            (body.0 + 30.0, body.1),
+        );
+    })
+    .unwrap();
+    let after = rects(&ws, cx);
+    for (was, now) in before.iter().zip(&after) {
+        assert!(
+            now.x > was.x + 50.0,
+            "moved by the drag: {was:?} -> {now:?}"
+        );
+    }
+}
+
 /// The balloon's presses never reach a program under it that asked for the mouse: a right one
 /// opens no block menu either, and a middle drag pans the canvas, as anywhere.
 #[gpui_kit::test]

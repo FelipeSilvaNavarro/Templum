@@ -113,7 +113,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 - `workspace/`: `mod.rs` has the types (`Workspace`, `Space`, `Body`, `Tool`…) and the constructor; each other file
   is an `impl Workspace` block for one area: `spaces.rs` (the workspaces), `blocks.rs` (adding, focusing and
   closing blocks), `view.rs` (the camera), `input.rs` (keys and the pointer), `selection.rs` (selected blocks: Shift+drag,
-  Shift+click on a title; moving them together, Delete, Copy and Paste), `history.rs` (Ctrl+Z and Ctrl+Shift+Z on the
+  Shift+click on a title; moving them together from a block or from the box around them, Delete, Copy and
+  Paste), `history.rs` (Ctrl+Z and Ctrl+Shift+Z on the
   blocks: added, closed, moved, resized; each step keeps the change that takes it back), `tiling.rs` (grid mode:
   blocks tiled full screen like Hyprland, [specs/grid.md](specs/grid.md)), `render.rs` (drawing a frame),
   `drawing.rs` (the drawing tools), `wires.rs` (wires between blocks: wiring and unwiring, their undo steps, the Wire

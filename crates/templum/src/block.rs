@@ -40,6 +40,9 @@ const EDGE: f32 = 6.0;
 /// Below Full a title is a label this far in from the card's border, and a terminal's status
 /// dot in it is this wide: screen pixels, never zoomed.
 const LABEL_IN: f32 = 4.0;
+/// How far below a block's top its far-zoom label reaches, screen pixels: its inset, border,
+/// padding and a line of text, with room to spare.
+const LABEL_BAND: f32 = 32.0;
 const DOT: f32 = 8.0;
 /// The Templum Agent's mark before a title, world units.
 const MARK: f32 = 10.0;
@@ -350,7 +353,7 @@ pub(crate) fn render(
                     ws.frame_block(id, window, cx);
                 } else if ws.space.selected.contains(&id) {
                     // A selected block's title moves every selected block, still selected.
-                    ws.begin_group_move(e.position);
+                    ws.begin_group_move(e.position, None);
                     cx.stop_propagation();
                     return;
                 } else {
@@ -571,6 +574,14 @@ pub(crate) fn render(
                 .child(fade_in(close, ("close-fade", n)))
         });
 
+    // Both are drawn at the Full level only.
+    let covered = match body {
+        Body::Terminal(pane) => {
+            level == Level::Full && (ws.balloon(pane.term.id()).is_some() || pane.find.is_some())
+        }
+        _ => false,
+    };
+    let terminal = matches!(body, Body::Terminal(_));
     let frame = div()
         .id(("body", n))
         .absolute()
@@ -579,7 +590,41 @@ pub(crate) fn render(
         .w_full()
         .h(px((r.h - chrome::TITLE_H * z).max(0.0)))
         .p(px(chrome::PAD * z))
-        .overflow_hidden();
+        .overflow_hidden()
+        // A selected block's body holds the selection like its title does: a press (before the
+        // content hears it) moves every selected block, and a click picks this block; Shift+click
+        // takes it out. A far label over the body's top is the title: there it is the title's press
+        // (a click keeps the selection), taken here because the body's content, a kanban's or a
+        // checklist's, hears presses ahead of the label. Left to the block's own handlers: the
+        // resize zones over the body, a terminal's balloon and find field (they're drawn over it,
+        // and don't occlude it), and a terminal's Ctrl+click (a link opens).
+        .when(
+            live && !tiled && !covered && ws.space.selected.contains(&id),
+            |el| {
+                el.capture_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                    let p = ws.local(e.position);
+                    if e.button != MouseButton::Left
+                        || (terminal && e.modifiers.secondary())
+                        || !chrome::on_body(r, edge, z, p)
+                    {
+                        return;
+                    }
+                    if e.modifiers.shift {
+                        ws.toggle_selected(id, window, cx);
+                    } else {
+                        let label = labeled && p.y < r.y + LABEL_BAND;
+                        if label && e.click_count == 2 {
+                            // As the label does: the camera flies to the block, which is picked.
+                            ws.frame_block(id, window, cx);
+                            ws.focus_block(id, window, cx);
+                        } else {
+                            ws.begin_group_move(e.position, (!label).then_some(id));
+                        }
+                    }
+                    cx.stop_propagation();
+                }))
+            },
+        );
     let content = match body {
         Body::Terminal(pane) => {
             frame
@@ -956,7 +1001,7 @@ fn find_bar(ws: &Workspace, n: usize, bar: &FindBar, z: f32) -> AnyElement {
 /// An invisible strip along a block's edge (`edge` thick), or a square at its corner, that resizes
 /// it by those `edges`, like a window's border.
 fn resize_zone(id: BlockId, edges: Edges, edge: f32, cx: &mut Context<Workspace>) -> AnyElement {
-    let corner = 2.0 * edge;
+    let corner = chrome::corner(edge);
     let name = match (edges.top, edges.bottom, edges.left, edges.right) {
         (true, _, true, _) => "top-left",
         (true, _, _, true) => "top-right",

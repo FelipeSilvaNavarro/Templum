@@ -516,7 +516,7 @@ impl Render for Workspace {
                                 return;
                             }
                             match e.button {
-                                MouseButton::Left => ws.release(e.position, cx),
+                                MouseButton::Left => ws.release(e.position, window, cx),
                                 MouseButton::Middle => ws.end_drag(),
                                 _ => {}
                             }
@@ -538,6 +538,12 @@ impl Render for Workspace {
             }
             _ => None,
         };
+        // The box around two or more selected blocks: a hairline, no events (a press in it is the
+        // workspace's, `on_background_down`).
+        let selection = self
+            .selection_box()
+            .filter(|_| !tiled)
+            .map(|b| self.space.view.rect_to_screen(b));
         let swapping = self.swap_overlay(cx);
         let area = div()
             .id("workspace")
@@ -584,6 +590,16 @@ impl Render for Workspace {
                     .border_1()
                     .border_color(self.ui.accent)
                     .bg(self.ui.accent.opacity(0.08))
+            }))
+            .children(selection.map(|r| {
+                div()
+                    .absolute()
+                    .left(px(r.x))
+                    .top(px(r.y))
+                    .w(px(r.w))
+                    .h(px(r.h))
+                    .border_1()
+                    .border_color(self.ui.accent)
             }))
             .children(swapping)
             .when(self.tool.draws() && !tiled, |el| {

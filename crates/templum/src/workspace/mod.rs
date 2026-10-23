@@ -629,11 +629,15 @@ enum Drag {
     /// A block, or every selected block, held by its title (`gesture` is a `Move` or `MoveGroup`):
     /// pressed at `from`, the pointer now at `pointer` (canvas points). Near the canvas's edge,
     /// once it is past a click, the camera moves, since when the last frame moved it (`scrolled`).
+    /// A selection held by a selected block's body (`picks`) takes the keyboard to that block when
+    /// let go in place, unless the wheel or the canvas's edge `carried` it meanwhile.
     Held {
         gesture: Gesture,
         from: Point,
         pointer: Point,
         scrolled: Option<Instant>,
+        picks: Option<BlockId>,
+        carried: bool,
     },
     /// Selecting text in a block's terminal.
     Select(BlockId),
@@ -693,12 +697,14 @@ enum Drag {
 
 impl Drag {
     /// A title pressed at the canvas point `at`.
-    fn held(gesture: Gesture, at: Point) -> Self {
+    fn held(gesture: Gesture, at: Point, picks: Option<BlockId>) -> Self {
         Drag::Held {
             gesture,
             from: at,
             pointer: at,
             scrolled: None,
+            picks,
+            carried: false,
         }
     }
 }
