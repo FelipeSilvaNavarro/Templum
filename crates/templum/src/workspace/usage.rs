@@ -17,7 +17,7 @@ use super::{Pane, TryIt, Workspace, show_notification};
 use crate::agents::{self, AgentEntry};
 use crate::config::Edit;
 use crate::notes;
-use crate::usage::{TURN_SECS, limit_name, meter_agents, resets_local};
+use crate::usage::{TURN_SECS, limit_name, meter_agents, resets};
 
 /// How often Templum asks Claude Code for the plan's limits. Its `/usage` asks Anthropic, which
 /// limits how often.
@@ -364,7 +364,7 @@ impl Workspace {
                     window.used_percent,
                     limit_name(window.minutes, window.scope.as_deref())
                 ),
-                format!("Resets {}", resets_local(window.resets_at, now)),
+                format!("Resets {}", resets(window.resets_at, now, false)),
                 NotificationType::Warning,
             ),
             Event::Reset {

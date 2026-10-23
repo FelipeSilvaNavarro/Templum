@@ -116,21 +116,22 @@ API prices, which is not what a subscription pays).
 ### In the title bar
 
 - **The meter**, left of the zoom level: one agent's limits at a time, its short name and each of its windows for
-  every model, shortest first, with a small bar: `Claude 5h 27% 7d 18%`. Bars are yellow from the warning line, red
-  from 95%. With several agents known, the next one fades in every 8 seconds or so (at the next read), never while
-  the pointer is over it, and a dot per agent says which is shown. An agent hidden in **Settings ▸ Usage** isn't
-  shown there. Hidden when no limit is known. A window whose reset time has passed is gone.
-- **Clicking it** opens **Agent usage** under it: each agent's windows (bar, percentage, when it resets: `in 25 min`
-  within the hour, `15:40` today, `Mon 09:00` later), then **Open sessions**: every terminal with usage, in every
-  workspace, as agent · folder · context · cost or tokens. Clicking a session reveals its terminal. Clicking outside
-  or Esc closes it.
+  every model, shortest first, with a small bar and, dim, when it resets: `Claude 5h 27% ▮ 4h 20m 7d 18% ▮ 3d 4h`.
+  Bars are yellow from the warning line, red from 95%. With several agents known, the next one fades in every 8
+  seconds or so (at the next read), never while the pointer is over it, and a dot per agent says which is shown. An
+  agent hidden in **Settings ▸ Usage** isn't shown there. Hidden when no limit is known. A window whose reset time
+  has passed is gone.
+- **Clicking it** opens **Agent usage** under it: each agent's windows (bar, percentage, when it resets, as a
+  countdown in at most two units: `in 25 min`, `in 4 hours 20 min`, `in 3 days 4 hours`), then **Open sessions**:
+  every terminal with usage, in every workspace, as agent · folder · context · cost or tokens. Clicking a session
+  reveals its terminal. Clicking outside or Esc closes it.
 
 ### Notifications
 
 Delivered like a terminal's news: in the app when Templum's window is active, also as a system notification when
 it isn't. Clicking one reveals a terminal running that agent.
 
-- **Near a limit:** `Claude Code: 90% of the 5-hour limit used` / `Resets at 15:40`. Once per window (a window is
+- **Near a limit:** `Claude Code: 90% of the 5-hour limit used` / `Resets in 4 hours`. Once per window (a window is
   the same until its reset time moves by more than 10 minutes), when its use first reaches the warning line.
 - **Reset:** `Claude Code's 5-hour limit has reset`. When the reset time passes, if the rule allows it given the
   highest use seen in that window:
