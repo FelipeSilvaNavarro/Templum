@@ -543,7 +543,10 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   block shows one; a **column** by its title (either case) or id; a **card** by its id, as `list_cards` shows it.
   `board`, `column` and `card` may be numbers or strings; a blank title, text or comment is refused.
 - `read_terminal` reads the terminal's own history, never what is painted, so a terminal off screen reads as
-  current. The result is at most 256 KB.
+  current. The result is at most 256 KB. A suggestion an input draws where its shown cursor waits, a faint run from
+  the cursor on (Claude Code's `Try "fix lint errors"`, Codex's `Ask Codex to do anything`, a completion), isn't
+  typed text: it is left out, there and in every screen Templum answers with (`send_keys`, `interrupt`, `wait_for`,
+  a task not taken or its dialog), so an agent doesn't take it for its person's.
 - Agents may stop waiting on long tool calls. Claude Code gives up on a call that sends nothing for 1800 s, its idle
   timeout for stdio servers, unless the server's own `timeout` is longer (seen 2026-10-17: `MCP server "templum"
   tool "wait_for_idle" sent no response or progress for 1800s; aborting`; that `timeout` lifts it from Claude Code

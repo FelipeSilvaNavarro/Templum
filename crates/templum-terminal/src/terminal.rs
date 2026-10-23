@@ -14,6 +14,7 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode, viewport_to_point};
 use alacritty_terminal::tty;
@@ -333,13 +334,32 @@ impl SharedTerm {
     }
 
     /// The last `count` lines of the history and the screen, as text, without the blank rows
-    /// under the last one written. A wrapped line is one line.
+    /// under the last one written. A wrapped line is one line. A suggestion where the cursor
+    /// waits for typing isn't typed, and is left out (an agent reading it took it for its
+    /// person's text): its row is then a line of its own.
     pub fn lines(&self, count: usize) -> Vec<String> {
         let term = self.0.lock_unfair();
         let (top, bottom) = (term.topmost_line().0, term.bottommost_line().0);
         // The blank rows under the cursor are at most a screen: read that much more.
         let from = (bottom + 1 - (count + term.screen_lines()) as i32).max(top);
-        let mut lines = text_between(&term, from, bottom);
+        let mut lines = match suggestion(&term).filter(|(line, _)| line.0 >= from) {
+            Some((line, cols)) => {
+                let part = |a: usize, b: usize| {
+                    term.bounds_to_string(
+                        GridPoint::new(line, Column(a)),
+                        GridPoint::new(line, Column(b)),
+                    )
+                };
+                let head = (cols.start > 0).then(|| part(0, cols.start - 1));
+                let tail = (cols.end < term.columns()).then(|| part(cols.end, term.columns() - 1));
+                let mut lines = text_between(&term, from, line.0 - 1);
+                let row = head.unwrap_or_default() + &tail.unwrap_or_default();
+                lines.push(row.trim_end().to_string());
+                lines.extend(text_between(&term, line.0 + 1, bottom));
+                lines
+            }
+            None => text_between(&term, from, bottom),
+        };
         while lines.last().is_some_and(String::is_empty) {
             lines.pop();
         }
@@ -395,6 +415,22 @@ fn text_between<T>(term: &Term<T>, top: i32, bottom: i32) -> Vec<String> {
     text.lines()
         .map(|line| line.trim_end().to_string())
         .collect()
+}
+
+/// The suggestion an input draws where its shown cursor waits for typing, not typed yet: the
+/// faint run of cells from the cursor on, its line and columns. Claude Code's placeholder
+/// (`Try "fix lint errors"`), Codex's (`Ask Codex to do anything`), a completion after what was
+/// typed.
+fn suggestion<T>(term: &Term<T>) -> Option<(Line, std::ops::Range<usize>)> {
+    if !term.mode().contains(TermMode::SHOW_CURSOR) {
+        return None;
+    }
+    let at = term.grid().cursor.point;
+    let row = &term.grid()[at.line];
+    let end = (at.column.0..term.columns())
+        .find(|&col| !row[Column(col)].flags.contains(Flags::DIM))
+        .unwrap_or(term.columns());
+    (end > at.column.0).then_some((at.line, at.column.0..end))
 }
 
 /// A terminal's processes, to read from any thread with [`inspect`].
@@ -2033,6 +2069,33 @@ mod tests {
         let all = term.lines(100);
         assert_eq!((all.len(), all[0].as_str()), (10, "1"));
         assert!(term.lines(0).is_empty());
+    }
+
+    #[test]
+    fn a_suggestion_where_the_cursor_waits_is_not_in_the_lines() {
+        // Claude Code 2.1.309's empty input, as it draws it: its placeholder faint, the cursor
+        // shown on the placeholder's first cell.
+        let (term, _) = headless(40, 4);
+        feed(
+            &term,
+            "\x1b[?25l\x1b[2;1H────\r\x1b[1B\x1b[39m❯\u{a0}\x1b[2mTry \"fix lint errors\"\r\x1b[1B\
+             \x1b[22m────\x1b[3;3H\x1b[?25h"
+                .as_bytes(),
+        );
+        assert_eq!(term.lines(4), ["", "────", "❯", "────"]);
+        // Codex 0.154.0's; faint text the cursor isn't on is the screen's.
+        feed(
+            &term,
+            b"\x1b[2J\x1b[1;1H\x1b[1m\xe2\x80\xba\x1b[22m \x1b[2mAsk Codex to do anything\
+              \x1b[22m\r\n\x1b[2mtip\x1b[22m\r\n> /he\x1b[2mlp\x1b[22m done\x1b[1;3H",
+        );
+        assert_eq!(term.lines(3), ["›", "tip", "> /help done"]);
+        // A completion after what was typed.
+        feed(&term, b"\x1b[3;6H");
+        assert_eq!(term.lines(1), ["> /he done"]);
+        // Under a hidden cursor, nothing waits for typing.
+        feed(&term, b"\x1b[?25l");
+        assert_eq!(term.lines(1), ["> /help done"]);
     }
 
     #[test]

@@ -1755,6 +1755,12 @@ those of `development` at f8c3ec9.
   card 127's build ran none (its blocks are terminals that run nothing, `Terminal::viewer`, and the bench opens a
   window). Fix: add a dozen viewers fed a synthetic transcript to `--bench-mixed`'s cockpit and paste its line in the
   pull request.
+- [ ] **Only the cursor's row of a suggestion is left out of a screen's text.** `suggestion`
+  (`crates/templum-terminal/src/terminal.rs:424`) is the faint run from the shown cursor on, on its row; a suggestion
+  long enough to wrap onto the rows under it keeps those in what `read_terminal` and the other answers show, where an
+  agent may still take them for its person's text. Claude Code's suggested next prompt, shown after a turn, wasn't
+  probed (it takes a paid turn): only its placeholder and Codex's were. Fix: probe a long suggestion; if it wraps,
+  leave out the faint rows right under it too.
 
 ## Placing new blocks
 
