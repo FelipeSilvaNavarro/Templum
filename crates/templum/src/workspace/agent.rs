@@ -261,6 +261,15 @@ impl Workspace {
                     let agent = &mut self.templum_agent;
                     let ended = matches!(event, ChatEvent::TurnEnded { .. });
                     let started = matches!(event, ChatEvent::Started { .. });
+                    // A process about to end for a settings change still reports the old model
+                    // at each turn it takes (a queued message's): the chosen one stays shown.
+                    if let ChatEvent::Started {
+                        model: Some(model), ..
+                    } = &event
+                        && !agent.restart
+                    {
+                        agent.model = Some(model.clone());
+                    }
                     match event {
                         ChatEvent::TurnEnded {
                             error: Some(ref e), ..
@@ -424,6 +433,9 @@ impl Workspace {
     /// (its next message resumes the session); one at work ends at its turn's end.
     pub(super) fn engine_settings_changed(&mut self) {
         let agent = &mut self.templum_agent;
+        // What the engine reported is about the old settings: the chip shows the chosen model
+        // until the new engine reports its own.
+        agent.model = None;
         if agent.engine.is_none() {
             return;
         }

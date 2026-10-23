@@ -110,12 +110,21 @@ The chat is a floating card that rises from the pill: the pill becomes its foote
   rows up to 70% of the canvas's height (at least 240 px), radius 14, `popover` fill, `hairline` border, the focused
   block's shadow (y 10, blur 30). It rises 12 px and fades in over 0.22 s; with less motion it appears.
 - **It doesn't block the app.** The canvas works around it; a click outside it doesn't close it. Only Esc in its field,
-  its ▾ button or the shortcut close it, and the conversation goes on while it is closed. It sits under the settings
-  panel, the workspaces screen and the welcome, over the blocks and the Git popup; it is window chrome, so the canvas's
-  zoom never scales it.
+  its ▾ button or the shortcut close it, and the conversation goes on while it is closed. It sits under the Git popup,
+  the settings panel, the workspaces screen and the welcome, over the blocks; it is window chrome, so the canvas's zoom
+  never scales it.
+- **Full screen:** the header's `maximize-2` button ("Full screen"; `minimize-2`, "Exit full screen", while full) makes
+  the card fill the canvas, 16 px in from every side, in the same layer (under the Git popup); its footer stays at the
+  bottom and its body grows. It stays full when the chat is closed and opened again, for as long as Templum runs (no
+  option). Esc, ▾ and the shortcut work as before; the rise and the fade are the same.
 - **Its header** (36 px): `sparkles` and "Templum Agent" in `title`, the engine chip, then on the right **Stop** (a
-  `circle-stop`, only while it works), **New chat** (`message-square-plus`) and **▾** (close). Batch 2 adds the run
-  meter between them ([Orchestration](#orchestration)).
+  `circle-stop`, only while it works), **Full screen**, **New chat** (`message-square-plus`) and **▾** (close). Batch 2
+  adds the run meter between them ([Orchestration](#orchestration)).
+- **The engine chip** ("Claude Code · opus") is a button: its menu lists Default (the agent's own model), the agent's
+  models (Claude Code: haiku, sonnet, opus) with a check on the current one, and **Another model…**, which opens
+  Settings ▸ Templum Agent to type one. A choice writes `templum_agent.model` as Settings does, so it reaches the next
+  start of the engine the same way, and the chip shows the model the engine reports once it has started, and the chosen
+  one until then.
 - **Its body** scrolls; it follows new rows while it is at its end, and a small "↓ New" pill brings it back there
   after the person scrolled up.
 - **An empty conversation** shows three suggestions as chips; a click puts its text in the field:
@@ -200,7 +209,7 @@ A section after Connections:
 | Field | Control | Option | Batch |
 |---|---|---|---|
 | Agent | Dropdown: the engines Templum can run; one not installed says "(not installed)" | `templum_agent.agent` (`claude`) | 1; Codex from 3 |
-| Model | Text; empty is the agent's own default. Checked as `spawn_agent` checks a model (1 to 64 letters, digits, `.`, `-`, `_`, `:`, `/`) | `templum_agent.model` | 1 |
+| Model | Dropdown: Default (the agent's own), then the agent's models (Claude Code: haiku, sonnet, opus); under it Another model, a text field for one the list doesn't have, checked as `spawn_agent` checks a model (1 to 64 letters, digits, `.`, `-`, `_`, `:`, `/`). An engine with no list of models shows the text field alone, as Model | `templum_agent.model` | 1 |
 | Effort | Dropdown: Default, then the agent's efforts ([agents.md](agents.md#a-model-and-an-effort)) | `templum_agent.effort` | 1 |
 | Prompt pill | Switch, on: the pill at the bottom of the canvas; off, the shortcut still opens it | `templum_agent.pill` | 1 |
 | Agents at once | Number 1–16, default 4: how many of its tasks may run together | `templum_agent.max_agents` | 2 |

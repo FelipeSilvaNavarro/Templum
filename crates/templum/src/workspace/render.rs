@@ -731,9 +731,14 @@ impl Render for Workspace {
         });
         // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
         let open = self.templum_agent.open;
+        let full = open && self.templum_agent.full;
         let waiting = self.templum_agent.approvals.len();
         let approval = self.templum_agent.approvals.first().map(|a| {
-            let width = 640.0_f32.min(vp.w - 32.0);
+            let width = if open {
+                crate::chat::panel::approval_width(vp.w, full)
+            } else {
+                640.0_f32.min(vp.w - 32.0)
+            };
             crate::chat::approval::render(self, a, (1, waiting), width, window, cx)
         });
         let pill = (!tiled || open)
@@ -757,11 +762,13 @@ impl Render for Workspace {
         }
         .map(|pill| {
             let left = if self.sidebar { sidebar::WIDTH } else { 0.0 };
+            // Full screen fills the canvas to its inset; else the card sits above the toolbar.
+            let bottom = if full { 16.0 } else { toolbar::above(self) };
             div()
                 .absolute()
                 .left(px(left))
                 .right_0()
-                .bottom(px(toolbar::above(self)))
+                .bottom(px(bottom))
                 .flex()
                 .justify_center()
                 .child(pill)

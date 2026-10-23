@@ -31,7 +31,7 @@ mod general;
 mod git;
 mod row;
 mod sections;
-mod templum_agent;
+pub(crate) mod templum_agent;
 #[cfg(test)]
 mod tests;
 mod updates;

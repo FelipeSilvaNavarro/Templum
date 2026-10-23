@@ -2374,6 +2374,202 @@ fn new_chat_and_stop_buttons(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn full_screen_fills_the_canvas_and_stays_when_the_chat_closes(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    open_chat(handle, &ws, cx);
+    let card = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            let vp = ws.read(cx).viewport(window);
+            let card = window.find("agent-chat").bounds();
+            let below = window.viewport_size().height - (card.origin.y + card.size.height);
+            (
+                f32::from(card.size.width),
+                f32::from(card.size.height),
+                vp,
+                (f32::from(card.origin.y), f32::from(below)),
+            )
+        })
+        .unwrap()
+    };
+    let toggle = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.click("agent-full", cx);
+            window.render_frame(cx);
+        })
+        .unwrap()
+    };
+    let (normal_w, normal_h, vp, _) = card(cx);
+    toggle(cx);
+    let (w, h, _, (top, below)) = card(cx);
+    assert_eq!((w, h), (vp.w - 32.0, vp.h - 32.0));
+    // 16 px in from the canvas's top (under the title bar) and bottom.
+    assert_eq!(top, f32::from(gpui_kit::component::TITLE_BAR_HEIGHT) + 16.0);
+    assert_eq!(below, 16.0);
+    assert!(w > normal_w && h > normal_h);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("agent-close", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    open_chat(handle, &ws, cx);
+    assert_eq!(card(cx).0, w, "still full once reopened");
+    toggle(cx);
+    assert_eq!(card(cx).0, normal_w);
+}
+
+#[gpui_kit::test]
+fn the_engine_chip_picks_the_model(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    open_chat(handle, &ws, cx);
+    let model =
+        |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.config.templum_agent.model.clone());
+    let pick = |n: usize, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.click("agent-model", cx);
+            window.render_frame(cx);
+            // The button takes the keyboard from the field, as a mouse down on it does.
+            window.blur(cx);
+            window.within("popup-menu").click(n, cx);
+            window.render_frame(cx);
+        })
+        .unwrap()
+    };
+    // Default, haiku, sonnet, opus, Another model….
+    pick(2, cx);
+    assert!(
+        pill_has_keys(handle, &ws, cx),
+        "the field keeps the keyboard"
+    );
+    assert_eq!(model(cx), "sonnet");
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(crate::chat::pill::engine(ws), "Claude Code · sonnet")
+    });
+    pick(0, cx);
+    assert_eq!(model(cx), "", "Default clears it");
+    pick(4, cx);
+    ws.read_with(cx, |ws, _| {
+        let panel = ws.settings.as_ref().expect("Settings opened");
+        assert_eq!(panel.section, crate::settings::Section::TemplumAgent);
+    });
+}
+
+#[gpui_kit::test]
+fn the_chip_shows_the_model_the_engine_reports_and_the_chosen_one_until_then(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN, TEXT_TURN]);
+    let chip = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| crate::chat::pill::engine(ws));
+    assert_eq!(chip(cx), "Claude Code");
+    send(handle, &ws, cx, "hi");
+    rows_until(&ws, cx, ended);
+    assert_eq!(chip(cx), "Claude Code · claude-opus-5-5");
+    ws.update(cx, |ws, cx| {
+        ws.edit(
+            Edit::set("templum_agent", "model", "sonnet"),
+            |c| c.templum_agent.model = "sonnet".into(),
+            cx,
+        )
+    });
+    frame(handle, cx);
+    assert_eq!(
+        chip(cx),
+        "Claude Code · sonnet",
+        "until the new engine reports"
+    );
+    send(handle, &ws, cx, "again");
+    rows_until(&ws, cx, |rows| {
+        let ends = rows
+            .iter()
+            .filter(|r| matches!(r, ::templum_agent::Row::End { .. }));
+        ends.count() == 2
+    });
+    assert_eq!(chip(cx), "Claude Code · claude-opus-5-5");
+}
+
+#[gpui_kit::test]
+fn a_pick_mid_turn_is_not_undone_by_the_old_process_reporting_again(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    // The first turn is still going when the person picks and sends a follow-up, which the same
+    // process takes in a turn of its own, with its own init on the old model.
+    let end = TEXT_TURN
+        .lines()
+        .find(|l| l.contains(r#""type":"result""#))
+        .unwrap();
+    let (handle, ws) = with_fake_engine(
+        cx,
+        dir.path(),
+        &[&endless_turn(), &format!("{end}\n{TEXT_TURN}")],
+    );
+    send(handle, &ws, cx, "hi");
+    rows_until(&ws, cx, |rows| {
+        rows.iter()
+            .any(|r| matches!(r, ::templum_agent::Row::Text { .. }))
+    });
+    ws.update(cx, |ws, cx| {
+        ws.edit(
+            Edit::set("templum_agent", "model", "sonnet"),
+            |c| c.templum_agent.model = "sonnet".into(),
+            cx,
+        )
+    });
+    frame(handle, cx);
+    send(handle, &ws, cx, "and this");
+    rows_until(&ws, cx, ended);
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            ws.templum_agent.engine.is_none(),
+            "it ended at the turn's end"
+        );
+        assert_eq!(crate::chat::pill::engine(ws), "Claude Code · sonnet");
+    });
+}
+
+#[gpui_kit::test]
+fn an_approval_in_the_open_card_fits_inside_its_border_and_padding(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    let _answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    open_chat(handle, &ws, cx);
+    for full in [false, true] {
+        ws.update(cx, |ws, _| ws.templum_agent.full = full);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let card = window.find("agent-chat").bounds();
+            let approval = window.find("approval").bounds();
+            // 1 px of border and 8 of padding on each side.
+            assert_eq!(
+                approval.left() - card.left(),
+                gpui_kit::px(9.0),
+                "full: {full}"
+            );
+            assert_eq!(
+                card.right() - approval.right(),
+                gpui_kit::px(9.0),
+                "full: {full}"
+            );
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn an_approval_of_the_closed_chat_keeps_its_width_in_full_screen(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    ws.update(cx, |ws, _| ws.templum_agent.full = true);
+    let _answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let vp = ws.read(cx).viewport(window);
+        assert!(!ws.read(cx).templum_agent.open);
+        let width = f32::from(window.find("approval").bounds().size.width);
+        assert_eq!(width, 640.0_f32.min(vp.w - 32.0));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn suggestions_fill_the_field(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     open_chat(handle, &ws, cx);
