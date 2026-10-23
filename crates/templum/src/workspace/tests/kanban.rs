@@ -1767,7 +1767,7 @@ impl LongTodo {
 }
 
 /// The pointer moves to `at` and a frame is drawn: a scrollbar over its track is shown.
-fn hover_at(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32)) {
+pub(super) fn hover_at(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32)) {
     window.dispatch_event(
         PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
             position: point(px(at.0), px(at.1)),

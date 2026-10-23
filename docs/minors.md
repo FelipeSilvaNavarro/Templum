@@ -402,6 +402,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   behind an error branch it can't reach; `note_tabs.rs` places a block at the view's center twice and removes a tab
   and fixes `active` twice. Fix: the width computed once in `list_view`; `wired_checklist` returning the `&List`; one
   helper each in `note_tabs.rs`.
+- [ ] **A right-click on a long checklist's scrollbar opens no menu.** While the scrollbar shows (pointer over its
+  track, or scrolling), gpui-component's scrollbar stops every press on its 16-unit strip; `list_view`
+  (`crates/templum/src/checklist.rs`) picks the block and pans for the middle button in the capture phase, but the
+  block's menu opens from the block's own bubble-phase handler, so a right-click there does nothing. The strip also
+  covers the right 4 units of a row's ×. Fix: open the block's menu for the right button in that capture handler when
+  the press is on the strip, and leave a field's own right-click alone.
 
 ## Grid mode
 

@@ -342,6 +342,7 @@ impl Workspace {
                 let checklist = Checklist {
                     list,
                     editing: None,
+                    scroll: Default::default(),
                 };
                 Some(self.add_block(rect, Body::Checklist(checklist)))
             }
