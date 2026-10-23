@@ -1198,9 +1198,15 @@ impl Terminal {
     }
 
     fn send(&self, bytes: impl Into<Cow<'static, [u8]>>) {
+        let bytes = bytes.into();
+        // alacritty's event loop never finishes an empty write: all input after it would wait
+        // behind it, forever (an IME clearing its composition replaces it with "").
+        if bytes.is_empty() {
+            return;
+        }
         if let Some(pty) = &self.pty {
             self.inputs.fetch_add(1, Ordering::Relaxed);
-            let _ = pty.send(Msg::Input(bytes.into()));
+            let _ = pty.send(Msg::Input(bytes));
         }
     }
 
