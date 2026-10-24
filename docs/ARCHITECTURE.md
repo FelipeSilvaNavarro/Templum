@@ -172,6 +172,10 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 - `inbox.rs`: the requests inbox, one popup per workspace for what agents ask the person, and the notice on a
   terminal whose agent waits for an answer ([specs/ask-inbox.md](specs/ask-inbox.md));
   `workspace/inbox.rs` is its model.
+- `agents_view.rs`: the Agents popup, every running agent of every workspace in one list with its state, and the
+  sidebar's button with its count of the agents that finished unseen ([specs/agents-view.md](specs/agents-view.md));
+  `workspace/agents_view.rs` is its model: each agent's state as its block's dot tells it, the watch that ages
+  states and marks Done, the grouped rows and the popup's keys.
 - `balloon.rs`: the request itself as the inbox draws it: a question's dialog, a plan to approve, a yes/no request
   ([specs/connections.md](specs/connections.md#requests-from-agents)).
 - `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;

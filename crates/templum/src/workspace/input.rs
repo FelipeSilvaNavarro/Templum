@@ -734,6 +734,7 @@ impl Workspace {
             Command::ToggleSidebar => self.toggle_sidebar(window, cx),
             Command::Workspaces => self.toggle_screen(window, cx),
             Command::GoToWaiting => self.go_to_waiting(window, cx),
+            Command::AllAgents => self.toggle_agents(window, cx),
             Command::Find => self.open_find(window, cx),
             Command::OpenFile => self.open_file_by_name(window, cx),
             Command::Quit => self.quit(window, cx),

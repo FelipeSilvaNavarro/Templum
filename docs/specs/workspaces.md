@@ -41,9 +41,11 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
 - **Right-click a tile:** a menu with **Rename…** and **Delete…**.
   - Rename opens a dialog with a text field. Enter or **Rename** applies it, Esc cancels.
   - Delete asks first: "Delete *name*? Its terminals will close." It is disabled while only one workspace exists.
-- **At the foot, apart:** the requests inbox button ("Requests"; [ask-inbox.md](ask-inbox.md)) above the Git button
-  ([git.md](git.md)). A yellow badge at its top right counts the requests waiting in the workspace shown, "99+" past
-  99, and the button pulses for 3 seconds when one arrives there (not with reduced motion).
+- **At the foot, apart:** the Agents button ("Agents"; [agents-view.md](agents-view.md)) above the requests inbox
+  button ("Requests"; [ask-inbox.md](ask-inbox.md)) above the Git button ([git.md](git.md)). A yellow badge at the
+  Requests button's top right counts the requests waiting in the workspace shown, "99+" past 99, and the button
+  pulses for 3 seconds when one arrives there (not with reduced motion). An accent badge at the Agents button's top
+  right counts the agents of every running workspace that finished unseen, "99+" past 99; it never pulses.
 - **Collapsing:** the title bar gets a button on its left (gpui-kit's panel icon) that hides or shows the
   sidebar. The canvas then takes the whole width. Whether it is shown is kept across restarts.
 

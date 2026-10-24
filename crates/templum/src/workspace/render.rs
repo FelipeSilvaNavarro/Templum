@@ -311,6 +311,7 @@ impl Render for Workspace {
             self.remove_block(id, window, cx);
         }
         self.hear(window, cx);
+        self.watch_agents(window.is_window_active(), cx.background_executor().now());
         // A tool call whose block is gone is withdrawn (docs/specs/connections.md).
         self.drop_orphans(cx);
 
@@ -741,6 +742,22 @@ impl Render for Workspace {
                 .bottom(px(GIT_GAP))
                 .child(crate::inbox::popup(self, w, h, window, cx))
         });
+        // The Agents popup: the same place, size and layering as the inbox (never open together).
+        // The rows are made once a frame: the selection is pinned on them, and the popup draws them.
+        let rows = self.agents_open.then(|| {
+            let all = self.agent_rows();
+            let listed = self.listed_in(&all);
+            self.pin_agent(&all, &listed);
+            (all, listed)
+        });
+        let agents =
+            rows.map(|(all, listed)| {
+                let Size { w, h } = self.git_popup_size();
+                let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
+                div().absolute().left(px(left)).bottom(px(GIT_GAP)).child(
+                    crate::agents_view::popup(self, w, h, &all, listed, window, cx),
+                )
+            });
         // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
         let open = self.templum_agent.open;
         let full = open && self.templum_agent.full;
@@ -826,6 +843,7 @@ impl Render for Workspace {
             .children(agent)
             .children(git)
             .children(inbox)
+            .children(agents)
             // Under what the title bar opens: the settings, the theme picker, the screen.
             .children(welcome)
             .children(panel)

@@ -1,7 +1,7 @@
 # The Agents view: every agent, at a glance
 
 - **Date:** 2026-10-24
-- **Status:** Designed (kanban card 153, "a global view of all agents"); plan:
+- **Status:** Implemented (kanban card 153, "a global view of all agents"); plan:
   [2026-10-24-agents-view.md](../plans/2026-10-24-agents-view.md)
 - **Builds on:** [ask-inbox.md](ask-inbox.md) (the Requests inbox: this popup is its sibling, drawn the same way),
   [usage.md](usage.md#what-a-person-sees) (the usage chip's data and words), [workspaces.md](workspaces.md#the-sidebar)
@@ -254,3 +254,26 @@ Sizes beyond the list's width, paddings, the rows' exact layout and truncation, 
 look, the empty states' look, the details' section spacing, the screen box's look, which key handler of the popup
 takes ↑ ↓ Enter Esc before the field does, and where exactly Templum notes a state's change when it hears it (the
 plan names the places).
+
+## As built
+
+What the builder chose where the spec left it open:
+
+- The model is `workspace/agents_view.rs` (`Doing`, `Show`, `Watch`, `AgentRow`, the keys); the view is
+  `agents_view.rs`. The watch runs in a frame, after a bus message (`Workspace::serve`) and in the 1 s look loop.
+- `Doing::AwaitsSubagents` needs a subagent: a stale `awaits_subagents` flag with none left reads Working.
+- "Working · 1 subagent" is singular for one, as "Waiting for 1 subagent".
+- The group header's count of agents that need the person ignores the filter and the search; it reads "1 needs
+  you" for one and "2 need you" for more.
+- A request waiting in the inbox makes the row Needs you whatever news the block has (the dot may show the news).
+- The selection the list falls back on (the first row, when the chosen agent is hidden or left, or none was chosen)
+  is pinned each frame: it stays selected when the order changes. The person's own choice is kept apart: it is
+  selected again as soon as the filter or the search lists it, and goes only when its agent is gone.
+- A folder, in the rows and in the details (and the inbox's), is the last one read after a snapshot
+  (`Pane::seen.folder`): asking the process (`term.cwd()`) every frame is too dear on Windows.
+- The empty list says "No agent is running" whenever no agent runs, whatever is typed in the search.
+- ↑ and ↓, Enter and Esc are taken in the capture phase of the popup, so they reach the search field only as
+  typing; the picker's keys win while the theme picker is open, as in the inbox.
+- The empty words sit in the list column; the details column is blank when no row is selected.
+- The ages are drawn when the window is drawn: an idle window shows "2m" until something redraws it.
+- The details scroll with the wheel and show no scrollbar.

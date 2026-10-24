@@ -228,6 +228,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   that delays `stop_agent` lets the job write its file. A person sees nothing; a contributor may see CI fail once.
   Fix: a longer job (`sleep 10`, the final wait to match) so the stop has seconds to spare, or have the job loop
   until a "stopped" file exists and fail the test if it ever ends by itself.
+- [ ] **`a_task_for_an_agent_still_starting_is_typed_once_it_is_ready` failed once in a full run.**
+  (`crates/templum/src/workspace/tests/spawn.rs:707`, `said_twice`, seen during card 153 in a full
+  `cargo test --workspace`; it passed alone eight times and on the next full run.) A person sees nothing; a
+  contributor may see CI fail once. Fix: wait for the second echo with a deadline (frames until the screen has it),
+  not one look.
 - [ ] **`a_quiet_agent_is_told_once_to_a_master_not_waiting` failed once in a full run.**
   (`crates/templum/src/workspace/tests/delegate.rs:2832`, seen at d71ae86 in a full `cargo test --workspace` while
   two other agents built in their worktrees: the reply's end notice wasn't there yet, `told` was `[]`; it passed alone
@@ -2165,3 +2170,12 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   not a move with no button down, so a program that asked for every move (and highlights the option under the pointer)
   can have its choice moved before an Allow of `send_keys ["enter"]`. Counting the moves would ask again each time the
   pointer crosses it on the way to the approval. Fix: the screen hash above covers it.
+
+## Agents view
+
+- [ ] **A row's age is stale in a window nothing redraws.** `inbox::age(now - since)` is read when the popup is
+  drawn (`crates/templum/src/agents_view.rs`, `agent_row`), and nothing animates, so an open popup in a quiet window
+  says "2m" until the next frame. Fix: while the popup is open, a 30-second timer that calls `cx.notify()`.
+- [ ] **The details have no scrollbar.** The right column scrolls with the wheel but, unlike the inbox's, draws no
+  `scrollbar_over` (`crates/templum/src/agents_view.rs`, `detail`): a tall details column (many subagents, a long
+  task) gives no hint that it goes on. Fix: keep a `ScrollHandle` for it in the Workspace and draw `scrollbar_over`.

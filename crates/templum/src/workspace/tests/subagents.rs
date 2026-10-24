@@ -13,7 +13,7 @@ use super::*;
 
 /// The Claude Code hook input `input`, from the agent in `terminal`, as `templum hook claude`
 /// hands it to the workspace.
-fn hook(
+pub(super) fn hook(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,

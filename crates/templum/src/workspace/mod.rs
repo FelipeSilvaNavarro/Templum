@@ -2,6 +2,7 @@
 
 mod activity;
 mod agent;
+pub(crate) mod agents_view;
 mod approvals;
 mod autostart;
 mod blocks;
@@ -66,7 +67,8 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, App, Bounds, Context, FocusHandle, Focusable as _, KeyBinding, Keystroke, Pixels,
-    Point as PixelPoint, SharedString, Subscription, Task, Window, WindowAppearance, px,
+    Point as PixelPoint, SharedString, Subscription, Task, UniformListScrollHandle, Window,
+    WindowAppearance, px,
 };
 use templum_canvas::{
     Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Edges, Gesture, Guide, Point,
@@ -337,6 +339,8 @@ pub(crate) struct Pane {
     pub settles: Option<Instant>,
     /// The Claude Code subagent it shows (`templum follow`): read-only, never saved.
     pub follows: Option<subagents::Follows>,
+    /// What the Agents view keeps of its agent between frames (docs/specs/agents-view.md).
+    pub watch: agents_view::Watch,
 }
 
 impl Pane {
@@ -1337,6 +1341,26 @@ pub struct Workspace {
     pub(crate) inbox_list: gpui_kit::ScrollHandle,
     /// The selection changed: the list scrolls to its row once it is drawn and laid out.
     pub(crate) inbox_reveal: std::cell::Cell<bool>,
+    /// The Agents view (docs/specs/agents-view.md): the chip chosen, the search's words (trimmed),
+    /// whether the pointer is over the list, and the order its rows were last listed in, which
+    /// they keep while it is.
+    pub(crate) agents_show: agents_view::Show,
+    pub(crate) agents_query: String,
+    pub(crate) agents_hover: bool,
+    pub(crate) agents_held: std::cell::RefCell<Vec<String>>,
+    /// The Agents popup is open. Never together with the Git popup or the inbox.
+    pub(crate) agents_open: bool,
+    /// The terminal of the agent the person chose in the popup; none, or one it doesn't list:
+    /// `agents_pinned`'s row, else the first.
+    pub(crate) agents_at: Option<String>,
+    /// The terminal of the agent shown selected in its stead (the first row, say): it stays
+    /// selected as the order changes, until the chosen one is listed again.
+    pub(crate) agents_pinned: Option<String>,
+    /// Its search field, made at the first open; its text is `agents_query`.
+    pub(crate) agents_search: Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
+    _agents_search_sub: Option<Subscription>,
+    /// The list's scroll, kept to show the selected row.
+    pub(crate) agents_list: UniformListScrollHandle,
     /// The plan's limits as Claude Code's `/usage` last told them, by account (the agent's id
     /// for its own folder).
     pub(crate) claude_polled: HashMap<String, templum_usage::Limits>,
@@ -1632,10 +1656,7 @@ impl Workspace {
         let looks = cx.spawn(async move |ws, cx| {
             loop {
                 cx.background_executor().timer(activity::LOOK).await;
-                let looked = ws.update(cx, |ws, cx| {
-                    ws.look_at_agents(cx);
-                    ws.deliver_notices(cx);
-                });
+                let looked = ws.update(cx, |ws, cx| ws.look_around(cx));
                 if looked.is_err() {
                     break;
                 }
@@ -1777,6 +1798,16 @@ impl Workspace {
             inbox_pulse: None,
             inbox_list: Default::default(),
             inbox_reveal: Default::default(),
+            agents_show: Default::default(),
+            agents_query: String::new(),
+            agents_hover: false,
+            agents_held: Default::default(),
+            agents_open: false,
+            agents_at: None,
+            agents_pinned: None,
+            agents_search: None,
+            _agents_search_sub: None,
+            agents_list: UniformListScrollHandle::new(),
             claude_polled: HashMap::new(),
             claude_asked: HashMap::new(),
             claude_queue: Default::default(),

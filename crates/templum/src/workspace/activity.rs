@@ -95,6 +95,14 @@ impl Looks {
 }
 
 impl Workspace {
+    /// The loop's look: at the screens, at what the agents' states became (no window is at hand
+    /// to say whether one is looked at: the next frame does), and the notices due.
+    pub(super) fn look_around(&mut self, cx: &mut Context<Self>) {
+        self.look_at_agents(cx);
+        self.watch_agents(false, cx.background_executor().now());
+        self.deliver_notices(cx);
+    }
+
     /// A look at every agent's screen, in every workspace: the state it gives, where that is new.
     /// A look after the person typed, clicked or scrolled in it tells nothing (they change it).
     /// An agent at work whose screen went still ends the task it was on, with its last lines: no

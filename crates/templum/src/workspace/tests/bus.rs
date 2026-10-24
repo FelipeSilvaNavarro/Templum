@@ -828,16 +828,10 @@ fn without_a_data_folder_there_is_no_bus(cx: &mut TestAppContext) {
     ws.read_with(cx, |ws, _| assert!(ws.bus.is_none()));
 }
 
-/// Hands the workspace an agent's event, as `templum hook` does.
-pub(super) fn event(
-    handle: AnyWindowHandle,
-    ws: &Entity<Workspace>,
-    cx: &mut TestAppContext,
-    terminal: &str,
-    event: Value,
-) {
+/// An agent's event, as `templum hook` hands it to the bus.
+pub(super) fn event_message(terminal: &str, event: Value) -> Message {
     let (reply, _) = std::sync::mpsc::channel();
-    let message = Message {
+    Message {
         hello: Hello {
             terminal: terminal.into(),
             client: "hook".into(),
@@ -849,7 +843,18 @@ pub(super) fn event(
             params: event,
         },
         reply,
-    };
+    }
+}
+
+/// Hands the workspace an agent's event.
+pub(super) fn event(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    terminal: &str,
+    event: Value,
+) {
+    let message = event_message(terminal, event);
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| ws.serve(message, window, cx))
     })

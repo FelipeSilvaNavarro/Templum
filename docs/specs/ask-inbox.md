@@ -32,7 +32,8 @@ person answers there, one after the other, without going to any terminal.
 - Requests of other workspaces in this inbox: each workspace has its own; the others keep telling as today (the
   workspace tile's yellow dot, the notification, the sound, Ctrl+Shift+A).
 - The Templum Agent's own approvals (crates/templum/src/chat/approval.rs): they stay in its chat.
-- The global view of every agent (kanban card 153): later; it may link to this inbox.
+- The global view of every agent (kanban card 153): [agents-view.md](agents-view.md), the Agents popup; its "Open
+  request" opens this inbox at an agent's oldest request.
 - New ways to ask: the tools and their answers stay as they are, but for `why` (below).
 
 ## Anti-goals (a failure even if it works)

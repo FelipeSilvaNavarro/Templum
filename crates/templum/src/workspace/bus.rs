@@ -159,9 +159,16 @@ pub(super) fn same_or_copy(exe: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 impl Workspace {
+    /// Answers one message from the bus, then notes the agents' states it changed (an agent's turn
+    /// ends while no frame is drawn).
+    pub(super) fn serve(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
+        self.serve_message(message, window, cx);
+        self.watch_agents(window.is_window_active(), cx.background_executor().now());
+    }
+
     /// Answers one message from the bus. A tool call that waits is kept (`waits.rs`) and answered
     /// later; meanwhile the connection's next lines are served.
-    pub(super) fn serve(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
+    fn serve_message(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
         let Message {
             hello,
             conn,

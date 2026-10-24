@@ -10,7 +10,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, FontWeight, KeyDownEvent,
+    AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, FontWeight, Hsla, KeyDownEvent,
     ScrollWheelEvent, TestSupportExt, Window, div, point, px,
 };
 use templum_canvas::BlockId;
@@ -256,7 +256,7 @@ fn detail(ws: &Workspace, wait: &Wait, w: f32, h: f32, cx: &mut Context<Workspac
     let stopped = matches!(wait.what, Waiting::Question { stopped: true, .. });
     let pane = ws.pane(&wait.from);
     let folder = pane
-        .and_then(|p| p.term.cwd().or_else(|| p.seen.folder.clone()))
+        .and_then(|p| p.seen.folder.clone())
         .map(|f| f.display().to_string());
     let from = div()
         .flex()
@@ -368,7 +368,7 @@ fn detail(ws: &Workspace, wait: &Wait, w: f32, h: f32, cx: &mut Context<Workspac
 }
 
 /// A section's name over its lines.
-fn section(ws: &Workspace, name: &'static str) -> Div {
+pub(crate) fn section(ws: &Workspace, name: &'static str) -> Div {
     div()
         .text_size(px(SMALL))
         .font_weight(FontWeight::SEMIBOLD)
@@ -377,7 +377,7 @@ fn section(ws: &Workspace, name: &'static str) -> Div {
 }
 
 /// A line of what is only known around the request.
-fn dim(ws: &Workspace, text: String) -> Div {
+pub(crate) fn dim(ws: &Workspace, text: String) -> Div {
     div()
         .min_w(px(0.0))
         .text_size(px(SMALL))
@@ -462,7 +462,21 @@ pub(crate) fn badge_text(count: usize) -> String {
 /// The count of the workspace's requests as a small yellow badge, `id` its element: none when
 /// nothing waits.
 pub(crate) fn badge(ws: &Workspace, id: &'static str) -> Option<AnyElement> {
-    let count = ws.inbox().len();
+    count_badge(
+        ws,
+        ws.inbox().len(),
+        hsla(ws.theme.palette.ansi[3], 1.0),
+        id,
+    )
+}
+
+/// `count` as a small badge of `color` at the top right of a button, `id` its element: none for 0.
+pub(crate) fn count_badge(
+    ws: &Workspace,
+    count: usize,
+    color: Hsla,
+    id: &'static str,
+) -> Option<AnyElement> {
     (count > 0).then(|| {
         div()
             .id(id)
@@ -476,7 +490,7 @@ pub(crate) fn badge(ws: &Workspace, id: &'static str) -> Option<AnyElement> {
             .items_center()
             .justify_center()
             .rounded_full()
-            .bg(hsla(ws.theme.palette.ansi[3], 1.0))
+            .bg(color)
             .text_size(px(10.0))
             .font_weight(FontWeight::BOLD)
             .text_color(ws.ui.surface)

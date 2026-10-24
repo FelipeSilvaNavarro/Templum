@@ -1,6 +1,7 @@
 //! The requests inbox's model (docs/specs/ask-inbox.md): the requests of the workspace shown,
 //! the one selected, and why each is asked.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use gpui_kit::{App, Context, KeyDownEvent, Keystroke, Window};
@@ -58,6 +59,7 @@ impl Workspace {
     ) {
         self.inbox_open = true;
         self.git_open = false;
+        self.agents_open = false;
         if let Some(at) = at
             && self.inbox().iter().any(|w| w.key == at)
         {
@@ -262,21 +264,26 @@ impl Workspace {
         self.show_selected();
     }
 
+    /// The card each block works on, by the block's id: its newest card not yet in its board's
+    /// last column, of any board.
+    pub(crate) fn cards_by_block(&self) -> HashMap<String, (u64, String)> {
+        let mut cards: HashMap<String, (u64, String)> = HashMap::new();
+        for board in &self.boards.boards {
+            let open = board.columns.len().saturating_sub(1);
+            for card in board.columns[..open].iter().flat_map(|c| &c.cards) {
+                if let Some(Assignee::Block(uid)) = &card.assignee
+                    && cards.get(uid).is_none_or(|(id, _)| card.id > *id)
+                {
+                    cards.insert(uid.clone(), (card.id, card.title.clone()));
+                }
+            }
+        }
+        cards
+    }
+
     /// Why the agent that made `wait` asks, as far as Templum knows and the agent said.
     pub(crate) fn why(&self, wait: &Wait) -> Why {
-        let uid = self.uid_of(&wait.from);
-        // Its newest card not yet in its board's last column.
-        let card = self
-            .boards
-            .boards
-            .iter()
-            .flat_map(|board| {
-                let open = board.columns.len().saturating_sub(1);
-                board.columns[..open].iter().flat_map(|c| &c.cards)
-            })
-            .filter(|card| card.assignee == Some(Assignee::Block(uid.clone())))
-            .max_by_key(|card| card.id)
-            .map(|card| (card.id, card.title.clone()));
+        let card = self.cards_by_block().remove(&self.uid_of(&wait.from));
         let task = self
             .pane(&wait.from)
             .and_then(|pane| pane.handed.as_ref())

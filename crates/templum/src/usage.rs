@@ -294,12 +294,16 @@ pub(crate) fn popover(ws: &Workspace, cx: &mut Context<Workspace>) -> AnyElement
         .into_any_element()
 }
 
+/// The chip's context part: "42%", or "84k ctx" when the window's size is unknown.
+pub(crate) fn context_text(s: &Session) -> Option<String> {
+    s.context_percent
+        .map(|p| format!("{p:.0}%"))
+        .or_else(|| s.context_tokens.map(|t| format!("{} ctx", tokens(t))))
+}
+
 /// A terminal's chip: its text ("42% · $3.10") and its tooltip. None when nothing is known.
 pub(crate) fn chip(s: &Session) -> Option<(String, String)> {
-    let context = s
-        .context_percent
-        .map(|p| format!("{p:.0}%"))
-        .or_else(|| s.context_tokens.map(|t| format!("{} ctx", tokens(t))));
+    let context = context_text(s);
     let spent = s
         .cost_usd
         .map(|c| format!("${c:.2}"))
@@ -350,7 +354,7 @@ fn level(ws: &Workspace, used: f32) -> Hsla {
 }
 
 /// A thin bar `width` wide, filled to `percent`.
-fn bar(percent: f32, width: f32, color: Hsla, track: Hsla) -> Div {
+pub(crate) fn bar(percent: f32, width: f32, color: Hsla, track: Hsla) -> Div {
     div()
         .flex_shrink_0()
         .w(px(width))

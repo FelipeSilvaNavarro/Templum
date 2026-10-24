@@ -1,5 +1,5 @@
 //! The workspaces sidebar: a tile per workspace (click: show it; right-click: rename, delete),
-//! and + for a new one; the requests and Git buttons at its foot. See docs/specs/workspaces.md.
+//! and + for a new one; the agents, requests and Git buttons at its foot. See docs/specs/workspaces.md.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
@@ -127,7 +127,7 @@ pub(crate) fn render(
                 .children(tiles)
                 .child(plus),
         )
-        // Apart, in the corner: the requests and Git aren't workspaces.
+        // Apart, in the corner: the agents, requests and Git aren't workspaces.
         .child(
             div()
                 .flex()
@@ -137,6 +137,7 @@ pub(crate) fn render(
                 .mt(px(8.0))
                 .border_t_1()
                 .border_color(ui.hairline)
+                .child(crate::agents_view::button(ws, TILE, cx))
                 .child(crate::inbox::button(ws, pulse, TILE, cx))
                 .child(git),
         )

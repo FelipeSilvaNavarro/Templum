@@ -809,6 +809,7 @@ impl Workspace {
                 asked_by: None,
                 settles: None,
                 follows: None,
+                watch: Default::default(),
             })),
         );
         self.added(id);

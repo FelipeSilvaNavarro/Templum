@@ -41,6 +41,7 @@ pub(crate) enum Command {
     ToggleSidebar,
     Workspaces,
     GoToWaiting,
+    AllAgents,
     Find,
     OpenFile,
     Quit,
@@ -48,7 +49,7 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 39] = [
+    pub const ALL: [Command; 40] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
@@ -85,6 +86,7 @@ impl Command {
         Command::ToggleSidebar,
         Command::Workspaces,
         Command::GoToWaiting,
+        Command::AllAgents,
         Command::Find,
         Command::OpenFile,
         Command::Quit,
@@ -129,6 +131,7 @@ impl Command {
             Command::ToggleSidebar => "toggle_sidebar",
             Command::Workspaces => "workspaces",
             Command::GoToWaiting => "go_to_waiting",
+            Command::AllAgents => "all_agents",
             Command::Find => "find",
             Command::OpenFile => "open_file",
             Command::Quit => "quit",
@@ -174,6 +177,7 @@ impl Command {
             Command::ToggleSidebar => "Show or hide the sidebar",
             Command::Workspaces => "The workspaces screen",
             Command::GoToWaiting => "Go to the terminal waiting for you",
+            Command::AllAgents => "Show all agents",
             Command::Find => "Find in the terminal",
             Command::OpenFile => "Open a file by name (in an editor)",
             Command::Quit => "Quit Templum",
@@ -283,6 +287,8 @@ impl Command {
             (Command::Workspaces, true) => &["cmd-shift-o"],
             (Command::GoToWaiting, false) => &["ctrl-shift-a"],
             (Command::GoToWaiting, true) => &["cmd-shift-a"],
+            (Command::AllAgents, false) => &["ctrl-shift-l"],
+            (Command::AllAgents, true) => &["cmd-shift-l"],
             (Command::Find, false) => &["ctrl-shift-f"],
             (Command::Find, true) => &["cmd-f"],
             (Command::OpenFile, false) => &["ctrl-p"],
@@ -341,6 +347,7 @@ pub(crate) struct KeysConfig {
     pub toggle_sidebar: Option<Keys>,
     pub workspaces: Option<Keys>,
     pub go_to_waiting: Option<Keys>,
+    pub all_agents: Option<Keys>,
     pub find: Option<Keys>,
     pub open_file: Option<Keys>,
     pub quit: Option<Keys>,
@@ -385,6 +392,7 @@ impl KeysConfig {
             Command::ToggleSidebar => self.toggle_sidebar.as_ref(),
             Command::Workspaces => self.workspaces.as_ref(),
             Command::GoToWaiting => self.go_to_waiting.as_ref(),
+            Command::AllAgents => self.all_agents.as_ref(),
             Command::Find => self.find.as_ref(),
             Command::OpenFile => self.open_file.as_ref(),
             Command::Quit => self.quit.as_ref(),
@@ -429,6 +437,7 @@ impl KeysConfig {
             Command::ToggleSidebar => &mut self.toggle_sidebar,
             Command::Workspaces => &mut self.workspaces,
             Command::GoToWaiting => &mut self.go_to_waiting,
+            Command::AllAgents => &mut self.all_agents,
             Command::Find => &mut self.find,
             Command::OpenFile => &mut self.open_file,
             Command::Quit => &mut self.quit,
@@ -558,6 +567,22 @@ mod tests {
         let mut keys = KeysConfig::default();
         keys.set(Command::NewGit, Some(Keys::One("ctrl-g".into())));
         assert_eq!(keys.get(Command::NewGit), Some(&Keys::One("ctrl-g".into())));
+    }
+
+    #[test]
+    fn all_agents_is_ctrl_shift_l() {
+        assert_eq!(Command::AllAgents.defaults(false), ["ctrl-shift-l"]);
+        assert_eq!(Command::AllAgents.defaults(true), ["cmd-shift-l"]);
+        assert_eq!(Command::AllAgents.name(), "all_agents");
+        assert_eq!(Command::AllAgents.title(), "Show all agents");
+        assert_eq!(
+            defaults(false).command(&typed("ctrl-shift-l")),
+            Some(Command::AllAgents)
+        );
+        assert_eq!(
+            defaults(true).command(&typed("cmd-shift-l")),
+            Some(Command::AllAgents)
+        );
     }
 
     fn typed(s: &str) -> Keystroke {

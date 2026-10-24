@@ -17,7 +17,7 @@ use crate::workspace::inbox::Why;
 use crate::workspace::{Handed, Waiting};
 
 /// A terminal opened apart from the others, at row `row` of the canvas.
-fn open_terminal(
+pub(super) fn open_terminal(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
@@ -463,7 +463,7 @@ fn a_request_keeps_when_it_arrived(cx: &mut TestAppContext) {
     assert_eq!(waited, Duration::from_secs(90));
 }
 
-fn name(text: String) -> ElementId {
+pub(super) fn name(text: String) -> ElementId {
     ElementId::Name(text.into())
 }
 
@@ -482,7 +482,7 @@ fn drawn_inbox(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestApp
 }
 
 /// Clicks the element `id`, the window drawn before and after.
-fn click_id(handle: AnyWindowHandle, cx: &mut TestAppContext, id: ElementId) {
+pub(super) fn click_id(handle: AnyWindowHandle, cx: &mut TestAppContext, id: ElementId) {
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.click(id, cx);
@@ -491,7 +491,7 @@ fn click_id(handle: AnyWindowHandle, cx: &mut TestAppContext, id: ElementId) {
     .unwrap();
 }
 
-fn drawn(handle: AnyWindowHandle, cx: &mut TestAppContext, id: ElementId) -> bool {
+pub(super) fn drawn(handle: AnyWindowHandle, cx: &mut TestAppContext, id: ElementId) -> bool {
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.try_find(id).is_some()
@@ -503,7 +503,7 @@ fn part(n: BlockId, what: &str) -> ElementId {
     crate::balloon::part(n.0 as usize, what)
 }
 
-fn asks(
+pub(super) fn asks(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
