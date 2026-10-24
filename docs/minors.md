@@ -806,6 +806,36 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   press would open the block's menu. Fix: open the block's menu from the list's capture handler when the pointer is
   over the strip and no card is (the cards as direct children of the scrolling box give their bounds through
   `ScrollHandle::bounds_for_item`).
+- [ ] **The attachments' look and the drop and paste weren't seen in a window.** Card 152
+  (`crates/templum/src/kanban.rs`, `open_draft`: the Attachments section, the ring on `card-body`) was built while the
+  person slept and checked headless only. A person may meet thumbnails or rows that crowd a long name, a ring that is
+  too faint in a theme, ten images that wrap badly, or a drop or a pasted screenshot
+  (`grim -g "$(slurp)" - | wl-copy`) that behaves differently on Wayland, macOS or Windows. Fix: run
+  `cargo run -p templum -- --dev` in light and dark themes, attach a 9 MB image, a PDF and a text file, drop from the
+  file manager, paste a screenshot and copied text, and correct what looks wrong.
+- [ ] **No headless test reads the face's attachment count.** The face (`meta_row`,
+  `crates/templum/src/kanban.rs`) draws the paperclip and the count in a div the harness only finds by id, so
+  `attach_shows_a_thumbnail_and_a_row_and_done_puts_them_on_the_card` asserts the element appears and goes, and the
+  count is checked through the card's data. A wrong number on the face passes. Fix: give the div an accessibility
+  label with the count (or read its text if gpui-kit gains a way) and assert "2".
+- [ ] **The sweep at start reads and deletes on the UI thread.** `attachments::sweep`
+  (`crates/templum/src/attachments.rs`, called from `load_spaces`) walks `<data>/attachments/` before any window can
+  open, as the design chose; a data folder with thousands of attachments, on a slow disk, delays the first frame.
+  Fix: sweep on the background executor after the first frame, with the boards cloned into the task.
+- [ ] **A copy that fails after Save draft leaves a draft that is the card.** `land` (`crates/templum/src/kanban.rs`)
+  returns on `Err` and does nothing else: the draft kept at Save draft holds no change but the copy that failed, so
+  it equals its card and the face shows the draft pencil for nothing until someone opens and leaves the card. Fix: on
+  `Err`, drop that card's kept draft when its `work` equals its `base` (ids aside), with a test.
+- [ ] **A file copied while a draft is saved and reopened can be lost.** In `land` (`crates/templum/src/kanban.rs`,
+  the `Kept` arm): Save draft while a file copies, reopen the card from the draft, press Done before the copy ends,
+  and the copy finds no dialog and no draft (Done dropped it) and the card isn't its dialog's to take it: the file
+  lands on neither the card nor a draft, and the next start sweeps it. Fix to consider: remember the last dialog's
+  outcome per card on the workspace and follow it when no dialog and no draft is found, with a test.
+- [ ] **On X11 a copy from an app that offers an image and text attaches the image.** gpui-fast-linux 0.1.8
+  (`x11/clipboard.rs`, `get_any`) reads image formats before text, so copying cells from LibreOffice (which offers
+  both) and pressing Ctrl+V in a card's field gives `ClipboardEntry::Image` and no text: `pasted_image`
+  (`crates/templum/src/kanban.rs`) attaches "Pasted image.png" instead of pasting the words. Wayland and the other
+  platforms are not known to do it. Fix: upstream, or prefer text in that reader.
 
 ## Connections
 

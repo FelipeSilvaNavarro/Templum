@@ -532,7 +532,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
 | `ask_user` | `questions` (each `question`, `header`, `options` with `label`, `description`, `preview`, `multiSelect`), or `question` and `options` (strings); `timeout` (none) | Questions in the inbox ([Requests](#requests-from-agents), [ask-user.md](ask-user.md)); the answers as JSON, or with `question` the answer as text | — | 3 |
 | `propose_plan` | `plan` (Markdown, at most 256 KB), `title`, `timeout` (none) | A plan in the inbox, Approve or Reject with a comment ([agent-tools.md](agent-tools.md#propose_plan)); `Approved.`, or the error `Rejected.`, with the comment | — | card 35 |
-| `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, priority, assignee (`(you)` on the caller's), checklist progress and comment count; with `card`, that card whole: its description, checklist items and comments, each with its number (and "edited" once its author changed it) ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40, card 77 |
+| `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, priority, assignee (`(you)` on the caller's), checklist progress, comment and attachment counts; with `card`, that card whole: its description, checklist items, attachments (each one's name, size and absolute path, [card 152](kanban.md#attachments-kanban-card-152)) and comments, each with its number (and "edited" once its author changed it) ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40, card 77 |
 | `create_card` | `board`, `column`, `title`, `description`, `priority`, `for`, `checklist` | A new card at the column's end (the board's first column when left out); its id. Its description tells an agent a review's findings are a card each (card 35) | wired kanban | 4, card 40 |
 | `edit_card` | `card`, `priority`, `for`, `add_items`, `check`, `uncheck` | Sets the card's priority and who it is for, adds checklist items, checks and unchecks them: one Ctrl+Z step ([Cards for an agent](#cards-for-an-agent)) | wired kanban | card 40 |
 | `move_card` | `card`, `column` | Moves a card to the end of a column; into the board's last column or one titled Review (either case), unless the card's newest comment is the caller's, its answer asks for one: "Say on it what you did and what the next one needs to know: comment_card." | wired kanban | 4 |
@@ -598,8 +598,10 @@ runs "any X" when its agent is X or runs X's program (the first word of their co
   `"priority" is low, medium, high or none`.
 - **`list_cards`** lines, in this order after the id and title: the labels, `priority high`, the assignee
   (`assignee b7k2m "Claude Code · api"` for a block, `for any codex` for an agent; ` (you)` after it when it is the
-  caller's block, or the caller's agent), `checklist 2/5`, the comments. With `card`, after the description:
-  `checklist:` then one line per item, `  41 [ ] Build` (its id, `[x]` or `[ ]`, its text), as `read_checklist` does.
+  caller's block, or the caller's agent), `checklist 2/5`, the comments, `2 attachments`. With `card`, after the
+  description:
+  `checklist:` then one line per item, `  41 [ ] Build` (its id, `[x]` or `[ ]`, its text), as `read_checklist` does;
+  then, with a data folder, `attachments:` and a line each, `  shot.png  47 KB  <data folder>/attachments/41/shot.png`.
 - **`create_card`** also takes `priority`, `for` and `checklist` (text, an item per line, read as `add_items` reads
   it). Its answer is unchanged: `Created card 40.`
 - **`edit_card`** takes `card` and at least one of `priority`, `for`, `add_items` (text, as `add_items`), `check` and

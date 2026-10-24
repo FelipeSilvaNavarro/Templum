@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::attachments;
 use crate::checklists::Item;
 use crate::session::{self, Loaded};
 
@@ -86,6 +87,43 @@ pub(crate) struct Card {
     pub checklist: Vec<Item>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<Comment>,
+    /// Files kept for it in `<data>/attachments/<id>/`, in the order attached.
+    #[serde(
+        default,
+        deserialize_with = "known",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub attachments: Vec<Attachment>,
+}
+
+/// A file of a card, by its name in the card's folder. One whose name isn't a plain file name
+/// doesn't read, so a hand-edited `boards.json` can't point outside the folder.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawAttachment")]
+pub(crate) struct Attachment {
+    pub name: String,
+    pub size: u64,
+}
+
+#[derive(Deserialize)]
+struct RawAttachment {
+    name: String,
+    size: u64,
+}
+
+impl TryFrom<RawAttachment> for Attachment {
+    type Error = String;
+
+    fn try_from(raw: RawAttachment) -> Result<Self, String> {
+        if attachments::plain_name(&raw.name) {
+            Ok(Attachment {
+                name: raw.name,
+                size: raw.size,
+            })
+        } else {
+            Err(format!("{:?} is not a file name", raw.name))
+        }
+    }
 }
 
 /// Who a card is for: one block (one agent's session), or any session of an agent.
@@ -187,16 +225,26 @@ impl Card {
             assignee: None,
             checklist: Vec::new(),
             comments: Vec::new(),
+            attachments: Vec::new(),
         }
     }
 
-    /// What sending it to a terminal types: its title, then its description.
-    pub fn text(&self) -> String {
-        if self.description.trim().is_empty() {
+    /// What sending it to a terminal types: its title, then its description, then (with a data
+    /// folder to say where they are) the path of each attachment, for the agent to read.
+    pub fn text(&self, data: Option<&Path>) -> String {
+        let mut text = if self.description.trim().is_empty() {
             self.title.clone()
         } else {
             format!("{}\n\n{}", self.title, self.description)
+        };
+        if let (Some(data), false) = (data, self.attachments.is_empty()) {
+            text.push_str("\n\nAttachments:");
+            for a in &self.attachments {
+                let path = attachments::dir(data, self.id).join(&a.name);
+                text.push_str(&format!("\n{}", path.display()));
+            }
         }
+        text
     }
 
     /// Its checklist's (done, all).
@@ -290,6 +338,18 @@ impl Draft {
                     }
                 }
                 _ => {}
+            }
+        }
+        for a in &base.attachments {
+            if work.attachments.iter().all(|w| w.name != a.name) {
+                card.attachments.retain(|c| c.name != a.name);
+            }
+        }
+        for a in &work.attachments {
+            if base.attachments.iter().all(|b| b.name != a.name)
+                && card.attachments.iter().all(|c| c.name != a.name)
+            {
+                card.attachments.push(a.clone());
             }
         }
     }
@@ -505,7 +565,11 @@ impl Boards {
     pub fn finish_draft(&mut self, board: u64, draft: &Draft) -> Option<u64> {
         self.drop_draft(draft.at);
         if draft.new {
-            let id = self.next();
+            // An attachment reserved its id (`work.id`) so its files are in the card's folder.
+            let id = match draft.work.id {
+                0 => self.next(),
+                reserved => reserved,
+            };
             let card = Card {
                 id,
                 ..draft.work.clone()
@@ -1370,5 +1434,120 @@ mod tests {
             panic!("not read")
         };
         assert!(read.drafts.is_empty());
+    }
+    fn attached(name: &str, size: u64) -> Attachment {
+        Attachment {
+            name: name.into(),
+            size,
+        }
+    }
+
+    #[test]
+    fn attachments_read_back_and_a_card_without_any_writes_no_key() {
+        let (mut boards, board, _, cards) = abc();
+        boards.edit_card(board, cards[0], |c| {
+            c.attachments = vec![attached("shot.png", 48213), attached("log.txt", 12)]
+        });
+        let d = tempfile::tempdir().unwrap();
+        save(d.path(), &boards, 1).unwrap();
+        assert_eq!(load(d.path()), Loaded::Saved(boards.clone()));
+        let text = std::fs::read_to_string(path(d.path())).unwrap();
+        assert_eq!(text.matches("\"attachments\"").count(), 1, "{text}");
+        assert!(text.contains("\"name\": \"shot.png\""), "{text}");
+        assert!(text.contains("\"size\": 48213"), "{text}");
+    }
+
+    #[test]
+    fn an_attachment_name_that_leaves_its_folder_is_dropped() {
+        let d = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T",
+            "cards":[{"id":3,"title":"kept","attachments":[
+              {"name":"../../.ssh/id_rsa","size":1},{"name":"a/b","size":1},{"name":"a\\b","size":1},
+              {"name":"","size":1},{"name":"..","size":1},{"name":".","size":1},{"name":"ok.png","size":7},
+              {"size":3}]}]}]}]}"#;
+        std::fs::write(path(d.path()), text).unwrap();
+        let Loaded::Saved(read) = load(d.path()) else {
+            panic!("not read")
+        };
+        let card = &read.boards[0].columns[0].cards[0];
+        assert_eq!(card.title, "kept");
+        assert_eq!(card.attachments, [attached("ok.png", 7)]);
+    }
+
+    #[test]
+    fn done_adds_and_removes_the_persons_attachments_and_keeps_the_rest() {
+        let (mut boards, board, _, card) = one_card();
+        boards.edit_card(board, card, |c| {
+            c.attachments = vec![attached("old.png", 1), attached("keep.txt", 2)]
+        });
+        let draft = draft_of(&boards, board, card, |c| {
+            c.attachments.retain(|a| a.name != "old.png");
+            c.attachments.push(attached("new.pdf", 3));
+        });
+        // Meanwhile (a second window's Done or a Ctrl+Z) the card gained a file.
+        boards.edit_card(board, card, |c| {
+            c.attachments.push(attached("other.png", 4))
+        });
+        assert_eq!(boards.finish_draft(board, &draft), Some(card));
+        let names: Vec<_> = boards
+            .card(board, card)
+            .unwrap()
+            .attachments
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        assert_eq!(names, ["keep.txt", "other.png", "new.pdf"]);
+    }
+
+    #[test]
+    fn a_new_card_keeps_its_reserved_id_at_done() {
+        let (mut boards, board, column, _) = one_card();
+        let reserved = boards.next();
+        let draft = Draft {
+            at: column,
+            new: true,
+            base: Card::new(reserved),
+            work: Card {
+                title: "Typed".into(),
+                attachments: vec![attached("shot.png", 5)],
+                ..Card::new(reserved)
+            },
+        };
+        assert_eq!(boards.finish_draft(board, &draft), Some(reserved));
+        assert_eq!(boards.card(board, reserved).unwrap().attachments.len(), 1);
+        // No reservation (0): a fresh id, as before.
+        let plain = Draft {
+            base: Card::new(0),
+            work: Card::new(0),
+            ..draft
+        };
+        let made = boards.finish_draft(board, &plain).unwrap();
+        assert_ne!(made, 0);
+        assert_ne!(made, reserved);
+    }
+
+    #[test]
+    fn a_cards_text_ends_with_its_attachments_paths() {
+        let mut card = Card::new(7);
+        card.title = "Fix".into();
+        card.attachments = vec![attached("shot.png", 5), attached("log.txt", 6)];
+        let data = Path::new("data");
+        let shot = crate::attachments::dir(data, 7).join("shot.png");
+        let log = crate::attachments::dir(data, 7).join("log.txt");
+        assert_eq!(
+            card.text(Some(data)),
+            format!("Fix\n\nAttachments:\n{}\n{}", shot.display(), log.display())
+        );
+        assert_eq!(
+            card.text(None),
+            "Fix",
+            "without a data folder there is no path"
+        );
+        assert_eq!(Card::new(8).text(Some(data)), "New card");
+        card.description = "Why".into();
+        assert!(
+            card.text(Some(data))
+                .starts_with("Fix\n\nWhy\n\nAttachments:\n")
+        );
     }
 }

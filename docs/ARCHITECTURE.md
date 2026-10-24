@@ -225,7 +225,9 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   `menu::Items` arm ([specs/cockpit.md](specs/cockpit.md)). Blocks snap to each other's edges and centers while they
   are moved or resized (`templum-canvas`'s `snap.rs`). The toolbar (`toolbar.rs`) holds the tools;
   `workspace::Tool` is the active one. Kanban boards are app-wide (`Workspace::boards`,
-  `board.rs`, saved in `boards.json` with the snapshot); `kanban.rs` draws a block's board at the zoom, with GPUI's
+  `board.rs`, saved in `boards.json` with the snapshot; a card's attached files are copied by `attachments.rs`
+  into `<data>/attachments/<card id>/` on the background executor and swept at start when no card holds them);
+  `kanban.rs` draws a block's board at the zoom, with GPUI's
   drag and drop, a card's priority, checklist and who it is for; a column or the board scrolls while a card is dragged
   near its edge ([specs/kanban.md](specs/kanban.md)). Note blocks draw their tabs with `tab_strip.rs`. Note and checklist blocks
   share their dialog's body (`list_dialog.rs`: the rows a search finds, open, delete on a second click, new).

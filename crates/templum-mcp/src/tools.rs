@@ -829,8 +829,9 @@ pub fn list() -> Value {
         {
             "name": "list_cards",
             "description": "A board shown by a kanban connected to you: its columns, and each card's id, title, \
-                            labels, priority, assignee ((you) on yours), checklist progress and comment count. \
-                            With card, that card whole: its description, checklist items and comments too.",
+                            labels, priority, assignee ((you) on yours), checklist progress, comment and attachment counts. \
+                            With card, that card whole: its description, checklist items, attachments (each \
+                            one's name, size and path) and comments too.",
             "inputSchema": { "type": "object", "properties": { "board": board, "card": card } },
         },
         {

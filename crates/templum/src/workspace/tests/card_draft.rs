@@ -4,7 +4,7 @@ use super::*;
 use crate::board::Priority;
 
 /// A kanban block on a new board with no card: (block, board, first column).
-fn empty_board(
+pub(super) fn empty_board(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
@@ -23,7 +23,12 @@ fn empty_board(
     .unwrap()
 }
 
-fn click_add(handle: AnyWindowHandle, cx: &mut TestAppContext, block: BlockId, column: u64) {
+pub(super) fn click_add(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    block: BlockId,
+    column: u64,
+) {
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         let add = gpui_kit::ElementId::Name(format!("add-card-{}-{column}", block.0).into());
@@ -34,7 +39,7 @@ fn click_add(handle: AnyWindowHandle, cx: &mut TestAppContext, block: BlockId, c
 }
 
 /// Presses `key`, then draws.
-fn press_key(handle: AnyWindowHandle, cx: &mut TestAppContext, key: &str) {
+pub(super) fn press_key(handle: AnyWindowHandle, cx: &mut TestAppContext, key: &str) {
     cx.update_window(handle, |_, window, cx| {
         window.press(key, cx);
         window.render_frame(cx);
@@ -42,7 +47,7 @@ fn press_key(handle: AnyWindowHandle, cx: &mut TestAppContext, key: &str) {
     .unwrap();
 }
 
-fn click_on(handle: AnyWindowHandle, cx: &mut TestAppContext, what: &'static str) {
+pub(super) fn click_on(handle: AnyWindowHandle, cx: &mut TestAppContext, what: &'static str) {
     cx.update_window(handle, |_, window, cx| {
         window.click(what, cx);
         window.render_frame(cx);
@@ -50,7 +55,7 @@ fn click_on(handle: AnyWindowHandle, cx: &mut TestAppContext, what: &'static str
     .unwrap();
 }
 
-fn dialog_open(handle: AnyWindowHandle, cx: &mut TestAppContext) -> bool {
+pub(super) fn dialog_open(handle: AnyWindowHandle, cx: &mut TestAppContext) -> bool {
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.try_find("card-done").is_some()
@@ -58,7 +63,7 @@ fn dialog_open(handle: AnyWindowHandle, cx: &mut TestAppContext) -> bool {
     .unwrap()
 }
 
-fn open_card(
+pub(super) fn open_card(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
@@ -74,7 +79,11 @@ fn open_card(
     .unwrap();
 }
 
-fn cards(ws: &Entity<Workspace>, cx: &mut TestAppContext, board: u64) -> Vec<crate::board::Card> {
+pub(super) fn cards(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    board: u64,
+) -> Vec<crate::board::Card> {
     ws.read_with(cx, |ws, _| {
         ws.boards
             .board(board)

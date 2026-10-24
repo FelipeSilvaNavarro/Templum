@@ -328,7 +328,7 @@ impl Workspace {
                 send: self.send_to_menu(
                     self.boards
                         .card(board, card)
-                        .map_or_else(String::new, |c| c.text()),
+                        .map_or_else(String::new, |c| c.text(self.data_dir.as_deref())),
                 ),
             },
             Target::Ink(index) => Items::Ink { index },

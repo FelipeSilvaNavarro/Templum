@@ -8,6 +8,7 @@ use gpui_kit::{Context, ImageSource, Window};
 use templum_canvas::{BlockId, Rect, Size, chrome};
 
 use crate::alert;
+use crate::attachments;
 use crate::board;
 use crate::checklists;
 use crate::notes;
@@ -42,12 +43,25 @@ impl Workspace {
         use session::Loaded;
         match self.data_dir.as_deref().map(board::load) {
             Some(Loaded::Saved(boards)) => {
+                // Only boards read cleanly say what is held: otherwise nothing is deleted.
+                if let Some(data) = &self.data_dir
+                    && let Err(err) = attachments::sweep(data, &boards)
+                {
+                    eprintln!("templum: couldn't delete the files no card holds: {err}");
+                }
                 self.boards_saved = Some(boards.clone());
                 self.boards = boards;
             }
             Some(Loaded::Moved { to, why }) => {
+                // Their files go with them: the session starts empty, and a start after it
+                // would sweep every file the set-aside boards list.
+                let files = match self.data_dir.as_deref().map(attachments::set_aside) {
+                    Some(Ok(true)) => ", their files as attachments.bak".to_string(),
+                    Some(Err(err)) => format!(", and their files couldn't be set aside: {err}"),
+                    Some(Ok(false)) | None => String::new(),
+                };
                 let message = format!(
-                    "Couldn't read the boards ({why}); they were kept as {}",
+                    "Couldn't read the boards ({why}); they were kept as {}{files}",
                     to.display()
                 );
                 eprintln!("templum: {message}");

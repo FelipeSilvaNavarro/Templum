@@ -4,7 +4,8 @@
 - **Status:** Implemented; [version 2](#version-2-kanban-card-40) (who a card is for, priority, a checklist, the
   card's id, scrolling while dragging, the open card redone) implemented; agents
   [edit and delete their own comments](#editing-and-deleting-a-comment-kanban-card-77) (card 77) and a long column
-  has [a scrollbar](#a-scrollbar-in-a-column-kanban-card-78) (card 78)
+  has [a scrollbar](#a-scrollbar-in-a-column-kanban-card-78) (card 78); a card holds
+  [attachments](#attachments-kanban-card-152) (card 152, implemented)
 - **Builds on:** [workspaces.md](workspaces.md) and [persistence.md](persistence.md)
 
 ## Goal
@@ -23,8 +24,8 @@ same board stay in sync.
 
 ## Out of scope
 
-- Due dates, members, attachments, search, and archiving. (A card's checklist came with
-  [version 2](#version-2-kanban-card-40).)
+- Due dates, members, search, and archiving. (A card's checklist came with
+  [version 2](#version-2-kanban-card-40), and its files with [card 152](#attachments-kanban-card-152).)
 - Label names: a label is one of six colors.
 
 ## A kanban block
@@ -370,14 +371,16 @@ header and the footer stay). Sizes in pixels; every color comes from the theme.
        card's own are filled with it and checked (the terminal's background color for the check). A tooltip says
        "Toggle the red label".
   3. **Description:** a section header (below), 8, the multi-line field (4 rows, placeholder "Add a description").
-  4. **Checklist:** the section header with "2/5" at the right when it has items; 8; a progress bar 4 high, rounded,
+  4. **Attachments** (card 152, [below](#attachments-kanban-card-152)): the section header (`paperclip`) with their
+     number and **Attach** at the right, then thumbnails and rows; with no data folder it is not drawn.
+  5. **Checklist:** the section header with "2/5" at the right when it has items; 8; a progress bar 4 high, rounded,
      `ui.hover` behind and `ui.accent` for the done part; the item rows (padding 6 sideways and 5 up and down, rounded
      6, `ui.hover` under the pointer, gap 10, items at the top): the Git popup's round box (16, filled with `ui.accent`
      and a check in `ui.surface` when done; `card-item-box-{item}`), the text at 13 (done: `title_dim`, struck
      through), and at the right an 18 × 18 ✕ (tooltip "Remove the item", `card-item-delete-{item}`) shown while the
      pointer is over its row; last, the Git popup's one-line field with a `plus` before the placeholder "Add an item"
      (`card-item-field`).
-  5. **Comments:** the section header with their number at the right; a gap of 10; the thread; the comment field.
+  6. **Comments:** the section header with their number at the right; a gap of 10; the thread; the comment field.
      - **The thread**, oldest first, a gap of 14: each comment is its author's round mark (26: the initial on the
        theme's accent at 16% for the person's own, on ANSI magenta at 16% for an agent's or a block's), then the author
        (12.5 semibold) and its age (11) over the text in a bubble (13, line height 1.5, rounded 8, 12 and 8 inside;
@@ -721,7 +724,8 @@ an older file without `drafts` loads. **Not seen in a window:** the question's l
 
 ## Attachments (kanban card 152)
 
-*Designed; plan: [docs/plans/2026-10-24-card-attachments.md](../plans/2026-10-24-card-attachments.md).* The card, as
+*Implemented ([As built](#as-built-card-152)); plan:
+[docs/plans/2026-10-24-card-attachments.md](../plans/2026-10-24-card-attachments.md).* The card, as
 the person wrote it: *"Sistema de anexar arquivos, imagens etc no card do kanban."* A card held only words: the
 screenshot of a bug, a spec's PDF or a log lived somewhere else, and an agent handed the card never saw them.
 
@@ -923,3 +927,48 @@ The section's sizes past those above; how a copy's result finds the dialog's wor
 weak handle); where the refusals' notification is raised; the path of gpui-kit's input `Paste` action; whether a
 file drop reaches the dialog in the headless harness (a card's drop doesn't: [minors.md](../minors.md), Kanban). If it
 doesn't, the test calls the drop's function, the drop is checked by hand, and a minor says so.
+
+### As built (card 152)
+
+The plan's four tasks, as one change, left in the working tree for review. The person was asleep, so where the plan
+left a choice the one best for the system was taken:
+
+- **Where a late copy lands.** The dialog that started the copy keeps its outcome (`Work::outcome`: open, Done, Kept
+  by Save draft, or Dropped by Discard and Delete card) and `land` (`kanban.rs`) routes by it first. Done: onto the
+  card, as its own step of Ctrl+Z (a dialog reopened since sees the file there, through `merge_into` of the live card,
+  and has nothing to ask about). Dropped: nowhere, even when the card is reopened before the copy ends. Open or Kept:
+  into the dialog open on that card, found by the id in its work (`ws.card_work` with `work.id == card`), not by
+  `Rc::ptr_eq`, so a dialog reopened from the kept draft shows it too; else into the kept draft. `attach` itself
+  still does nothing unless the dialog it is given is the open one.
+- **Boards set aside take their files.** When `boards.json` is read as unreadable-but-movable (`Loaded::Moved`),
+  `attachments::set_aside` renames `<data>/attachments` to `attachments.bak` beside `boards.json.bak`, replacing an
+  older one the way the older `boards.json.bak` is replaced: the pair restores together, and the session starts with
+  no files, so the next start's sweep has nothing of the old cards to delete and new cards don't reuse old folders.
+  The files go to a temporary name first (`attachments.moving`), the older `.bak` is removed only after that worked,
+  and the temporary becomes `attachments.bak`; if a step fails (a file held open on Windows) the files are put back
+  where they were, and the set-aside notification adds "and their files couldn't be set aside: <error>" (on success
+  it adds ", their files as attachments.bak").
+- **Refusals** are one warning per `attach` call, raised from its task once every copy has ended; the copies run side
+  by side on the background executor and are taken in the order attached. A file that grew past 50 MB after its size
+  was read is refused too (the copy reads one byte past the limit).
+- **Names:** a pasted image takes a free name like any file (`Pasted image (2).png`); a path with no name, or one
+  that isn't a plain file name, is refused.
+- **The sweep** also removes the empty folder of a card with no attachments left (not counted), and keeps a file a
+  kept draft's `base` still names (Ctrl+Z of a removal), as well as its `work`. It runs in `load_spaces` only on
+  `Loaded::Saved`; an unreadable folder or an entry that won't go is kept as the first error (printed), and the sweep
+  goes on with the rest. `plain_name` also needs exactly one normal path component, so on Windows `C:x.png` is no
+  name.
+- **The paste** is gpui-kit's `component::input::Paste`, captured on the dialog's body (`card-body`) ahead of any
+  field. A clipboard with a non-blank text, an image beside it or not, is the field's; with an image and no text
+  (blank counts as none) the image is attached and the field gets nothing. With no data folder a pasted image does
+  nothing.
+- **The drop** reaches the dialog in the headless harness (unlike a card's drop), so `dropping_files_on_the_open_card…`
+  dispatches a real `FileDropEvent` and no minor is needed for it. The ring is the body's border, always 2 wide and
+  clear, lit with the accent while `ExternalPaths` are over it, so nothing moves when it lights (the body's sides are
+  2 narrower to make up).
+- **`list_cards`:** the count ("1 attachment", "3 attachments") is in a card's line with or without a data folder;
+  the `attachments:` part, with paths, only with one. `Card::text(data)` takes the data folder (None: no paths).
+- **Verified by hand:** nothing in a window, as the person was asleep (see the minors, Kanban). Headless: every
+  behavior above has a test; the face's count is checked by the data (the harness can't read a div's text, so the
+  test asserts the face's element appears and goes with Ctrl+Z). `--bench-mixed` was left to the person.
+

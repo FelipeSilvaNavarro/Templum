@@ -3,28 +3,34 @@
 //! terminal's text. See docs/specs/kanban.md.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::{Cancel, Confirm};
 use gpui_kit::component::input::{
-    Input, InputEvent, InputState, Position, Textarea, TextareaState,
+    Input, InputEvent, InputState, Paste, Position, Textarea, TextareaState,
 };
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, BoxShadow, ClickEvent, ClipboardItem, Context, Div, DragMoveEvent, ElementId,
-    Entity, FontWeight, Hsla, MouseButton, MouseDownEvent, Render, ScrollHandle, ScrollWheelEvent,
-    SharedString, Stateful, TestSupportExt, Window, div, point, px, relative,
+    AnyElement, App, BoxShadow, ClickEvent, ClipboardEntry, ClipboardItem, Context, Div,
+    DragMoveEvent, ElementId, Entity, ExternalPaths, FontWeight, Hsla, Image, MouseButton,
+    MouseDownEvent, ObjectFit, PathPromptOptions, Render, ScrollHandle, ScrollWheelEvent,
+    SharedString, Stateful, TestSupportExt, Window, div, img, point, px, relative,
 };
 use templum_canvas::{BlockId, EDGE_ZONE, Point, Rect, Size, edge_scroll};
 
-use crate::board::{Assignee, Board, Boards, Card, Column, Comment, Draft, Label, Priority};
+use crate::attachments;
+use crate::board::{
+    Assignee, Attachment, Board, Boards, Card, Column, Comment, Draft, Label, Priority,
+};
 use crate::checklists::{self, Item};
 use crate::git_block::Check;
 use crate::git_block::widgets::{check_box, field, icon_button};
@@ -35,7 +41,7 @@ use crate::note;
 use crate::notes;
 use crate::prompt::{self, Choice};
 use crate::theme::Ui;
-use crate::workspace::Workspace;
+use crate::workspace::{Workspace, show_notification};
 
 /// A new kanban block's size, and the smallest one (world units).
 pub(crate) const SIZE: Size = Size { w: 900.0, h: 540.0 };
@@ -673,6 +679,18 @@ fn meta_row(ws: &Workspace, n: usize, card: &Card, z: f32, cx: &App) -> impl Int
         .when(!card.description.is_empty(), |el| {
             el.child(icon(IconName::FileText))
         })
+        .when(!card.attachments.is_empty(), |el| {
+            el.child(
+                div()
+                    .id(name("attachments", n, id))
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0 * z))
+                    .child(icon(IconName::Paperclip))
+                    .child(card.attachments.len().to_string())
+                    .test_support(),
+            )
+        })
         .when(ws.boards.draft(id).is_some(), |el| {
             el.child(
                 div()
@@ -839,6 +857,23 @@ pub(crate) fn open_card(
 pub(crate) struct Work {
     now: Draft,
     opened: Draft,
+    /// The names of the files being copied in: they show as "Copying…" and count as a change.
+    copying: Vec<String>,
+    /// How the dialog ended: a copy that ends after it goes where this says.
+    outcome: Outcome,
+}
+
+/// What became of a card dialog's work.
+#[derive(Clone, Copy, PartialEq)]
+enum Outcome {
+    /// Still open.
+    Open,
+    /// Done: it reached the card.
+    Done,
+    /// Save draft: it is a kept draft.
+    Kept,
+    /// Discard or Delete card: nobody wants it.
+    Dropped,
 }
 
 /// A dialog's work, shared by its fields and buttons, and kept by the workspace while it is open.
@@ -846,7 +881,7 @@ pub(crate) type Open = Rc<RefCell<Work>>;
 
 impl Work {
     fn changed(&self) -> bool {
-        self.now.work != self.opened.work
+        self.now.work != self.opened.work || !self.copying.is_empty()
     }
 
     /// Keeps the work as a draft, if the person changed anything: what the window's closing does
@@ -920,6 +955,201 @@ fn add_items(ws: &mut Workspace, open: &Open, board: u64, items: &[(String, bool
 fn finish_card(ws: &mut Workspace, open: &Open, board: u64) {
     let draft = open.borrow().now.clone();
     ws.edit_boards(|b| b.finish_draft(board, &draft));
+}
+
+/// The id of the card the open dialog is for. A card not created yet has none until its first
+/// attachment: one is taken from the boards, and set in the work and in the dialog's start alike
+/// (so the id alone is no change). Done gives the card that id, so its files are where they were
+/// put.
+fn card_id(ws: &mut Workspace, open: &Open) -> u64 {
+    let open = &mut *open.borrow_mut();
+    if open.now.work.id == 0 {
+        let id = ws.boards.next();
+        for card in [
+            &mut open.now.base,
+            &mut open.now.work,
+            &mut open.opened.base,
+            &mut open.opened.work,
+        ] {
+            card.id = id;
+        }
+    }
+    open.now.work.id
+}
+
+/// What a person puts on a card: a file on disk, or a pasted image.
+pub(crate) enum Source {
+    File(PathBuf),
+    Image(Image),
+}
+
+impl Source {
+    /// The name it shows while it is copied.
+    fn label(&self) -> String {
+        match self {
+            Source::File(path) => path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into(),
+            ),
+            Source::Image(image) => format!("Pasted image.{}", image.format.extension()),
+        }
+    }
+}
+
+/// Attaches `from` to the open card: each is copied into the card's folder on the background
+/// executor, and then joins the work. All the ways in end here.
+pub(crate) fn attach(
+    ws: &mut Workspace,
+    open: &Open,
+    board: u64,
+    from: Vec<Source>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(data) = ws.data_dir.clone() else {
+        return;
+    };
+    if from.is_empty() || !ws.card_work.as_ref().is_some_and(|w| Rc::ptr_eq(w, open)) {
+        return;
+    }
+    let card = card_id(ws, open);
+    let jobs: Vec<(String, Source)> = from.into_iter().map(|s| (s.label(), s)).collect();
+    open.borrow_mut()
+        .copying
+        .extend(jobs.iter().map(|(label, _)| label.clone()));
+    cx.notify();
+    let open = open.clone();
+    cx.spawn_in(window, async move |this, cx| {
+        // The copies run side by side; their results are taken in the order attached.
+        let copies: Vec<_> = jobs
+            .into_iter()
+            .map(|(label, source)| {
+                let (data, name) = (data.clone(), label.clone());
+                let copy = cx.background_executor().spawn(async move {
+                    match source {
+                        Source::File(path) => attachments::copy_in(&data, card, &path),
+                        Source::Image(image) => {
+                            attachments::write_in(&data, card, &name, &image.bytes)
+                        }
+                    }
+                });
+                (label, copy)
+            })
+            .collect();
+        let mut refused = Vec::new();
+        for (label, copy) in copies {
+            let result = copy.await;
+            if let Err(why) = &result {
+                refused.push(format!("{label} ({why})"));
+            }
+            this.update(cx, |ws, cx| {
+                land(ws, &open, board, card, &label, result);
+                cx.notify();
+            })
+            .ok();
+        }
+        if !refused.is_empty() {
+            let message = format!("Not attached: {}.", refused.join(", "));
+            cx.update(|window, cx| show_notification(window, cx, Notification::warning(message)))
+                .ok();
+        }
+    })
+    .detach();
+}
+
+/// A copy of `card`'s ended: it joins the work of the dialog open on that card; else the kept
+/// draft of the card (Save draft); else, after Done, the card itself, as a step of Ctrl+Z of its
+/// own. After Discard or Delete card it joins nothing, and the next start deletes the file.
+fn land(
+    ws: &mut Workspace,
+    open: &Open,
+    board: u64,
+    card: u64,
+    label: &str,
+    result: Result<Attachment, String>,
+) {
+    {
+        let mut open = open.borrow_mut();
+        if let Some(i) = open.copying.iter().position(|c| c == label) {
+            open.copying.remove(i);
+        }
+    }
+    let Ok(file) = result else {
+        return;
+    };
+    // The outcome of the dialog that started the copy decides first: a dialog reopened on the
+    // card since must not take a file the earlier one let go (Discard) or already handed over
+    // (Done: the card has it, and the reopened dialog sees it there).
+    let outcome = open.borrow().outcome;
+    match outcome {
+        Outcome::Dropped => {}
+        Outcome::Done => {
+            let board = ws.boards.find_card(card).map_or(board, |(b, _)| b);
+            ws.edit_boards(|b| b.edit_card(board, card, |c| c.attachments.push(file)));
+        }
+        Outcome::Open | Outcome::Kept => {
+            let current = ws
+                .card_work
+                .clone()
+                .filter(|w| w.borrow().now.work.id == card);
+            if let Some(current) = current {
+                current.borrow_mut().now.work.attachments.push(file);
+            } else if let Some(draft) = ws.boards.drafts.iter_mut().find(|d| d.work.id == card) {
+                draft.work.attachments.push(file);
+            }
+        }
+    }
+}
+
+/// The image on the clipboard when it holds one and no text that isn't blank: a screenshot is
+/// attached; anything with words is pasted into the field as text.
+fn pasted_image(item: &ClipboardItem) -> Option<Image> {
+    if item.text().is_some_and(|t| !t.trim().is_empty()) {
+        return None;
+    }
+    item.entries().iter().find_map(|entry| match entry {
+        ClipboardEntry::Image(image) => Some(image.clone()),
+        _ => None,
+    })
+}
+
+/// Attach: the system's file picker, several files at once. Cancel attaches nothing.
+fn pick_files(
+    ws: Entity<Workspace>,
+    open: Open,
+    board: u64,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    move |_, window, cx| {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        let (ws, open) = (ws.clone(), open.clone());
+        window
+            .spawn(cx, async move |cx| {
+                let files = match picked.await {
+                    Ok(Ok(Some(paths))) => paths,
+                    Ok(Ok(None)) | Err(_) => return,
+                    Ok(Err(err)) => {
+                        let message = format!("Couldn't open the file picker: {err}");
+                        eprintln!("templum: {message}");
+                        cx.update(|window, cx| {
+                            show_notification(window, cx, Notification::warning(message))
+                        })
+                        .ok();
+                        return;
+                    }
+                };
+                ws.update_in(cx, |ws, window, cx| {
+                    let from = files.into_iter().map(Source::File).collect();
+                    attach(ws, &open, board, from, window, cx)
+                })
+                .ok();
+            })
+            .detach();
+    }
 }
 
 /// The open card's assignee button, showing `who`: its menu gives the card to anyone, one
@@ -1352,7 +1582,7 @@ fn ask_to_leave(
     let at = open.borrow().now.at;
     let (save, keep, discard) = (ws.clone(), ws.clone(), ws.clone());
     let (open, editing) = (open.clone(), editing.clone());
-    let (open_keep, editing_keep) = (open.clone(), editing.clone());
+    let (open_keep, editing_keep, open_discard) = (open.clone(), editing.clone(), open.clone());
     let choices = vec![
         Choice {
             id: "leave-save",
@@ -1369,6 +1599,7 @@ fn ask_to_leave(
             primary: false,
             act: Rc::new(move |window, cx| {
                 save_draft(&keep, &editing_keep, &open_keep, board, cx);
+                open_keep.borrow_mut().outcome = Outcome::Kept;
                 keep.update(cx, |ws, cx| {
                     ws.boards.keep_draft(open_keep.borrow().now.clone());
                     cx.notify();
@@ -1382,6 +1613,7 @@ fn ask_to_leave(
             primary: false,
             act: Rc::new(move |window, cx| {
                 editing.borrow_mut().take();
+                open_discard.borrow_mut().outcome = Outcome::Dropped;
                 discard.update(cx, |ws, cx| {
                     ws.boards.drop_draft(at);
                     cx.notify();
@@ -1413,6 +1645,8 @@ fn open_draft(
     let open: Open = Rc::new(RefCell::new(Work {
         opened: draft.clone(),
         now: draft,
+        copying: Vec::new(),
+        outcome: Outcome::Open,
     }));
     ws.card_work = Some(open.clone());
     let ws = cx.entity();
@@ -1513,6 +1747,7 @@ fn open_draft(
         let (ws, editing, open) = (ws.clone(), editing.clone(), open.clone());
         Rc::new(move |cx| {
             save_draft(&ws, &editing, &open, board, cx);
+            open.borrow_mut().outcome = Outcome::Done;
             ws.update(cx, |ws, cx| {
                 finish_card(ws, &open, board);
                 cx.notify();
@@ -1896,8 +2131,10 @@ fn open_draft(
             let ws = ws.clone();
             let red = hsla(palette.ansi[1], 1.0);
             if new {
+                let open = open.clone();
                 danger("discard-card", "Discard", red)
                     .on_click(move |_: &ClickEvent, window, cx| {
+                        open.borrow_mut().outcome = Outcome::Dropped;
                         ws.update(cx, |ws, cx| {
                             ws.boards.drop_draft(card);
                             cx.notify();
@@ -1906,8 +2143,10 @@ fn open_draft(
                     })
                     .test_support()
             } else {
+                let open = open.clone();
                 danger("delete-card", "Delete card", red)
                     .on_click(move |_: &ClickEvent, window, cx| {
+                        open.borrow_mut().outcome = Outcome::Dropped;
                         ws.update(cx, |ws, cx| {
                             ws.edit_boards(|b| b.remove_card(board, card));
                             cx.notify();
@@ -2006,6 +2245,230 @@ fn open_draft(
                         .rounded_full()
                         .bg(ui.accent),
                 )
+        });
+        // Attachments: thumbnails of the images, then a row each for the other files; a file
+        // being copied is a row with no ✕. A click opens a file with the system's app.
+        let files = ws_now.data_dir.as_ref().map(|data| {
+            let folder = attachments::dir(data, shown.id);
+            let remove = |name: &str| {
+                let name = name.to_string();
+                let rm = edit(Rc::new(move |c| c.attachments.retain(|a| a.name != name)));
+                move |e: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    rm(e, window, cx);
+                    cx.stop_propagation();
+                }
+            };
+            let cross = |group: &SharedString, name: &str, corner: bool| {
+                let group = group.clone();
+                let button = div()
+                    .id(ElementId::Name(format!("attachment-remove-{name}").into()))
+                    .flex_shrink_0()
+                    .size(px(18.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(if corner { 9.0 } else { 4.0 }))
+                    .opacity(0.0)
+                    .group_hover(group, |s| s.opacity(1.0))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(ui.hover))
+                    .child(
+                        Icon::new(IconName::Close)
+                            .size(px(11.0))
+                            .text_color(ui.title_dim),
+                    )
+                    .tooltip(|window, cx| Tooltip::new("Remove the attachment").build(window, cx))
+                    .on_click(remove(name))
+                    .test_support();
+                if corner {
+                    button.absolute().top(px(4.0)).right(px(4.0)).bg(ui.surface)
+                } else {
+                    button
+                }
+            };
+            let opener = |name: &str| {
+                let path = folder.join(name);
+                move |_: &ClickEvent, _: &mut Window, cx: &mut App| cx.open_with_system(&path)
+            };
+            let item = |a: &Attachment| {
+                let name = a.name.clone();
+                let group = SharedString::from(format!("attachment-group-{name}"));
+                let tip = format!("{name} · {}", attachments::size_text(a.size));
+                let el = div()
+                    .id(ElementId::Name(format!("attachment-{name}").into()))
+                    .group(group.clone())
+                    .cursor_pointer()
+                    .on_click(opener(&name));
+                if attachments::thumbnail(a) {
+                    let missing = move || {
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(ui.card)
+                            .child(
+                                Icon::new(IconName::Image)
+                                    .size(px(20.0))
+                                    .text_color(ui.title_dim),
+                            )
+                            .into_any_element()
+                    };
+                    el.relative()
+                        .size(px(72.0))
+                        .rounded(px(6.0))
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(ui.hairline)
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                        .child(
+                            img(folder.join(&name))
+                                .size_full()
+                                .object_fit(ObjectFit::Cover)
+                                .with_fallback(missing),
+                        )
+                        .child(cross(&group, &name, true))
+                        .test_support()
+                        .into_any_element()
+                } else {
+                    el.flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .px(px(6.0))
+                        .py(px(5.0))
+                        .rounded(px(6.0))
+                        .hover(move |s| s.bg(ui.hover))
+                        .child(
+                            Icon::new(IconName::File)
+                                .size(px(14.0))
+                                .text_color(ui.title_dim),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .text_size(px(13.0))
+                                .child(name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(ui.title_dim)
+                                .child(attachments::size_text(a.size)),
+                        )
+                        .child(cross(&group, &name, false))
+                        .test_support()
+                        .into_any_element()
+                }
+            };
+            let (thumbs, rows): (Vec<_>, Vec<_>) = shown
+                .attachments
+                .iter()
+                .partition(|a| attachments::thumbnail(a));
+            let copying = open.borrow().copying.clone();
+            let copying = copying.iter().map(|name| {
+                div()
+                    .id(ElementId::Name(format!("attachment-copying-{name}").into()))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .px(px(6.0))
+                    .py(px(5.0))
+                    .child(
+                        Icon::new(IconName::File)
+                            .size(px(14.0))
+                            .text_color(ui.title_dim),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_size(px(13.0))
+                            .child(name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ui.title_dim)
+                            .child("Copying…"),
+                    )
+                    .test_support()
+            });
+            let empty = shown.attachments.is_empty() && open.borrow().copying.is_empty();
+            let list = if empty {
+                div()
+                    .id("card-attachments")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.0))
+                    .py(px(14.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_dashed()
+                    .border_color(ui.hairline)
+                    .text_size(px(12.0))
+                    .text_color(ui.title)
+                    .child(
+                        Icon::new(IconName::Paperclip)
+                            .size(px(13.0))
+                            .text_color(ui.title_dim),
+                    )
+                    .child("Drop files here or paste a screenshot")
+            } else {
+                div()
+                    .id("card-attachments")
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .when(!thumbs.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(8.0))
+                                .children(thumbs.into_iter().map(&item)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .children(rows.into_iter().map(&item))
+                            .children(copying),
+                    )
+            };
+            let n = shown.attachments.len();
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .child(
+                            section(
+                                ui,
+                                IconName::Paperclip,
+                                "Attachments",
+                                (n > 0).then(|| n.to_string()),
+                            )
+                            .flex_1()
+                            .pr(px(8.0)),
+                        )
+                        .child(
+                            Button::new("attach-files")
+                                .small()
+                                .ghost()
+                                .icon(IconName::Plus)
+                                .label("Attach")
+                                .on_click(pick_files(ws.clone(), open.clone(), board)),
+                        ),
+                )
+                .child(list.test_support())
         });
         let thread = if comments.is_empty() {
             div()
@@ -2133,12 +2596,45 @@ fn open_draft(
             .footer(footer)
             .child(
                 div()
+                    .id("card-body")
                     .flex()
                     .flex_col()
                     .gap(px(22.0))
-                    .px(px(SIDE))
-                    .pt(px(10.0))
-                    .pb(px(14.0))
+                    .px(px(SIDE - 2.0))
+                    .pt(px(8.0))
+                    .pb(px(12.0))
+                    // A ring while files are dragged over the card: the border is always there,
+                    // clear, so the card doesn't move when it lights.
+                    .border_2()
+                    .border_color(gpui_kit::transparent_black())
+                    .rounded(px(8.0))
+                    .drag_over::<ExternalPaths>(move |s, _, _, _| s.border_color(ui.accent))
+                    .on_drop({
+                        let (ws, open) = (ws.clone(), open.clone());
+                        move |dropped: &ExternalPaths, window, cx| {
+                            let from = dropped.paths().iter().cloned().map(Source::File);
+                            ws.update(cx, |ws, cx| {
+                                attach(ws, &open, board, from.collect(), window, cx)
+                            });
+                        }
+                    })
+                    // A screenshot on the clipboard is attached, whichever field has the
+                    // keyboard: in the capture phase, ahead of any field's own paste.
+                    .capture_action({
+                        let (ws, open) = (ws.clone(), open.clone());
+                        move |_: &Paste, window, cx| {
+                            let Some(image) =
+                                cx.read_from_clipboard().as_ref().and_then(pasted_image)
+                            else {
+                                return;
+                            };
+                            cx.stop_propagation();
+                            ws.update(cx, |ws, cx| {
+                                let from = vec![Source::Image(image)];
+                                attach(ws, &open, board, from, window, cx)
+                            });
+                        }
+                    })
                     .child(
                         div()
                             .id("card-title")
@@ -2187,6 +2683,7 @@ fn open_draft(
                             .child(section(ui, IconName::FileText, "Description", None))
                             .child(Textarea::new(&description)),
                     )
+                    .children(files)
                     .child(
                         div()
                             .flex()
@@ -2284,6 +2781,28 @@ fn open_draft(
 mod tests {
     use super::*;
     use templum_canvas::EDGE_SPEED;
+
+    #[test]
+    fn only_an_image_with_no_text_is_a_pasted_image() {
+        use gpui_kit::{ClipboardEntry, ClipboardString, ImageFormat};
+        let image = Image::from_bytes(ImageFormat::Png, vec![1, 2, 3]);
+        let text = |t: &str| ClipboardEntry::String(ClipboardString::new(t.into()));
+        let item = |entries| ClipboardItem { entries };
+        let image_entry = || ClipboardEntry::Image(image.clone());
+        assert_eq!(
+            pasted_image(&item(vec![image_entry()])),
+            Some(image.clone())
+        );
+        assert_eq!(pasted_image(&item(vec![image_entry(), text("x")])), None);
+        assert_eq!(pasted_image(&item(vec![text("x"), image_entry()])), None);
+        assert_eq!(
+            pasted_image(&item(vec![image_entry(), text("  \n")])),
+            Some(image.clone()),
+            "blank text is no text"
+        );
+        assert_eq!(pasted_image(&item(vec![text("x")])), None);
+        assert_eq!(pasted_image(&item(vec![])), None);
+    }
 
     #[test]
     fn a_drag_scrolls_faster_near_an_edge_in_world_units_and_never_across_another_column() {

@@ -17,7 +17,7 @@ use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Kanban, Space, Workspace, remember
 use crate::board::{Assignee, Card, Priority};
 use crate::checklist::{self, Checklist};
 use crate::note::{self, Note};
-use crate::{checklists, notes};
+use crate::{attachments, checklists, notes};
 
 /// A block [`Workspace::add_block_in`] opens.
 pub(crate) enum NewBlock {
@@ -637,6 +637,11 @@ impl Workspace {
             1 => line.push_str("  1 comment"),
             n => line.push_str(&format!("  {n} comments")),
         }
+        match c.attachments.len() {
+            0 => {}
+            1 => line.push_str("  1 attachment"),
+            n => line.push_str(&format!("  {n} attachments")),
+        }
         line
     }
 
@@ -670,6 +675,18 @@ impl Workspace {
             for item in &c.checklist {
                 let mark = if item.done { 'x' } else { ' ' };
                 text.push_str(&format!("\n  {} [{mark}] {}", item.id, flat(&item.text)));
+            }
+        }
+        if let (Some(data), false) = (&self.data_dir, c.attachments.is_empty()) {
+            text.push_str("\nattachments:");
+            for a in &c.attachments {
+                let path = attachments::dir(data, c.id).join(&a.name);
+                let size = attachments::size_text(a.size);
+                text.push_str(&format!(
+                    "\n  {}  {size}  {}",
+                    flat(&a.name),
+                    path.display()
+                ));
             }
         }
         let now = notes::now();

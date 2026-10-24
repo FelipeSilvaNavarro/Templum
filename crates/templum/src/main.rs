@@ -4,6 +4,7 @@
 
 mod agents;
 mod alert;
+mod attachments;
 mod autostart;
 mod balloon;
 mod bench;
