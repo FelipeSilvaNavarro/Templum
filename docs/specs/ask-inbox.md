@@ -90,9 +90,10 @@ does the button. Only one of the Git popup and the inbox is open at a time. Two 
     ("The agent stopped waiting: your answer will be typed into its terminal.").
 - **After an answer** (Send, Dismiss, a button), the next request in the list is selected; with none left, the right
   column says nothing waits ("Nothing waits for you") and the inbox stays open.
-- **Keys** (*the designer's call*: it behaves like the Git popup, which isn't modal): opening the inbox (its button,
-  the notice, Ctrl+Shift+A — all the person's own acts) gives it the keyboard, and so does a click in it; a click on
-  the canvas or a block gives the keyboard to what was clicked and the inbox **stays open** beside it, so the person
+- **Keys** (*the designer's call*; unlike the Git popup, whose backdrop closes it on a press outside, the inbox has no
+  backdrop): opening the inbox (its button, the notice, Ctrl+Shift+A — all the person's own acts) gives it the
+  keyboard, and so does a click in it; a click on the canvas or a block reaches what was clicked, gives it the
+  keyboard, and the inbox **stays open** beside it, so the person
   can read or type into an agent's terminal and come back. While it has the keyboard, ask-user.md's keys work on the
   selected request, and ↑/↓ with Alt (or the builder's choice that doesn't clash with the dialog's own arrows) move in
   the list; Esc closes it. This replaces the balloon's `balloon_keys`/`away` routing (workspace/input.rs).
