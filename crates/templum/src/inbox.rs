@@ -11,7 +11,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, FontWeight, KeyDownEvent,
-    ScrollWheelEvent, TestSupportExt, div, point, px,
+    ScrollWheelEvent, TestSupportExt, Window, div, point, px,
 };
 use templum_canvas::BlockId;
 
@@ -70,7 +70,13 @@ fn asker(ws: &Workspace, wait: &Wait) -> String {
 
 /// The popup, `w` by `h` pixels: the list of the workspace's requests at the left, the selected
 /// one at the right.
-pub(crate) fn popup(ws: &Workspace, w: f32, h: f32, cx: &mut Context<Workspace>) -> AnyElement {
+pub(crate) fn popup(
+    ws: &Workspace,
+    w: f32,
+    h: f32,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
     let ui = ws.ui;
     let fg = hsla(ws.theme.palette.foreground, 1.0);
     let selected = ws.inbox_selected();
@@ -100,7 +106,7 @@ pub(crate) fn popup(ws: &Workspace, w: f32, h: f32, cx: &mut Context<Workspace>)
         .on_key_down(cx.listener(|ws, e: &KeyDownEvent, window, cx| ws.on_inbox_key(e, window, cx)))
         // The wheel scrolls the lists and stops there: the popup occludes the canvas under it.
         .on_scroll_wheel(|_: &ScrollWheelEvent, _, cx| cx.stop_propagation())
-        .child(list(ws, selected.map(|w| w.key), cx))
+        .child(list(ws, selected.map(|w| w.key), window, cx))
         .child(div().w(px(1.0)).h_full().flex_shrink_0().bg(ui.hairline))
         .child(match selected {
             Some(wait) => detail(ws, wait, right, h, cx),
@@ -120,7 +126,12 @@ pub(crate) fn popup(ws: &Workspace, w: f32, h: f32, cx: &mut Context<Workspace>)
 }
 
 /// The left column: a header, then a row per request, oldest first.
-fn list(ws: &Workspace, selected: Option<u64>, cx: &mut Context<Workspace>) -> Div {
+fn list(
+    ws: &Workspace,
+    selected: Option<u64>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Div {
     let ui = ws.ui;
     let now = cx.background_executor().now();
     let header = div()
@@ -147,6 +158,17 @@ fn list(ws: &Workspace, selected: Option<u64>, cx: &mut Context<Workspace>) -> D
                 .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.close_inbox(window, cx)))
                 .test_support(),
         );
+    // The selection moved: its row comes into view, once the list has a size to scroll in.
+    if ws.inbox_reveal.get() {
+        if ws.inbox_list.bounds().size.height > px(0.0) {
+            ws.inbox_reveal.set(false);
+            if let Some(ix) = ws.inbox().iter().position(|w| Some(w.key) == selected) {
+                ws.inbox_list.scroll_to_item(ix);
+            }
+        } else {
+            window.request_animation_frame();
+        }
+    }
     let rows =
         ws.inbox().into_iter().map(|wait| {
             let key = wait.key;
@@ -209,7 +231,9 @@ fn list(ws: &Workspace, selected: Option<u64>, cx: &mut Context<Workspace>) -> D
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
-                .children(rows),
+                .track_scroll(&ws.inbox_list)
+                .children(rows)
+                .test_support(),
         )
 }
 
@@ -425,4 +449,78 @@ pub(crate) fn notice(
             )
             .into_any_element(),
     )
+}
+
+/// What the badge reads: the count, "99+" past 99.
+pub(crate) fn badge_text(count: usize) -> String {
+    match count {
+        0..=99 => count.to_string(),
+        _ => "99+".to_string(),
+    }
+}
+
+/// The count of the workspace's requests as a small yellow badge, `id` its element: none when
+/// nothing waits.
+pub(crate) fn badge(ws: &Workspace, id: &'static str) -> Option<AnyElement> {
+    let count = ws.inbox().len();
+    (count > 0).then(|| {
+        div()
+            .id(id)
+            .absolute()
+            .top(px(-2.0))
+            .right(px(-2.0))
+            .min_w(px(16.0))
+            .h(px(16.0))
+            .px(px(4.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .bg(hsla(ws.theme.palette.ansi[3], 1.0))
+            .text_size(px(10.0))
+            .font_weight(FontWeight::BOLD)
+            .text_color(ws.ui.surface)
+            .child(badge_text(count))
+            .test_support()
+            .into_any_element()
+    })
+}
+
+/// The sidebar's button: the inbox toggled, its badge, and while a request has just arrived a
+/// pulse (the caller draws frames while it lasts: `Workspace::inbox_pulsing`).
+pub(crate) fn button(ws: &Workspace, pulse: f32, size: f32, cx: &mut Context<Workspace>) -> Div {
+    let ui = ws.ui;
+    let waiting = hsla(ws.theme.palette.ansi[3], 1.0);
+    div()
+        .relative()
+        .child(
+            div()
+                .id("inbox-button")
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .size(px(size))
+                .rounded(px(10.0))
+                .cursor_pointer()
+                .when(ws.inbox_open, move |el| el.bg(ui.pressed))
+                .when(pulse > 0.0, move |el| el.bg(waiting.opacity(0.3 * pulse)))
+                .hover(move |s| s.bg(ui.hover))
+                .active(move |s| s.bg(ui.pressed))
+                .child(
+                    Icon::new(IconName::Inbox)
+                        .size(px(16.0))
+                        .text_color(if pulse > 0.0 { waiting } else { ui.title }),
+                )
+                .tooltip(|window, cx| Tooltip::new("Requests").build(window, cx))
+                .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_inbox(window, cx)))
+                .test_support(),
+        )
+        .children(badge(ws, "inbox-badge"))
+}
+
+/// How strong the pulse is `elapsed` after a request arrived: it swells and fades once a second
+/// while `Workspace::inbox_pulsing`, 0 to 1.
+pub(crate) fn pulse(elapsed: Duration) -> f32 {
+    0.5 - 0.5 * (elapsed.as_secs_f32() * std::f32::consts::TAU).cos()
 }

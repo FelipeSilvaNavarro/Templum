@@ -739,7 +739,7 @@ impl Render for Workspace {
                 .absolute()
                 .left(px(left))
                 .bottom(px(GIT_GAP))
-                .child(crate::inbox::popup(self, w, h, cx))
+                .child(crate::inbox::popup(self, w, h, window, cx))
         });
         // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
         let open = self.templum_agent.open;
@@ -817,7 +817,9 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h(px(0.0))
                     .flex()
-                    .when(self.sidebar, |el| el.child(sidebar::render(self, cx)))
+                    .when(self.sidebar, |el| {
+                        el.child(sidebar::render(self, window, cx))
+                    })
                     .child(area),
             )
             // The Git popup over the Templum agent.

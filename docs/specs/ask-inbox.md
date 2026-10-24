@@ -1,11 +1,13 @@
 # The requests inbox: what agents ask, in one place
 
 - **Date:** 2026-10-23
-- **Status:** Design (kanban card 144), not implemented
+- **Status:** Implemented (kanban card 144; commits 0089726, 287c53d and the one that adds the sidebar button,
+  the pulse, the notifications' click, `go_to_waiting`, the long preview and these specs); plan:
+  [2026-10-23-ask-inbox.md](../plans/2026-10-23-ask-inbox.md)
 - **Builds on:** [ask-user.md](ask-user.md) (the questions' dialog, its keys, its answers),
-  [connections.md](connections.md#requests-from-agents) (the balloon, `connect`), [agent-tools.md](agent-tools.md)
-  (the worktree requests), [git.md](git.md) (the popup this one is drawn like), [workspaces.md](workspaces.md) (the
-  sidebar)
+  [connections.md](connections.md#requests-from-agents) (the former balloon, `connect`),
+  [agent-tools.md](agent-tools.md) (the worktree requests), [git.md](git.md) (the popup this one is drawn like),
+  [workspaces.md](workspaces.md) (the sidebar)
 
 ## Intent
 
@@ -147,3 +149,25 @@ The icons, sizes, colors (theme tokens only), the list rows' layout and truncati
 pulse's timing, the keys that move in the list, how much of a handed task to keep and show, the preview's line limit
 (about 12), and how the balloon's code is reused or moved (its question/plan/allow parts drawn at a fixed scale in the
 inbox instead of at the canvas's zoom).
+
+## As built
+
+What the builder chose where this design left it open, and what changed on the way:
+
+- **Keys:** Alt+↑ and Alt+↓ select the previous and the next request; Esc closes the inbox, also from a field; the
+  theme picker's keys stay the picker's, and a terminal's copy, paste, close, find and prompt shortcuts are nothing
+  while the inbox has the keyboard. A request that ends under a field the person types in gives the keyboard back to
+  the inbox; one that ends elsewhere leaves it where it is.
+- **The notice:** a chip with the waiting yellow border at the bottom center of the terminal, at the Full level; it
+  takes its own presses, so a group move over the rest of the body works as for any block.
+- **The pulse:** the button's background swells and fades once a second for 3 seconds from the arrival of a request
+  in the workspace shown (`Workspace::inbox_pulse`); frames are asked for only while it lasts.
+- **The list** scrolls to keep the selected row in view (Alt+↑/↓, a notification's click, the next request after an
+  answer); a row's age is told as it was drawn.
+- **A long preview** is cut after 12 lines of the wrapped text; Show more / Show less applies to all the previews of
+  the request. The preview has no scroll of its own.
+- **`go_to_waiting`** opens the inbox, selecting no request in particular, when the workspace shown has one waiting.
+- **Notifications:** a request in the workspace shown with the window in front makes none, in view or not (the badge
+  tells), but its block still gets the alert (answering or seeing the block clears it), so the workspace's tile has
+  its dot and Ctrl+Shift+A finds the request from another workspace. A notification's click shows the workspace the
+  asking block is in when it is clicked.

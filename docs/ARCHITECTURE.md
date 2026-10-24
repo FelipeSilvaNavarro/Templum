@@ -158,7 +158,7 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   (`approval.rs`): window chrome over the canvas's bottom center, never scaled by the zoom
   ([specs/templum-agent.md](specs/templum-agent.md#what-a-person-sees)).
 - `sidebar.rs`: the workspaces' tiles, a workspace's face (its image, icon or initials, in its color) and the Git
-  button at its foot;
+  and inbox buttons at its foot;
   `spaces_screen.rs`: the workspaces screen (cards, search, keys, dragging to reorder); `space_dialog.rs`: a
   workspace's look and its Edit… dialog ([specs/cockpit.md](specs/cockpit.md#6-the-workspaces-screen)).
 - `welcome.rs`: the welcome a first run opens over a frosted canvas (each block a soft shadow of its shape: GPUI has

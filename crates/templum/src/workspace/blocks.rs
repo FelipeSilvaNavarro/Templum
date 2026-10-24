@@ -188,10 +188,16 @@ impl Workspace {
         id
     }
 
-    /// Shows the terminal waiting for the person (it asked for attention): this workspace's
-    /// first, then the others' in the sidebar's order, the oldest block first. Going there is
-    /// seeing it, so the next time shows the next one. None waiting: a notification says so.
+    /// Opens the inbox when a request waits in this workspace. Else shows the terminal waiting
+    /// for the person (it asked for attention): this workspace's first, then the others' in the
+    /// sidebar's order, the oldest block first. Going there is seeing it, so the next time shows
+    /// the next one. None waiting: a notification says so.
     pub(crate) fn go_to_waiting(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A request waits here: the inbox has it.
+        if !self.inbox().is_empty() {
+            self.open_inbox(None, window, cx);
+            return;
+        }
         let order = self.order();
         let spaces =
             std::iter::once(&self.space).chain(order.into_iter().filter(|s| s.id != self.space.id));

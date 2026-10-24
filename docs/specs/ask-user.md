@@ -3,9 +3,9 @@
 - **Date:** 2026-10-17
 - **Status:** Implemented (kanban card 34, "Correções ask_user"; card 70 made a click only pick, Send answers; card 81
   redrew the dialog in the language of the kanban card's dialog and the Git popup; card 115 shows several questions
-  one at a time under tabs); plan:
-  [2026-10-17-ask-user-v2.md](../plans/2026-10-17-ask-user-v2.md)
-- **Builds on:** [connections.md](connections.md#requests-from-agents) (the balloon, the tools, the notices typed
+  one at a time under tabs; card 144 moved the dialog from a balloon on the asking terminal into the requests inbox,
+  [ask-inbox.md](ask-inbox.md)); plan: [2026-10-17-ask-user-v2.md](../plans/2026-10-17-ask-user-v2.md)
+- **Builds on:** [connections.md](connections.md#requests-from-agents) (the inbox, the tools, the notices typed
   back), [settings.md](settings.md), [shell-integration.md](shell-integration.md#news-and-notifications) (alerts and
   notifications)
 
@@ -145,18 +145,17 @@ What each client does with a long tool call (read in their documentation, 2026-1
 
 ## The dialog
 
-The balloon of [connections.md](connections.md#requests-from-agents) (centered on the terminal under its title bar,
-80% of its width and at most 80% of its height) holds the call's questions. Since card 81 it is drawn in the language
-of the kanban card's dialog ([kanban.md](kanban.md#the-open-card)) and the Git popup ([git.md](git.md)): a block's own
-color (`ui.surface`) under hairlines, rounded 12, the yellow frame of the block's waiting dot, the theme's accent for
-what is lit, every color a theme token, every size a world size × the zoom (so it scales like a photo: no zoom
-changes where its text wraps, and it is drawn at the Full level of detail only, as before). The frame is a column of
-three parts, **a header and a foot that stay and a body between them that scrolls**, so a long question never
-pushes "Waiting for your answer" or Send out of reach (a block too short for that: *A small block*, below):
+The request's part of the inbox of [ask-inbox.md](ask-inbox.md) holds the call's questions: the right column of its
+popup, under where the request comes from and why it is asked. Since card 81 it is drawn in the language of the kanban
+card's dialog ([kanban.md](kanban.md#the-open-card)) and the Git popup ([git.md](git.md)): the popup's color
+(`ui.surface`) under hairlines, the theme's accent for what is lit, every color a theme token. Since card 144 it is
+window chrome: sizes are pixels, never scaled by the canvas's zoom, and it was a balloon centered on the asking
+terminal (80% of its width) before. It is **a body that scrolls and a foot that stays**, so a long question never
+pushes Send out of reach:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ (?) Waiting for your answer  2 questions                          1 of 2 │  header
+│ FROM  Claude Code · api    WHY  Releasing 1.2: the answer picks the store │  inbox's
 ├──────────────────────────────────────────────────────────────────────────┤
 │  (✓) Database    ( ) Features                                            │  tabs
 │  ━━━━━━━━━━━━━                                                           │
@@ -177,32 +176,25 @@ pushes "Waiting for your answer" or Send out of reach (a block too short for tha
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Header** (18 at the sides, 10 up and down, a hairline under it): a 30 square tile of the waiting yellow at 16%
-  holding lucide `circle-question-mark`, "Waiting for your answer" (13.5, semibold), what the call is in `title_dim`
-  ("2 questions", "1 question"; a plan: "Plan to approve"), and at the right, when several requests of the block wait
-  in turn, "1 of 3" in a faint badge (`ui.hover`).
+- **The inbox's own parts** (the list of requests, "From" and "Why", the notice on the terminal) are
+  [ask-inbox.md](ask-inbox.md)'s. A request that waits has no header of its own any more: the list's row says who
+  asks, what it is and for how long.
 - **A cancelled question** says "The agent stopped waiting: your answer will be typed into its terminal." in a banner
-  right under the header, which stays with it (a rounded 8 box of the waiting yellow at 12%, lucide `circle-alert`).
-- **Body** (18 at the sides, 16 up and down): everything below scrolls, with gpui-component's scrollbar over it (the
-  kanban column's, `kanban::scrollbar_over`: shown on hover and while scrolling, only once the body overflows) and the
-  wheel over it, not over the terminal (with Ctrl it zooms the canvas). A press on the scrollbar's strip picks the
-  dialog's block and a middle drag from it pans the canvas, as anywhere in the balloon (the balloon takes both in the
-  capture phase, ahead of the scrollbar, as the kanban column does). Its scroll follows the zoom
-  (`PreviewScroll::follow`), so the same words stay in view when the canvas zooms.
-- **A small block** keeps the dialog usable: the body keeps at least 90 world units. Where 80% of the terminal's area
-  (under its title bar) can't hold the header (51), the foot (51 on one line, 89 when its buttons wrap), the banner if
-  any and those 90, the balloon takes the whole area; where even that can't, **the whole frame scrolls as one body**
-  (header, banner, questions and foot), with the scrollbar over it, so every part is reachable by the wheel. The foot's
-  buttons wrap on a second line in a dialog narrower than 260, Send on the right, so none is cut at the sides. A
-  test (`the_balloons_fixed_parts_are_as_tall_as_its_fit_assumes`) keeps the heights `balloon::fit` assumes true.
+  at the top of the scrolling body (a rounded 8 box of the waiting yellow at 12%, lucide `circle-alert`).
+- **Body** (18 at the sides): what the request says scrolls under "From" and "Why", with gpui-component's scrollbar
+  over it (the kanban column's, `kanban::scrollbar_over`: shown on hover and while scrolling, only once the body
+  overflows) and the wheel over it. The foot stays under it, 51 high.
+- **A small popup** keeps the dialog usable: the popup is at least the Git popup's smallest size (600 × 420 pixels)
+  whatever the window, and the body scrolls, so every part is reachable by the wheel or the keys. The foot's buttons
+  wrap on a second line in a column narrower than 260, Send on the right, so none is cut at the sides.
 - **Tabs** (card 115): a call of several questions shows **one at a time**, under a row of tabs at the top of the
   body, one per question in its order, in the Git popup's look: each its header as its chip shows it (12 characters
   at most), or "Question 2" without one, in `title_dim` (the terminal's text color under the pointer), medium, the
   Git tabs' size; the shown one in the terminal's text color, underlined by 2 of the accent; a hairline under the row.
   Before each label a 14 ring (`title_dim`) **fills with the accent and a check** once its question has an answer
   (an option picked, or Other's text), so the person sees what is left. A click on a tab shows its question. The row
-  wraps on more lines in a dialog too narrow for one, so no tab is ever cut; it lies in the body, so card 81's small
-  block (the minimum body, the whole area, the whole frame scrolling) holds with it unchanged. Another question
+  wraps on more lines in a dialog too narrow for one, so no tab is ever cut; it lies in the body, so the small popup's
+  rules hold with it unchanged. Another question
   shows from the body's top, where the tabs are. A call of one question (and today's shape, and a plan) shows no
   tab. The note, the foot and its count are the call's, under every tab; what is typed in a tab (an Other text, a
   free answer, the note) stays when another shows.
@@ -222,14 +214,17 @@ pushes "Waiting for your answer" or Send out of reach (a block too short for tha
   and its container may shrink to it (`min_w_0`): long questions, long labels and long descriptions grow their rows,
   and the body scrolls. Many questions stay usable: one shows at a time under its tab, and the foot says "1 of 3
   answered".
-- **Preview:** a question with an option that has a preview lays out in two columns when the dialog is at least 520
-  world units wide (the block's width × 0.8; fixed by the block, not the zoom), its panel on the left (45%), the
-  preview on the right: the highlighted option's ([Keyboard](#keyboard); hovering an option highlights it), else the
+- **Preview:** a question with an option that has a preview lays out in two columns when the request's column is at
+  least 520 pixels wide (a wider Git-sized popup; the default popup's column is a little narrower), its panel on the
+  left (45%), the preview on the right: the highlighted option's ([Keyboard](#keyboard); hovering an option
+  highlights it), else the
   picked one's, else the first one's with a preview; an option without one shows "No preview" dim. In a narrower
-  dialog the preview goes **under** the options, full width. Either way it has a caption ("Preview", lucide `eye`)
-  and a frame (hairline, rounded 8, the canvas color) in the terminal's font at 12 world units, never wrapped, at
-  most 18 lines tall, scrolling both ways. The wheel over it scrolls it only when it has more than 18 lines or the
-  wheel is sideways; over a short one the wheel goes on to the body.
+  column the preview goes **under** the options, full width. Either way it has a caption ("Preview", lucide `eye`)
+  and a frame (hairline, rounded 8, the canvas color) in the terminal's font at 12 pixels. **A long preview wraps** to
+  the frame's width (a word longer than it by letters: no sideways scroll), **shows its first 12 lines** and, when
+  it has more, a **Show more** link under the frame that shows the whole text (then **Show less**; `part(n,
+  "q<q>-preview-more")`), for the request's previews together (`Wait::more`). The frame has no scroll of its own: the
+  wheel over it scrolls the body.
 - **Note:** a section header (lucide `sticky-note`, "Note", "optional" at the right, as the kanban card's sections)
   over one field (placeholder "Add a note for the agent"), after the questions and a hairline.
 - **The foot** (a hairline over it, 18 at the sides, 10 up and down): **Dismiss** on the left, a ghost button (30
@@ -246,7 +241,7 @@ pushes "Waiting for your answer" or Send out of reach (a block too short for tha
 - **Today's shape** draws today's dialog in the same frame: its options as full-width buttons (no radio: a picked one is
   tinted and its label in the accent), a click picking one; or, with none, the field. No Other row, no note; Dismiss
   and Send in the foot as for any question (Send used to sit beside a lone field).
-- **The other balloons share the frame:** a plan ([agent-tools.md](agent-tools.md#propose_plan)) holds its chip, its
+- **The other requests share the frame:** a plan ([agent-tools.md](agent-tools.md#propose_plan)) holds its chip, its
   frame and the Comment field in the body and **Reject** (ghost) and **Approve** (solid, lucide `check`) in the foot;
   a request to connect or another with two buttons holds its words in the body and **Deny** (ghost) and **Allow**
   (solid) at the right of the foot.
@@ -256,23 +251,22 @@ pushes "Waiting for your answer" or Send out of reach (a block too short for tha
 The card, as the person wrote it: *"Refatoração modal de ask_user: atualmente está péssimo, não está responsivo para
 textos gigantes, o texto fica cortado, layout com aspecto antigo; quero um layout mais moderno igual refatoramos o
 modal de create card do kanban e o modal de git."* The redesign changes no behavior: the same ids (`q<q>-option-<i>`,
-`q<q>-other`, `note`, `send`, `dismiss`, `allow`, `deny`, `count`, `waiting`, `stopped`, `plan-*`, `("balloon", n)`),
-the same rows and keys, the same answers (card 115 changed the rows: the shown question's).
+`q<q>-other`, `note`, `send`, `dismiss`, `allow`, `deny`, `stopped`, `plan-*`; `count` and `waiting`, the balloon's
+header, went with it, and `("balloon", n)` became `inbox`), the same rows and keys, the same answers (card 115
+changed the rows: the shown question's).
 
-1. **A header and a foot outside the scroll,** not one dialog that scrolls whole: the old balloon scrolled its first
-   line and its buttons away with the text (two minors, deleted). The balloon is a column; its body is the part that
+1. **A foot outside the scroll,** not one dialog that scrolls whole: the old balloon scrolled its first
+   line and its buttons away with the text (two minors, deleted). The request is a column; its body is the part that
    shrinks (`min_h_0`) and scrolls, with the scrollbar the kanban's columns have.
 2. **The same frame for a question, a plan and a request with two buttons,** so the three look like one dialog; each
    kind only fills the body and the foot (`Parts`).
-3. **The preview goes under the options in a narrow dialog.** Two columns in a 320-wide dialog (a 400-wide block)
-   left each about 130 wide; the layout depends on the block's width, which is in world units, so zooming never
-   moves it.
-4. **The wheel over a short preview goes on to the body.** The preview always took the wheel, so over a short one
-   (most of them) the dialog stopped scrolling under the pointer.
+3. **The preview goes under the options in a narrow dialog.** Two columns in a 320-wide dialog left each about 130
+   wide; the layout depends on the column's width, so it never changes with the zoom.
+4. **The wheel over a preview goes on to the body.** The preview always took the wheel, so over a short one
+   (most of them) the dialog stopped scrolling under the pointer; since card 144 a preview has no scroll at all.
 5. **"1 of 3 answered" in the foot** with several questions, so a person who scrolled past a question can tell why
    Send is faint.
-6. **A block that isn't the one worked in** still pans the canvas on the wheel, as over any block ([Keyboard](#keyboard)
-   and [navigation.md](navigation.md)): a click on the dialog takes the block first.
+6. ~~A block that isn't the one worked in~~ pans no more: the dialog isn't on a block any more.
 
 ### Calls made for card 115
 
@@ -280,9 +274,9 @@ The card, as the person wrote it: *"ask_user em sistema de tabs: atualmente est�
 pode mudar entre as perguntas."* The answers, Other, the note, previews, multiSelect, plans and requests with two
 buttons don't change; the ids tests use stay, with `tab-<q>` and `tab-<q>-answered` added.
 
-1. **The tabs are in the body, not fixed over it.** Fixed, their height (more when they wrap) would enter
-   `balloon::fit`'s sum for the small block; in the body they scroll with it and the small block's rules hold as they
-   are. Another question shows from the top, where they are.
+1. **The tabs are in the body, not fixed over it.** Fixed, their height (more when they wrap) would eat the
+   body's room in a small popup; in the body they scroll with it. Another question shows from the top, where they
+   are.
 2. **They wrap, rather than scroll sideways:** every tab stays in sight and clickable, and a header is 12 characters
    at most, so a row wraps only with many questions or a narrow block.
 3. **← and → turn them; Ctrl+Tab doesn't:** it is the next workspace's shortcut, which the dialog leaves running.
@@ -295,10 +289,12 @@ buttons don't change; the ids tests use stay, with `tab-<q>` and `tab-<q>-answer
 
 ### Keyboard
 
-- The dialog has the keyboard while its block does (focused, or under the pointer with focus following it), from the
-  moment it shows, until Esc gives it back to the terminal. Given back, it stays the terminal's, also when the
-  pointer leaves the block and comes back, until a click on the dialog takes it again. Meanwhile no key reaches the
-  terminal; shortcuts still run, as they do from today's field.
+- The dialog has the keyboard while the **inbox** does: opening the inbox (its sidebar button, the notice on the asking
+  terminal, Ctrl+Shift+A: all the person's own acts) gives it the keyboard, and so does a click in it; a click on the
+  canvas or a block gives the keyboard to what was clicked, and the inbox stays open beside it. A request that
+  arrives never takes the keyboard. While the inbox has it no key reaches a terminal; shortcuts still run (but the
+  ones that act on the terminal in front: copy, paste, close, find, the prompts), and the theme picker's keys are the
+  picker's while it is open.
 - **The highlight** is on one row (an option, an Other row, the note or Send) or on none, as the dialog opens. Its
   rows are the shown question's, the note and Send. ↓ and Tab put it on the first row, ↑ and Shift+Tab on Send, then
   move it; hovering a row puts it there. With no row
@@ -318,20 +314,23 @@ buttons don't change; the ids tests use stay, with `tab-<q>` and `tab-<q>-answer
   Enter, as today; a multiSelect's options are checked with Space, never Enter.
 - On an Other row or the note, the field has the keyboard (GPUI's focus) and types; Tab and Shift+Tab, and ↑ and ↓
   where the field lets them through, move on.
-- **Esc** gives the keyboard back to the terminal; the dialog stays.
-- **Presses too soon:** keys and clicks on its options, Send and Dismiss are ignored for 0.5 s after the dialog first
-  shows a request (it arrives, or the one before it is answered): someone typing or clicking in the terminal as it
-  appears doesn't answer it.
+- **Alt+↑ and Alt+↓** select the previous and the next request of the inbox's list.
+- **Esc** closes the inbox, also from a field, and gives the keyboard back to the canvas.
+- **Presses too soon:** keys and clicks on its options, Send and Dismiss are ignored for 0.5 s after the inbox first
+  draws a request (it is selected, or the one before it is answered): someone typing or clicking as it appears
+  doesn't answer it.
 - A request to connect keeps its buttons and takes no keys.
 
 ## Telling the person
 
-- **Notification:** as today (connections.md, since 1bb9cf1): when the person doesn't see the dialog (another
-  workspace, outside the view, grid mode, too small for the Full level and not focused, or the window in the
-  background), a notification says "Asks you: *the first question*", with "(and 2 more)" when the call has more; the
-  system's too in the background, when `terminal.notifications` is on. A click shows the block.
+- **Notification:** when the person doesn't see the request (it is in another workspace than the one shown, or
+  the window is in the background), a notification says "Asks you: *the first question*", with "(and 2 more)" when
+  the call has more; the system's too in the background, when `terminal.notifications` is on. A click shows that
+  workspace with its inbox open at the request. A request in the workspace shown, the window in front, makes none:
+  the sidebar button's badge and pulse tell it ([ask-inbox.md](ask-inbox.md)).
 - **Alert:** in that same case the asking block gets an alert, "Asks you: …", as a bell gives one: its workspace's
-  tile shows the yellow dot and Ctrl+Shift+A (`go_to_waiting`) goes there, so a person coming back finds the question.
+  tile shows the yellow dot. Ctrl+Shift+A (`go_to_waiting`) opens the inbox when the workspace shown has a request
+  waiting; else it goes to the terminal that asked for attention, so a person coming back finds the question.
   Seeing the block clears the alert, as any alert's. No second notification comes from it.
 - **Sound:** a short system sound when a question or a request to connect arrives, seen or not, unless
   `[connections] sound = false`; at most one every 2 seconds, so parallel calls don't stack. The platform's own
@@ -382,9 +381,9 @@ A `question_timeout` outside 0–1440 is an invalid file, as any bad value is.
 | `templum/src/config.rs`, `settings/connections.rs`, `settings/fields.rs` | `question_timeout`, `sound`; their rows |
 | `templum/src/workspace/waits.rs` | the deadline from the setting; a cancel keeps a question; the front-of-queue time |
 | `templum/src/workspace/questions.rs` (new) | a question's fields (one per question's Other, the note), picks, Send, Dismiss, keys, the answer typed back once cancelled, the alert |
-| `templum/src/workspace/input.rs` | the dialog's keys before the terminal's |
-| `templum/src/balloon.rs` | the dialog: the frame (header, banner, scrolling body, foot) and what each kind puts in it (`question`, its `tabs`, `plan`, `allow`) |
-| `templum/src/workspace/waits.rs`, `markdown.rs`, `kanban.rs` | `Wait::body`, the body's scroll; `PreviewScroll::follow`, which keeps it through zooms; `scrollbar_over`, the kanban column's scrollbar shared |
+| `templum/src/workspace/inbox.rs`, `templum/src/inbox.rs` | the inbox's keys before the workspace's (`on_inbox_key`), its popup and the notice on a terminal ([ask-inbox.md](ask-inbox.md)) |
+| `templum/src/balloon.rs` | the request: the banner, the scrolling body and the foot, and what each kind puts in it (`question`, its `tabs`, `plan`, `allow`) |
+| `templum/src/workspace/waits.rs`, `markdown.rs`, `kanban.rs` | `Wait::body`, the body's scroll; `PreviewScroll::follow`; `scrollbar_over`, the kanban column's scrollbar shared |
 | `templum/src/chime.rs` (new) | the platform's player |
 
 No new dependency.
@@ -403,15 +402,16 @@ No new dependency.
   Send answers; Dismiss refuses; no deadline by
   default, the setting's or the call's, the shorter; a cancelled question stays, says so, and its answer is typed as a
   notice; the connection's end still withdraws it; the dialog's keys (moves, Space, Enter, Tab into a field, Esc and
-  the keyboard staying the terminal's after it) and none reaching the terminal; Enter with no row highlighted; presses within 0.5 s ignored; the preview of the hovered option; sizes × zoom; the
+  the inbox closing and the keyboard going back to the canvas) and none reaching the terminal; Enter with no row
+  highlighted; presses within 0.5 s ignored; the preview of the hovered option; the
   notification's "(and N more)"; the alert when unseen and none when seen; a sound is due once per 2 seconds, none
   with the setting off; the two settings' defaults, limits and rows.
 - **The redesign (card 81, `workspace/tests/requests.rs`):** a question of thousands of words and thirty options keeps
-  the balloon within 80% of its terminal's area with the header and the foot where they were while the body scrolls,
+  the popup within its size with the foot where it was while the body scrolls,
   and an option far down is reached, picked and sent; a word longer than the dialog wraps inside it (the content
   never grows past the body); the preview goes beside the options in a wide dialog and under them in a narrow one; the
-  foot counts the answers of several questions and says nothing for one; the body's scroll follows the zoom; the
-  wheel over a short preview scrolls the body and over a tall one the preview. `templum-mcp`: `Form::answered`.
+  foot counts the answers of several questions and says nothing for one; the
+  wheel over a preview, short or tall, scrolls the body. `templum-mcp`: `Form::answered`.
 - **Tabs (card 115, `templum-mcp` and `workspace/tests/requests.rs`):** the rows are the shown question's; showing a
   question moves a highlight off the hidden one, none and the note's staying; turning wraps both ways; only several
   questions have tabs, each named by its header or "Question N"; the next question without an answer starts after
@@ -420,10 +420,13 @@ No new dependency.
   Send answers the JSON; ← → turn the tabs, wrapping, and stay the field's in a field, at its start and its end too;
   a click on a single-select option shows the next unanswered question, a checkbox stays; another question shows from
   the body's top, and ← → on one question leave the scroll alone; Enter moving on shows its tab; tabs wrap inside the
-  body of a narrow dialog and every tab, option and Send is reached in a block too small for the dialog.
+  body of a narrow dialog and every tab, option and Send is reached in the smallest popup.
+- **The inbox (card 144, `workspace/tests/inbox.rs`):** the requests of [ask-inbox.md](ask-inbox.md), answered by
+  clicks and by keys from the popup; a long preview wraps, is cut at 12 lines and shows the rest on Show more.
 - **By hand:** Claude Code, Codex and Gemini CLI each asking with `questions` and getting the JSON; a question left 3
   minutes in Claude Code (is the call cancelled once backgrounded? the answer reaches it either way); Esc in Claude Code while it asks, then an answer typed into
-  it; the sound on Linux (with and without `canberra-gtk-play`), macOS and Windows; the dialog at far and near zooms.
+  it; the sound on Linux (with and without `canberra-gtk-play`), macOS and Windows; the inbox with a dozen requests
+  open.
 - **Bench:** the dialog paints, so the pull request carries `--bench` and `--bench-mixed`.
 
 ## Risks

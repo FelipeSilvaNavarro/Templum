@@ -926,12 +926,10 @@ Left by the second review of batch 2; line numbers are those of `development` at
 
 Left by batch 3 (agents together) and its review; line numbers are those of `development` at 6aa33f6.
 
-- [ ] **The balloon covers the find field.** Both sit at the terminal's top right (`render`,
-  `crates/templum/src/balloon.rs:18`; `find_bar`, `crates/templum/src/block.rs:682`). A person who opens find while an
-  agent asks sees the balloon over the field. Fix: put the balloon under the find field while it is open.
-- [ ] **The balloon's field misses Templum's paste shortcut.** The balloon's branch of `on_key_down`
-  (`crates/templum/src/workspace/input.rs`) lets every command but Copy and Paste through, so Ctrl+Shift+V does
-  nothing in a question's field; the find field's branch above it handles it. Fix: the same case as the find field's.
+- [ ] **The inbox's field misses Templum's paste shortcut.** `on_inbox_key`
+  (`crates/templum/src/workspace/inbox.rs`) lets every command but Copy and Paste through, so Ctrl+Shift+V does
+  nothing in a question's field; the find field's branch (`on_key_down`) handles it. Fix: the same case as the find
+  field's.
 - [ ] **The dot stops while it is off screen on a wire that is only partly in view.** A frame is asked for only when
   the dot's point is in view (`crates/templum/src/workspace/render.rs:447`): once it leaves the view it stays there
   until something else draws, then jumps. Fix: ask for frames while the wire's curve's bounds meet the view.
@@ -1317,29 +1315,11 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
 
 Left by the ask_user dialog's redesign (kanban card 81, `docs/specs/ask-user.md`).
 
-- [ ] **The ask_user balloon grows when its block shrinks past the first threshold.** `fit`
-  (`crates/templum/src/balloon.rs`) gives 80% of the area while it holds what the dialog needs, else the whole area:
-  400×271 gives at most 194, 400×270 gives 242, so a person resizing a block sees the dialog jump taller as the block
-  gets shorter. Fix: `((area * SHARE).max(needs.min(area)), area < needs)`.
-- [ ] **A keyboard highlight on Send, Approve or Reject isn't scrolled into view when the whole frame scrolls.**
-  `reveal` (`crates/templum/src/balloon.rs`) is attached to options, Other and the note, not to `send_button` or the
-  plan's buttons: in a small block ↑/Shift+Tab puts the highlight on a Send out of view (Enter still sends). Fix:
-  attach `reveal(Row::Send, wait)` to Send and `reveal(Row::Option(0, i))` to Approve/Reject.
-- [ ] **A plan's frame ignores the stopped banner and a wrapped foot.** `(tallest - BORDER - HEAD - FOOT)`
-  (`crates/templum/src/balloon.rs`) overestimates the body by `notice(w)`, and by 38 when the foot wraps: in a narrow
-  block whose plan the agent stopped waiting for, the frame can be taller than the body and the wheel over it never
-  scrolls the body to Comment. Fix: subtract the same foot and notice that `fit` uses.
-- [ ] **In a narrow dialog the header's title runs over "1 of 3".** "Waiting for your answer" is `flex_shrink_0`
-  (`crates/templum/src/balloon.rs`): under about 290 wide it covers the count badge and is clipped, so a person may not
-  see other requests wait. Fix: let the title truncate (`min_w_0` + `truncate`), keep the badge `flex_shrink_0`.
-- [ ] **The small-block test covers only today's shape.** `a_dialog_in_a_small_block_keeps_its_body_and_reaches_send`
-  (`crates/templum/src/workspace/tests/requests.rs`) answers `question`/`options` only; several questions under tabs
-  are driven by `tabs_wrap_and_are_reached_in_a_small_block` (card 115), but a plan, two buttons, Other and the note,
-  and a stopped question in a small block aren't. Fix: loop the same sizes over those calls.
-- [ ] **connections.md and ask-user.md's Testing lag the small-block fixes.** `docs/specs/connections.md` still says
-  "at most 80% of its height" with no small-block exception, and `docs/specs/ask-user.md`'s Testing doesn't list the
-  small-block, fit-heights, keys-scroll, plan-wheel or scrollbar-strip tests. Fix: point connections.md to
-  ask-user.md's *A small block* and add the tests to the list.
+- [ ] **A plan's frame ignores the stopped banner and a wrapped foot.** `detail` (`crates/templum/src/inbox.rs`) gives
+  `plan` the popup's height less its border and `FOOT` (51), which the banner of a plan the agent stopped waiting for
+  (about 50) and a foot that wraps (38 more, in a column narrower than 260) make too much: the frame can be taller than
+  the body and the wheel over it never scrolls the body to Comment. Fix: subtract the banner and the foot's real
+  heights.
 
 - [ ] **A lit tab on an upper line of wrapped tabs is underlined over the next line.** `tabs`
   (`crates/templum/src/balloon.rs`, kanban card 115) draws one hairline under the whole row and each tab's 2-unit
@@ -1348,10 +1328,6 @@ Left by the ask_user dialog's redesign (kanban card 81, `docs/specs/ask-user.md`
   floats. Fix: a hairline under each line (a row per line, splitting the tabs by measured width), or tabs as
   filled pills (`kanban::segment`'s look) when the row wraps.
 
-- [ ] **The wheel over a dialog of a block that isn't the one worked in pans the canvas.** `route_wheel`
-  (`crates/templum/src/workspace/input.rs`) gives the wheel to a block's content only when it is focused or selected,
-  and the balloon is the block's content: with focus not following the pointer, a huge dialog can't be scrolled by
-  wheel until a click focuses its block. Fix: let `route_wheel` pass a wheel over a balloon that overflows to it.
 
 Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
 
@@ -1367,11 +1343,12 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   Windows; neither was played on those systems, so a person there may hear nothing (or a console flash on Windows).
   On Linux both `canberra-gtk-play` and `pw-play` exit 0, but no one listened. Fix: play it there and adjust
   `chime::players`.
-- [ ] **ask_user v2's dialog isn't tried by hand.** The dialog (`crates/templum/src/balloon.rs`, redrawn by card 81)
-  was built and tested headless only: its look at far and near zooms, the header's tile and badge, the options'
-  panel and marks, the preview beside or under the options, the scrollbar, the highlight, and Claude Code, Codex
-  and Gemini CLI each asking with `questions`, then Esc in Claude Code and an answer typed back, weren't seen. A
-  person may meet misaligned marks, a pane that crowds the options or a header that wraps in a narrow block. Card 115's
+- [ ] **The inbox and ask_user's dialog aren't tried by hand.** The inbox (`crates/templum/src/inbox.rs`, card 144) and
+  the dialog it holds (`crates/templum/src/balloon.rs`) were built and tested headless only: the popup's look, its
+  list's rows, the notice's chip on a terminal, the sidebar button's badge and pulse, the options' panel and marks,
+  the preview beside or under the options, the scrollbar, the highlight, and Claude Code, Codex and Gemini CLI each
+  asking with `questions`, then Esc in Claude Code and an answer typed back, weren't seen. A person may meet
+  misaligned marks, a pane that crowds the options or a chip that covers the terminal's last line. Card 115's
   tabs (`tabs` in the same file: their rings, the lit tab's underline, a row that wraps) weren't seen either. Fix: run
   `cargo run -p templum -- --dev`, ask with the spec's example from each agent and from `templum ask`, and correct
   what looks wrong.
@@ -1388,13 +1365,6 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
 - [ ] **Clicking Other's radio only puts the keyboard in its field.** After picking an option, a click on Other's
   mark (`crates/templum/src/balloon.rs`, `q<q>-other-mark`) leaves the option picked though Other's text is still in
   the field, so Send answers the option. Fix: on that click, also `form.typed(ask, q, <the field's text>)`.
-- [ ] **After Esc, hovering still highlights a row.** The highlight is drawn and set by hover
-  (`crates/templum/src/balloon.rs`) while `away`, though keys go to the terminal: Enter on a highlighted option goes
-  to the agent's prompt. Fix: neither draw nor set the highlight while the question is `away`.
-- [ ] **A question withdrawn while its field has the keyboard leaves no one with it.** When the agent quits, the
-  deadline passes or the block closes while an Other field or the note is focused, the focus stays on a dropped
-  handle and keys go nowhere until a click (traced in GPUI's `window.rs`, not run). Fix: give the workspace the
-  keyboard when a wait whose field had it is removed (`answer`, `closed`).
 - [ ] **Esc and the arrows do nothing in a question's first half second.** `question_key`
   (`crates/templum/src/workspace/questions.rs:204`) returns on `too_soon` before matching the key, so it blocks every
   dialog key, though the spec only blocks those that answer (options, Send, Dismiss). A person who presses Esc as the
@@ -1564,7 +1534,7 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   passthrough mode, once alacritty_terminal offers it.
 - [ ] **`remove_worktree` and `merge_worktree` read the worktree on the UI thread.** Left by card 35
   (`Workspace::worktree_state`, `crates/templum/src/workspace/ops.rs`): a few git commands (`worktree list`,
-  `status`, `rev-list`, `diff`) run before the call answers or the balloon asks; in a big repository the window may
+  `status`, `rev-list`, `diff`) run before the call answers or the inbox shows it; in a big repository the window may
   stall for a moment. Fix: read it on the background executor, the call an `Outcome::Later` that opens the request
   once read.
 - [ ] **A repeating schedule drifts later.** Left by the final review of card 35

@@ -481,68 +481,13 @@ fn closing_the_asking_block_withdraws_its_question(cx: &mut TestAppContext) {
     ws.read_with(cx, |ws, _| assert!(ws.waits.is_empty()));
 }
 
-#[gpui_kit::test]
-fn a_question_off_screen_is_a_notification(cx: &mut TestAppContext) {
-    let (handle, ws) = open(cx);
-    let (_, _, mine) = three_blocks(handle, &ws, cx);
-    let (terminal, _) = me(&ws, cx, mine);
-    super::terminals::set_active(handle, true, cx);
-    let before = notification_count(handle, cx);
-    let asked = json!({ "question": "Here?", "options": ["Yes"] });
-    let _here = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
-    assert_eq!(
-        notification_count(handle, cx),
-        before,
-        "the balloon is in view"
-    );
-    // The asking block far outside the view.
-    ws.update(cx, |ws, _| {
-        ws.space.canvas.get_mut(mine).unwrap().rect.x += 100_000.0;
-    });
-    let alert = |cx: &mut TestAppContext| {
-        ws.read_with(cx, |ws, _| ws.space.terminal(mine).unwrap().alert.clone())
-    };
-    assert_eq!(alert(cx), None, "seen: no alert");
-    // Not the block the person works in either.
-    ws.update(cx, |ws, _| ws.space.focused = None);
-    let asked = json!({ "question": "There?", "options": ["Yes"] });
-    let _there = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
-    assert_eq!(notification_count(handle, cx), before + 1);
-    // An alert too, as a bell's: its workspace's dot, and Ctrl+Shift+A goes there.
-    assert_eq!(
-        alert(cx),
-        Some(crate::alert::Alert::Attention(Some(
-            "Asks you: There?".into()
-        )))
-    );
-    let id = ws.read_with(cx, |ws, _| ws.space.id.clone());
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, _| ws.sidebar = true);
-        window.render_frame(cx);
-        assert!(
-            window
-                .try_find(gpui_kit::ElementId::Name(
-                    format!("workspace-alert-{id}").into()
-                ))
-                .is_some(),
-            "the workspace's dot"
-        );
-        ws.update(cx, |ws, cx| ws.go_to_waiting(window, cx));
-    })
-    .unwrap();
-    ws.read_with(cx, |ws, _| {
-        assert_eq!(ws.space.focused, Some(mine), "revealed")
-    });
-    assert_eq!(alert(cx), None);
-}
-
 /// The notification counts the call's other questions; it says the same as the alert.
 #[gpui_kit::test]
 fn a_notification_counts_the_other_questions(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (_, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
-    super::terminals::set_active(handle, true, cx);
+    super::terminals::set_active(handle, false, cx);
     ws.update(cx, |ws, _| {
         ws.space.focused = None;
         ws.space.canvas.get_mut(mine).unwrap().rect.x += 100_000.0;
@@ -599,15 +544,15 @@ fn no_chime_with_the_sound_off(cx: &mut TestAppContext) {
     ws.read_with(cx, |ws, _| assert_eq!(ws.last_chime, None));
 }
 
-/// The person doesn't see a question in view: the window is in the background, or the asking
-/// block is too small on screen for its dialog to be drawn. A notification says what it asks.
+/// The person doesn't see a question when the window is in the background: a notification says
+/// what it asks. In front, zoomed out or not, the inbox's badge tells.
 #[gpui_kit::test]
-fn a_question_the_person_cant_see_is_a_notification(cx: &mut TestAppContext) {
+fn a_question_in_a_window_in_the_background_is_a_notification(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (_, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
     super::terminals::set_active(handle, true, cx);
-    // Zoomed out: in view, drawn as bars, no dialog.
+    // Zoomed out: the block is drawn as bars.
     ws.update(cx, |ws, _| {
         ws.space.focused = None;
         ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 0.33);
@@ -616,19 +561,15 @@ fn a_question_the_person_cant_see_is_a_notification(cx: &mut TestAppContext) {
     let before = notification_count(handle, cx);
     let asked = json!({ "question": "Far?", "options": ["Yes"] });
     let _far = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
-    assert_eq!(notification_count(handle, cx), before + 1);
-    // Up close again, with the window in the background.
-    ws.update(cx, |ws, _| {
-        ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 1.0)
-    });
-    frame(handle, cx);
-    let asked = json!({ "question": "Near?", "options": ["Yes"] });
-    let _near = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
-    assert_eq!(notification_count(handle, cx), before + 1, "in view");
+    assert_eq!(
+        notification_count(handle, cx),
+        before,
+        "the window is in front"
+    );
     super::terminals::set_active(handle, false, cx);
     let asked = json!({ "question": "Away?", "options": ["Yes"] });
-    let _away = call_later(handle, &ws, cx, &terminal, 3, "ask_user", asked);
-    assert_eq!(notification_count(handle, cx), before + 2);
+    let _away = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
+    assert_eq!(notification_count(handle, cx), before + 1);
 }
 
 /// Claude Code asks its person to allow a Templum tool, then calls it: the person allowed it, and
@@ -1498,42 +1439,6 @@ fn hovering_an_option_shows_its_preview(cx: &mut TestAppContext) {
     );
 }
 
-/// A preview of 2000 lines stays 18 lines tall, scrolling in its pane.
-#[gpui_kit::test]
-fn a_long_preview_scrolls_in_its_pane(cx: &mut TestAppContext) {
-    let (handle, ws) = open(cx);
-    let (_, _, mine) = three_blocks(handle, &ws, cx);
-    let (terminal, _) = me(&ws, cx, mine);
-    let n = mine.0 as usize;
-    let long: Vec<String> = (0..2000).map(|i| format!("line {i}")).collect();
-    let asked = json!({ "questions": [{ "question": "Which?", "options": [
-        { "label": "Long", "preview": long.join("\n") }, { "label": "Short" }
-    ] }] });
-    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
-    shown(handle, cx);
-    {
-        let zoom = 1.0;
-        let height = cx
-            .update_window(handle, |_, window, cx| {
-                window.render_frame(cx);
-                f32::from(
-                    window
-                        .find(crate::balloon::part(n, "q0-preview"))
-                        .bounds()
-                        .size
-                        .height,
-                )
-            })
-            .unwrap();
-        // 18 lines of 16, its padding of 8 above and below, its 1 px frame.
-        assert!(
-            height <= (18.0 * 16.0 + 16.0) * zoom + 2.0,
-            "{height} at {zoom}"
-        );
-        assert!(height >= 18.0 * 16.0 * zoom, "{height} at {zoom}");
-    }
-}
-
 /// The scroll of the newest wait's body, pixels.
 fn body_scroll(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> f32 {
     ws.read_with(cx, |ws, _| {
@@ -1734,12 +1639,10 @@ fn wheel_over_preview(
     body_scroll(ws, cx)
 }
 
-/// The wheel over a preview of a few lines scrolls the dialog's body (the preview has nothing to
-/// scroll up and down); over a tall one it scrolls the preview and leaves the body alone.
+/// The wheel over a preview, short or tall, scrolls the request's body: a preview has no scroll
+/// of its own (Show more shows the rest).
 #[gpui_kit::test]
-fn the_wheel_scrolls_the_dialog_over_a_short_preview_and_the_preview_over_a_tall_one(
-    cx: &mut TestAppContext,
-) {
+fn the_wheel_over_a_preview_scrolls_the_requests_body(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (_, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
@@ -1780,10 +1683,9 @@ fn the_wheel_scrolls_the_dialog_over_a_short_preview_and_the_preview_over_a_tall
     ws.update(cx, |ws, _| {
         ws.waits.remove(0);
     });
-    assert_eq!(
-        wheel_over_preview(handle, &ws, cx, n),
-        0.0,
-        "the preview did"
+    assert!(
+        wheel_over_preview(handle, &ws, cx, n) < 0.0,
+        "the body scrolled over a tall one too"
     );
 }
 
@@ -2476,13 +2378,13 @@ fn the_wheel_over_a_long_plan_scrolls_the_plan_not_the_body(cx: &mut TestAppCont
     assert_eq!(body_scroll(&ws, cx), 0.0, "the body did not");
 }
 
-/// A plan off screen is a notification that says so: "Asks you to approve a plan: …".
+/// A plan the person doesn't see is a notification that says so: "Asks you to approve a plan: …".
 #[gpui_kit::test]
-fn a_plan_off_screen_says_it_asks_for_an_approval(cx: &mut TestAppContext) {
+fn a_plan_in_the_background_says_it_asks_for_an_approval(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (_, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
-    super::terminals::set_active(handle, true, cx);
+    super::terminals::set_active(handle, false, cx);
     ws.update(cx, |ws, _| {
         ws.space.canvas.get_mut(mine).unwrap().rect.x += 100_000.0;
         ws.space.focused = None;

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::input::InputState;
 use gpui_kit::{App, Context, Entity, Focusable as _, Subscription, Window};
 use serde_json::Value;
-use templum_canvas::{BlockId, Level};
+use templum_canvas::BlockId;
 use templum_mcp::ask::{Ask, Form, Row};
 use templum_mcp::tools::Event;
 use templum_mcp::{Replier, Reply, tools};
@@ -48,6 +48,8 @@ pub(crate) struct Wait {
     pub since: Instant,
     /// When the inbox first drew it, by the executor's clock.
     pub shown: Cell<Option<Instant>>,
+    /// Its options' previews are shown whole (Show more), not cut after a few lines.
+    pub more: Cell<bool>,
     /// The scroll of the request's body in the inbox.
     pub body: crate::markdown::PreviewScroll,
     /// The row the keys just moved the highlight to: the body scrolls to show it once, when it is
@@ -198,6 +200,7 @@ impl Workspace {
             what,
             since: cx.background_executor().now(),
             shown: Cell::new(None),
+            more: Cell::new(false),
             body: Default::default(),
             reveal: Rc::default(),
         };
@@ -209,6 +212,12 @@ impl Workspace {
             }
         );
         if matches!(wait.what, Waiting::Question { .. } | Waiting::Allow { .. }) {
+            if self
+                .caller(&wait.from)
+                .is_some_and(|(space, _)| space == self.space.id)
+            {
+                self.inbox_arrived(cx);
+            }
             self.tell_asking(&wait, window, cx);
             self.chime(cx);
             // Its block waits for its person now. The agent that handed it a task hears nothing:
@@ -230,6 +239,7 @@ impl Workspace {
         };
         let wait = self.waits.remove(i);
         self.inbox_settle(&[key]);
+        self.request_ended(&wait, cx);
         self.unwatch(&wait);
         if !matches!(wait.what, Waiting::Question { stopped: true, .. }) {
             let _ = wait.reply.send(tools::tool_result(&wait.id, &reply));
@@ -298,6 +308,7 @@ impl Workspace {
             .collect();
         for wait in &gone {
             self.unwatch(wait);
+            self.request_ended(wait, cx);
         }
         self.inbox_settle(&gone.iter().map(|w| w.key).collect::<Vec<_>>());
         cx.notify();
@@ -317,6 +328,7 @@ impl Workspace {
         let gone: Vec<Wait> = self.waits.extract_if(.., |w| w.conn == conn).collect();
         for wait in &gone {
             self.unwatch(wait);
+            self.request_ended(wait, cx);
         }
         self.inbox_settle(&gone.iter().map(|w| w.key).collect::<Vec<_>>());
         cx.notify();
@@ -459,10 +471,10 @@ impl Workspace {
                 },
             },
         };
-        self.seen_asking(&from);
         match job {
             Err(reply) => {
                 self.answer(key, reply, cx);
+                self.seen_asking(&from);
             }
             Ok(job) => {
                 let Some(at) = self.waits.iter().position(|w| w.key == key) else {
@@ -470,6 +482,8 @@ impl Workspace {
                 };
                 let wait = self.waits.remove(at);
                 self.inbox_settle(&[key]);
+                self.request_ended(&wait, cx);
+                self.seen_asking(&from);
                 cx.notify();
                 cx.spawn(async move |_, _| {
                     let reply = job.await;
@@ -498,9 +512,12 @@ impl Workspace {
     }
 
     /// The person answered a request of the terminal `from`: they saw its block, whose alert
-    /// (`tell_asking`'s, or any other) goes, as seeing a block clears its alert.
+    /// (`tell_asking`'s, or any other) goes, as seeing a block clears its alert; but not while
+    /// another request of it waits, whose words the alert keeps (`request_ended`).
     pub(super) fn seen_asking(&mut self, from: &str) {
-        if let Some(pane) = self.pane_mut(from) {
+        if self.asking(from).is_none()
+            && let Some(pane) = self.pane_mut(from)
+        {
             pane.alert = None;
         }
     }
@@ -573,33 +590,35 @@ impl Workspace {
         }
     }
 
-    /// The person doesn't see the asking block's dialog (the block is in another workspace,
-    /// outside the view, hidden by grid mode, or too small on screen for its dialog to be drawn,
-    /// or the window is in the background): a notification says what it asks, clicking it shows
-    /// the block; and the block gets an alert, as a bell gives one (its workspace's dot,
-    /// `go_to_waiting`).
+    /// The person doesn't see the request: it is in another workspace than the one shown, or the
+    /// window is in the background. A notification says what it asks, clicking it shows that
+    /// workspace with its inbox open at the request. The block gets an alert in every case, as a
+    /// bell gives one (its workspace's dot, `go_to_waiting`), so a request missed here is found
+    /// from another workspace; a request here, the window in front, is told by the inbox's
+    /// badge alone.
     fn tell_asking(&mut self, wait: &Wait, window: &mut Window, cx: &mut Context<Self>) {
         let Some((space_id, me)) = self.caller(&wait.from) else {
             return;
         };
-        // As `block::render` draws it: in full, or worked in.
-        let full = self.space.focused == Some(me)
-            || templum_canvas::level(self.cell.font_size, self.space.rest) == Level::Full;
-        let shown = window.is_window_active()
-            && space_id == self.space.id
-            && self.space.shown(me)
-            && full
-            && self
-                .space
-                .canvas
-                .visible_from(&self.space.view, self.viewport(window))
-                .any(|b| b.id == me);
-        if shown {
-            return;
-        }
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let (_, title, _) = self.about(&space.blocks[&me], cx);
-        let text = match &wait.what {
+        let Some(text) = self.asking_text(wait, cx) else {
+            return;
+        };
+        if let Some(pane) = self.pane_mut(&wait.from) {
+            pane.alert = Some(Alert::Attention(Some(text.clone())));
+        }
+        // A request here, the window in front, is told by the badge: no notification.
+        if window.is_window_active() && space_id == self.space.id {
+            return;
+        }
+        self.notify_from(space_id, me, title, text, Some(wait.key), window, cx);
+    }
+
+    /// What the request `wait` says to the person, as a notification and the block's alert: None
+    /// for what is no request of the person's.
+    fn asking_text(&self, wait: &Wait, cx: &App) -> Option<String> {
+        Some(match &wait.what {
             Waiting::Question { ask, .. } if ask.plan.is_some() => {
                 format!("Asks you to approve a plan: {}", ask.summary())
             }
@@ -608,12 +627,27 @@ impl Workspace {
                 more => format!("Asks you: {} (and {more} more)", ask.summary()),
             },
             Waiting::Allow { .. } => self.allow_line(wait, cx),
-            Waiting::Turn { .. } | Waiting::Event { .. } => return,
+            Waiting::Turn { .. } | Waiting::Event { .. } => return None,
+        })
+    }
+
+    /// The request `ended` of the terminal `from` is gone: its block's alert follows what still
+    /// waits there. The oldest request left gives its words; with none left, the alert goes if it
+    /// was the request's (a bell's or a command's stays).
+    fn request_ended(&mut self, ended: &Wait, cx: &App) {
+        let Some(gone) = self.asking_text(ended, cx) else {
+            return;
         };
-        if let Some(pane) = self.pane_mut(&wait.from) {
-            pane.alert = Some(Alert::Attention(Some(text.clone())));
+        let left = self
+            .asking(&ended.from)
+            .and_then(|(wait, _)| self.asking_text(wait, cx));
+        if let Some(pane) = self.pane_mut(&ended.from) {
+            match left {
+                Some(text) => pane.alert = Some(Alert::Attention(Some(text))),
+                None if pane.alert == Some(Alert::Attention(Some(gone))) => pane.alert = None,
+                None => {}
+            }
         }
-        self.notify_from(space_id, me, title, text, window, cx);
     }
 
     /// `wait_for` from the terminal `from`: `event` in the terminal `block`. `idle` is

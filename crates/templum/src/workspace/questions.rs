@@ -144,6 +144,14 @@ impl Workspace {
         }
     }
 
+    /// Show more / Show less on the previews of the question `key`.
+    pub(crate) fn toggle_previews(&mut self, key: u64, cx: &mut Context<Self>) {
+        if let Some(wait) = self.waits.iter().find(|w| w.key == key) {
+            wait.more.set(!wait.more.get());
+            cx.notify();
+        }
+    }
+
     /// A click on the tab of question `q` of the question `key`: that question shows.
     pub(crate) fn show_question(
         &mut self,

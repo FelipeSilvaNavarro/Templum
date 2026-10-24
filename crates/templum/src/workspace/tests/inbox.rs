@@ -1097,3 +1097,473 @@ fn a_wait_ending_elsewhere_leaves_the_field_the_keyboard(cx: &mut TestAppContext
     assert_eq!(typed(cx), "ship on friday", "every key went to the field");
     ws.read_with(cx, |ws, _| assert_eq!(ws.waits[0].key, first));
 }
+
+/// The badge reads the count, "99+" past 99.
+#[test]
+fn the_badge_reads_99_at_most() {
+    use crate::inbox::badge_text;
+    assert_eq!(
+        [1, 2, 99, 100, 120].map(badge_text),
+        ["1", "2", "99", "99+", "99+"]
+    );
+}
+
+#[gpui_kit::test]
+fn the_badge_counts_this_workspaces_requests(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let b = open_terminal(handle, &ws, cx, 0);
+    let c = open_terminal(handle, &ws, cx, 1);
+    let (a_id, _) = me(&ws, cx, a);
+    let (b_id, _) = me(&ws, cx, b);
+    let (c_id, _) = me(&ws, cx, c);
+    let badge = name("inbox-badge".into());
+    assert!(!drawn(handle, cx, badge.clone()), "none: no badge");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.move_blocks(vec![c], None, window, cx))
+    })
+    .unwrap();
+    let _here = (
+        asks(handle, &ws, cx, &a_id, 1),
+        asks(handle, &ws, cx, &b_id, 2),
+    );
+    let _elsewhere = asks(handle, &ws, cx, &c_id, 3);
+    assert_eq!(listed(&ws, cx).len(), 2, "this workspace's two");
+    assert!(drawn(handle, cx, badge), "the badge");
+}
+
+/// Review Focus 4: a hundred and twenty requests: the badge says 99+, the list scrolls, the
+/// selection stays in view.
+#[gpui_kit::test]
+fn many_requests_keep_the_selection_in_view(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    for conn in 1..=120 {
+        let _ = asks(handle, &ws, cx, &terminal, conn);
+    }
+    let keys = listed(&ws, cx);
+    assert_eq!(keys.len(), 120);
+    assert_eq!(crate::inbox::badge_text(keys.len()), "99+");
+    assert!(drawn(handle, cx, name("inbox-badge".into())));
+    let in_view = |cx: &mut TestAppContext, key: u64| {
+        cx.update_window(handle, |_, window, cx| {
+            for _ in 0..3 {
+                window.render_frame(cx);
+            }
+            let list = window.find("inbox-list").bounds();
+            let row = window.find(name(format!("inbox-row-{key}"))).bounds();
+            row.top() >= list.top() && row.bottom() <= list.bottom()
+        })
+        .unwrap()
+    };
+    // Opened on the last one, far below the first screenful.
+    open_inbox(handle, &ws, cx, Some(keys[119]));
+    assert!(in_view(cx, keys[119]), "the last");
+    // Then up by the keys, past the top of what shows.
+    cx.update_window(handle, |_, window, cx| {
+        for _ in 0..30 {
+            window.press("alt-up", cx);
+            window.render_frame(cx);
+        }
+    })
+    .unwrap();
+    assert_eq!(selected(&ws, cx), Some(keys[89]));
+    assert!(in_view(cx, keys[89]), "30 rows up");
+}
+
+#[test]
+fn the_pulse_swells_and_fades_once_a_second() {
+    use crate::inbox::pulse;
+    let s = Duration::from_secs_f32;
+    assert!(pulse(s(0.0)) < 0.01 && pulse(s(1.0)) < 0.01);
+    assert!(pulse(s(0.5)) > 0.99);
+}
+
+#[gpui_kit::test]
+fn a_new_request_pulses_the_button_for_a_while(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let b = open_terminal(handle, &ws, cx, 0);
+    let (terminal, _) = me(&ws, cx, a);
+    let (elsewhere, _) = me(&ws, cx, b);
+    let pulsing = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, cx| {
+            ws.inbox_pulsing(cx.background_executor().now())
+        })
+    };
+    assert!(!pulsing(cx), "nothing yet");
+    // A request in another workspace doesn't pulse this one's button.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.move_blocks(vec![b], None, window, cx))
+    })
+    .unwrap();
+    let _far = asks(handle, &ws, cx, &elsewhere, 1);
+    assert!(!pulsing(cx), "not for the others");
+    let _answers = asks(handle, &ws, cx, &terminal, 2);
+    assert!(pulsing(cx), "a request here");
+    after(cx, 2900);
+    assert!(pulsing(cx), "for a few seconds");
+    after(cx, 200);
+    assert!(!pulsing(cx), "then no frame is asked for any more");
+    // Frames drawn while it lasts and after: the badge stays.
+    assert!(drawn(handle, cx, name("inbox-badge".into())));
+}
+
+#[gpui_kit::test]
+fn with_reduced_motion_the_button_never_pulses(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    no_motion(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.inbox_pulse, None));
+    assert!(
+        drawn(handle, cx, name("inbox-badge".into())),
+        "the badge only"
+    );
+}
+
+#[gpui_kit::test]
+fn the_toggle_shows_the_count_when_the_sidebar_is_hidden(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    let (button, toggle) = (name("inbox-button".into()), name("sidebar-badge".into()));
+    ws.update(cx, |ws, _| ws.sidebar = true);
+    assert!(drawn(handle, cx, button.clone()));
+    assert!(
+        !drawn(handle, cx, toggle.clone()),
+        "the sidebar has the badge"
+    );
+    ws.update(cx, |ws, _| ws.sidebar = false);
+    assert!(!drawn(handle, cx, button), "no sidebar, no button");
+    assert!(drawn(handle, cx, toggle), "the toggle has it");
+}
+
+#[gpui_kit::test]
+fn the_button_toggles_the_inbox(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| ws.sidebar = true);
+    for open in [true, false] {
+        click_id(handle, cx, name("inbox-button".into()));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.inbox_open, open));
+    }
+}
+
+/// A request here with the window in front is told by the badge alone, in view or not; another
+/// workspace's is a notification, whose click shows that workspace with its inbox open at it.
+#[gpui_kit::test]
+fn a_request_here_with_the_window_active_isnt_notified(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let b = open_terminal(handle, &ws, cx, 0);
+    let ((terminal, _), (elsewhere, _)) = (me(&ws, cx, a), me(&ws, cx, b));
+    super::terminals::set_active(handle, true, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(a).unwrap().rect.x += 100_000.0;
+        ws.space.focused = None;
+    });
+    let before = notification_count(handle, cx);
+    let _here = asks(handle, &ws, cx, &terminal, 1);
+    assert_eq!(
+        notification_count(handle, cx),
+        before,
+        "here: the badge tells"
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.terminal(a).unwrap().alert,
+            Some(crate::alert::Alert::Attention(Some(
+                "Asks you: Ship it?".into()
+            ))),
+            "the block keeps the alert for the workspace's dot"
+        )
+    });
+    // Another workspace's.
+    let there = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.move_blocks(vec![b], None, window, cx);
+                ws.others.last().unwrap().id.clone()
+            })
+        })
+        .unwrap();
+    // The move said so itself.
+    after(cx, 600);
+    frame(handle, cx);
+    let before = notification_count(handle, cx);
+    let _far = asks(handle, &ws, cx, &elsewhere, 2);
+    assert_eq!(
+        notification_count(handle, cx),
+        before + 1,
+        "there: a notification"
+    );
+    let key = ws.read_with(cx, |ws, _| ws.waits.last().unwrap().key);
+    // Its click.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.show_request(&there, key, window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.id, there, "that workspace");
+        assert!(ws.inbox_open, "its inbox");
+    });
+    assert_eq!(selected(&ws, cx), Some(key), "at that request");
+}
+
+#[gpui_kit::test]
+fn go_to_waiting_opens_the_inbox_when_a_request_waits(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let go = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.go_to_waiting(window, cx))
+        })
+        .unwrap()
+    };
+    go(cx);
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.inbox_open, "nothing waits: today's")
+    });
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    go(cx);
+    ws.read_with(cx, |ws, _| assert!(ws.inbox_open, "a request waits"));
+}
+
+/// A long preview wraps and shows twelve lines; Show more shows the rest, Show less cuts it again.
+#[gpui_kit::test]
+fn a_long_preview_wraps_and_shows_more_on_demand(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let tall: Vec<String> = (0..40).map(|i| format!("line {i}")).collect();
+    let asked = json!({ "questions": [{ "question": "Which?", "options": [
+        { "label": "Long", "preview": tall.join("\n") }, { "label": "Short" }
+    ] }] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    ws.update(cx, |ws, _| {
+        ws.git_size = Some(templum_canvas::Size::new(1100.0, 760.0))
+    });
+    drawn_inbox(handle, &ws, cx);
+    let height = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            f32::from(window.find(part(a, "q0-preview")).bounds().size.height)
+        })
+        .unwrap()
+    };
+    let more = part(a, "q0-preview-more");
+    // The link is under the fold of the request's body.
+    let down = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.waits[0].body.handle.scroll_to_bottom());
+        frame(handle, cx);
+    };
+    // 12 lines of 16, its padding of 8 above and below, its 1 px frame.
+    assert!(height(cx) <= 12.0 * 16.0 + 16.0 + 2.0, "{}", height(cx));
+    assert!(drawn(handle, cx, more.clone()), "Show more");
+    down(cx);
+    click_id(handle, cx, more.clone());
+    assert!(height(cx) >= 40.0 * 16.0, "all 40: {}", height(cx));
+    down(cx);
+    click_id(handle, cx, more.clone());
+    assert!(height(cx) <= 12.0 * 16.0 + 16.0 + 2.0, "cut again");
+}
+
+#[gpui_kit::test]
+fn a_long_line_of_a_preview_wraps_and_a_short_preview_has_no_link(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let line = "word ".repeat(40);
+    let asked = json!({ "questions": [{ "question": "Which?", "options": [
+        { "label": "Wide", "preview": line.trim() }
+    ] }] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    drawn_inbox(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let preview = window.find(part(a, "q0-preview")).bounds();
+        let column = window.find(part(a, "body")).bounds();
+        assert!(preview.right() <= column.right(), "no sideways scroll");
+        assert!(preview.size.height > px(16.0 * 3.0), "wrapped: {preview:?}");
+        assert!(window.try_find(part(a, "q0-preview-more")).is_none());
+    })
+    .unwrap();
+}
+
+/// A request missed in the workspace shown is found from another: its tile has the dot and
+/// Ctrl+Shift+A goes to its block.
+#[gpui_kit::test]
+fn a_request_missed_here_is_found_from_another_workspace(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    super::terminals::set_active(handle, true, cx);
+    let here = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    ws.update(cx, |ws, _| ws.space.focused = None);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.new_space(window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_ne!(ws.space.id, here, "elsewhere now"));
+    assert!(
+        drawn(handle, cx, name(format!("workspace-alert-{here}"))),
+        "the workspace's dot"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.go_to_waiting(window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.id, here, "back where it waits");
+        assert_eq!(ws.space.focused, Some(a));
+    });
+}
+
+/// The click on a request's notification shows the workspace its block is in now.
+#[gpui_kit::test]
+fn a_notification_shows_the_workspace_the_block_moved_to(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let b = open_terminal(handle, &ws, cx, 0);
+    let (terminal, _) = me(&ws, cx, b);
+    let _ = a;
+    let before = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    let key = ws.read_with(cx, |ws, _| ws.waits[0].key);
+    // The block moves on, to a workspace of its own, after the notification was made.
+    let there = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.move_blocks(vec![b], None, window, cx);
+                ws.others.last().unwrap().id.clone()
+            })
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.show_request(&before, key, window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.id, there, "where the block is");
+        assert!(ws.inbox_open);
+    });
+    assert_eq!(selected(&ws, cx), Some(key), "listing the request");
+}
+
+/// A preview the estimate takes for short is never cut: wrapped, it is taller than 12 lines, and
+/// it is shown whole, with no link. (The estimate is made to err: letters of one pixel.)
+#[gpui_kit::test]
+fn a_preview_the_estimate_calls_short_is_shown_whole(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    // 12 lines of 150 characters: 3 rows each on screen, though the estimate counts 1.
+    let line = "word ".repeat(30);
+    let text: Vec<&str> = (0..12).map(|_| line.trim()).collect();
+    let asked = json!({ "questions": [{ "question": "Which?", "options": [
+        { "label": "Wide", "preview": text.join("\n") }
+    ] }] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    ws.update(cx, |ws, _| ws.cell.size.w = 1.0);
+    drawn_inbox(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let preview = window.find(part(a, "q0-preview")).bounds();
+        // 12 lines of 16 is where a cut would be.
+        assert!(
+            preview.size.height > px(12.0 * 16.0 + 16.0 + 2.0 + 16.0),
+            "{preview:?}"
+        );
+        assert!(window.try_find(part(a, "q0-preview-more")).is_none());
+    })
+    .unwrap();
+}
+
+/// A request that is withdrawn (its deadline, its agent leaving) takes its alert with it: the
+/// block's dot and Ctrl+Shift+A don't point at what no longer waits. Another alert stays.
+#[gpui_kit::test]
+fn a_withdrawn_request_takes_its_alert_with_it(cx: &mut TestAppContext) {
+    use crate::alert::Alert;
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let alert = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(a).unwrap().alert.clone())
+    };
+    // Its deadline.
+    let asked = json!({ "question": "Ship it?", "options": ["Yes"], "timeout": 1 });
+    let _timed = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    assert_eq!(
+        alert(cx),
+        Some(Alert::Attention(Some("Asks you: Ship it?".into())))
+    );
+    after(cx, 1100);
+    assert!(listed(&ws, cx).is_empty(), "withdrawn");
+    assert_eq!(alert(cx), None, "its alert went");
+    // Its agent leaves; a bell rung meanwhile stays.
+    let _gone = asks(handle, &ws, cx, &terminal, 2);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(a).unwrap().alert = Some(Alert::Attention(Some("a bell".into())))
+    });
+    bus_note(
+        handle,
+        &ws,
+        cx,
+        2,
+        templum_mcp::bus::CLOSED,
+        serde_json::Value::Null,
+    );
+    assert!(listed(&ws, cx).is_empty());
+    assert_eq!(
+        alert(cx),
+        Some(Alert::Attention(Some("a bell".into()))),
+        "not the request's"
+    );
+}
+
+/// Answering one of a terminal's two requests leaves the alert for the other: after leaving the
+/// workspace its tile still has the dot.
+#[gpui_kit::test]
+fn the_request_left_keeps_the_dot_of_its_workspace(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let here = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    super::terminals::set_active(handle, true, cx);
+    let _first = asks(handle, &ws, cx, &terminal, 1);
+    let second = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "ask_user",
+        json!({ "question": "Which?", "options": ["A"] }),
+    );
+    let keys = listed(&ws, cx);
+    ws.update(cx, |ws, cx| ws.answer(keys[0], Reply::ok("Yes"), cx));
+    ws.update(cx, |ws, _| {
+        ws.seen_asking(&terminal);
+        ws.space.focused = None;
+    });
+    assert_eq!(second.try_recv(), Err(TryRecvError::Empty));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.terminal(a).unwrap().alert,
+            Some(crate::alert::Alert::Attention(Some(
+                "Asks you: Which?".into()
+            ))),
+            "the other request's words"
+        )
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.new_space(window, cx))
+    })
+    .unwrap();
+    assert!(drawn(handle, cx, name(format!("workspace-alert-{here}"))));
+}

@@ -45,9 +45,10 @@ events itself (`Canvas::selection_box`, `templum-canvas`).
   pans; the header's buttons, the resize strips along the sides, the corner squares and the grip keep their
   presses; a double-click on a title frames the block; grid mode's tiles (no free move, no box). The wheel over
   selected blocks scrolls their content, [below](#the-wheel-over-blocks).
-- The body's content keeps the presses that are its own: a terminal's balloon and find field (only the title
-  moves the group there) and a terminal's Ctrl+click (Cmd on macOS), which opens a link. Far away, the block's
-  label is its title: a click on it keeps the selection, a double-click frames the block.
+- The body's content keeps the presses that are its own: a terminal's find field and the notice of a request that
+  waits for the person (only the title moves the group over the find field) and a terminal's Ctrl+click (Cmd on
+  macOS), which opens a link. Far away, the block's label is its title: a click on it keeps the selection, a
+  double-click frames the block.
 - A click is a press let go within a click's distance of where it started, without the wheel having carried the
   selection. On a body or in the box, blocks nudged on the way are put back, with no step for Ctrl+Z.
 - Held, the selection pans the canvas at its edge like a title drag, [below](#holding-a-block).

@@ -1321,6 +1321,13 @@ pub struct Workspace {
     /// A request ended while the inbox was open: the next frame gives the inbox the keyboard back
     /// if one of its fields (which ended with it) had it.
     inbox_refocus: bool,
+    /// When the last request arrived in the workspace shown: the sidebar's button pulses for
+    /// `inbox::PULSE` after it (never with reduced motion).
+    pub(crate) inbox_pulse: Option<Instant>,
+    /// The list's scroll, kept to show the selected row.
+    pub(crate) inbox_list: gpui_kit::ScrollHandle,
+    /// The selection changed: the list scrolls to its row once it is drawn and laid out.
+    pub(crate) inbox_reveal: std::cell::Cell<bool>,
     /// The plan's limits as Claude Code's `/usage` last told them, by account (the agent's id
     /// for its own folder).
     pub(crate) claude_polled: HashMap<String, templum_usage::Limits>,
@@ -1752,6 +1759,9 @@ impl Workspace {
             inbox_at: None,
             inbox_focus: cx.focus_handle(),
             inbox_refocus: false,
+            inbox_pulse: None,
+            inbox_list: Default::default(),
+            inbox_reveal: Default::default(),
             claude_polled: HashMap::new(),
             claude_asked: HashMap::new(),
             claude_queue: Default::default(),

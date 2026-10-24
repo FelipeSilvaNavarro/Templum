@@ -209,8 +209,8 @@ refused until its timeout), and ends as 3 says: its reply, its agent leaving, it
 - **Where no hook hears them:** the screen goes still, so 5's notice (with tools) or the task's end (without) carries
   the dialog as drawn, and the master can still answer it with `send_keys`, `send_to_terminal` or a `reply` to it; with
   tools the task stays open across that answer.
-- **Its questions to the person:** the server's instructions ask for `ask_user`, whose balloon Templum hears; as card
-  30 wants, its master isn't told of them.
+- **Its questions to the person:** the server's instructions ask for `ask_user`, whose request in the inbox
+  Templum hears; as card 30 wants, its master isn't told of them.
 - **`reply` itself asks nothing** (9).
 
 ### 7. The whole answer, and more than the screen

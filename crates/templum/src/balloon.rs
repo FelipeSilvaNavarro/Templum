@@ -28,9 +28,9 @@ const LABEL: f32 = 13.5;
 const SMALL: f32 = 12.0;
 /// The body's sides, and the foot's.
 pub(crate) const SIDE: f32 = 18.0;
-/// A preview's line height, world units, and the most lines it shows (it scrolls past them).
+/// A preview's line height, world units, and the most lines it shows before Show more.
 const PREVIEW_LINE: f32 = 16.0;
-const PREVIEW_LINES: f32 = 18.0;
+const PREVIEW_CLAMP: usize = 12;
 /// A dialog narrower than this, world units, lays a preview under the options instead of beside
 /// them.
 const BESIDE: f32 = 520.0;
@@ -241,7 +241,14 @@ fn question(
     block = block.child(match ask.preview_of(q, form) {
         None => panel(choices),
         Some(shown) => {
-            let preview = preview(ws, shown, n, q, z);
+            // The body's sides are not the preview's; beside the options it has what their 45% and
+            // the gap leave.
+            let preview_w = if w >= BESIDE {
+                (w - 2.0 * SIDE) * 0.55 - 12.0
+            } else {
+                w - 2.0 * SIDE
+            };
+            let preview = preview(ws, wait, shown, (n, q), preview_w, z, cx);
             if w >= BESIDE {
                 div()
                     .flex()
@@ -560,13 +567,31 @@ fn hover(
     })
 }
 
-/// Question `q`'s preview: a caption over `shown` in the terminal's font, never wrapped, in a
-/// frame at most PREVIEW_LINES tall, scrolling both ways; None says "No preview".
-fn preview(ws: &Workspace, shown: Option<&str>, n: usize, q: usize, z: f32) -> Div {
+/// Question `q`'s preview of the block `n`, `w` world units wide: a caption over `shown` in the
+/// terminal's font, wrapped on the frame's width and cut after PREVIEW_CLAMP lines with a Show
+/// more under it that shows the rest (and Show less); None says "No preview".
+fn preview(
+    ws: &Workspace,
+    wait: &Wait,
+    shown: Option<&str>,
+    (n, q): (usize, usize),
+    w: f32,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> Div {
     let ui = ws.ui;
     let pad = 8.0 * z;
-    // A short preview has nothing to scroll up and down: the wheel goes on to the dialog's body.
-    let tall = shown.is_some_and(|text| text.lines().count() > PREVIEW_LINES as usize);
+    let (key, more) = (wait.key, wait.more.get());
+    // The lines it takes wrapped, by the width of a letter of its font.
+    let letters = ((w - 2.0 * (8.0 + 1.0)) / (ws.cell.size.w * SMALL / ws.cell.font_size))
+        .floor()
+        .max(1.0) as usize;
+    let long = shown.is_some_and(|text| {
+        text.lines()
+            .map(|line| line.chars().count().div_ceil(letters).max(1))
+            .sum::<usize>()
+            > PREVIEW_CLAMP
+    });
     div()
         .flex_1()
         .min_w(px(0.0))
@@ -591,8 +616,11 @@ fn preview(ws: &Workspace, shown: Option<&str>, n: usize, q: usize, z: f32) -> D
             div()
                 .id(part(n, &format!("q{q}-preview")))
                 .w_full()
-                .max_h(px(PREVIEW_LINES * PREVIEW_LINE * z + 2.0 * pad))
-                .overflow_scroll()
+                // Cut only where Show more is offered: an estimate that is short shows it whole.
+                .when(long && !more, |el| {
+                    el.max_h(px(PREVIEW_CLAMP as f32 * PREVIEW_LINE * z + 2.0 * pad))
+                })
+                .overflow_hidden()
                 .p(px(pad))
                 .rounded(px(8.0 * z))
                 .border_1()
@@ -601,20 +629,27 @@ fn preview(ws: &Workspace, shown: Option<&str>, n: usize, q: usize, z: f32) -> D
                 .font_family(ws.cell.font.family.clone())
                 .text_size(px(SMALL * z))
                 .line_height(px(PREVIEW_LINE * z))
-                .whitespace_nowrap()
-                // The wheel scrolls it, not the dialog around it.
-                .on_scroll_wheel(move |e: &ScrollWheelEvent, _, cx| {
-                    let sideways = e.delta.pixel_delta(px(1.0)).x.abs() > px(0.0);
-                    if !e.modifiers.control && (tall || sideways) {
-                        cx.stop_propagation();
-                    }
-                })
+                .whitespace_normal()
                 .child(match shown {
                     Some(text) => div().child(clean_preview(text)),
                     None => div().text_color(ui.title_dim).child("No preview"),
                 })
                 .test_support(),
         )
+        .when(long || more, |el| {
+            el.child(
+                div()
+                    .id(part(n, &format!("q{q}-preview-more")))
+                    .text_size(px(11.0 * z))
+                    .text_color(ui.accent)
+                    .cursor_pointer()
+                    .child(if more { "Show less" } else { "Show more" })
+                    .on_click(
+                        cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_previews(key, cx)),
+                    )
+                    .test_support(),
+            )
+        })
 }
 
 /// One of a question's options: its radio (`mark` false) or checkbox (`mark` true) and its label,

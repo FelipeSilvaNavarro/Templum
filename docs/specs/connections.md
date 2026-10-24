@@ -18,7 +18,7 @@ read the dev server's log in the block beside it, can't move its card, leaves no
 and handing work to another agent means pasting a transcript. With connections, a person **wires** blocks together
 on the canvas, and an agent can use every block wired to it: read a terminal, type into it, hand a task to another
 agent and get its answer back, start a new agent beside itself, move kanban cards, write to a shared note, open a
-file in the editor, and ask the person a question in a balloon next to its block.
+file in the editor, and ask the person a question in the requests inbox.
 
 Templum serves this as an **MCP server** the agents it opens are given, and as a **`templum` command line** for
 agents without MCP, scripts and hooks.
@@ -30,7 +30,7 @@ agents without MCP, scripts and hooks.
 2. An agent knows which block it is, which blocks are wired to it, and the others it could ask to be wired to.
 3. A person wires two blocks with the Wire tool or a block's menu; wires follow their blocks, can be selected,
    deleted and taken back, and come back after a restart.
-4. An agent reads and writes only the blocks wired to it; asking for another shows a balloon the person answers.
+4. An agent reads and writes only the blocks wired to it; asking for another waits in the inbox for the person.
 5. Claude Code wired to Codex hands it a task and gets Codex's final answer back as the tool's result, and the task
    is visible in Codex's terminal.
 6. A block's status dot shows whether its agent is working or waiting for the person, within a second.
@@ -138,12 +138,12 @@ later starts with none.
 
 - **Notify:** a notification titled with the block's title, the agent's text as its message; clicking it reveals the
   block. In the background it is a system notification, as a terminal's are.
-- **A question** (`ask_user`) and **a request to connect** (`connect`) open a **balloon** on the asking block, at the
-  Full level of detail: a dialog centered on its terminal (under the title bar), 80% of its width and at most 80% of
-  its height, its sizes the block's at the zoom, so it scales like a photo. Its header ("Waiting for your answer",
-  with a yellow tile and frame, the yellow of the block's dot, that say the agent waits for the person) and its foot
-  (the buttons) stay; the body between them scrolls past that height, the wheel over it scrolling it and not the
-  terminal (with Ctrl it zooms the canvas) ([ask-user.md](ask-user.md#the-dialog)):
+- **A question** (`ask_user`) and **a request to connect** (`connect`) wait in the **requests inbox** of the
+  workspace ([ask-inbox.md](ask-inbox.md)): a popup opened from the sidebar's button, with a row per request and,
+  for the selected one, where it comes from, why it is asked and the request itself, its body scrolling over a foot
+  of buttons that stays ([ask-user.md](ask-user.md#the-dialog)). The asking terminal shows no balloon, only a small
+  notice, "Waiting for your answer" (with how many when several), at its bottom, whose click opens the inbox at its
+  oldest request:
   - a question ([ask-user.md](ask-user.md#the-dialog)) shows its questions, each with its header, its options (a
     radio or a checkbox, the label, the description), an Other field, then a note, **Dismiss** and **Send**; today's
     shape (`question`, `options` as strings) shows its text whole and a button per option, or a text field and
@@ -151,15 +151,17 @@ later starts with none.
   - a request to connect says "*Claude Code · api* wants to connect to *Dev server*" with **Allow** and **Deny**;
     Allow wires them;
   - a request for a block already wired is answered at once; Allow is a step of Ctrl+Z, as wiring by hand is;
-  - several requests from one block wait in turn: the balloon shows the oldest, with "1 of 3";
-  - a question's dialog has the keyboard while its block does, until Esc gives it back
-    ([ask-user.md](ask-user.md#keyboard)); meanwhile no key reaches the terminal, and presses within 0.5 s of it
-    showing are ignored;
-  - when the person doesn't see the balloon (the block is in another workspace, outside the view, hidden by grid mode,
-    or too small on screen for the Full level and not focused, or the window is in the background), a notification
-    says what the agent asks ("Asks you: …", with "(and 2 more)" for a call's other questions), also the system's in
-    the background; clicking it reveals the block. The block gets an alert too, as a bell gives one: its workspace's
-    tile shows the yellow dot and Ctrl+Shift+A goes there; answering clears it;
+  - several requests from one block wait in the list, oldest first, and its notice counts them;
+  - the inbox has the keyboard when the person opens it or clicks in it, until Esc closes it
+    ([ask-user.md](ask-user.md#keyboard)); a request that arrives never takes it, no key reaches a terminal while
+    the inbox has it, and presses within 0.5 s of the inbox drawing a request are ignored;
+  - when the person doesn't see the request (it is in another workspace than the one shown, or the window is in the
+    background), a notification says what the agent asks ("Asks you: …", with "(and 2 more)" for a call's other
+    questions), also the system's in the background; clicking it shows that workspace with its inbox open at the
+    request. The block gets an alert too, as a bell gives one: its workspace's tile shows the yellow dot, and
+    Ctrl+Shift+A opens the inbox of the workspace shown when a request waits there, else goes to the terminal that
+    asked for attention; answering clears it. A request in the workspace shown, the window in front, is told by the
+    badge on the sidebar's inbox button (on the sidebar's toggle when the sidebar is hidden) and a short pulse;
   - a question or a request to connect makes a short system sound, seen or not, at most one every 2 seconds, unless
     `[connections] sound = false` ([ask-user.md](ask-user.md#telling-the-person));
   - the block's dot shows it waiting for the person (yellow, "Waiting for you: *the question*"), at every level;
@@ -298,9 +300,9 @@ later starts with none.
     Bash?] Its screen is in the pasted text.` and the last 20 lines of its screen, as drawn (300 ms after its hook),
     once per wait; not while a call of the asker waits for the task, which hears its end, nor to an asker whose
     `wait_for(needs_you)` hears it. Nothing else comes back, as noise the asker can't act on: not a question
-    its balloon asks (`ask_user`, `connect`: the person sees the balloon, and the asker can't answer it), nor its
-    timeout, which only the asker's call that waits for it tells (the agent may still work, and its end comes then).
-    While the asker waits for its person, its agent is starting
+    its request waits in the inbox (`ask_user`, `connect`: the person sees it there, and the asker can't answer
+    it), nor its timeout, which only the asker's call that waits for it tells (the agent may still work, and its end
+    comes then). While the asker waits for its person, its agent is starting
     (no snapshot found it yet), its person typed into it in the last 3 seconds, or Templum typed into it (a task, a
     reply, a notice) in the last 8.1 seconds (that text's Enter, up to 2 s after it, a second one 3 seconds later, and
     the looks after it 3 seconds more, may still be due), a notice waits, oldest first. Into a terminal whose agent is
@@ -509,8 +511,8 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `delegate` | `block`, `task`, `wait` (false), `timeout` (600 s) | [Delegating](#delegating); without `wait`, says the task's id once its agent took it, or why it didn't (card 118; one still starting: at once), and why the agent has no Templum tools, if so; its end is typed into the caller's terminal; to the agent on the caller's task, a change to it | wired, an agent | 3, 8, card 69, 118 |
 | `reply` | `text`, `block` (optional) | Answers the task the caller is on, whole, and ends it ([Delegating](#delegating) 8); with a `block` that didn't hand it the task, types `[reply from …]` and the text into it | wired when it names a block | 3, 8, card 69 |
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
-| `ask_user` | `questions` (each `question`, `header`, `options` with `label`, `description`, `preview`, `multiSelect`), or `question` and `options` (strings); `timeout` (none) | Questions in a balloon ([Requests](#requests-from-agents), [ask-user.md](ask-user.md)); the answers as JSON, or with `question` the answer as text | — | 3 |
-| `propose_plan` | `plan` (Markdown, at most 256 KB), `title`, `timeout` (none) | A plan in the caller's balloon, Approve or Reject with a comment ([agent-tools.md](agent-tools.md#propose_plan)); `Approved.`, or the error `Rejected.`, with the comment | — | card 35 |
+| `ask_user` | `questions` (each `question`, `header`, `options` with `label`, `description`, `preview`, `multiSelect`), or `question` and `options` (strings); `timeout` (none) | Questions in the inbox ([Requests](#requests-from-agents), [ask-user.md](ask-user.md)); the answers as JSON, or with `question` the answer as text | — | 3 |
+| `propose_plan` | `plan` (Markdown, at most 256 KB), `title`, `timeout` (none) | A plan in the inbox, Approve or Reject with a comment ([agent-tools.md](agent-tools.md#propose_plan)); `Approved.`, or the error `Rejected.`, with the comment | — | card 35 |
 | `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, priority, assignee (`(you)` on the caller's), checklist progress and comment count; with `card`, that card whole: its description, checklist items and comments, each with its number (and "edited" once its author changed it) ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40, card 77 |
 | `create_card` | `board`, `column`, `title`, `description`, `priority`, `for`, `checklist` | A new card at the column's end (the board's first column when left out); its id. Its description tells an agent a review's findings are a card each (card 35) | wired kanban | 4, card 40 |
 | `edit_card` | `card`, `priority`, `for`, `add_items`, `check`, `uncheck` | Sets the card's priority and who it is for, adds checklist items, checks and unchecks them: one Ctrl+Z step ([Cards for an agent](#cards-for-an-agent)) | wired kanban | card 40 |
@@ -1238,7 +1240,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum schedule <block> <text> [--at HH:MM] [--after <min>] [--every <min>]`, `templum unschedule <id>` | `schedule`, `cancel_schedule` | card 35 |
 | `templum wire <a> <b>` | wires two blocks of the workspace of the terminal it runs in, a step of Ctrl+Z; not a tool (an agent's MCP server never lists it); it asks no one, so an agent's shell tool can wire its own block (the person's choice) | 5 |
 
-A verb stays connected until its answer: stopped with Ctrl+C, what it waited for (a balloon) is withdrawn.
+A verb stays connected until its answer: stopped with Ctrl+C, what it waited for (a request in the inbox) is withdrawn.
 `templum open` and `templum spawn --folder` read a relative path from the folder they run in (an agent's shell tool may
 not be in the agent's); `templum open` takes `<path>:<line>:<column>` as compilers and grep print it, the column
 ignored.
@@ -1306,13 +1308,13 @@ a Copy button, and Gemini CLI's Install and Remove.
 | `templum/src/workspace/bus.rs` (new) | the bus's messages answered on the main thread: the caller, the tools, the events, the requests that wait | 1, 3–5 |
 | `templum/src/workspace/usage.rs` | what `typed()` adds for Claude Code and Codex | 1 |
 | `templum/src/session.rs`, `workspace/persist.rs`, `workspace/blocks.rs`, `workspace/spaces.rs` | block ids: given, saved, restored, moved | 1 |
-| `templum/src/block.rs` | the agent's state in the status dot; the balloon | 1, 3 |
+| `templum/src/block.rs` | the agent's state in the status dot; the notice of a waiting request | 1, 3 |
 | `templum/src/config.rs` | `[connections]` | 1 |
 | `templum-canvas/src/wire.rs` (new) | `Wire`; the curve between two rects, a point on it, hitting it | 2 |
 | `templum/src/workspace/wires.rs` (new), `templum/src/wires.rs` (new) | wiring, unwiring, selecting, undo, labels (`Change::Label`); painting wires, the dot and the labels | 2, 5 |
-| `templum/src/workspace/waits.rs`, `delegate.rs`, `spawn.rs` (new) | the requests that wait and the balloon's answers; tasks handed over, `reply`, `wait_for_idle`; `spawn_agent` | 3 |
+| `templum/src/workspace/waits.rs`, `delegate.rs`, `spawn.rs` (new) | the requests that wait and the inbox's answers; tasks handed over, `reply`, `wait_for_idle`; `spawn_agent` | 3 |
 | `templum/src/workspace/content.rs` (new) | the kanban, note and file tools | 4 |
-| `templum/src/balloon.rs` (new) | the balloon | 3 |
+| `templum/src/balloon.rs`, `inbox.rs` (new) | the request's dialog; the inbox and the notice ([ask-inbox.md](ask-inbox.md)) | 3 |
 | `templum-git/src/repo.rs` | `Repo::add_worktree` | 3 |
 | `templum/src/toolbar.rs`, `menu/`, `workspace/history.rs`, `workspace/input.rs`, `workspace/render.rs` | the Wire tool, the menus, the undo steps, the pointer | 2 |
 | `templum/src/board.rs`, `kanban.rs` | a card's assignee and comments, saved in `boards.json`; the card's face and the open card show them | 4 |
@@ -1370,14 +1372,14 @@ folder, and Claude Code's server only with its hooks; a block id survives saving
 moving to another workspace, and a pasted block gets a new one; (batch 2) the Wire tool and the menu wire two blocks,
 undo takes it back, a selected wire is deleted with Delete, closing a block and undoing brings its wires back, wires
 come back after a restart and a wire to a missing block is dropped; (batch 3) `delegate` types the header and the task
-and Enter, `wait` ends with the `Stopped` message or its timeout, `reply` answers it, the balloon answers `ask_user`,
+and Enter, `wait` ends with the `Stopped` message or its timeout, `reply` answers it, the inbox answers `ask_user`,
 Allow wires and Deny refuses, `spawn_agent` opens a wired block beside the caller and types its prompt once it started,
 closing a block answers what waited on it, the dot travels only while a task is handed over; (batch 4) comments and
 assignee survive a round trip and an older file loads, `claim_card` refuses a card another block holds, `append_note`
 shows in the open note, `open_file` lands at the line in the wired editor without taking the keyboard, and every
 tool is refused without a wire; (batch 5) `wait_for` answers `needs_you` at once or
-when the agent or its balloon asks, a command's end and code, a bell and a notification, its timeout with the last
-lines, a closed block, and shows no balloon; `templum wire` wires a step Ctrl+Z takes back and an MCP client can't
+when the agent or its request asks, a command's end and code, a bell and a notification, its timeout with the last
+lines, a closed block, and shows no request; `templum wire` wires a step Ctrl+Z takes back and an MCP client can't
 call it; a changing screen says Working and a still one ends the task, the person's typing not counting; Rename
 wire… labels, Ctrl+Z, a disconnect, a close and a restart keep it, a hand-edited file's label is trimmed or dropped;
 the pill shows at 100%, 50% and 25% and not in grid mode; Settings ▸ Connections' switch, its Copy button and
@@ -1417,9 +1419,9 @@ answer and no notice, one its client cancelled gets the notice; a notice waits w
 starting or its person types, goes at least 8.1 s after anything Templum typed into the same agent, oldest first, and
 never goes into a shell (also when its agent quit while it waited); a task whose agent left or whose block closed comes
 back as failed, one its asker interrupts or closes doesn't; a dialog in a task is told once per wait, seeming stuck too,
-and not while a call waits for the task, and a balloon isn't told; a change from the asker goes into its task and
-restarts its timeout, none goes before a spawn's prompt, and another agent is still refused; a task past its timeout
-comes back only at its end; a task handed with `wait` gets no notice of its timeout.
+and not while a call waits for the task, and a request in the inbox isn't told; a change from the asker goes into
+its task and restarts its timeout, none goes before a spawn's prompt, and another agent is still refused; a task
+past its timeout comes back only at its end; a task handed with `wait` gets no notice of its timeout.
 
 **Agents typed in a terminal:** the raw words are what is typed, unquoted (a path with a space is one
 word), with `--mcp-config=`; a new terminal's variables follow the switch, the status line, WSL, cmd and Windows
@@ -1444,7 +1446,7 @@ it.
 **Manual (Hyprland):** Claude Code from the menu: `/mcp` lists `templum` connected, "list the blocks" and "read the
 last 30 lines of the dev server" work, the dot follows its turns and a permission prompt; Codex: `/mcp` lists it;
 `templum blocks` in a plain terminal; `templum mcp` in another terminal emulator exits 2; wiring by tool and menu,
-restart; Claude Code delegating to Codex and getting its answer; a question and a connect request in the balloon;
+restart; Claude Code delegating to Codex and getting its answer; a question and a connect request in the inbox;
 `spawn_agent` with a worktree; (batch 5) Gemini CLI's Install, `/mcp`, dot and Remove; Claude Code delegating to
 Gemini CLI; Codex's dot turning accent within about 3 s of a prompt; a permission dialog left 15 s still yellow, an
 allowed `sleep 20` turning accent within about 3 s, Esc while Claude Code writes ending Working within about 5 s, a
@@ -1477,7 +1479,7 @@ One pull request per batch, each with its own plan in `docs/plans/`:
    typed into Claude Code and Codex, `[connections]`, the verbs of batch 1.
 2. **Wires:** the model, painting, the Wire tool, the menus, selecting and deleting, undo, saving; tools check wires.
 3. **Agents together:** `connect`, `spawn_agent` with worktrees, `delegate`, `reply`, `wait_for_idle`, `ask_user`,
-   the balloon, the travelling dot.
+   the inbox, the travelling dot.
 4. **Content:** the kanban tools with comments, assignee and claiming; notes; `open_file`; `git_status` (removed
    since: agents run `git status` in their own terminal).
 5. **The rest:** `wait_for`, wire labels, Settings ▸ Connections, Gemini CLI, `templum wire`, `--json` everywhere.

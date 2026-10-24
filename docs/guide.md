@@ -266,7 +266,8 @@ The Claude Code and Codex you open from **AI agent ▸** get Templum's MCP serve
 settings files stay as they are. Wire blocks together with the Wire tool (the cable in the toolbar) or a block's
 **Connect to ▸**: an agent reads and types into the terminals wired to it. They can ask which block they are, list
 the workspace's blocks, read and type into their own terminal, and send you a notification. An agent can ask you a
-question, or to be wired to another block, in a balloon on its block; hand a task to an agent wired to it and get its
+question, or to be wired to another block, in the requests inbox (the button above Git in the sidebar); hand a
+task to an agent wired to it and get its
 answer back (a dot travels along the wire meanwhile); and open another agent beside itself, in a new Git worktree if
 it likes. An agent wired to a kanban reads its cards and creates, moves, comments on and claims them; it reads a
 wired note and adds to it, and opens a file at a line in an editor. The dot before a

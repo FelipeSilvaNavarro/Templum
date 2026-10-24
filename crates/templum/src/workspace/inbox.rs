@@ -1,6 +1,8 @@
 //! The requests inbox's model (docs/specs/ask-inbox.md): the requests of the workspace shown,
 //! the one selected, and why each is asked.
 
+use std::time::{Duration, Instant};
+
 use gpui_kit::{App, Context, KeyDownEvent, Keystroke, Window};
 
 use super::Workspace;
@@ -8,6 +10,8 @@ use super::waits::{Wait, Waiting, field_focused};
 use crate::board::Assignee;
 use crate::keys::Command;
 
+/// How long the sidebar's button pulses when a request arrives.
+pub(crate) const PULSE: Duration = Duration::from_secs(3);
 /// The lines of a handed task the inbox keeps.
 const TASK_LINES: usize = 3;
 
@@ -59,6 +63,7 @@ impl Workspace {
         {
             self.inbox_at = Some(at);
         }
+        self.show_selected();
         self.inbox_focus.focus(window, cx);
         cx.notify();
     }
@@ -72,8 +77,7 @@ impl Workspace {
         cx.notify();
     }
 
-    // The sidebar's button toggles it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The sidebar's button.
     pub(crate) fn toggle_inbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.inbox_open {
             self.close_inbox(window, cx);
@@ -94,8 +98,52 @@ impl Workspace {
     /// Selects the request `key`, and gives the inbox the keyboard.
     pub(crate) fn select_request(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
         self.inbox_at = Some(key);
+        self.show_selected();
         self.inbox_focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// The list scrolls, once drawn and laid out, to show the selected row.
+    fn show_selected(&self) {
+        self.inbox_reveal.set(true);
+    }
+
+    /// A request arrived in the workspace shown: the button pulses for a while, unless motion is
+    /// reduced.
+    pub(super) fn inbox_arrived(&mut self, cx: &App) {
+        if !cx.reduce_motion() {
+            self.inbox_pulse = Some(cx.background_executor().now());
+        }
+    }
+
+    /// The button pulses at `now`: a request arrived less than `PULSE` ago.
+    pub(crate) fn inbox_pulsing(&self, now: Instant) -> bool {
+        self.inbox_pulse
+            .is_some_and(|at| now.saturating_duration_since(at) < PULSE)
+    }
+
+    /// A click on a notification of the request `key`, which came from the workspace `space`: the
+    /// workspace its block is in now is shown (`space` if the request is gone), with its inbox
+    /// open at the request.
+    pub(crate) fn show_request(
+        &mut self,
+        space: &str,
+        key: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let now = self
+            .waits
+            .iter()
+            .find(|w| w.key == key)
+            .and_then(|w| self.caller(&w.from))
+            .map_or_else(|| space.to_string(), |(space, _)| space);
+        let Some(to) = self.order().iter().position(|s| s.id == now) else {
+            return;
+        };
+        self.close_welcome(window, cx);
+        self.switch_to(to, window, cx);
+        self.open_inbox(Some(key), window, cx);
     }
 
     /// Go to terminal: the block of the request `key` is revealed, and the inbox closes.
@@ -211,6 +259,7 @@ impl Workspace {
             return;
         };
         self.inbox_at = self.inbox().iter().map(|w| w.key).find(|&key| key > at);
+        self.show_selected();
     }
 
     /// Why the agent that made `wait` asks, as far as Templum knows and the agent said.
