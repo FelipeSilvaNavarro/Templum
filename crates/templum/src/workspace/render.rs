@@ -300,14 +300,27 @@ impl Render for Workspace {
         if self.keep_dead_starts() {
             super::persist::say_unstarted(window, cx);
         }
-        let exited: Vec<BlockId> = self
+        let exited: Vec<(BlockId, Option<String>)> = self
             .space
             .terminals()
             .filter(|(_, pane)| pane.term.exited() && !pane.died_starting())
-            .map(|(id, _)| id)
+            .map(|(id, pane)| (id, pane.term.killed().then(|| pane.term.title())))
             .collect();
         // Nothing left to lose: no question.
-        for id in exited {
+        for (id, killed) in exited {
+            // Its block closes: say why it went (docs/specs/shells.md#a-scope-for-each-terminal).
+            if let Some(title) = killed {
+                let message = format!(
+                    "The terminal “{title}” was stopped by the system, most likely for \
+                     using too much memory"
+                );
+                eprintln!("templum: {message}");
+                super::show_notification(
+                    window,
+                    cx,
+                    gpui_kit::component::notification::Notification::warning(message),
+                );
+            }
             self.remove_block(id, window, cx);
         }
         self.hear(window, cx);

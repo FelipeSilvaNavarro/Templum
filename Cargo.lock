@@ -7007,6 +7007,7 @@ name = "templum-terminal"
 version = "0.1.4"
 dependencies = [
  "alacritty_terminal",
+ "async-io",
  "libc",
  "polling",
  "regex",
@@ -7014,6 +7015,7 @@ dependencies = [
  "tempfile",
  "windows-registry 0.6.1",
  "windows-sys 0.61.2",
+ "zbus",
 ]
 
 [[package]]

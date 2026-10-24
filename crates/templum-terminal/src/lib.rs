@@ -6,6 +6,8 @@ mod input;
 mod integration;
 mod link;
 pub mod palette;
+#[cfg(target_os = "linux")]
+mod scope;
 mod shells;
 mod snapshot;
 mod tap;

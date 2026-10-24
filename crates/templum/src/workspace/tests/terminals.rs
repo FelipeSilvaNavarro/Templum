@@ -1235,3 +1235,31 @@ fn a_terminal_opened_with_a_shell_runs_it_and_saves_its_label(cx: &mut TestAppCo
         assert_eq!(pane.term.title(), "cat");
     });
 }
+
+/// A shell killed from outside (SIGKILL), as systemd-oomd ends a terminal's scope that uses too
+/// much memory: its block closes and a notification says why (card 173).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_killed_shell_closes_its_block_and_says_why(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let pid = ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(id)
+            .unwrap()
+            .term
+            .processes()
+            .shell
+            .unwrap()
+    });
+    let killed = std::process::Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    until("its block to close", handle, &ws, cx, |ws| {
+        ws.space.terminal(id).is_none()
+    });
+    cx.run_until_parked();
+    assert_eq!(notification_count(handle, cx), 1);
+}

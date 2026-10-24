@@ -232,11 +232,14 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`crates/templum/src/workspace/tests/spawn.rs`, seen during card 143 in a full `cargo test --workspace` on a loaded
   machine; it passed alone three times and in the next two full runs.) A person sees nothing; a contributor may see CI
   fail once. Fix: wait on the condition with a deadline (frames until it holds), not one look.
-- [ ] **`a_task_for_an_agent_still_starting_is_typed_once_it_is_ready` failed once in a full run.**
-  (`crates/templum/src/workspace/tests/spawn.rs:707`, `said_twice`, seen during card 153 in a full
-  `cargo test --workspace`; it passed alone eight times and on the next full run.) A person sees nothing; a
-  contributor may see CI fail once. Fix: wait for the second echo with a deadline (frames until the screen has it),
-  not one look.
+- [ ] **`said_twice` fails now and then in a full run.** (`crates/templum/src/workspace/tests/spawn.rs`:
+  `a_task_for_an_agent_still_starting_is_typed_once_it_is_ready`, seen during card 153;
+  `another_agents_prompt_waits_for_its_process_and_a_still_screen`, seen during card 173 in the reduced-env run, its
+  screen showing the second copy as `sayhi(When task…`; each passed alone five to eight times and in the next full
+  run.) It already waits with a deadline: the cause is that the tty's echo and `cat`'s copy interleave, so where a
+  copy wraps varies, and `screen_until` joins the rows trimmed, so a copy that wraps at its space reads `sayhi`. A
+  person sees nothing; a contributor may see CI fail once. Fix: count `say hi` in the grid's text with wrapped rows
+  joined untrimmed (`bounds_to_string` keeps them), or prompt with a word without spaces.
 - [ ] **`a_quiet_agent_is_told_once_to_a_master_not_waiting` failed once in a full run.**
   (`crates/templum/src/workspace/tests/delegate.rs:2832`, seen at d71ae86 in a full `cargo test --workspace` while
   two other agents built in their worktrees: the reply's end notice wasn't there yet, `told` was `[]`; it passed alone
@@ -487,6 +490,21 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   as the session's. Fix: drop `tokens` for a relayed session (its cost is shown), or name it "Context".
 
 ## Programs in a terminal
+
+- [ ] **The Templum Agent's builds still share Templum's cgroup.** Only terminals get a systemd scope
+  (`move_to_scope`, `crates/templum-terminal/src/scope.rs`); the Templum Agent's engine (`crates/templum-agent/src/engine.rs`)
+  and every command its tools run, and Generate ✨'s agent (`crates/templum-git/src/message.rs`), are Templum's
+  children in its own cgroup, so a heavy build the Templum Agent starts can still get the whole window killed by
+  systemd-oomd (card 173). Fix: make `move_to_scope` public and call it with the engine's pid after its spawn.
+- [ ] **A `kill -9` of a shell reads as the system's doing.** A block whose shell ends by SIGKILL says it "was
+  stopped by the system, most likely for using too much memory" (`Workspace::render`,
+  `crates/templum/src/workspace/render.rs`; `Terminal::killed`), also when the person killed it from another
+  terminal. Fix: keep the scope after it fails (`CollectMode=inactive`), read its `Result` (`oom-kill`) when the
+  shell ends, then `ResetFailedUnit` it.
+- [ ] **What a shell forks before its scope exists stays in Templum's cgroup.** The move happens about 2 ms after the
+  shell starts (`move_to_scope`, `crates/templum-terminal/src/scope.rs`), so a daemon its startup files start in that
+  window (an `ssh-agent`, a `direnv` hook) is out of the scope; an agent typed in starts later, inside. Fix: start the
+  shell through a gate that execs it once the scope's job is done (as `systemd-run --scope` does with itself).
 
 - [ ] **A shell only the login shell's PATH finds is forgotten on the first restore.** `found_shell`
   (`crates/templum/src/workspace/persist.rs`) looks a saved terminal's shell up in `Workspace::shells`, read before the

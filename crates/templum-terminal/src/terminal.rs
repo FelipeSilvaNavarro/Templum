@@ -41,6 +41,8 @@ pub(crate) struct Shared {
     /// When the terminal was made, and when its shell ended: how long the shell lived.
     born: Instant,
     exited: OnceLock<Instant>,
+    /// How its shell ended, as the OS reported it.
+    ended: OnceLock<std::process::ExitStatus>,
     /// Reported to CSI 14 t (text area size) queries.
     size: Mutex<WindowSize>,
     /// PTY input: set right after the event loop exists, since the Term needs the listener first.
@@ -68,6 +70,7 @@ impl Shared {
             title: Mutex::new(None),
             born: Instant::now(),
             exited: OnceLock::new(),
+            ended: OnceLock::new(),
             size: Mutex::new(size),
             pty: OnceLock::new(),
             palette: Mutex::new(palette),
@@ -178,6 +181,9 @@ impl EventListener for Listener {
             Event::ResetTitle => {
                 *s.title.lock().unwrap() = None;
                 s.wake();
+            }
+            Event::ChildExit(status) => {
+                let _ = s.ended.set(status);
             }
             // Exit comes after the child's last output has been read (ChildExit comes before).
             // Uncoalesced: a block off screen is never re-armed, and must still close.
@@ -990,6 +996,10 @@ impl Terminal {
         let master = pty.file().try_clone().ok();
         #[cfg(windows)]
         let pid = pty.child_watcher().pid().map(|pid| pid.get());
+        #[cfg(target_os = "linux")]
+        if let Some(pid) = pid {
+            crate::scope::move_to_scope(pid, id.clone(), shell_name.clone());
+        }
         let term = Arc::new(FairMutex::new(Term::new(
             opts.options.config(),
             &TermSize::new(opts.cols as usize, opts.rows as usize),
@@ -1084,6 +1094,19 @@ impl Terminal {
 
     pub fn exited(&self) -> bool {
         self.shared.exited.get().is_some()
+    }
+
+    /// Its shell was killed (SIGKILL, Unix) rather than ending: what systemd-oomd does to the
+    /// scope of a terminal that uses too much memory (on Linux each terminal has its own).
+    /// Templum itself never kills a shell whose block is still open.
+    pub fn killed(&self) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt as _;
+            self.shared.ended.get().and_then(|s| s.signal()) == Some(libc::SIGKILL)
+        }
+        #[cfg(not(unix))]
+        false
     }
 
     /// How long its shell lived, once it ended.

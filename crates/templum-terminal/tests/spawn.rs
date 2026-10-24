@@ -775,3 +775,195 @@ fn empty_text_does_not_block_what_is_typed_after_it() {
         snapshot.text()
     );
 }
+
+/// The cgroup `/proc/<pid>/cgroup` names (cgroup v2: one line, `0::<path>`).
+#[cfg(target_os = "linux")]
+fn cgroup(pid: &str) -> String {
+    std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+/// A systemd user manager answers, and runs this process, so it can move its children: not in a
+/// CI container, nor under an SSH login, whose session the system's manager owns.
+#[cfg(target_os = "linux")]
+fn user_manager() -> bool {
+    let answers = std::process::Command::new("systemctl")
+        .args(["--user", "is-system-running"])
+        .output()
+        .is_ok_and(|o| {
+            let state = String::from_utf8_lossy(&o.stdout);
+            matches!(
+                state.trim(),
+                "running" | "degraded" | "starting" | "initializing"
+            )
+        });
+    answers && cgroup("self").contains(".service/")
+}
+
+/// Each terminal's shell, and what it starts, runs in a systemd user scope of its own, not in
+/// Templum's cgroup: systemd-oomd, which kills a whole scope, ends that terminal alone (card 173).
+#[cfg(target_os = "linux")]
+#[test]
+fn each_terminal_runs_in_a_systemd_scope_of_its_own() {
+    if !user_manager() {
+        eprintln!("skipped: no systemd user manager runs this test");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let terms = [long_lived(dir.path()), long_lived(dir.path())];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    for term in &terms {
+        let shell = term.processes().shell.expect("a pid").to_string();
+        let scope = format!("/templum-term-{}.scope", term.id());
+        while !cgroup(&shell).ends_with(&scope) {
+            assert!(
+                Instant::now() < deadline,
+                "the shell is in {:?}, not in {scope}",
+                cgroup(&shell)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_ne!(cgroup(&shell), cgroup("self"));
+    }
+    // What oomd does to the first one's scope.
+    let killed = std::process::Command::new("systemctl")
+        .args(["--user", "kill", "--signal=SIGKILL"])
+        .arg(format!("templum-term-{}.scope", terms[0].id()))
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    while !terms[0].exited() {
+        assert!(Instant::now() < deadline, "the killed scope's shell runs");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(terms[0].killed());
+    assert!(!terms[1].exited(), "the other terminal lives");
+}
+
+/// A shell that ends at once leaves no scope behind: systemd misses the emptying of some of them,
+/// which would stay running, empty, until the person logs out.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_shell_that_ends_at_once_leaves_no_scope() {
+    if !user_manager() {
+        eprintln!("skipped: no systemd user manager runs this test");
+        return;
+    }
+    let terms: Vec<Terminal> = (0..20)
+        .map(|_| {
+            Terminal::spawn(
+                SpawnOptions {
+                    cols: 40,
+                    rows: 5,
+                    cell_px: (8, 16),
+                    command: Some(("sh".into(), vec!["-c".into(), "exit 0".into()])),
+                    palette: Palette::default(),
+                    options: TermOptions::default(),
+                    working_directory: None,
+                    integration: None,
+                    env: Vec::new(),
+                },
+                Arc::new(|| {}),
+            )
+            .expect("spawn")
+        })
+        .collect();
+    let units = || {
+        let listed = std::process::Command::new("systemctl")
+            .args(["--user", "list-units", "--all", "--plain", "--no-legend"])
+            .arg("templum-term-*")
+            .output()
+            .unwrap();
+        let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+        terms
+            .iter()
+            .map(|t| format!("templum-term-{}.scope", t.id()))
+            .filter(|unit| listed.contains(unit.as_str()))
+            .collect::<Vec<_>>()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !units().is_empty() {
+        assert!(Instant::now() < deadline, "left: {:?}", units());
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Without a user bus (no systemd, a container), a terminal opens as before: its shell runs in
+/// the cgroup of the process that opened it, and stderr says why, once.
+#[cfg(target_os = "linux")]
+#[test]
+fn without_a_user_bus_a_terminal_runs_where_templum_does() {
+    const NAME: &str = "without_a_user_bus_a_terminal_runs_where_templum_does";
+    if std::env::var_os("TEMPLUM_TEST_NO_BUS").is_none() {
+        // Again in a process whose bus isn't there: without the variable, `/run/user/<uid>/bus`.
+        let none = tempfile::tempdir().unwrap();
+        let run = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env("TEMPLUM_TEST_NO_BUS", "1")
+            .env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                format!("unix:path={}", none.path().join("bus").display()),
+            )
+            .output()
+            .unwrap();
+        let (out, err) = (
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr),
+        );
+        assert!(
+            run.status.success() && out.contains("1 passed"),
+            "{out}{err}"
+        );
+        assert_eq!(
+            err.matches("terminals stay in Templum's own cgroup")
+                .count(),
+            1,
+            "{err}"
+        );
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let terms = [long_lived(dir.path()), long_lived(dir.path())];
+    let ours = cgroup("self");
+    // The scope's thread gives up at once; a second to see that nothing moved them.
+    let until = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < until {
+        for term in &terms {
+            let shell = term.processes().shell.expect("a pid").to_string();
+            assert!(!term.exited(), "the shell runs");
+            assert_eq!(cgroup(&shell), ours);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A shell killed (SIGKILL), as systemd-oomd ends a scope, says so; one that exits doesn't.
+#[cfg(unix)]
+#[test]
+fn a_killed_shell_says_so() {
+    for (script, killed) in [("kill -9 $$", true), ("exit 3", false)] {
+        let term = Terminal::spawn(
+            SpawnOptions {
+                cols: 40,
+                rows: 5,
+                cell_px: (8, 16),
+                command: Some(("sh".into(), vec!["-c".into(), script.into()])),
+                palette: Palette::default(),
+                options: TermOptions::default(),
+                working_directory: None,
+                integration: None,
+                env: Vec::new(),
+            },
+            Arc::new(|| {}),
+        )
+        .expect("spawn");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !term.exited() {
+            assert!(Instant::now() < deadline, "{script}: never ended");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(term.killed(), killed, "{script}");
+    }
+}
