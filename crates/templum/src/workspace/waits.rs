@@ -363,8 +363,11 @@ impl Workspace {
 
     /// Why `wait` can't be answered any more, if so.
     fn orphaned(&self, wait: &Wait) -> Option<Reply> {
-        // The Templum Agent asks from no block.
-        if wait.from != templum_agent::ASKER && self.caller(&wait.from).is_none() {
+        // The Templum Agent and the API ask from no block.
+        if wait.from != templum_agent::ASKER
+            && wait.from != templum_api::ASKER
+            && self.caller(&wait.from).is_none()
+        {
             return Some(Reply::err(
                 "Your block was closed; the request was withdrawn.",
             ));
@@ -747,6 +750,8 @@ impl Workspace {
             let id = self.watch_keep(watch, cx);
             let back = if by == templum_agent::ASKER {
                 "comes back into this chat"
+            } else if by == templum_api::ASKER {
+                "comes back as a notice event"
             } else {
                 "is typed into your terminal"
             };

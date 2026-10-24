@@ -269,6 +269,45 @@ impl Ask {
         answer.to_string()
     }
 
+    /// Whether `answers` (one list per question, as [`Ask::answer`] takes them) fit these
+    /// questions: what the inbox's Send can't send. Err says what to fix. The API checks an answer
+    /// with it, since its caller isn't a form.
+    pub fn checked(&self, answers: &[Vec<String>]) -> Result<(), String> {
+        if answers.len() != self.questions.len() {
+            return Err(format!(
+                "Answer the {} questions: answers has {}.",
+                self.questions.len(),
+                answers.len()
+            ));
+        }
+        for (i, (question, picked)) in self.questions.iter().zip(answers).enumerate() {
+            let n = i + 1;
+            if picked.iter().any(|a| a.trim().is_empty()) {
+                return Err("An answer is blank.".into());
+            }
+            if question.multi && picked.is_empty() {
+                return Err(format!("Question {n} needs an answer."));
+            }
+            if !question.multi && picked.len() != 1 {
+                return Err(format!("Question {n} takes one answer."));
+            }
+            let others: Vec<&String> = picked
+                .iter()
+                .filter(|a| !question.options.iter().any(|o| &o.label == *a))
+                .collect();
+            if self.plan.is_some() && !others.is_empty() {
+                return Err("A plan is Approve or Reject.".into());
+            }
+            if others.len() > 1 {
+                return Err(format!(
+                    "Question {n} takes one other answer at most: \"{}\" and \"{}\" aren't its options.",
+                    others[0], others[1]
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// The tool's result: the answer as `answer` gives it; for a plan, `Approved.` or the error
     /// `Rejected.`, with the person's comment when they wrote one.
     pub fn reply(&self, answers: &[Vec<String>], note: &str) -> Reply {
@@ -990,6 +1029,48 @@ mod tests {
         assert_eq!(form.tab, 0);
         form.turn(&ask, 1);
         assert_eq!(form.tab, 1);
+    }
+
+    #[test]
+    fn an_answer_is_checked_against_its_questions() {
+        let ask = parse(&json!({"questions": [
+            {"question": "Which database?", "header": "DB", "options": [{"label": "Postgres"}, {"label": "SQLite"}]},
+            {"question": "Extras?", "header": "Extras", "multiSelect": true, "options": [{"label": "A"}, {"label": "B"}]},
+        ]}))
+        .unwrap();
+        let v = |answers: &[&[&str]]| -> Vec<Vec<String>> {
+            answers
+                .iter()
+                .map(|a| a.iter().map(|s| s.to_string()).collect())
+                .collect()
+        };
+        assert_eq!(ask.checked(&v(&[&["Postgres"], &["A", "B"]])), Ok(()));
+        assert_eq!(
+            ask.checked(&v(&[&["Postgres"], &["A", "my own"]])),
+            Ok(()),
+            "one Other"
+        );
+        let err = |answers: &[&[&str]]| ask.checked(&v(answers)).unwrap_err();
+        assert_eq!(
+            err(&[&["Postgres"]]),
+            "Answer the 2 questions: answers has 1."
+        );
+        assert_eq!(
+            err(&[&["Postgres", "SQLite"], &["A"]]),
+            "Question 1 takes one answer."
+        );
+        assert_eq!(err(&[&["Postgres"], &[]]), "Question 2 needs an answer.");
+        assert_eq!(err(&[&["  "], &["A"]]), "An answer is blank.");
+        assert_eq!(
+            err(&[&["Postgres"], &["x", "y"]]),
+            "Question 2 takes one other answer at most: \"x\" and \"y\" aren't its options."
+        );
+        let plan = plan(Some("t".into()), "body".into());
+        assert_eq!(plan.checked(&v(&[&["Approve"]])), Ok(()));
+        assert_eq!(
+            plan.checked(&v(&[&["maybe"]])).unwrap_err(),
+            "A plan is Approve or Reject."
+        );
     }
 
     /// A call with several questions shows tabs; one question, today's shape and a plan don't.

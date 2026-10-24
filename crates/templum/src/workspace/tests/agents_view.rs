@@ -252,7 +252,7 @@ fn hidden_agent(
 
 /// Two agents `a` and `b`, `a` focused in the window in front, each at the end of a turn
 /// the person did not see: `b` is Done.
-fn one_done(
+pub(super) fn one_done(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,

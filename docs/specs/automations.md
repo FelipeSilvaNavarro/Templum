@@ -615,3 +615,10 @@ What the builder chose where the plan left it open, and what differs:
   display was at hand to see the spacing, the toggles' wrap or the dimmed Run now by eye, so a person should open it
   once. The notification's click is one line (`open_fired`, tested) with no headless click on a notification.
 
+### The API (card 171)
+
+- `save_automation`, `set_automation`, `run_automation` and `delete_automation` are tools only the API serves
+  ([api.md](api.md)); agents still have none (the non-goal stands). A save goes through `save_rule`, the editor's Save
+  with its checks and words; a draft the person has open is left alone. A token limited to some workspaces saves rules
+  for them only, and a rule that runs a command takes a Full token. The state shows each rule's `when` and `do` as the
+  file keeps them, with its next run, its last run and its sentence.

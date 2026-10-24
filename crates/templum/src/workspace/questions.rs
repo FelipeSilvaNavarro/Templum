@@ -196,14 +196,37 @@ impl Workspace {
         let Some(answers) = form.answers(ask, &others) else {
             return;
         };
-        let reply = ask.reply(&answers, &note);
-        // Its client stopped waiting: typed into its terminal, once its agent takes typing.
-        let notice = matches!(wait.what, Waiting::Question { stopped: true, .. })
-            .then(|| (wait.from.clone(), ask.notice(&reply.text)));
+        self.answer_question(key, answers, &note, window, cx);
+    }
+
+    /// Answers the question `key` with `answers` (a list per question) and the note: what Send
+    /// does, and what the API's `answer_request` does. A question whose client stopped waiting
+    /// has its answer typed into its terminal, once its agent takes typing.
+    pub(super) fn answer_question(
+        &mut self,
+        key: u64,
+        answers: Vec<Vec<String>>,
+        note: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
+            return;
+        };
+        let Waiting::Question { ask, stopped, .. } = &wait.what else {
+            return;
+        };
+        let reply = ask.reply(&answers, note);
+        let notice = stopped.then(|| (wait.from.clone(), ask.notice(&reply.text)));
         self.close_question(key, reply, window, cx);
         if let Some((to, notice)) = notice {
             self.queue_notice(to, notice, NoticeKind::Other, cx);
         }
+    }
+
+    /// Dismisses the question `key` without the inbox's too-soon guard (the API's).
+    pub(super) fn dismiss_now(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_question(key, Reply::err(DISMISSED), window, cx);
     }
 
     /// Dismiss: the question `key` is refused.

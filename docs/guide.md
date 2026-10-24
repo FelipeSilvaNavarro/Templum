@@ -278,6 +278,15 @@ shows it working (accent) or waiting for you (yellow, "Waiting for you: …"). I
 command line.
 Every block has a short id (`b7k2m`) that lasts through restarts. Turn it off with `[connections] enabled = false`. See [specs/connections.md](specs/connections.md).
 
+## The API
+
+Settings ▸ **API** opens a door to your Templum for a phone, a dashboard or another computer: off until you turn it on,
+and then it answers only to the **tokens** you make there (read, control or full; an expiry; optionally only some
+workspaces). It serves every tool the Templum Agent has, the things a dashboard lists and a live stream of what changes.
+Templum runs no server of its own: point a tunnel (cloudflared), a VPN or a proxy at its port, 7411. Off this computer
+it needs HTTPS (Templum's certificate, with a fingerprint to pin, or yours). A title-bar pill shows while it is on, and
+Settings lists who is connected. See [api.md](api.md).
+
 ## Automations
 
 The clock button in the sidebar's foot, above Git (Ctrl+Shift+J), opens **Automations**: rules that run at a time and

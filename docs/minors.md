@@ -2218,3 +2218,11 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   (`crates/templum/src/workspace/automations.rs`, `attempt`). What a person sees: a rule edited within a second of
   firing counts that run once. Fix: keep a counter that every save and switch-on bumps, and compare it.
 
+## API
+
+- [ ] **An approval has no time in the state.** `RequestView.since` is when its popup first showed it (0 before), since
+  `chat::Approval` has no creation time. Fix: give `Approval` a `since: Instant` when it is queued.
+- [ ] **A certificate or key edited on disk is read at the next start of the server only.** Settings ▸ API ▸ My
+  certificate reads the files when the server starts; replacing them (a renewal) needs a toggle of the switch. Fix: a
+  *Reload* button, or a look at their modified times.
+

@@ -1047,6 +1047,10 @@ impl Workspace {
     /// missing: abc12 isn't open".
     pub(crate) fn automation_target(&self, a: &Automation) -> Result<(), String> {
         let missing = |why: String| Err(format!("Target missing: {why}"));
+        // The sweep that turns off a revoked token's rules runs every few seconds: until then.
+        if self.api_token_is_gone(a) {
+            return missing("its token was revoked".into());
+        }
         if let Some(id) = &a.workspace {
             match self.spaces().find(|s| s.id == *id) {
                 None => return missing("a deleted workspace".into()),
@@ -1090,6 +1094,16 @@ impl Workspace {
             Do::Agent { agent, .. } if !self.agents.iter().any(|e| e.id == *agent) => {
                 missing(format!("{agent} isn't in Settings ▸ Agents"))
             }
+            // What a token limited to some workspaces saved opens only inside their folders.
+            Do::Agent { folder, .. }
+            | Do::Command {
+                terminal: None,
+                folder,
+                ..
+            } => match self.api_folder_problem(a, &self.automation_folder(a, folder.as_deref())) {
+                Some(why) => missing(why),
+                None => Ok(()),
+            },
             _ => Ok(()),
         }
     }
@@ -1534,6 +1548,7 @@ impl Workspace {
         let at = ids.iter().position(|i| *i == id);
         self.automations.remove(id);
         self.automation_runs.remove(&id);
+        self.api_unconfine(id);
         self.automation_drafts.remove(&id);
         if self.automations_at == Some(id) {
             let left = self.automation_ids();
@@ -1669,6 +1684,24 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Result<u64, String> {
         let draft = self.automation_draft(id).cloned().ok_or("It is gone.")?;
+        let saved = self.save_rule(id, draft, cx)?;
+        self.automation_drafts.remove(&id);
+        // The person's own save: no longer a limited token's rule.
+        self.api_unconfine(saved);
+        self.automations_at = Some(saved);
+        cx.notify();
+        Ok(saved)
+    }
+
+    /// Saves `draft` as the automation `id` (`NEW`: a new one, added on) with the editor's checks:
+    /// counted from now (`since`, no runs, its held run dropped, `next` computed). Err: its
+    /// problem, nothing saved. The editor's Save and the API's `save_automation` share it.
+    pub(crate) fn save_rule(
+        &mut self,
+        id: u64,
+        draft: Automation,
+        cx: &mut Context<Self>,
+    ) -> Result<u64, String> {
         if let Some(problem) = self.automation_problem(&draft, Local::now().naive_local()) {
             return Err(problem);
         }
@@ -1693,14 +1726,11 @@ impl Workspace {
             live.cooldown = draft.cooldown;
             id
         };
-        self.automation_drafts.remove(&id);
         let a = self.automations.get(saved).cloned().ok_or("It is gone.")?;
         let run = self.automation_runs.entry(saved).or_default();
         run.reset();
         run.next = a.on.then(|| next_for(&a, now)).flatten();
-        self.automations_at = Some(saved);
         self.look_at_automations(cx);
-        cx.notify();
         Ok(saved)
     }
 

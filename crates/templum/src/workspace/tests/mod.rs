@@ -718,6 +718,7 @@ pub(super) fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32))
 mod accounts;
 mod agents;
 mod agents_view;
+mod api;
 mod attachments;
 mod automations;
 mod block_ids;

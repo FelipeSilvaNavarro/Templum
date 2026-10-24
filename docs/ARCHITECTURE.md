@@ -16,9 +16,10 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | `templum-update` | lib | Finds the newest release on GitHub (`lib.rs`), how Templum was installed and the release file that fits it (`install.rs`). Downloads it and checks GitHub's SHA-256 (`fetch.rs`), then puts it in place: a rename over the AppImage or executable, a bundle swap on macOS, an installer's command line, a command for a terminal ([specs/updates.md](specs/updates.md)) | No |
 | `templum-mcp` | lib | The bus Templum's blocks talk over: JSON-RPC lines on a local socket (`bus.rs`), the MCP tools (`tools.rs`), the Templum Agent's control tools and their danger (`control.rs`), the agents' hook events (`hooks.rs`) and the `templum` command line (`cli.rs`: the MCP bridges `mcp` and `control`, `hook`, the verbs) ([specs/connections.md](specs/connections.md)) | No |
 | `templum-agent` | lib | The Templum Agent's engine: Claude Code's words and its stream-json lines read into chat events (`claude.rs`), the conversation's rows, its own things and its file (`conversation.rs`), the child process and its reader threads (`engine.rs`), and the fake engine the tests run (`fake.rs`) ([specs/templum-agent.md](specs/templum-agent.md)); a Claude Code subagent's transcript read, as it grows, into the text its block shows (`follow.rs`, [specs/claude-subagents.md](specs/claude-subagents.md)) | No |
+| `templum-api` | lib | Templum's HTTP API ([specs/api.md](specs/api.md), [for people](api.md)): the tokens and their file (`store.rs`), TLS with Templum's certificate or the person's (`tls.rs`), the state's types and their comparison (`model.rs`), the registry: the control server's tools and the API's own, their scopes, the routes and the OpenAPI document (`registry.rs`, `openapi.rs`), the server (`server.rs`: hyper on a single-threaded tokio runtime on its own thread, auth, limits, CORS), the event stream (`events.rs`) and the audit log (`audit.rs`) | No |
 
-All eight crates exist. New library crates are created together with the first real code that needs
-them, never as empty scaffolding. The behavior of the current version is specified in
+Nine crates exist. New library crates are created together with the first
+real code that needs them, never as empty scaffolding. The behavior of the current version is specified in
 [specs/walking-skeleton.md](specs/walking-skeleton.md), [specs/design-system.md](specs/design-system.md) and
 [specs/config.md](specs/config.md).
 
@@ -68,6 +69,12 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - **The Templum Agent** (`templum-agent`, `workspace/agent.rs`): a headless Claude Code started with the first
   message (`std::process::Command`, no PTY), its stdout and stderr read on threads of their own into a channel the UI
   thread drains; Stop sends its interrupt request; the conversation is saved in `<data>/agent/`.
+- **The API** (`templum-api`, [specs/api.md](specs/api.md)): off until Settings ▸ API turns it on, then an
+  HTTP server on its own thread (`templum-api`), on loopback unless the person chooses another address, which needs
+  TLS. It hands each call to the UI thread as a bus `Message` (`client: "api"`) through the bus's own channel,
+  served by `workspace/api.rs` with the control server's dispatch; the bus refuses an `api` hello from its socket.
+  While an event stream is open, the UI thread builds the API's state (`workspace/api_state.rs`) at most every
+  250 ms and the server sends each stream what changed.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera
@@ -190,6 +197,13 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   terminal count (`status().finished`) within a second. A rule's run state is split into slots, one per block that
   fired it, so each agent's run is held or typed apart; "the agent that fired it" is the saved block `fired-it`,
   swapped for that block before a run.
+- `workspace/api.rs`, `workspace/api_state.rs`, `settings/api.rs`: the Templum API's glue
+  ([specs/api.md](specs/api.md)).
+  `api.rs` serves the bus messages of client `api` on the UI thread (the token's scope and workspaces checked,
+  then the control server's `control_call` with an `Actor::Api`, the API's own tools, `answer_request`), keeps the API's
+  file and its server (`start_api`, `api_edit`, the tokens) and runs the tick that hands the server the state every
+  250 ms while a stream is open; `api_state.rs` builds that state as `overview` walks the workspaces; `settings/api.rs`
+  is Settings ▸ API, and the title bar draws the pill (`title_bar.rs`).
 - `balloon.rs`: the request itself as the inbox draws it: a question's dialog, a plan to approve, a yes/no request
   ([specs/connections.md](specs/connections.md#requests-from-agents)).
 - `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;

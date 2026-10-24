@@ -409,6 +409,11 @@ impl Workspace {
     /// Every session::EVERY: reads the processes and writes each workspace's file in the
     /// background, when its snapshot differs from the last one written.
     pub(super) fn snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The API's tokens' last uses, told by its server since the last one.
+        self.keep_api_uses(cx.background_executor().now());
+        // A token that expired takes its automations with it.
+        let names = self.token_names();
+        self.api_cut_rules(&names, cx);
         let Some(dir) = self.data_dir.clone().filter(|_| !self.first_run_welcome()) else {
             return;
         };

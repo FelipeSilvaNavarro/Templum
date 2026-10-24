@@ -493,6 +493,43 @@ impl Workspace {
         ))
     }
 
+    /// Moves and resizes a block, also in a workspace not shown, as one step of that workspace's
+    /// Ctrl+Z: what is left out keeps, and no block gets smaller than its kind's least.
+    pub(super) fn move_block_in(
+        &mut self,
+        (space, id): (&str, BlockId),
+        uid: &str,
+        (x, y, w, h): (Option<f32>, Option<f32>, Option<f32>, Option<f32>),
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let cell = self.cell.size;
+        let moved = self.in_space(space, |ws| {
+            let old = ws.space.canvas.get(id).map(|b| ws.space.home(b))?;
+            let min = ws
+                .space
+                .blocks
+                .get(&id)
+                .map_or(chrome::min_block_size(cell), |b| b.min_size(cell));
+            // The biggest grid a terminal may have, as a restored canvas keeps it (`restorable`).
+            let max = chrome::block_size(super::MAX_COLS, super::MAX_ROWS, cell);
+            let rect = Rect::new(
+                x.unwrap_or(old.x),
+                y.unwrap_or(old.y),
+                w.unwrap_or(old.w).clamp(min.w, max.w.max(min.w)),
+                h.unwrap_or(old.h).clamp(min.h, max.h.max(min.h)),
+            );
+            ws.place(vec![(id, rect)], Then::New, cx);
+            Some(rect)
+        });
+        match moved.flatten() {
+            Some(r) => Reply::ok(format!(
+                "Moved {uid} to {:.0},{:.0} {:.0}×{:.0}.",
+                r.x, r.y, r.w, r.h
+            )),
+            None => Reply::err(format!("There's no block {uid}: overview lists them.")),
+        }
+    }
+
     /// What closing a block would lose, as the person's own close asks: a program at work in a
     /// terminal, unsaved edits in an editor. None when nothing would be.
     pub(super) fn would_lose(&self, (space, id): (&str, BlockId)) -> Option<String> {

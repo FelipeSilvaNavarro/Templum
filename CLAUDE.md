@@ -30,6 +30,9 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
   and the lessons in [ADR-0002](docs/adr/0002-ui-framework.md) instead of guessing APIs. The `spike/gpui` branch has a working
   canvas-of-terminals prototype to learn from.
 - **Tests:** every logic change ships a test that fails without it. For UI-only changes, state how you verified them.
+- **Every feature in the API** (kanban card 171, [docs/specs/api.md](docs/specs/api.md)): a new feature ships its
+  Templum API surface (a tool in the registry, or its data in the API's state) and its lines in `docs/api.md`, in the
+  same change. A control tool is in the API by itself; give it its scope (`control::reads`, `control::rule`).
 - **Minor issues left for later:** every minor deferred by a review, a plan or a fix goes into
   [docs/minors.md](docs/minors.md), under its area, with where it is, what a person sees and a way to fix it. When one
   is fixed, delete its entry in the same commit as the fix.

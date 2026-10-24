@@ -548,9 +548,11 @@ impl Workspace {
             }
         }
         let tree = tree_of(&space);
+        let deleted = space.id.clone();
         // Dropping its terminals hangs their shells up.
         drop(space);
         self.end_later(tree, cx);
+        self.api_forget_workspace(&deleted, cx);
         self.write_index(window, cx);
         cx.notify();
     }

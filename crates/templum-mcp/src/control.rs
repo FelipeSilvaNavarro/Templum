@@ -92,6 +92,14 @@ pub enum ControlCall {
     CloseBlock {
         block: String,
     },
+    /// Moves or resizes a block; what is left out keeps. Sizes are over 0.
+    MoveBlock {
+        block: String,
+        x: Option<f32>,
+        y: Option<f32>,
+        w: Option<f32>,
+        h: Option<f32>,
+    },
 }
 
 /// A call and the reason the model gave for it, shown apart in the approval.
@@ -190,6 +198,9 @@ fn for_it(tool: &Value) -> Value {
     }
     serde_json::from_str(&text).expect("JSON")
 }
+
+/// The farthest a block may be put from the canvas's origin, in canvas units.
+const PLACE_MOST: f32 = 10_000_000.0;
 
 /// The longest `reason`, in bytes: the approval draws it whole above its buttons.
 const MAX_REASON: usize = 500;
@@ -330,6 +341,23 @@ pub fn list() -> Value {
             },
         },
         {
+            "name": "move_block",
+            "description": "Moves or resizes a block: x and y its top-left corner, w and h its size, in canvas \
+                            units; what you leave out keeps (the person takes it back with Ctrl+Z). Says where \
+                            it is now.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "block": block,
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "w": { "type": "number", "description": "Its width, over 0 (a block never gets smaller than its kind's least)." },
+                    "h": { "type": "number", "description": "Its height, over 0 (a block never gets smaller than its kind's least)." },
+                },
+                "required": ["block"],
+            },
+        },
+        {
             "name": "close_block",
             "description": "Closes a block (the person brings it back with Ctrl+Z). Asks the person first when a \
                             program runs in a block you didn't open.",
@@ -343,6 +371,20 @@ pub fn list() -> Value {
     let mut all: Vec<Value> = own.as_array().expect("tools").clone();
     all.extend(shared);
     json!({ "tools": all })
+}
+
+/// Whether the tool `name` only reads: the API's Read tokens may call it.
+pub fn reads(name: &str) -> bool {
+    matches!(
+        name,
+        "overview"
+            | "list_agents"
+            | "read_terminal"
+            | "list_cards"
+            | "read_note"
+            | "read_checklist"
+            | "wait_for"
+    )
 }
 
 /// `name` is one of the control tools.
@@ -444,6 +486,39 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
         "close_block" => ControlCall::CloseBlock {
             block: text("block")?,
         },
+        "move_block" => {
+            let number = |key: &str| match &args[key] {
+                Value::Null => Ok(None),
+                value => value
+                    .as_f64()
+                    .map(|n| n as f32)
+                    .filter(|n| n.is_finite())
+                    .map(Some)
+                    .ok_or_else(|| format!("\"{key}\" is a number")),
+            };
+            let (x, y, w, h) = (number("x")?, number("y")?, number("w")?, number("h")?);
+            // A place no canvas reaches is a typo, and would be stored as it is.
+            for (key, place) in [("x", x), ("y", y)] {
+                if place.is_some_and(|p| p.abs() > PLACE_MOST) {
+                    return Err(format!("\"{key}\" is within ±10000000"));
+                }
+            }
+            if [x, y, w, h].iter().all(Option::is_none) {
+                return Err("move_block needs x, y, w or h".into());
+            }
+            for (key, size) in [("w", w), ("h", h)] {
+                if size.is_some_and(|size| size <= 0.0) {
+                    return Err(format!("\"{key}\" is a size over 0"));
+                }
+            }
+            ControlCall::MoveBlock {
+                block: text("block")?,
+                x,
+                y,
+                w,
+                h,
+            }
+        }
         _ if SHARED.contains(&name) => {
             let call = tools::parse(name, args)?;
             // The approval shows it whole: a longer one would stall each frame that draws it.
@@ -492,6 +567,7 @@ pub fn title(name: &str) -> &'static str {
         "connect" => "Connecting blocks",
         "disconnect" => "Disconnecting blocks",
         "close_block" => "Closing a block",
+        "move_block" => "Moving a block",
         "send_to_terminal" => "Typing into a terminal",
         "send_keys" => "Pressing keys",
         "notify" => "Notifying you",
@@ -539,6 +615,72 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reads_names_the_tools_that_only_read() {
+        let tools = list();
+        let names: Vec<&str> = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        let reading: Vec<&str> = names.iter().copied().filter(|n| reads(n)).collect();
+        assert_eq!(
+            reading,
+            [
+                "overview",
+                "list_agents",
+                "read_terminal",
+                "wait_for",
+                "list_cards",
+                "read_note",
+                "read_checklist",
+            ]
+        ); // in list()'s order
+        assert!(!reads("send_to_terminal") && !reads("whatever"));
+    }
+
+    #[test]
+    fn move_block_takes_a_place_or_a_size_and_never_asks() {
+        let err = |args: Value| parse("move_block", &args).unwrap_err();
+        assert_eq!(err(json!({"block": "b"})), "move_block needs x, y, w or h");
+        assert_eq!(err(json!({"block": "b", "h": 0})), "\"h\" is a size over 0");
+        assert_eq!(
+            err(json!({"block": "b", "w": -4})),
+            "\"w\" is a size over 0"
+        );
+        assert_eq!(err(json!({"block": "b", "x": "left"})), "\"x\" is a number");
+        assert!(err(json!({"x": 1})).contains("needs \"block\""));
+        assert_eq!(
+            err(json!({"block": "b", "x": 1e12})),
+            "\"x\" is within ±10000000"
+        );
+        assert_eq!(
+            err(json!({"block": "b", "y": -1e8})),
+            "\"y\" is within ±10000000"
+        );
+        assert!(
+            parse(
+                "move_block",
+                &json!({"block": "b", "x": -9_999_999, "y": 1e7})
+            )
+            .is_ok()
+        );
+        let parsed = parse("move_block", &json!({"block": "b", "x": -10.5, "w": 300})).unwrap();
+        assert_eq!(
+            parsed.call,
+            ControlCall::MoveBlock {
+                block: "b".into(),
+                x: Some(-10.5),
+                y: None,
+                w: Some(300.0),
+                h: None
+            }
+        );
+        assert_eq!(rule(&parsed.call), Rule::Free);
+        assert_eq!(title("move_block"), "Moving a block");
+    }
+
+    #[test]
     fn every_tool_parses_its_example_and_names_what_is_missing() {
         let examples = [
             ("overview", json!({})),
@@ -560,6 +702,7 @@ mod tests {
             ("connect", json!({"a": "b7k2m", "b": "k9x1d"})),
             ("disconnect", json!({"a": "b7k2m", "b": "k9x1d"})),
             ("close_block", json!({"block": "b7k2m", "reason": "done"})),
+            ("move_block", json!({"block": "b7k2m", "x": 10, "w": 300})),
             (
                 "send_to_terminal",
                 json!({"block": "b7k2m", "text": "ls", "enter": true, "reason": "look"}),

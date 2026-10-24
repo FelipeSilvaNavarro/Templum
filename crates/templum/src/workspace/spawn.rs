@@ -17,7 +17,7 @@ use crate::agents::AgentEntry;
 /// How often a spawned agent's readiness for its prompt is looked at.
 pub(super) const READY_LOOK: Duration = Duration::from_secs(1);
 /// Who opens an agent: a block's agent with `spawn_agent` (its terminal's `TEMPLUM_TERMINAL` and
-/// its block), the Templum Agent, or an automation (its task's asker and its signature).
+/// its block), the Templum Agent, or an automation or a token of the API (its task's asker and its signature).
 pub(super) enum Opener {
     Block { terminal: String, id: BlockId },
     TemplumAgent,
@@ -118,15 +118,18 @@ impl Workspace {
                 )
                 .0
             };
-        self.in_worktree(folder, worktree, open, window, cx)
+        self.in_worktree(folder, worktree, None, open, window, cx)
     }
 
     /// `open` in `folder`, at once; with `worktree`, in a new Git worktree of that name that git
-    /// makes on the background executor, the call answered once `open` ran there.
+    /// makes on the background executor, the call answered once `open` ran there. With `roots` (a
+    /// token limited to some workspaces), the repository's main tree, as git reports it, must lie
+    /// inside one of them, or nothing is made.
     pub(super) fn in_worktree(
         &mut self,
         folder: PathBuf,
         worktree: Option<String>,
+        roots: Option<Vec<PathBuf>>,
         open: impl FnOnce(&mut Self, &Path, &mut Window, &mut Context<Self>) -> Reply + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -140,9 +143,15 @@ impl Workspace {
                 .background_executor()
                 .spawn(async move {
                     match templum_git::Repo::discover(&program, &folder) {
-                        Ok(Some(repo)) => repo
-                            .add_worktree(&name)
-                            .map_err(|e| format!("Couldn't make the worktree: {}", e.first_line())),
+                        Ok(Some(repo)) => match roots
+                            .as_deref()
+                            .map(|r| super::api::main_tree_inside(&repo, r))
+                        {
+                            Some(Err(why)) => Err(why),
+                            _ => repo.add_worktree(&name).map_err(|e| {
+                                format!("Couldn't make the worktree: {}", e.first_line())
+                            }),
+                        },
                         Ok(None) => Err(format!(
                             "{} isn't in a Git repository: a worktree needs one.",
                             folder.display()
@@ -287,9 +296,8 @@ impl Workspace {
         };
         let wired = match &opener {
             Opener::Block { .. } => ", connected to you".to_string(),
-            Opener::TemplumAgent if wire_to.is_empty() => String::new(),
-            Opener::Automation { .. } => String::new(),
-            Opener::TemplumAgent => {
+            Opener::TemplumAgent | Opener::Automation { .. } if wire_to.is_empty() => String::new(),
+            Opener::TemplumAgent | Opener::Automation { .. } => {
                 let home = self.space_named(space);
                 let uids: Vec<String> = wire_to
                     .iter()
