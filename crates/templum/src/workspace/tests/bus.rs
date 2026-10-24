@@ -212,11 +212,19 @@ pub(super) fn answer_soon(
     cx: &mut TestAppContext,
     answers: &std::sync::mpsc::Receiver<String>,
 ) -> (bool, String) {
+    result_of(&answer_line_soon(cx, answers))
+}
+
+/// The line that came on `answers`, whatever it is (a result or an error), waiting for it.
+pub(super) fn answer_line_soon(
+    cx: &mut TestAppContext,
+    answers: &std::sync::mpsc::Receiver<String>,
+) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         cx.run_until_parked();
         if let Ok(line) = answers.try_recv() {
-            return result_of(&line);
+            return line;
         }
         assert!(Instant::now() < deadline, "no answer");
         std::thread::sleep(Duration::from_millis(20));

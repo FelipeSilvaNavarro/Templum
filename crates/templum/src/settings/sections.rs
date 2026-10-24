@@ -349,6 +349,7 @@ pub(super) fn rows(
             rows
         }
         Section::Connections => super::connections::rows(ws, entity, window, cx),
+        Section::Api => super::api::rows(ws, entity, window, cx),
         Section::TemplumAgent => super::templum_agent::rows(ws, entity, window, cx),
         Section::Updates => super::updates::rows(ws, entity),
         Section::Shortcuts => Command::ALL

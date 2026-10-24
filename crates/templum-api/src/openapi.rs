@@ -1,0 +1,779 @@
+//! The OpenAPI 3.1 document (`GET /v1/openapi.json`), generated from the registry: a path for
+//! every route and every tool, each with the scope it takes. The schemas of the state and of the
+//! errors are written by hand beside the types they describe (`model.rs`); a test walks a state
+//! against them.
+
+use crate::registry::{self, Does, ROUTES, Resource};
+use serde_json::{Map, Value, json};
+
+const SCHEMAS: &str = "#/components/schemas/";
+
+fn r(name: &str) -> Value {
+    json!({ "$ref": format!("{SCHEMAS}{name}") })
+}
+
+fn nullable(schema: Value) -> Value {
+    json!({ "anyOf": [schema, { "type": "null" }] })
+}
+
+fn array(items: Value) -> Value {
+    json!({ "type": "array", "items": items })
+}
+
+fn kind(name: &str) -> Value {
+    json!({ "type": name })
+}
+
+/// A scalar or nothing.
+fn maybe(name: &str) -> Value {
+    json!({ "type": [name, "null"] })
+}
+
+/// An object whose every property is always there (a view serializes its nulls).
+fn view(properties: &[(&str, Value)]) -> Value {
+    let required: Vec<&str> = properties.iter().map(|(name, _)| *name).collect();
+    json!({
+        "type": "object",
+        "properties": properties.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<Map<String, Value>>(),
+        "required": required,
+    })
+}
+
+/// `components.schemas`: the state and its parts, the event's notice, the errors and a tool's
+/// answer.
+fn schemas() -> Value {
+    let (s, i, n, b) = (
+        || kind("string"),
+        || kind("integer"),
+        || kind("number"),
+        || kind("boolean"),
+    );
+    json!({
+        "State": view(&[
+            ("app", r("App")),
+            ("workspaces", array(r("WorkspaceView"))),
+            ("blocks", array(r("BlockView"))),
+            ("wires", array(r("WireView"))),
+            ("requests", array(r("RequestView"))),
+            ("boards", array(r("BoardView"))),
+            ("cards", array(r("CardView"))),
+            ("automations", array(r("AutomationView"))),
+            ("usage", nullable(r("UsageView"))),
+        ]),
+        "App": view(&[
+            ("version", s()),
+            ("api", i()),
+            ("shown", maybe("string")),
+        ]),
+        "WorkspaceView": view(&[
+            ("id", s()),
+            ("name", s()),
+            ("folder", maybe("string")),
+            ("color", maybe("string")),
+            ("shown", b()),
+            ("stopped", b()),
+        ]),
+        "Rect": view(&[("x", n()), ("y", n()), ("w", n()), ("h", n())]),
+        "BlockView": view(&[
+            ("id", s()),
+            ("workspace", s()),
+            ("kind", s()),
+            ("title", s()),
+            ("folder", maybe("string")),
+            ("rect", r("Rect")),
+            ("z", i()),
+            ("opened_by", maybe("string")),
+            ("board", maybe("integer")),
+            ("agent", nullable(r("AgentView"))),
+        ]),
+        "AgentView": view(&[
+            ("agent", s()),
+            ("state", json!({ "type": "string", "enum": ["needs_you", "starting", "waiting_subagents", "working", "done", "idle"] })),
+            ("asks", maybe("string")),
+            ("subagents", i()),
+            ("since", maybe("integer")),
+            ("model", maybe("string")),
+            ("effort", maybe("string")),
+            ("usage", nullable(r("SessionView"))),
+        ]),
+        "SessionView": view(&[
+            ("context_percent", maybe("number")),
+            ("tokens", maybe("integer")),
+            ("cost_usd", maybe("number")),
+        ]),
+        "WireView": view(&[("a", s()), ("b", s()), ("label", maybe("string"))]),
+        "RequestView": view(&[
+            ("id", s()),
+            ("kind", json!({ "type": "string", "enum": ["question", "plan", "connect", "remove_worktree", "merge_worktree", "approval"] })),
+            ("block", maybe("string")),
+            ("workspace", maybe("string")),
+            ("since", i()),
+            ("summary", s()),
+            ("why", r("Why")),
+            ("questions", array(r("QuestionView"))),
+            ("plan", nullable(r("PlanView"))),
+            ("buttons", json!({ "type": ["array", "null"], "items": s() })),
+            ("stopped", b()),
+            ("scope", json!({ "type": "string", "enum": ["read", "control", "full"] })),
+            ("tool", maybe("string")),
+            ("said", maybe("string")),
+            ("details", maybe("string")),
+            ("facts", maybe("string")),
+            ("reason", maybe("string")),
+        ]),
+        "Why": view(&[
+            ("card", nullable(r("CardRef"))),
+            ("task", maybe("string")),
+            ("agent", maybe("string")),
+        ]),
+        "CardRef": view(&[("id", i()), ("title", s())]),
+        "QuestionView": view(&[
+            ("question", s()),
+            ("header", maybe("string")),
+            ("multi", b()),
+            ("options", array(r("OptionView"))),
+        ]),
+        "OptionView": view(&[
+            ("label", s()),
+            ("description", maybe("string")),
+            ("preview", maybe("string")),
+        ]),
+        "PlanView": view(&[("title", maybe("string")), ("text", s())]),
+        "BoardView": view(&[("id", i()), ("name", s()), ("columns", array(r("ColumnView")))]),
+        "ColumnView": view(&[("id", i()), ("title", s()), ("cards", array(i()))]),
+        "CardView": view(&[
+            ("id", i()),
+            ("board", i()),
+            ("column", i()),
+            ("title", s()),
+            ("description", s()),
+            ("labels", array(s())),
+            ("priority", maybe("string")),
+            ("assignee", nullable(r("Assignee"))),
+            ("checklist", array(r("ItemView"))),
+            ("comments", array(r("CommentView"))),
+            ("attachments", array(r("AttachmentView"))),
+        ]),
+        "Assignee": view(&[("block", maybe("string")), ("agent", maybe("string"))]),
+        "ItemView": view(&[("id", i()), ("text", s()), ("done", b())]),
+        "CommentView": view(&[
+            ("number", i()),
+            ("by", s()),
+            ("text", s()),
+            ("at", i()),
+            ("edited", b()),
+        ]),
+        "AttachmentView": view(&[("name", s()), ("size", i())]),
+        "AutomationView": view(&[
+            ("id", i()),
+            ("name", s()),
+            ("on", b()),
+            ("workspace", maybe("string")),
+            ("when", json!({ "description": "As automations.json keeps it: {\"daily\": {\"at\": \"09:00:00\"}}." })),
+            ("do", json!({ "description": "As automations.json keeps it: {\"notify\": {\"text\": \"…\"}}." })),
+            ("max_runs", maybe("integer")),
+            ("cooldown", maybe("integer")),
+            ("runs", i()),
+            ("last", json!({ "description": "{at, went, about} of its last run, or null." })),
+            ("next", maybe("integer")),
+            ("sentence", s()),
+        ]),
+        "UsageView": view(&[("limits", array(r("LimitsView")))]),
+        "LimitsView": view(&[("agent", s()), ("at", i()), ("windows", array(r("WindowView")))]),
+        "WindowView": view(&[
+            ("minutes", i()),
+            ("used_percent", n()),
+            ("resets_at", i()),
+            ("scope", maybe("string")),
+        ]),
+        "Notice": view(&[
+            ("text", s()),
+            ("block", maybe("string")),
+            ("workspace", maybe("string")),
+        ]),
+        "Error": view(&[(
+            "error",
+            view(&[("code", s()), ("message", s())]),
+        )]),
+        "ToolResult": json!({
+            "type": "object",
+            "description": "The tool's text, and what it touched when Templum knows it.",
+            "properties": { "text": s(), "workspace": s(), "block": s() },
+            "required": ["text"],
+        }),
+    })
+}
+
+/// The errors a route can answer, with the spec's codes.
+fn error(status: &str) -> (&'static str, &'static str) {
+    match status {
+        "400" => (
+            "invalid",
+            "Malformed JSON, an argument that doesn't parse, or a tool's argument error.",
+        ),
+        "401" => (
+            "auth",
+            "No token, a wrong, expired or revoked one, a used or stale ticket.",
+        ),
+        "403" => ("scope", "The token's scope is too low."),
+        "404" => (
+            "not_found",
+            "No such route, tool or resource (a target the token doesn't see is this too).",
+        ),
+        "413" => ("too_large", "A body over 1 MiB."),
+        "415" => (
+            "json",
+            "A POST, PUT or PATCH whose Content-Type isn't application/json.",
+        ),
+        "422" => (
+            "refused",
+            "The tool refused; its sentence says what to do next.",
+        ),
+        "429" => (
+            "slow_down",
+            "Too many failed authentications from the address, too many calls from the token, or too many streams. Retry-After says when.",
+        ),
+        _ => ("busy", "Too many connections, or Templum is quitting."),
+    }
+}
+
+fn responses(ok: Value, statuses: &[&str]) -> Value {
+    let mut out = Map::from_iter([("200".to_string(), ok)]);
+    for status in statuses {
+        let (code, why) = error(status);
+        out.insert(
+            status.to_string(),
+            json!({
+                "description": format!("`{code}`: {why}"),
+                "content": { "application/json": { "schema": r("Error") } },
+            }),
+        );
+    }
+    Value::Object(out)
+}
+
+fn json_ok(schema: Value) -> Value {
+    json!({ "description": "Done.", "content": { "application/json": { "schema": schema } } })
+}
+
+/// What a resource answers.
+fn resource(resource: Resource) -> Value {
+    match resource {
+        Resource::State => r("State"),
+        Resource::Workspaces => array(r("WorkspaceView")),
+        Resource::Workspace => r("WorkspaceView"),
+        Resource::Blocks | Resource::Agents => array(r("BlockView")),
+        Resource::Block => r("BlockView"),
+        Resource::Requests => array(r("RequestView")),
+        Resource::Request => r("RequestView"),
+        Resource::Boards => array(r("BoardView")),
+        Resource::Board => r("BoardView"),
+        Resource::Card => r("CardView"),
+        Resource::Automations => array(r("AutomationView")),
+        Resource::Automation => r("AutomationView"),
+        Resource::Usage => r("UsageView"),
+    }
+}
+
+/// `{x}` segments of a path, as path parameters.
+fn path_parameters(path: &str) -> Vec<Value> {
+    path.split('/')
+        .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
+        .map(|name| json!({ "name": name, "in": "path", "required": true, "schema": kind("string") }))
+        .collect()
+}
+
+fn operation_id(method: &str, path: &str) -> String {
+    let words: String = path
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("{}{}", method.to_lowercase(), words.trim_end_matches('_'))
+}
+
+fn tool_schema(name: &str) -> Value {
+    registry::tools()
+        .into_iter()
+        .find(|tool| tool["name"] == name)
+        .unwrap_or(Value::Null)
+}
+
+/// One operation of a route.
+fn operation(route: &registry::Route) -> Value {
+    let body = matches!(route.method, "POST" | "PUT" | "PATCH");
+    let mut parameters = path_parameters(route.path);
+    let mut op = json!({ "operationId": operation_id(route.method, route.path) });
+    let (summary, scope, ok) = match route.does {
+        Does::Read(what) => (
+            format!("Reads {}.", route.path.trim_start_matches("/v1/")),
+            "read".to_string(),
+            json_ok(resource(what)),
+        ),
+        Does::Events => {
+            op["description"] = json!(
+                "Server-Sent Events: a `snapshot` of the state, then a `put` or `delete` per change of a \
+                 collection (workspace, block, wire, request, board, card, automation, usage) and `notice` \
+                 happenings; `: ping` comments keep it alive. Resumes with Last-Event-ID. A browser's \
+                 EventSource can't set headers: it opens with a ticket from POST /v1/tickets."
+            );
+            op["security"] = json!([{ "bearer": [] }, { "ticket": [] }]);
+            op["parameters"] = json!([]);
+            (
+                "Streams the state's changes.".to_string(),
+                "read".to_string(),
+                json!({ "description": "An event stream.", "content": { "text/event-stream": { "schema": kind("string") } } }),
+            )
+        }
+        Does::Ticket => (
+            "Makes a ticket: a key for one GET /v1/events, 30 seconds, once.".to_string(),
+            "read".to_string(),
+            json_ok(view(&[
+                ("ticket", kind("string")),
+                ("expires_in", kind("integer")),
+            ])),
+        ),
+        Does::Tools => (
+            "Lists the registry: every tool's name, description, input schema and scope."
+                .to_string(),
+            "read".to_string(),
+            json_ok(array(json!({ "type": "object" }))),
+        ),
+        Does::OpenApi => (
+            "This document.".to_string(),
+            "read".to_string(),
+            json_ok(json!({ "type": "object" })),
+        ),
+        Does::Tool("") => (
+            "Runs any tool of the registry by name; the body is its arguments.".to_string(),
+            "per tool (see /v1/tools/{name})".to_string(),
+            json_ok(r("ToolResult")),
+        ),
+        Does::Tool(name) => {
+            let tool = tool_schema(name);
+            if !body && let Some(props) = tool["inputSchema"]["properties"].as_object() {
+                for (key, schema) in props {
+                    if !route.path.contains(&format!("{{{key}}}")) {
+                        parameters.push(json!({ "name": key, "in": "query", "schema": schema }));
+                    }
+                }
+            }
+            if body {
+                // A saved automation's body is the automation itself.
+                let schema = if name == "save_automation" {
+                    tool["inputSchema"]["properties"]["automation"].clone()
+                } else {
+                    tool["inputSchema"].clone()
+                };
+                op["requestBody"] = json!({
+                    "required": false,
+                    "content": { "application/json": { "schema": schema } },
+                });
+            }
+            (
+                tool["description"].as_str().unwrap_or_default().to_string(),
+                registry::nominal(name).to_string(),
+                json_ok(r("ToolResult")),
+            )
+        }
+    };
+    op["summary"] = json!(summary);
+    op["x-templum-scope"] = json!(scope);
+    if !parameters.is_empty() {
+        op["parameters"] = Value::Array(parameters);
+    }
+    let mut statuses = vec!["401", "404", "429", "503"];
+    if matches!(route.does, Does::Tool(_)) {
+        statuses.splice(0..0, ["400", "403"]);
+        if body {
+            statuses.extend(["413", "415"]);
+        }
+        statuses.push("422");
+    }
+    op["responses"] = responses(ok, &statuses);
+    op
+}
+
+/// The document.
+pub fn document() -> Value {
+    let mut paths: Map<String, Value> = Map::new();
+    for route in ROUTES {
+        paths
+            .entry(route.path)
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .expect("a path is an object")
+            .insert(route.method.to_lowercase(), operation(route));
+    }
+    for tool in registry::tools() {
+        let name = tool["name"].as_str().unwrap_or_default();
+        let path = format!("/v1/tools/{name}");
+        let post = json!({
+            "operationId": format!("tool_{name}"),
+            "summary": tool["description"],
+            "x-templum-scope": registry::nominal(name),
+            "requestBody": { "required": true, "content": { "application/json": { "schema": tool["inputSchema"] } } },
+            "responses": responses(
+                json_ok(r("ToolResult")),
+                &["400", "401", "403", "404", "413", "415", "422", "429", "503"],
+            ),
+        });
+        paths.insert(path, json!({ "post": post }));
+    }
+    json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "The Templum API",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "Your Templum, from anywhere: tools, resources and a live event stream. Every request carries `Authorization: Bearer <token>`; a token is made in Settings ▸ API.",
+        },
+        "servers": [{ "url": "http://127.0.0.1:7411", "description": "Templum on this computer, with the API turned on." }],
+        "security": [{ "bearer": [] }],
+        "paths": paths,
+        "components": {
+            "securitySchemes": {
+                "bearer": { "type": "http", "scheme": "bearer" },
+                "ticket": { "type": "apiKey", "in": "query", "name": "ticket", "description": "From POST /v1/tickets; opens one GET /v1/events." },
+            },
+            "schemas": schemas(),
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::*;
+
+    #[test]
+    fn the_document_has_every_route_and_tool() {
+        let doc = document();
+        assert_eq!(doc["openapi"], "3.1.0");
+        assert_eq!(doc["info"]["version"], env!("CARGO_PKG_VERSION"));
+        for route in ROUTES {
+            let op = &doc["paths"][route.path][route.method.to_lowercase()];
+            assert!(op.is_object(), "{} {}", route.method, route.path);
+            assert!(op["x-templum-scope"].is_string() && op["responses"]["200"].is_object());
+        }
+        for tool in registry::tools() {
+            let path = format!("/v1/tools/{}", tool["name"].as_str().unwrap());
+            assert!(doc["paths"][&path]["post"].is_object(), "{path}");
+        }
+        assert_eq!(
+            doc["paths"]["/v1/tools/send_to_terminal"]["post"]["x-templum-scope"],
+            "full"
+        );
+        assert_eq!(
+            doc["paths"]["/v1/tools/overview"]["post"]["x-templum-scope"],
+            "read"
+        );
+        assert_eq!(
+            doc["paths"]["/v1/tools/answer_request"]["post"]["x-templum-scope"],
+            "control or full"
+        );
+        assert_eq!(doc["paths"]["/v1/state"]["get"]["x-templum-scope"], "read");
+        assert_eq!(doc["security"], json!([{ "bearer": [] }]));
+        assert_eq!(
+            doc["paths"]["/v1/events"]["get"]["security"][1],
+            json!({ "ticket": [] })
+        );
+        // A path parameter is declared, a tool's other arguments of a GET are query parameters.
+        let read = &doc["paths"]["/v1/terminals/{block}/text"]["get"]["parameters"];
+        let names: Vec<&str> = read
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        let mut names = names;
+        names.sort_unstable();
+        assert_eq!(names, ["block", "last_command", "lines"]);
+        // Operation ids are unique.
+        let mut ids = std::collections::HashSet::new();
+        for (_, path) in doc["paths"].as_object().unwrap() {
+            for (_, op) in path.as_object().unwrap() {
+                assert!(
+                    ids.insert(op["operationId"].as_str().unwrap().to_string()),
+                    "{op}"
+                );
+            }
+        }
+        // A $ref anywhere resolves.
+        fn refs(value: &Value, doc: &Value) {
+            match value {
+                Value::Object(map) => {
+                    if let Some(Value::String(target)) = map.get("$ref") {
+                        let pointer = target.trim_start_matches('#');
+                        assert!(doc.pointer(pointer).is_some(), "{target}");
+                    }
+                    map.values().for_each(|v| refs(v, doc));
+                }
+                Value::Array(items) => items.iter().for_each(|v| refs(v, doc)),
+                _ => {}
+            }
+        }
+        refs(&doc, &doc);
+    }
+
+    /// `value` against `schema`: what the document promises. A small checker: `$ref`, `anyOf`,
+    /// `type` (one or a list), `properties` (no key outside them), `required` and `items`.
+    fn check(schema: &Value, value: &Value, doc: &Value, at: &str) -> Result<(), String> {
+        if let Some(target) = schema["$ref"].as_str() {
+            let schema = doc
+                .pointer(target.trim_start_matches('#'))
+                .ok_or(format!("{at}: no {target}"))?;
+            return check(schema, value, doc, at);
+        }
+        if let Some(options) = schema["anyOf"].as_array() {
+            return if options.iter().any(|o| check(o, value, doc, at).is_ok()) {
+                Ok(())
+            } else {
+                Err(format!("{at}: none of the options fit {value}"))
+            };
+        }
+        let types: Vec<&str> = match &schema["type"] {
+            Value::String(one) => vec![one],
+            Value::Array(list) => list.iter().filter_map(Value::as_str).collect(),
+            _ => vec![],
+        };
+        if !types.is_empty() {
+            let fits = |t: &str| match t {
+                "null" => value.is_null(),
+                "string" => value.is_string(),
+                "boolean" => value.is_boolean(),
+                "integer" => value.is_i64() || value.is_u64(),
+                "number" => value.is_number(),
+                "array" => value.is_array(),
+                "object" => value.is_object(),
+                _ => false,
+            };
+            if !types.iter().any(|t| fits(t)) {
+                return Err(format!("{at}: {value} is not {types:?}"));
+            }
+        }
+        if let (Some(properties), Some(object)) =
+            (schema["properties"].as_object(), value.as_object())
+        {
+            for (key, inner) in object {
+                let property = properties
+                    .get(key)
+                    .ok_or(format!("{at}: the schema has no \"{key}\""))?;
+                check(property, inner, doc, &format!("{at}.{key}"))?;
+            }
+            for key in schema["required"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if !object.contains_key(key) {
+                    return Err(format!("{at}: \"{key}\" is missing"));
+                }
+            }
+        }
+        if let (Some(items), Some(list)) = (schema.get("items"), value.as_array()) {
+            for (i, item) in list.iter().enumerate() {
+                check(items, item, doc, &format!("{at}[{i}]"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// One of everything, every option Some and every list one item long.
+    fn full_state() -> State {
+        State {
+            app: App {
+                version: "0.1.5".into(),
+                api: 1,
+                shown: Some("w3".into()),
+            },
+            workspaces: vec![WorkspaceView {
+                id: "w3".into(),
+                name: "API".into(),
+                folder: Some("/p".into()),
+                color: Some("blue".into()),
+                shown: true,
+                stopped: false,
+            }],
+            blocks: vec![BlockView {
+                id: "b7k2m".into(),
+                workspace: "w3".into(),
+                kind: "terminal".into(),
+                title: "Claude".into(),
+                folder: Some("/p".into()),
+                rect: Rect {
+                    x: 1.0,
+                    y: 2.0,
+                    w: 3.0,
+                    h: 4.0,
+                },
+                z: 3,
+                opened_by: Some("templum-agent".into()),
+                board: Some(3),
+                agent: Some(AgentView {
+                    agent: "claude".into(),
+                    state: "needs_you".into(),
+                    asks: Some("Allow?".into()),
+                    subagents: 1,
+                    since: Some(5),
+                    model: Some("opus".into()),
+                    effort: Some("high".into()),
+                    usage: Some(SessionView {
+                        context_percent: Some(4.0),
+                        tokens: Some(9),
+                        cost_usd: Some(1.5),
+                    }),
+                }),
+            }],
+            wires: vec![WireView {
+                a: "a".into(),
+                b: "b".into(),
+                label: Some("l".into()),
+            }],
+            requests: vec![RequestView {
+                id: "r12".into(),
+                kind: "question".into(),
+                block: Some("b7k2m".into()),
+                workspace: Some("w3".into()),
+                since: 7,
+                summary: "Which?".into(),
+                why: Why {
+                    card: Some(CardRef {
+                        id: 152,
+                        title: "Attachments".into(),
+                    }),
+                    task: Some("t7".into()),
+                    agent: Some("because".into()),
+                },
+                questions: vec![QuestionView {
+                    question: "Which?".into(),
+                    header: Some("DB".into()),
+                    multi: true,
+                    options: vec![OptionView {
+                        label: "A".into(),
+                        description: Some("d".into()),
+                        preview: Some("p".into()),
+                    }],
+                }],
+                plan: Some(PlanView {
+                    title: Some("t".into()),
+                    text: "x".into(),
+                }),
+                buttons: Some(["Allow".into(), "Deny".into()]),
+                stopped: false,
+                scope: crate::store::Scope::Full,
+                tool: Some("send_to_terminal".into()),
+                said: Some("s".into()),
+                details: Some("d".into()),
+                facts: Some("f".into()),
+                reason: Some("r".into()),
+            }],
+            boards: vec![BoardView {
+                id: 3,
+                name: "Sprint".into(),
+                columns: vec![ColumnView {
+                    id: 7,
+                    title: "Doing".into(),
+                    cards: vec![40],
+                }],
+            }],
+            cards: vec![CardView {
+                id: 40,
+                board: 3,
+                column: 7,
+                title: "Login".into(),
+                description: "d".into(),
+                labels: vec!["l".into()],
+                priority: Some("high".into()),
+                assignee: Some(Assignee {
+                    block: Some("b".into()),
+                    agent: Some("claude".into()),
+                }),
+                checklist: vec![ItemView {
+                    id: 41,
+                    text: "Build".into(),
+                    done: true,
+                }],
+                comments: vec![CommentView {
+                    number: 51,
+                    by: "you".into(),
+                    text: "t".into(),
+                    at: 9,
+                    edited: true,
+                }],
+                attachments: vec![AttachmentView {
+                    name: "shot.png".into(),
+                    size: 48128,
+                }],
+            }],
+            automations: vec![AutomationView {
+                id: 1,
+                name: "Morning".into(),
+                on: true,
+                workspace: Some("w3".into()),
+                when: json!({"daily": {"at": "09:00:00"}}),
+                act: json!({"notify": {"text": "x"}}),
+                max_runs: Some(3),
+                cooldown: Some(4),
+                runs: 3,
+                last: Some(json!({"at": 1, "went": "ran", "about": "x"})),
+                next: Some(10),
+                sentence: "Every day".into(),
+            }],
+            usage: Some(UsageView {
+                limits: vec![LimitsView {
+                    agent: "claude".into(),
+                    at: 8,
+                    windows: vec![WindowView {
+                        minutes: 300,
+                        used_percent: 62.0,
+                        resets_at: 9,
+                        scope: Some("s".into()),
+                    }],
+                }],
+            }),
+        }
+    }
+
+    #[test]
+    fn the_state_schema_matches_the_state() {
+        let doc = document();
+        let state = serde_json::to_value(full_state()).unwrap();
+        check(&r("State"), &state, &doc, "state").unwrap();
+        // The checker itself: a key the schema lacks, a key missing, a wrong type.
+        let mut extra = state.clone();
+        extra["blocks"][0]["surprise"] = json!(1);
+        assert!(
+            check(&r("State"), &extra, &doc, "state")
+                .unwrap_err()
+                .contains("surprise")
+        );
+        let mut missing = state.clone();
+        missing["blocks"][0].as_object_mut().unwrap().remove("rect");
+        assert!(
+            check(&r("State"), &missing, &doc, "state")
+                .unwrap_err()
+                .contains("rect")
+        );
+        let mut wrong = state;
+        wrong["blocks"][0]["z"] = json!("front");
+        assert!(check(&r("State"), &wrong, &doc, "state").is_err());
+        // An empty state, with every Option None, fits too.
+        let empty = serde_json::to_value(State::default()).unwrap();
+        check(&r("State"), &empty, &doc, "state").unwrap();
+        // And so do the event's notice and the errors.
+        let notice = serde_json::to_value(Notice {
+            text: "t".into(),
+            block: None,
+            workspace: Some("w3".into()),
+        })
+        .unwrap();
+        check(&r("Notice"), &notice, &doc, "notice").unwrap();
+        check(
+            &r("Error"),
+            &json!({"error": {"code": "auth", "message": "m"}}),
+            &doc,
+            "error",
+        )
+        .unwrap();
+    }
+}

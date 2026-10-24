@@ -600,6 +600,123 @@ fn connect_wires_two_blocks_and_ctrl_z_takes_it_back(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn move_block_moves_and_ctrl_z_puts_it_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, note, _) = three_blocks(handle, &ws, cx);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&note].clone());
+    let rect =
+        |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.canvas.get(note).unwrap().rect);
+    let before = rect(cx);
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "move_block",
+        json!({"block": uid, "x": 120, "y": 80, "w": 640, "h": 400}),
+    );
+    assert_eq!(
+        (failed, text),
+        (false, format!("Moved {uid} to 120,80 640×400."))
+    );
+    assert_eq!(
+        rect(cx),
+        templum_canvas::Rect::new(120.0, 80.0, 640.0, 400.0)
+    );
+    // What is left out keeps; a size below the kind's least is raised to it.
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "move_block",
+        json!({"block": uid, "x": 5, "w": 1}),
+    );
+    assert!(!failed, "{text}");
+    let least = ws.read_with(cx, |ws, _| ws.space.blocks[&note].min_size(ws.cell.size));
+    assert_eq!(
+        rect(cx),
+        templum_canvas::Rect::new(5.0, 80.0, least.w, 400.0)
+    );
+    let undo = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.press(UNDO, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    undo(cx);
+    assert_eq!(
+        rect(cx),
+        templum_canvas::Rect::new(120.0, 80.0, 640.0, 400.0)
+    );
+    undo(cx);
+    assert_eq!(rect(cx), before, "Ctrl+Z puts it back");
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "move_block",
+        json!({"block": "nope", "x": 1}),
+    );
+    assert_eq!(
+        (failed, text),
+        (
+            true,
+            "There's no block nope: overview lists them.".to_string()
+        )
+    );
+}
+
+#[gpui_kit::test]
+fn move_block_in_a_hidden_workspace_steps_that_workspaces_history(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    control(handle, &ws, cx, "create_workspace", json!({"name": "API"}));
+    let (_, text) = control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({"workspace": "w2", "kind": "note"}),
+    );
+    let far = id_in(&text);
+    let rect = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let space = ws.space_named("w2").unwrap();
+            space
+                .canvas
+                .get(space.block_by_uid(&far).unwrap())
+                .unwrap()
+                .rect
+        })
+    };
+    let before = rect(cx);
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "move_block",
+        json!({"block": far, "x": 900, "y": 900}),
+    );
+    assert!(!failed, "{text}");
+    assert_eq!((rect(cx).x, rect(cx).y), (900.0, 900.0));
+    let undo = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.press(UNDO, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    undo(cx);
+    assert_eq!(
+        (rect(cx).x, rect(cx).y),
+        (900.0, 900.0),
+        "the shown workspace's undo leaves it"
+    );
+    control(handle, &ws, cx, "show", json!({"workspace": "w2"}));
+    undo(cx);
+    assert_eq!(rect(cx), before, "its own workspace's undo puts it back");
+}
+
+#[gpui_kit::test]
 fn a_wire_that_reaches_your_terminal_asks(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (kanban, _, mine) = three_blocks(handle, &ws, cx);
@@ -858,7 +975,7 @@ fn an_unknown_agent_or_a_bad_effort_opens_nothing(cx: &mut TestAppContext) {
 
 /// Calls `tool` as the engine does, on connection `conn` (its request's id is `conn` too): the
 /// channel its answer comes on, now or once the person answers.
-fn control_later(
+pub(super) fn control_later(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,

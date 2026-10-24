@@ -84,6 +84,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                 .gap(px(2.0))
                 .pr(px(8.0))
                 .children(crate::update::pill(ws, cx))
+                .children(api_pill(ws, cx))
                 .children(crate::usage::meter(ws, cx))
                 .child(
                     button("zoom-level", ui)
@@ -118,6 +119,60 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                         .test_support(),
                 ),
         )
+}
+
+/// The API's pill while it is on, before the usage meter: "API" and how many clients are
+/// connected, or "API off" in yellow when it can't listen (the reason is its tooltip). A click
+/// opens Settings ▸ API. Off, no pill: the person always sees a door that is open.
+fn api_pill(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<gpui_kit::AnyElement> {
+    let store = ws.api.store.as_ref().filter(|s| s.settings.enabled)?;
+    let (label, tip, warn) = match (&ws.api.server, &ws.api.error) {
+        (Some(server), _) => {
+            let clients = ws.api.clients;
+            let url = format!(
+                "{}://{}",
+                if store.settings.tls == templum_api::store::Tls::Off {
+                    "http"
+                } else {
+                    "https"
+                },
+                server.addr()
+            );
+            let plural = if clients == 1 { "client" } else { "clients" };
+            (
+                if clients == 0 {
+                    "API".to_string()
+                } else {
+                    format!("API · {clients}")
+                },
+                format!("The API listens on {url} · {clients} {plural} connected"),
+                false,
+            )
+        }
+        (None, error) => (
+            "API off".to_string(),
+            error.clone().unwrap_or_default(),
+            true,
+        ),
+    };
+    let ui = ws.ui;
+    let yellow = crate::grid::hsla(ws.theme.palette.ansi[3], 1.0);
+    Some(
+        button("api-pill", ui)
+            .when(warn, |el| el.text_color(yellow))
+            .child(label)
+            .tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+            })
+            .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
+                if ws.settings.as_ref().is_none_or(|p| p.closing) {
+                    ws.toggle_settings(window, cx);
+                }
+                ws.set_section(crate::settings::Section::Api, cx);
+            }))
+            .test_support()
+            .into_any_element(),
+    )
 }
 
 pub(crate) fn button(id: &'static str, ui: Ui) -> Stateful<Div> {

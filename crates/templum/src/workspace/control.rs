@@ -15,6 +15,43 @@ use super::spawn::Opener;
 use super::waits::Asked;
 use super::{Space, Workspace, show_notification};
 
+/// Who a control call acts for: the Templum Agent, whose tools these are, or a token of the API,
+/// which runs the same tools as the person (docs/specs/api.md, Who acts).
+pub(super) enum Actor {
+    Agent,
+    Api(templum_api::Caller),
+}
+
+impl Actor {
+    /// The asker of the tasks it hands: `Handed::by`.
+    pub(super) fn asker(&self) -> &'static str {
+        match self {
+            Actor::Agent => templum_agent::ASKER,
+            Actor::Api(_) => templum_api::ASKER,
+        }
+    }
+
+    /// Its signature on what it does: `[from API · phone, task t7]`, a notification's title.
+    pub(super) fn by(&self) -> String {
+        match self {
+            Actor::Agent => "Templum Agent".into(),
+            Actor::Api(caller) => format!("API · {}", caller.name),
+        }
+    }
+
+    /// The author of a comment it writes: the Templum Agent signs, the API is the person's hand.
+    pub(super) fn signs(&self) -> &'static str {
+        match self {
+            Actor::Agent => templum_agent::ASKER,
+            Actor::Api(_) => "you",
+        }
+    }
+
+    fn agent(&self) -> bool {
+        matches!(self, Actor::Agent)
+    }
+}
+
 /// What a control client hears when its secret isn't the engine's.
 const NOT_IT: &str = "This isn't the Templum Agent's process.";
 
@@ -95,7 +132,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (outcome, target) = self.control_call(parsed, args, window, cx);
+        let (outcome, target) = self.control_call(&Actor::Agent, parsed, args, window, cx);
         if let Some(target) = target {
             self.touch(name, args, target, cx);
         }
@@ -142,9 +179,18 @@ impl Workspace {
         cx.notify();
     }
 
+    /// What the Templum Agent made, noted so it may close it without asking; the API's calls
+    /// make nothing of the agent's.
+    fn made(&mut self, actor: &Actor, f: impl FnOnce(&mut templum_agent::Own)) {
+        if actor.agent() {
+            f(&mut self.templum_agent.conversation.own);
+        }
+    }
+
     /// A control call: its answer, and what it touched for the chat's row.
-    fn control_call(
+    pub(super) fn control_call(
         &mut self,
+        actor: &Actor,
         parsed: Parsed,
         args: &Value,
         window: &mut Window,
@@ -169,34 +215,40 @@ impl Workspace {
                 name,
                 folder,
                 color,
-            } => return self.create_workspace(&name, folder, color, window, cx),
+            } => return self.create_workspace(actor, &name, folder, color, window, cx),
             ControlCall::Show { workspace, block } => {
                 return self.show_for_agent(workspace, block, window, cx);
             }
-            ControlCall::AddBlock(add) => return self.add_block_for_agent(add, window, cx),
+            ControlCall::AddBlock(add) => return self.add_block_for_agent(actor, add, window, cx),
             ControlCall::OpenAgent(opening) => {
-                if opening.spawn.prompt.is_some()
+                if actor.agent()
+                    && opening.spawn.prompt.is_some()
                     && let Some(refused) = self.too_many_tasks()
                 {
                     return (Outcome::Now(refused), None);
                 }
                 return (
-                    self.open_agent_for_agent(opening, args.clone(), window, cx),
+                    self.open_agent_for_agent(actor, opening, args.clone(), window, cx),
                     None,
                 );
             }
             ControlCall::Connect { a, b } => return self.wire_for_agent(&a, &b, true, cx),
             ControlCall::Disconnect { a, b } => return self.wire_for_agent(&a, &b, false, cx),
             ControlCall::CloseBlock { block } => {
-                let asker = templum_agent::ASKER;
+                let asker = actor.asker();
                 return self.on_block(&block, |ws, at| {
                     ws.block_close(at, &block, asker, window, cx)
+                });
+            }
+            ControlCall::MoveBlock { block, x, y, w, h } => {
+                return self.on_block(&block, |ws, at| {
+                    ws.move_block_in(at, &block, (x, y, w, h), cx)
                 });
             }
             ControlCall::Block(Call::SendToTerminal { block, text, enter }) => {
                 return match self.find_block(&block) {
                     Some((space, id)) => {
-                        let asker = templum_agent::ASKER;
+                        let asker = actor.asker();
                         let typed = self.type_text(asker, (&space, id), &block, &text, enter, cx);
                         let target = Target {
                             workspace: Some(space),
@@ -208,9 +260,9 @@ impl Workspace {
                 };
             }
             ControlCall::Block(Call::SendKeys { block, keys }) => {
+                let by = actor.by();
                 return self.on_task(&block, |ws, at| {
-                    let by = "Templum Agent";
-                    ws.keys_in(templum_agent::ASKER, by, at, &block, keys, cx)
+                    ws.keys_in(actor.asker(), &by, at, &block, keys, cx)
                 });
             }
             ControlCall::Block(Call::Delegate {
@@ -223,16 +275,19 @@ impl Workspace {
                 let own_task = self.find_block(&block).is_some_and(|(space, id)| {
                     self.space_named(&space)
                         .and_then(|s| s.terminal(id)?.handed.as_ref())
-                        .is_some_and(|h| h.by == templum_agent::ASKER)
+                        .is_some_and(|h| h.by == actor.asker())
                 });
-                if !own_task && let Some(refused) = self.too_many_tasks() {
+                if actor.agent()
+                    && !own_task
+                    && let Some(refused) = self.too_many_tasks()
+                {
                     return (Outcome::Now(refused), None);
                 }
+                let by = actor.by();
                 return self.on_task(&block, |ws, at| {
-                    let by = "Templum Agent";
                     ws.hand_task(
-                        templum_agent::ASKER,
-                        by,
+                        actor.asker(),
+                        &by,
                         at,
                         &block,
                         &task,
@@ -253,22 +308,23 @@ impl Workspace {
             }) => {
                 return self.on_task(&block, |ws, at| match event {
                     templum_mcp::tools::Event::Idle => {
-                        ws.idle_wait(templum_agent::ASKER, at, &block, timeout)
+                        ws.idle_wait(actor.asker(), at, &block, timeout)
                     }
                     event => {
-                        let by = templum_agent::ASKER;
+                        let by = actor.asker();
                         ws.event_wait(by, at, &block, event, timeout, pattern, lines, wait, cx)
                     }
                 });
             }
             ControlCall::Block(Call::Interrupt { block }) => {
+                let by = actor.by();
                 return self.on_task(&block, |ws, at| {
-                    ws.interrupt_in(templum_agent::ASKER, "Templum Agent", at, &block, cx)
+                    ws.interrupt_in(actor.asker(), &by, at, &block, cx)
                 });
             }
             ControlCall::Block(Call::StopAgent { block }) => {
                 return self.on_task(&block, |ws, at| {
-                    Outcome::Now(ws.stop_agent_in(templum_agent::ASKER, at, &block, cx))
+                    Outcome::Now(ws.stop_agent_in(actor.asker(), at, &block, cx))
                 });
             }
             ControlCall::Block(Call::ListCards { board, card }) => {
@@ -294,7 +350,7 @@ impl Workspace {
                 };
                 return match self.card_new(board, new, cx) {
                     Ok(card) => {
-                        self.templum_agent.conversation.own.cards.push(card);
+                        self.made(actor, |own| own.cards.push(card));
                         let target = self.board_shown(board);
                         (
                             Outcome::Now(Reply::ok(format!("Created card {card}."))),
@@ -314,7 +370,7 @@ impl Workspace {
             }
             ControlCall::Block(Call::CommentCard { card, text }) => {
                 let target = self.card_shown(card);
-                let done = self.card_comment(card, &text, templum_agent::ASKER, cx);
+                let done = self.card_comment(card, &text, actor.signs(), cx);
                 return (Outcome::Now(done), target);
             }
             ControlCall::Block(Call::AppendNote { block, text }) => {
@@ -334,7 +390,7 @@ impl Workspace {
             }
             ControlCall::Block(Call::Notify { text }) => {
                 let notification = Notification::new()
-                    .title("Templum Agent")
+                    .title(actor.by())
                     .message(text)
                     .delivery(self.delivery(window));
                 show_notification(window, cx, notification);
@@ -348,6 +404,7 @@ impl Workspace {
     /// `create_workspace`: a new workspace, not shown, with its name, folder and color.
     fn create_workspace(
         &mut self,
+        actor: &Actor,
         name: &str,
         folder: Option<String>,
         color: Option<String>,
@@ -378,11 +435,7 @@ impl Workspace {
             space.look.color = color;
         }
         self.write_index(window, cx);
-        self.templum_agent
-            .conversation
-            .own
-            .workspaces
-            .push(id.clone());
+        self.made(actor, |own| own.workspaces.push(id.clone()));
         cx.notify();
         let done = Reply::ok(format!("Created workspace {} ({id}).", clean_title(name)));
         let target = Target {
@@ -439,6 +492,7 @@ impl Workspace {
     /// `add_block`: a block of a kind in a workspace, where it covers nothing.
     fn add_block_for_agent(
         &mut self,
+        actor: &Actor,
         add: AddBlock,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -545,16 +599,9 @@ impl Workspace {
                 None => return refuse(Reply::err("An editor needs a folder.")),
             },
         };
-        let own = &mut self.templum_agent.conversation.own;
-        own.boards.extend(made_board);
-        let opened = self.add_block_in(
-            &space,
-            block,
-            place,
-            Some(templum_agent::ASKER.into()),
-            window,
-            cx,
-        );
+        self.made(actor, |own| own.boards.extend(made_board));
+        let opener = actor.agent().then(|| templum_agent::ASKER.to_string());
+        let opened = self.add_block_in(&space, block, place, opener, window, cx);
         let id = match opened {
             Ok(id) => id,
             Err(why) => return refuse(Reply::err(why)),
@@ -569,10 +616,11 @@ impl Workspace {
                 .and_then(|b| b.note()?.tab().map(|t| t.id)),
             home.blocks.get(&id).and_then(|b| b.checklist()?.list),
         );
-        let own = &mut self.templum_agent.conversation.own;
-        own.blocks.push(uid.clone());
-        own.notes.extend(note);
-        own.checklists.extend(list);
+        self.made(actor, |own| {
+            own.blocks.push(uid.clone());
+            own.notes.extend(note);
+            own.checklists.extend(list);
+        });
         let done = Reply::ok(format!("Added {what} to {name} ({space}) as {uid}."));
         let target = Target {
             workspace: Some(space),
@@ -586,6 +634,7 @@ impl Workspace {
     /// it. Its row's target is set when it opened (`args`, its call).
     fn open_agent_for_agent(
         &mut self,
+        actor: &Actor,
         opening: Opening,
         args: Value,
         window: &mut Window,
@@ -651,15 +700,24 @@ impl Workspace {
             return refuse(format!("{} isn't a folder.", folder.display()));
         }
         let worktree = spawn.worktree.clone();
+        let opener = match actor {
+            Actor::Agent => Opener::TemplumAgent,
+            Actor::Api(_) => Opener::Automation {
+                asker: actor.asker().to_string(),
+                by: actor.by(),
+            },
+        };
+        let touched = actor.agent();
         let open = move |ws: &mut Self,
                          folder: &std::path::Path,
                          window: &mut Window,
                          cx: &mut Context<Self>| {
-            let opener = Opener::TemplumAgent;
             let (done, uid) = ws.open_agent_in(
                 &space, &entry, None, folder, &spawn, place, &wire_to, opener, window, cx,
             );
-            if let Some(uid) = uid {
+            if let Some(uid) = uid
+                && touched
+            {
                 ws.templum_agent.conversation.own.blocks.push(uid.clone());
                 let target = Target {
                     workspace: Some(space),
@@ -669,7 +727,16 @@ impl Workspace {
             }
             done
         };
-        self.in_worktree(folder, worktree, open, window, cx)
+        // A token limited to some workspaces makes worktrees only in repositories whose main tree
+        // lies inside their folders.
+        let roots = match actor {
+            Actor::Api(caller) if caller.workspaces.is_some() => {
+                let seen = self.api_state(cx).visible(caller);
+                Some(self.confined_roots(&seen))
+            }
+            _ => None,
+        };
+        self.in_worktree(folder, worktree, roots, open, window, cx)
     }
 
     /// `connect` (`on`) and `disconnect`: a wire between two blocks of one workspace, a step of

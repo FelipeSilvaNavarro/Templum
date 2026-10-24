@@ -3,6 +3,8 @@
 mod activity;
 mod agent;
 pub(crate) mod agents_view;
+pub(crate) mod api;
+mod api_state;
 mod approvals;
 pub(crate) mod automations;
 mod autostart;
@@ -108,8 +110,8 @@ const AGENT_ROWS: u16 = 32;
 /// How many folders a workspace remembers for agents.
 pub(crate) const RECENT: usize = 8;
 /// The largest block a saved canvas restores: a corrupt size mustn't allocate a giant grid.
-const MAX_COLS: u16 = 2000;
-const MAX_ROWS: u16 = 1000;
+pub(super) const MAX_COLS: u16 = 2000;
+pub(super) const MAX_ROWS: u16 = 1000;
 /// A press that moves less than this (screen pixels) before release is a click, not a pan.
 const CLICK_SLOP: f32 = 4.0;
 /// Drawing changes kept for undo, per workspace.
@@ -1563,6 +1565,8 @@ pub struct Workspace {
     watching: bool,
     /// The Templum Agent: its conversation, and its engine's secret (docs/specs/templum-agent.md).
     pub(crate) templum_agent: crate::chat::TemplumAgent,
+    /// The Templum API: its file, its server and what Settings shows (`api.rs`).
+    pub(crate) api: api::Api,
     /// Draws the next frame while a dot travels along a wire in view (`wires::DOT_FRAME`).
     _dot_frame: Task<()>,
     _wake: Task<()>,
@@ -1747,12 +1751,14 @@ impl Workspace {
             .and_then(|dir| std::fs::read_to_string(dir.join("updates").join(update::TOLD)).ok());
         let flush = vec![
             cx.on_release(|ws, cx| {
+                ws.flush_api();
                 ws.save();
                 ws.save_canvas_now(cx);
                 ws.save_conversation();
                 ws.finish_update();
             }),
             cx.on_app_quit(|ws, cx| {
+                ws.flush_api();
                 ws.save();
                 ws.save_canvas_now(cx);
                 ws.save_conversation();
@@ -1760,7 +1766,12 @@ impl Workspace {
                 async {}
             }),
         ];
-        let (bus, bus_env, bus_task) = bus::start(data_dir.as_deref(), window, cx);
+        let bus::Started {
+            bus,
+            env: bus_env,
+            task: bus_task,
+            tx: bus_tx,
+        } = bus::start(data_dir.as_deref(), window, cx);
         let mut ws = Self {
             space: Space::default(),
             others: Vec::new(),
@@ -1924,6 +1935,7 @@ impl Workspace {
             last_chime: None,
             next_task: 0,
             tool_conns: HashMap::new(),
+            api: api::Api::new(bus_tx),
             templum_agent: Default::default(),
             notices: Vec::new(),
             ending: HashMap::new(),
@@ -1955,6 +1967,7 @@ impl Workspace {
         }
         ws.refresh_autostart(cx);
         ws.load_spaces(window, cx);
+        ws.load_api(window, cx);
         ws.restore_conversation();
         ws
     }

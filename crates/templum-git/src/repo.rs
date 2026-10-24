@@ -545,7 +545,7 @@ impl Repo {
 
     /// The repository's main working tree: the first of `git worktree list`; None for a bare
     /// repository, which has none.
-    fn main_tree(&self) -> Result<Option<PathBuf>, GitError> {
+    pub fn main_tree(&self) -> Result<Option<PathBuf>, GitError> {
         let list = self.text(&["worktree", "list", "--porcelain"])?;
         let mut first = list.split("\n\n").next().unwrap_or_default().lines();
         let main = first

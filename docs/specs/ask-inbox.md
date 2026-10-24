@@ -171,3 +171,8 @@ What the builder chose where this design left it open, and what changed on the w
   tells), but its block still gets the alert (answering or seeing the block clears it), so the workspace's tile has
   its dot and Ctrl+Shift+A finds the request from another workspace. A notification's click shows the workspace the
   asking block is in when it is clicked.
+- **Answered from the API (card 171):** `answer_request` ([api.md](api.md)) answers a question, a plan or a yes/no
+  request as the inbox's buttons do: a question's answers go through `Ask::checked` (one answer per single-select
+  question, at most one other text, a plan is Approve or Reject) and then the same `answer_question` that Send uses,
+  so a stopped question's answer is still typed into its terminal; the inbox's too-soon guard doesn't apply. The
+  request leaves the inbox as for a click.

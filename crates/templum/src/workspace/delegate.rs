@@ -1651,6 +1651,10 @@ impl Workspace {
         about: Option<(String, u64)>,
         cx: &mut Context<Self>,
     ) {
+        // The API's asker has no terminal to type into: its notice is an event on its streams.
+        if to == templum_api::ASKER {
+            return self.api_notice_about(text, about);
+        }
         let at = cx.background_executor().now();
         self.notices.push(Notice {
             to,

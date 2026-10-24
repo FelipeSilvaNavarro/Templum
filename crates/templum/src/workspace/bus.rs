@@ -41,19 +41,25 @@ pub(super) fn start(
     data: Option<&Path>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
-) -> (Option<Bus>, Vec<(String, String)>, Task<()>) {
+) -> Started {
+    let nothing = || Started {
+        bus: None,
+        env: Vec::new(),
+        task: Task::ready(()),
+        tx: None,
+    };
     let Some(data) = data else {
-        return (None, Vec::new(), Task::ready(()));
+        return nothing();
     };
     let (tx, mut rx) = futures::channel::mpsc::unbounded::<Message>();
-    let bus = match templum_mcp::bus::start(data, tx) {
+    let bus = match templum_mcp::bus::start(data, tx.clone()) {
         Ok(bus) => bus,
         Err(err) => {
             eprintln!(
                 "templum: couldn't start the bus in {}: {err}",
                 data.display()
             );
-            return (None, Vec::new(), Task::ready(()));
+            return nothing();
         }
     };
     let env = terminal_env(&bus, data);
@@ -70,8 +76,26 @@ pub(super) fn start(
             }
         }
     });
-    (Some(bus), env, task)
+    // The API's server writes to the same channel: its messages come to `serve` as the bus's do.
+    Started {
+        bus: Some(bus),
+        env,
+        task,
+        tx: Some(tx),
+    }
 }
+
+/// What `start` makes: the bus, the environment its terminals get, the task that serves its
+/// messages, and the channel they come on.
+pub(super) struct Started {
+    pub bus: Option<Bus>,
+    pub env: Vec<(String, String)>,
+    pub task: Task<()>,
+    pub tx: Option<Sender>,
+}
+
+/// The channel the bus's messages go to the UI thread on: the API's server writes to it too.
+pub(super) type Sender = futures::channel::mpsc::UnboundedSender<Message>;
 
 /// What a tool call comes to.
 pub(super) enum Outcome {
@@ -177,6 +201,10 @@ impl Workspace {
         } = message;
         if hello.client == "control" {
             return self.serve_control(hello, conn, incoming, reply, window, cx);
+        }
+        // Made inside Templum by the API's server: the bus refuses this client on its socket.
+        if hello.client == templum_api::CLIENT {
+            return self.serve_api(hello, conn, incoming, reply, window, cx);
         }
         // Connections off: an agent's server and hooks get nothing, the command line works.
         let off = !self.config.connections.enabled && hello.client != "cli";

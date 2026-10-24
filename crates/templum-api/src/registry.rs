@@ -1,0 +1,999 @@
+//! The registry (docs/specs/api.md, Tools): every control tool plus the API's own, each tool's
+//! scope, the route table that names a tool or a resource, and how a request's path, query and
+//! body become a tool's arguments. The OpenAPI document is written from it (`openapi`).
+
+use crate::store::Scope;
+use serde_json::{Map, Value, json};
+use templum_mcp::control::{self, Rule};
+
+/// The tools only the API serves: automations are the person's, not an agent's.
+const OWN: [&str; 5] = [
+    "answer_request",
+    "save_automation",
+    "set_automation",
+    "run_automation",
+    "delete_automation",
+];
+
+/// The arguments that name something a workspace-limited token must see: a block, a workspace, a
+/// board, a card, a request or an automation. One list, so a new tool's argument can't slip past
+/// the check (`every_argument_is_a_target_or_not`).
+pub const TARGETS: [&str; 11] = [
+    "block",
+    "a",
+    "b",
+    "near",
+    "connect",
+    "for",
+    "workspace",
+    "board",
+    "card",
+    "request",
+    "automation",
+];
+
+/// Every other argument name the tools have today: they name nothing a token could be kept from.
+pub const NOT_TARGETS: &[&str] = &[
+    "add_items",
+    "agent",
+    "allow",
+    "answers",
+    "check",
+    "checklist",
+    "color",
+    "column",
+    "columns",
+    "description",
+    "dismiss",
+    "done",
+    "effort",
+    "enter",
+    "event",
+    "folder",
+    "h",
+    "id",
+    "item",
+    "keys",
+    "kind",
+    "last_command",
+    "lines",
+    "model",
+    "name",
+    "note",
+    "on",
+    "pattern",
+    "priority",
+    "prompt",
+    "reason",
+    "task",
+    "text",
+    "timeout",
+    "title",
+    "uncheck",
+    "w",
+    "wait",
+    "worktree",
+    "x",
+    "y",
+];
+
+/// A tool: its name, what it does and the schema of its arguments.
+fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "inputSchema": { "type": "object", "properties": properties, "required": required },
+    })
+}
+
+/// Every tool: the control server's, then the API's own.
+pub fn tools() -> Vec<Value> {
+    let mut all = control::list()["tools"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let automation = json!({ "type": "integer", "description": "An automation's number, as the state shows it." });
+    all.extend([
+        tool(
+            "answer_request",
+            "Answers what waits for the person, as the inbox's buttons do: a question or a plan with \
+             answers (one list per question, the labels picked and at most one other text; a plan is \
+             Approve or Reject), a yes/no request or an approval with allow (an approval's allow is \
+             Allow once), or dismiss. note is a plan's comment or a denial's words.",
+            json!({
+                "request": { "type": "string", "description": "A request's id, as the state shows it (r12, a3)." },
+                "answers": {
+                    "type": "array",
+                    "items": { "type": "array", "items": { "type": "string" } },
+                    "description": "One list per question: the labels picked, then at most one other text.",
+                },
+                "allow": { "type": "boolean", "description": "Allow (true) or deny (false) a yes/no request or an approval." },
+                "dismiss": { "type": "boolean", "description": "Dismiss a question or a plan without answering it." },
+                "note": { "type": "string" },
+            }),
+            &["request"],
+        ),
+        tool(
+            "save_automation",
+            "Saves an automation as the editor's Save does, with its checks and words: a new one, or \
+             the one numbered id replaced. Says its number.",
+            json!({
+                "automation": {
+                    "type": "object",
+                    "description": "As automations.json keeps one: name, on, workspace, when, do, max_runs.",
+                },
+                "id": automation,
+            }),
+            &["automation"],
+        ),
+        tool(
+            "set_automation",
+            "Turns an automation on or off.",
+            json!({ "automation": automation, "on": { "type": "boolean" } }),
+            &["automation", "on"],
+        ),
+        tool(
+            "run_automation",
+            "Runs an automation now.",
+            json!({ "automation": automation }),
+            &["automation"],
+        ),
+        tool(
+            "delete_automation",
+            "Deletes an automation.",
+            json!({ "automation": automation }),
+            &["automation"],
+        ),
+    ]);
+    all
+}
+
+/// The tools with their scope, as `GET /v1/tools` lists them.
+pub fn listed() -> Vec<Value> {
+    tools()
+        .into_iter()
+        .map(|mut tool| {
+            let scope = nominal(tool["name"].as_str().unwrap_or_default());
+            tool["scope"] = json!(scope);
+            tool
+        })
+        .collect()
+}
+
+pub fn known(name: &str) -> bool {
+    tools().iter().any(|tool| tool["name"] == name)
+}
+
+/// The words of a target that isn't there, or isn't the token's to see: the same for both, so a
+/// limited token learns nothing about what lies outside its workspaces.
+pub fn no(word: &str, id: &str) -> String {
+    let path = match word {
+        "block" => "/v1/blocks",
+        "workspace" => "/v1/workspaces",
+        "board" => "/v1/boards",
+        "request" => "/v1/requests",
+        "automation" => "/v1/automations",
+        _ => "/v1/state",
+    };
+    format!("There's no {word} {id}: GET {path} lists them.")
+}
+
+/// One of the API's own tools.
+pub fn own(name: &str) -> bool {
+    OWN.contains(&name)
+}
+
+/// The scope a call of `name` with `args` takes. A control tool is parsed first (its Err is the
+/// parser's sentence): Read when it only reads, Full when its rule asks the person each time,
+/// else Control.
+pub fn scope(name: &str, args: &Value) -> Result<Scope, String> {
+    if own(name) {
+        return Ok(match name {
+            "save_automation" if args["automation"]["do"].get("command").is_some() => Scope::Full,
+            "delete_automation" => Scope::Full,
+            _ => Scope::Control,
+        });
+    }
+    let parsed = control::parse(name, args)?;
+    Ok(if control::reads(name) {
+        Scope::Read
+    } else if matches!(control::rule(&parsed.call), Rule::Ask | Rule::AskEach) {
+        Scope::Full
+    } else {
+        Scope::Control
+    })
+}
+
+/// A tool's scope as the documents say it: "read", "control", "full", or "control or full" for the
+/// two whose scope depends on their arguments.
+pub fn nominal(name: &str) -> &'static str {
+    if matches!(name, "answer_request" | "save_automation") {
+        return "control or full";
+    }
+    let Some(tool) = tools().into_iter().find(|tool| tool["name"] == name) else {
+        return "control";
+    };
+    // An example call: what the tool needs, in the least that parses.
+    let schema = &tool["inputSchema"];
+    let mut args = Map::new();
+    for key in schema["required"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let property = &schema["properties"][key];
+        let example = match property["type"].as_str() {
+            Some("integer" | "number") => json!(1),
+            Some("boolean") => json!(true),
+            Some("array") => json!(["x"]),
+            Some("object") => json!({}),
+            _ => property["enum"][0]
+                .clone()
+                .as_str()
+                .map_or(json!("x"), |e| json!(e)),
+        };
+        args.insert(key.to_string(), example);
+    }
+    match scope(name, &Value::Object(args)) {
+        Ok(Scope::Read) => "read",
+        Ok(Scope::Full) => "full",
+        _ => "control",
+    }
+}
+
+/// What a route does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Does {
+    /// Runs a tool; an empty name is `POST /v1/tools/{name}`, where the path names it.
+    Tool(&'static str),
+    Read(Resource),
+    Events,
+    Ticket,
+    Tools,
+    OpenApi,
+}
+
+/// A resource a GET reads from the state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Resource {
+    State,
+    Workspaces,
+    Workspace,
+    Blocks,
+    Block,
+    Agents,
+    Requests,
+    Request,
+    Boards,
+    Board,
+    Card,
+    Automations,
+    Automation,
+    Usage,
+}
+
+#[derive(Debug)]
+pub struct Route {
+    pub method: &'static str,
+    pub path: &'static str,
+    pub does: Does,
+}
+
+const fn route(method: &'static str, path: &'static str, does: Does) -> Route {
+    Route { method, path, does }
+}
+
+use Does::{Events, OpenApi, Read, Ticket, Tool, Tools};
+use Resource as R;
+
+/// Every route (docs/specs/api.md, Resources and REST aliases). A path parameter is a tool's
+/// argument of the same name.
+pub const ROUTES: &[Route] = &[
+    route("GET", "/v1/state", Read(R::State)),
+    route("GET", "/v1/workspaces", Read(R::Workspaces)),
+    route("GET", "/v1/workspaces/{workspace}", Read(R::Workspace)),
+    route("GET", "/v1/blocks", Read(R::Blocks)),
+    route("GET", "/v1/blocks/{block}", Read(R::Block)),
+    route("GET", "/v1/agents", Read(R::Agents)),
+    route("GET", "/v1/terminals/{block}/text", Tool("read_terminal")),
+    route("GET", "/v1/notes/{block}/text", Tool("read_note")),
+    route("GET", "/v1/checklists/{block}", Tool("read_checklist")),
+    route("GET", "/v1/requests", Read(R::Requests)),
+    route("GET", "/v1/requests/{request}", Read(R::Request)),
+    route("GET", "/v1/boards", Read(R::Boards)),
+    route("GET", "/v1/boards/{board}", Read(R::Board)),
+    route("GET", "/v1/cards/{card}", Read(R::Card)),
+    route("GET", "/v1/automations", Read(R::Automations)),
+    route("GET", "/v1/automations/{automation}", Read(R::Automation)),
+    route("GET", "/v1/usage", Read(R::Usage)),
+    route("GET", "/v1/tools", Tools),
+    route("GET", "/v1/openapi.json", OpenApi),
+    route("GET", "/v1/events", Events),
+    route("POST", "/v1/tickets", Ticket),
+    route("POST", "/v1/tools/{name}", Tool("")),
+    route("POST", "/v1/workspaces", Tool("create_workspace")),
+    route("POST", "/v1/blocks", Tool("add_block")),
+    route("PATCH", "/v1/blocks/{block}", Tool("move_block")),
+    route("DELETE", "/v1/blocks/{block}", Tool("close_block")),
+    route("POST", "/v1/show", Tool("show")),
+    route("POST", "/v1/wires", Tool("connect")),
+    route("DELETE", "/v1/wires/{a}/{b}", Tool("disconnect")),
+    route("POST", "/v1/agents", Tool("open_agent")),
+    route("POST", "/v1/agents/{block}/task", Tool("delegate")),
+    route("POST", "/v1/agents/{block}/interrupt", Tool("interrupt")),
+    route("POST", "/v1/agents/{block}/stop", Tool("stop_agent")),
+    route(
+        "POST",
+        "/v1/terminals/{block}/text",
+        Tool("send_to_terminal"),
+    ),
+    route("POST", "/v1/terminals/{block}/keys", Tool("send_keys")),
+    route(
+        "POST",
+        "/v1/requests/{request}/answer",
+        Tool("answer_request"),
+    ),
+    route("POST", "/v1/boards/{board}/cards", Tool("create_card")),
+    route("PATCH", "/v1/cards/{card}", Tool("edit_card")),
+    route("POST", "/v1/cards/{card}/move", Tool("move_card")),
+    route("POST", "/v1/cards/{card}/comments", Tool("comment_card")),
+    route("POST", "/v1/automations", Tool("save_automation")),
+    route(
+        "PUT",
+        "/v1/automations/{automation}",
+        Tool("save_automation"),
+    ),
+    route(
+        "PATCH",
+        "/v1/automations/{automation}",
+        Tool("set_automation"),
+    ),
+    route(
+        "POST",
+        "/v1/automations/{automation}/run",
+        Tool("run_automation"),
+    ),
+    route(
+        "DELETE",
+        "/v1/automations/{automation}",
+        Tool("delete_automation"),
+    ),
+];
+
+/// The route for `method` and `path`, with its path parameters (percent-decoded). None for
+/// anything else, a trailing slash and an empty segment included.
+pub fn find(method: &str, path: &str) -> Option<(&'static Route, Vec<(&'static str, String)>)> {
+    let segments: Vec<&str> = path.strip_prefix('/')?.split('/').collect();
+    ROUTES
+        .iter()
+        .filter(|route| route.method == method)
+        .find_map(|route| {
+            let pattern: Vec<&'static str> = route.path.strip_prefix('/')?.split('/').collect();
+            if pattern.len() != segments.len() {
+                return None;
+            }
+            let mut params = Vec::new();
+            for (pattern, segment) in pattern.iter().zip(&segments) {
+                match pattern.strip_prefix('{').and_then(|p| p.strip_suffix('}')) {
+                    Some(name) => {
+                        let value = percent_decode(segment).filter(|v| !v.is_empty())?;
+                        params.push((name, value));
+                    }
+                    None if pattern == segment => {}
+                    None => return None,
+                }
+            }
+            Some((route, params))
+        })
+}
+
+/// A path segment with its `%XX` bytes decoded; None when they aren't UTF-8.
+fn percent_decode(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = segment.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The arguments of `tool` from a request: the body (a JSON object, or none), then the query,
+/// then the path parameters (the path wins), each text value typed by the tool's schema.
+pub fn arguments(
+    tool: &str,
+    params: &[(&str, String)],
+    query: &[(String, String)],
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let mut args = match body {
+        None | Some(Value::Null) => Map::new(),
+        Some(Value::Object(object)) => object,
+        Some(_) => return Err("The body is a JSON object.".into()),
+    };
+    // An automation is saved from its own fields; the number in the path is its id.
+    if tool == "save_automation" {
+        let rule = if args.contains_key("automation") {
+            args.clone()
+        } else {
+            Map::from_iter([("automation".to_string(), Value::Object(args))])
+        };
+        args = rule;
+    }
+    let schema = tools()
+        .into_iter()
+        .find(|t| t["name"] == tool)
+        .ok_or_else(|| format!("Unknown tool: {tool}"))?;
+    let properties = &schema["inputSchema"]["properties"];
+    for (key, text) in query {
+        if properties.get(key.as_str()).is_none() {
+            continue;
+        }
+        let typed = typed(key, text, &properties[key.as_str()])?;
+        match (args.get_mut(key), typed) {
+            // `?keys=a&keys=b`: one list.
+            (Some(Value::Array(list)), Value::Array(more)) => list.extend(more),
+            (_, typed) => {
+                args.insert(key.clone(), typed);
+            }
+        }
+    }
+    for (key, text) in params {
+        let key = if tool == "save_automation" && *key == "automation" {
+            "id"
+        } else {
+            key
+        };
+        args.insert(key.to_string(), typed(key, text, &properties[key])?);
+    }
+    Ok(Value::Object(args))
+}
+
+/// `text` as the schema `property` says its argument is.
+fn typed(key: &str, text: &str, property: &Value) -> Result<Value, String> {
+    Ok(match property["type"].as_str() {
+        Some("integer") => json!(
+            text.parse::<i64>()
+                .map_err(|_| format!("\"{key}\" is a whole number"))?
+        ),
+        Some("number") => json!(
+            text.parse::<f64>()
+                .ok()
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| format!("\"{key}\" is a number"))?
+        ),
+        Some("boolean") => match text {
+            "true" => json!(true),
+            "false" => json!(false),
+            _ => return Err(format!("\"{key}\" is true or false")),
+        },
+        Some("array") => json!([text]),
+        _ => json!(text),
+    })
+}
+
+/// An own tool's call, its arguments checked.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Own {
+    AnswerRequest {
+        request: String,
+        answer: Answer,
+        note: Option<String>,
+    },
+    SaveAutomation {
+        id: Option<u64>,
+        automation: Value,
+    },
+    SetAutomation {
+        id: u64,
+        on: bool,
+    },
+    RunAutomation {
+        id: u64,
+    },
+    DeleteAutomation {
+        id: u64,
+    },
+}
+
+/// How a request is answered.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Answer {
+    /// A list per question: the labels picked, then at most one other text.
+    Picked(Vec<Vec<String>>),
+    Allow(bool),
+    Dismiss,
+}
+
+/// An own tool's arguments; Err says what is wrong with them.
+pub fn parse_own(name: &str, args: &Value) -> Result<Own, String> {
+    let number = |key: &str| {
+        args[key]
+            .as_u64()
+            .ok_or_else(|| format!("{name} needs \"{key}\", a whole number"))
+    };
+    Ok(match name {
+        "answer_request" => {
+            let request = args["request"]
+                .as_str()
+                .ok_or_else(|| format!("{name} needs \"request\", a string"))?
+                .to_string();
+            let note = match &args["note"] {
+                Value::Null => None,
+                Value::String(note) => Some(note.clone()),
+                _ => return Err("\"note\" is a string".into()),
+            };
+            let picked = match &args["answers"] {
+                Value::Null => None,
+                Value::Array(lists) => Some(
+                    lists
+                        .iter()
+                        .map(|list| {
+                            list.as_array()?
+                                .iter()
+                                .map(|a| a.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .collect::<Option<Vec<Vec<String>>>>()
+                        .ok_or("\"answers\" is a list of lists of strings")?,
+                ),
+                _ => return Err("\"answers\" is a list of lists of strings".into()),
+            };
+            let allow = match &args["allow"] {
+                Value::Null => None,
+                Value::Bool(allow) => Some(*allow),
+                _ => return Err("\"allow\" is true or false".into()),
+            };
+            let dismiss = match &args["dismiss"] {
+                Value::Null | Value::Bool(false) => false,
+                Value::Bool(true) => true,
+                _ => return Err("\"dismiss\" is true".into()),
+            };
+            let answer = match (picked, allow, dismiss) {
+                (Some(picked), None, false) => Answer::Picked(picked),
+                (None, Some(allow), false) => Answer::Allow(allow),
+                (None, None, true) => Answer::Dismiss,
+                _ => return Err("answer_request needs one of answers, allow or dismiss".into()),
+            };
+            Own::AnswerRequest {
+                request,
+                answer,
+                note,
+            }
+        }
+        "save_automation" => {
+            if !args["automation"].is_object() {
+                return Err("save_automation needs \"automation\", an object".into());
+            }
+            let id = match &args["id"] {
+                Value::Null => None,
+                id => Some(id.as_u64().ok_or("\"id\" is a whole number")?),
+            };
+            Own::SaveAutomation {
+                id,
+                automation: args["automation"].clone(),
+            }
+        }
+        "set_automation" => Own::SetAutomation {
+            id: number("automation")?,
+            on: args["on"]
+                .as_bool()
+                .ok_or("set_automation needs \"on\", true or false")?,
+        },
+        "run_automation" => Own::RunAutomation {
+            id: number("automation")?,
+        },
+        "delete_automation" => Own::DeleteAutomation {
+            id: number("automation")?,
+        },
+        _ => return Err(format!("Unknown tool: {name}")),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn every_tool_is_known_with_a_schema() {
+        let all = tools();
+        let names: Vec<&str> = all.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        for tool in control::list()["tools"].as_array().unwrap() {
+            assert!(names.contains(&tool["name"].as_str().unwrap()));
+        }
+        for own in OWN {
+            assert!(
+                names.contains(&own) && known(own) && self::own(own),
+                "{own}"
+            );
+        }
+        assert!(
+            all.iter()
+                .all(|t| t["inputSchema"].is_object() && t["description"].is_string())
+        );
+        assert_eq!(
+            names.iter().collect::<HashSet<_>>().len(),
+            names.len(),
+            "no name twice"
+        );
+        assert!(!known("nope") && !own("overview"));
+    }
+
+    #[test]
+    fn scope_follows_the_registry() {
+        for (name, args, want) in [
+            ("overview", json!({}), Scope::Read),
+            ("read_terminal", json!({"block": "b"}), Scope::Read),
+            (
+                "wait_for",
+                json!({"block": "b", "event": "idle"}),
+                Scope::Read,
+            ),
+            (
+                "create_card",
+                json!({"board": "S", "title": "x"}),
+                Scope::Control,
+            ),
+            ("move_block", json!({"block": "b", "x": 1}), Scope::Control),
+            (
+                "open_agent",
+                json!({"agent": "claude", "workspace": "w3"}),
+                Scope::Control,
+            ),
+            (
+                "delegate",
+                json!({"block": "b", "task": "t"}),
+                Scope::Control,
+            ),
+            ("close_block", json!({"block": "b"}), Scope::Control),
+            (
+                "send_to_terminal",
+                json!({"block": "b", "text": "ls"}),
+                Scope::Full,
+            ),
+            (
+                "send_keys",
+                json!({"block": "b", "keys": ["y"]}),
+                Scope::Full,
+            ),
+            (
+                "answer_request",
+                json!({"request": "r1", "allow": true}),
+                Scope::Control,
+            ),
+            (
+                "save_automation",
+                json!({"automation": {"do": {"notify": {"text": "x"}}}}),
+                Scope::Control,
+            ),
+            (
+                "save_automation",
+                json!({"automation": {"do": {"command": {"text": "ls"}}}}),
+                Scope::Full,
+            ),
+            (
+                "set_automation",
+                json!({"automation": 1, "on": false}),
+                Scope::Control,
+            ),
+            ("run_automation", json!({"automation": 1}), Scope::Control),
+            ("delete_automation", json!({"automation": 1}), Scope::Full),
+        ] {
+            assert_eq!(scope(name, &args), Ok(want), "{name}");
+        }
+        assert!(
+            scope("move_card", &json!({"card": 4}))
+                .unwrap_err()
+                .contains("column")
+        );
+        assert_eq!(scope("nope", &json!({})), Err("Unknown tool: nope".into()));
+    }
+
+    #[test]
+    fn the_listed_scopes_are_the_nominal_ones() {
+        let by_name = |name: &str| nominal(name);
+        assert_eq!(by_name("overview"), "read");
+        assert_eq!(by_name("create_card"), "control");
+        assert_eq!(by_name("send_keys"), "full");
+        assert_eq!(by_name("delete_automation"), "full");
+        assert_eq!(by_name("answer_request"), "control or full");
+        assert_eq!(by_name("save_automation"), "control or full");
+        let listed = listed();
+        assert_eq!(listed.len(), tools().len());
+        assert!(listed.iter().all(|t| t["scope"].is_string()));
+    }
+
+    #[test]
+    fn every_argument_is_a_target_or_not() {
+        let mut unclassified = Vec::new();
+        for tool in tools() {
+            for key in tool["inputSchema"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+            {
+                if !(TARGETS.contains(&key.as_str()) || NOT_TARGETS.contains(&key.as_str())) {
+                    unclassified.push(format!("{}.{key}", tool["name"].as_str().unwrap()));
+                }
+            }
+        }
+        assert!(
+            unclassified.is_empty(),
+            "neither a target nor not: {unclassified:?}"
+        );
+        assert!(
+            TARGETS.iter().all(|t| !NOT_TARGETS.contains(t)),
+            "no name is both"
+        );
+        // And no name stays on a list after the last tool that had it.
+        let used: HashSet<String> = tools()
+            .iter()
+            .flat_map(|t| {
+                t["inputSchema"]["properties"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let stale: Vec<_> = TARGETS
+            .iter()
+            .chain(NOT_TARGETS)
+            .filter(|n| !used.contains(**n))
+            .collect();
+        assert!(stale.is_empty(), "no tool has these arguments: {stale:?}");
+    }
+
+    #[test]
+    fn routes_find_their_tool_and_parameters() {
+        let (route, params) = find("POST", "/v1/cards/40/move").unwrap();
+        assert_eq!(
+            (route.does, params),
+            (Does::Tool("move_card"), vec![("card", "40".to_string())])
+        );
+        let (route, params) = find("DELETE", "/v1/wires/b1/k1").unwrap();
+        assert_eq!(route.does, Does::Tool("disconnect"));
+        assert_eq!(params, [("a", "b1".to_string()), ("b", "k1".to_string())]);
+        let (route, params) = find("POST", "/v1/tools/move_card").unwrap();
+        assert_eq!(
+            (route.does, params),
+            (Does::Tool(""), vec![("name", "move_card".to_string())])
+        );
+        let (route, params) = find("GET", "/v1/blocks/b%37k").unwrap();
+        assert_eq!(
+            (route.does, params),
+            (
+                Does::Read(Resource::Block),
+                vec![("block", "b7k".to_string())]
+            )
+        );
+        assert!(find("GET", "/v2/state").is_none() && find("GET", "/v1/state/").is_none());
+        assert!(
+            find("GET", "/v1/blocks/").is_none(),
+            "an empty segment is no block"
+        );
+        assert!(find("GET", "/v1/blocks/%ff").is_none(), "not UTF-8");
+        assert!(find("GET", "/v1/blocks/%zz").is_none() && find("GET", "/v1/nope").is_none());
+        assert!(
+            find("PUT", "/v1/state").is_none(),
+            "a method the path doesn't take"
+        );
+        assert_eq!(find("GET", "/v1/events").unwrap().0.does, Does::Events);
+        assert_eq!(find("POST", "/v1/tickets").unwrap().0.does, Does::Ticket);
+        for route in ROUTES {
+            if let Does::Tool(name) = route.does
+                && !name.is_empty()
+            {
+                assert!(known(name), "{} {}", route.method, route.path);
+                // Its path parameters are its arguments.
+                let schema = tools().into_iter().find(|t| t["name"] == name).unwrap();
+                for segment in route
+                    .path
+                    .split('/')
+                    .filter_map(|s| s.strip_prefix('{')?.strip_suffix('}'))
+                {
+                    let key = if name == "save_automation" {
+                        "id"
+                    } else {
+                        segment
+                    };
+                    assert!(
+                        schema["inputSchema"]["properties"].get(key).is_some(),
+                        "{} {segment}",
+                        route.path
+                    );
+                }
+            }
+        }
+        let mut seen = HashSet::new();
+        assert!(
+            ROUTES.iter().all(|r| seen.insert((r.method, r.path))),
+            "no route twice"
+        );
+    }
+
+    #[test]
+    fn arguments_are_typed_by_the_schema_and_the_path_wins() {
+        let text = |s: &str| s.to_string();
+        assert_eq!(
+            arguments(
+                "read_terminal",
+                &[("block", text("b7k2m"))],
+                &[
+                    (text("lines"), text("50")),
+                    (text("last_command"), text("true"))
+                ],
+                None
+            ),
+            Ok(json!({"block": "b7k2m", "lines": 50, "last_command": true}))
+        );
+        assert_eq!(
+            arguments(
+                "move_card",
+                &[("card", text("40"))],
+                &[],
+                Some(json!({"card": 99, "column": "Done"}))
+            ),
+            Ok(json!({"card": 40, "column": "Done"}))
+        );
+        assert_eq!(
+            arguments(
+                "read_terminal",
+                &[("block", text("b"))],
+                &[(text("lines"), text("many"))],
+                None
+            ),
+            Err("\"lines\" is a whole number".into())
+        );
+        assert_eq!(
+            arguments(
+                "read_terminal",
+                &[("block", text("b"))],
+                &[(text("last_command"), text("yes"))],
+                None
+            ),
+            Err("\"last_command\" is true or false".into())
+        );
+        assert_eq!(
+            arguments(
+                "send_keys",
+                &[("block", text("b"))],
+                &[(text("keys"), text("a")), (text("keys"), text("b"))],
+                None
+            ),
+            Ok(json!({"block": "b", "keys": ["a", "b"]}))
+        );
+        assert_eq!(
+            arguments(
+                "show",
+                &[],
+                &[(text("nonsense"), text("1"))],
+                Some(json!({"workspace": "w3"}))
+            ),
+            Ok(json!({"workspace": "w3"})),
+            "an unknown query key is ignored"
+        );
+        assert!(arguments("show", &[], &[], Some(json!([1]))).is_err());
+        assert_eq!(arguments("show", &[], &[], None), Ok(json!({})));
+        assert!(
+            arguments("nope", &[], &[], None)
+                .unwrap_err()
+                .contains("Unknown tool")
+        );
+    }
+
+    #[test]
+    fn a_saved_automation_comes_from_the_body_and_the_path_gives_its_id() {
+        let rule = json!({"name": "x", "do": {"notify": {"text": "t"}}});
+        assert_eq!(
+            arguments("save_automation", &[], &[], Some(rule.clone())),
+            Ok(json!({"automation": rule}))
+        );
+        assert_eq!(
+            arguments(
+                "save_automation",
+                &[("automation", "3".into())],
+                &[],
+                Some(rule.clone())
+            ),
+            Ok(json!({"automation": rule, "id": 3}))
+        );
+        assert_eq!(
+            arguments(
+                "save_automation",
+                &[],
+                &[],
+                Some(json!({"automation": rule, "id": 2}))
+            ),
+            Ok(json!({"automation": rule, "id": 2}))
+        );
+    }
+
+    #[test]
+    fn own_tools_parse_their_arguments() {
+        assert_eq!(
+            parse_own(
+                "answer_request",
+                &json!({"request": "r1", "answers": [["A"]]})
+            ),
+            Ok(Own::AnswerRequest {
+                request: "r1".into(),
+                answer: Answer::Picked(vec![vec!["A".into()]]),
+                note: None
+            })
+        );
+        assert_eq!(
+            parse_own(
+                "answer_request",
+                &json!({"request": "r1", "allow": false, "note": "no"})
+            ),
+            Ok(Own::AnswerRequest {
+                request: "r1".into(),
+                answer: Answer::Allow(false),
+                note: Some("no".into())
+            })
+        );
+        assert_eq!(
+            parse_own("answer_request", &json!({"request": "r1", "dismiss": true})),
+            Ok(Own::AnswerRequest {
+                request: "r1".into(),
+                answer: Answer::Dismiss,
+                note: None
+            })
+        );
+        for bad in [
+            json!({"request": "r1"}),
+            json!({"request": "r1", "allow": true, "dismiss": true}),
+            json!({"request": "r1", "allow": true, "answers": []}),
+            json!({"request": "r1", "dismiss": false}),
+        ] {
+            assert_eq!(
+                parse_own("answer_request", &bad),
+                Err("answer_request needs one of answers, allow or dismiss".into()),
+                "{bad}"
+            );
+        }
+        assert!(
+            parse_own("answer_request", &json!({"allow": true}))
+                .unwrap_err()
+                .contains("\"request\"")
+        );
+        assert!(parse_own("answer_request", &json!({"request": "r", "answers": [1]})).is_err());
+        assert_eq!(
+            parse_own(
+                "save_automation",
+                &json!({"automation": {"name": "x"}, "id": 2})
+            ),
+            Ok(Own::SaveAutomation {
+                id: Some(2),
+                automation: json!({"name": "x"})
+            })
+        );
+        assert!(parse_own("save_automation", &json!({"automation": 3})).is_err());
+        assert_eq!(
+            parse_own("set_automation", &json!({"automation": 3, "on": false})),
+            Ok(Own::SetAutomation { id: 3, on: false })
+        );
+        assert!(parse_own("set_automation", &json!({"automation": 3})).is_err());
+        assert_eq!(
+            parse_own("run_automation", &json!({"automation": 3})),
+            Ok(Own::RunAutomation { id: 3 })
+        );
+        assert_eq!(
+            parse_own("delete_automation", &json!({"automation": 3})),
+            Ok(Own::DeleteAutomation { id: 3 })
+        );
+        assert!(parse_own("delete_automation", &json!({"automation": "x"})).is_err());
+        assert!(parse_own("overview", &json!({})).is_err());
+    }
+}

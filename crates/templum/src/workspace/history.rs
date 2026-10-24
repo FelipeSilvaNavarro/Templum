@@ -192,7 +192,12 @@ impl Workspace {
     }
 
     /// Puts blocks at `rects`; a terminal's grid follows.
-    fn place(&mut self, rects: Vec<(BlockId, Rect)>, then: Then, cx: &mut Context<Self>) {
+    pub(super) fn place(
+        &mut self,
+        rects: Vec<(BlockId, Rect)>,
+        then: Then,
+        cx: &mut Context<Self>,
+    ) {
         let mut before = Vec::new();
         for (id, rect) in rects {
             // A tile's rect is the grid's: its place on the canvas is what moves.

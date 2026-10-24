@@ -361,7 +361,10 @@ impl Workspace {
         let mut kept = Vec::new();
         for w in std::mem::take(&mut self.watches) {
             let pane = self.pane(&w.of);
-            let told = if w.by != templum_agent::ASKER && self.pane(&w.by).is_none() {
+            let told = if w.by != templum_agent::ASKER
+                && w.by != templum_api::ASKER
+                && self.pane(&w.by).is_none()
+            {
                 None
             } else if let Some(pane) = pane {
                 match pane.term.hit(w.watch) {

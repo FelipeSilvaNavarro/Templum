@@ -22,6 +22,7 @@ use crate::workspace::Workspace;
 
 pub(crate) mod accounts;
 mod agents;
+pub(crate) mod api;
 mod colors;
 pub(crate) mod connections;
 mod edits;
@@ -74,6 +75,7 @@ pub(crate) enum Section {
     Agents,
     Instructions,
     Connections,
+    Api,
     TemplumAgent,
     Usage,
     Updates,
@@ -81,7 +83,7 @@ pub(crate) enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 15] = [
+    pub const ALL: [Section; 16] = [
         Section::Appearance,
         Section::General,
         Section::Canvas,
@@ -93,6 +95,7 @@ impl Section {
         Section::Agents,
         Section::Instructions,
         Section::Connections,
+        Section::Api,
         Section::TemplumAgent,
         Section::Usage,
         Section::Updates,
@@ -112,6 +115,7 @@ impl Section {
             Section::Agents => "Agents",
             Section::Instructions => "Instructions",
             Section::Connections => "Connections",
+            Section::Api => "API",
             Section::TemplumAgent => "Templum Agent",
             Section::Usage => "Usage",
             Section::Updates => "Updates",
@@ -133,6 +137,7 @@ impl Section {
             Section::Agents => "settings-tab-agents",
             Section::Instructions => "settings-tab-instructions",
             Section::Connections => "settings-tab-connections",
+            Section::Api => "settings-tab-api",
             Section::TemplumAgent => "settings-tab-templum-agent",
             Section::Usage => "settings-tab-usage",
             Section::Updates => "settings-tab-updates",
@@ -163,6 +168,11 @@ impl Section {
             Section::Connections => Some(
                 "What the agents in the canvas get from Templum: its MCP server, to read and type \
                  into the blocks wired to them, and its hooks, for the dot on their terminal.",
+            ),
+            Section::Api => Some(
+                "Another door to Templum, from a phone, a dashboard or another computer: off until you \
+                 turn it on, and it answers only to the tokens you make. Templum runs no server of \
+                 its own: point your tunnel, proxy or VPN at its port.",
             ),
             Section::TemplumAgent => Some(
                 "The chat at the bottom of the canvas: an agent that builds and runs the canvas for \

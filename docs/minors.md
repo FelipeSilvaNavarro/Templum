@@ -2200,3 +2200,14 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **A model and an effort are free text.** The Start an agent form takes both as typed words
   (`crates/templum/src/automations_view/editor.rs`) and only Save says if the agent refuses them. Fix: dropdowns of the
   agent's own models and efforts (`Agent::launch_args`' lists).
+
+## API
+
+- [ ] **An approval has no time in the state.** `RequestView.since` is when its popup first showed it (0 before), since
+  `chat::Approval` has no creation time. Fix: give `Approval` a `since: Instant` when it is queued.
+- [ ] **`cooldown` is always null in the state.** The spec's `AutomationView` has it, but `automations::Automation` has
+  no cooldown yet (card 150's later batch). Fix: fill it from the rule once it has one.
+- [ ] **A certificate or key edited on disk is read at the next start of the server only.** Settings ▸ API ▸ My
+  certificate reads the files when the server starts; replacing them (a renewal) needs a toggle of the switch. Fix: a
+  *Reload* button, or a look at their modified times.
+

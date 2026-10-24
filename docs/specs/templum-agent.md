@@ -425,7 +425,7 @@ conversation". `reason` is an optional string on every Ask tool, shown in the ap
 | `edit_workspace` | `workspace`, `name`, `folder`, `color`, `icon` | Its name, folder and look | – | 3 |
 | `stop_workspace` | `workspace`, `reason` | Stops it ([cockpit.md](cockpit.md#stopping-a-workspace)) | Ask own | 3 |
 | `delete_workspace` | `workspace`, `reason` | Deletes it and its blocks | Ask each; Ask own when empty | 3 |
-| `move_block` | `block`, `x`, `y`, `w`, `h`, `workspace` | Moves or resizes it (a step of Ctrl+Z), or moves it to another workspace | – | 3 |
+| `move_block` | `block`, `x`, `y`, `w`, `h` (built by card 171, the API); `workspace` (batch 3) | Moves or resizes it, a step of that workspace's Ctrl+Z (no block smaller than its kind's least), or moves it to another workspace | – | 1 (`workspace`: 3) |
 | `arrange` | `workspace`, `layout` (`grid`, `row`, `column`), `blocks` | Lays the blocks out without overlap, keeping their sizes | – | 3 |
 | `grid`, `fit` | `on` | Grid mode on or off; the camera to every block | – | 3 |
 | `rename_board`, `add_column`, `rename_column` | … | The board's name and columns | – | 3 |
@@ -463,7 +463,8 @@ arguments can't lower it.
 - **Grants** ("Allow for this conversation") are per tool, any target, and last until New chat or quit; never saved.
 - **What keeps the model from going around it:** the engine has no shell, no file writing and no other MCP server; the
   control server has no command-line verbs; the secret lives only in the engine's environment; approvals are answered
-  only by clicks and keys in Templum's popup, never by a tool, a chat message or a CLI; the approval's facts are written
+  only by clicks and keys in Templum's popup, never by a tool, a chat message or a CLI, but by the API's full tokens,
+  the person's own hand (card 171); the approval's facts are written
   by Templum from the call, and the model's `reason` is shown apart; denying tells it not to try another way.
 - **Its own** is recorded as things are made (the conversation's `own` lists, saved with it, so a restart keeps them
   for the conversation); `opened_by: templum-agent` marks the blocks for good, but only this conversation's own skip

@@ -1,9 +1,9 @@
 # The Templum API: your Templum, from anywhere
 
 - **Date:** 2026-10-24
-- **Status:** Designed (kanban card 171, "the Templum ecosystem API"). Batch 1 planned:
-  [2026-10-24-api.md](../plans/2026-10-24-api.md); batches 2 and 3, and Templum to Templum, are designed here for
-  later plans.
+- **Status:** Batch 1 implemented (kanban card 171, "the Templum ecosystem API"; plan:
+  [2026-10-24-api.md](../plans/2026-10-24-api.md)); batches 2 and 3, and Templum to Templum, are designed here for
+  later plans. For people: [docs/api.md](../api.md).
 - **Builds on:** [connections.md](connections.md) (the bus, block ids, the tools, the `templum` command line),
   [templum-agent.md](templum-agent.md) (the control server: a tool for every hand action, and their danger),
   [agents-view.md](agents-view.md) (an agent's state), [ask-inbox.md](ask-inbox.md) (the requests),
@@ -414,7 +414,8 @@ don't know. A change that would break a client is `/v2`, served beside `/v1` for
   a browser warns about any self-signed certificate.
 - **The person's certificate:** a PEM certificate chain and a PEM private key, read at each start of the server; a
   file that doesn't load keeps the API off, with the reason in Settings and the title bar.
-- Over TLS every answer carries `Strict-Transport-Security: max-age=31536000`.
+- No `Strict-Transport-Security`: a browser would pin the host for a year, and Templum's certificate (or a tunnel's)
+  changes. (Revised after the security review.)
 
 ### Every answer
 
@@ -432,23 +433,32 @@ don't know. A change that would break a client is `/v2`, served beside `/v1` for
 
 ### Brute force and floods
 
-- **Failed authentications** are counted per client address: after 10 within 10 minutes, the address is refused for 2
-  seconds, then twice as long at each further failure, up to 15 minutes (`429`, `Retry-After`), without looking at its
-  token. A success clears its count.
+- **Failed authentications** (credentials shown that weren't good; none shown is not one) are counted per client
+  address, an IPv6 /64 as one: after 10 within 10 minutes, the address's failures are answered `429` for 2 seconds, then
+  twice as long at each further failure, up to 15 minutes (`Retry-After`). A good token always passes, so no address
+  can lock the person out, and a failure's connection is closed. The table is capped at 4096 addresses, swept once a
+  second; past the cap the rest share one entry. Connections: 64, 16 per token; off loopback, 8 that have shown no
+  token per address (an IPv6 /64; the newest stranger evicts the oldest, also for an address the limiter is
+  refusing: its users open connections in parallel); nobody is refused at accept, because the token is looked
+  at only once it speaks (a shared public address, a proxy that isn't loopback, the shared overflow entry); a full
+  table lets in a new one by evicting the oldest stranger of the address holding the most strangers.
 - **The client address** is the connection's peer, unless the peer is loopback (a tunnel, a proxy on this computer):
-  then `CF-Connecting-IP` when present (Cloudflare sets it, a client can't), else the last entry of `X-Forwarded-For`
-  (the one the proxy added), else the peer (*the designer's call*: without this, a tunnel makes every client one
+  then the last entry of `X-Forwarded-For` (the one the proxy added; `CF-Connecting-IP` is not believed, a client can
+  send it), else the peer (*the designer's call*: without this, a tunnel makes every client one
   address and an attacker would lock the person out).
 - **Floods:** the limits of [Errors and limits](#errors-and-limits).
 
 ### Visibility
 
 - The title bar's pill; Settings' clients with Disconnect; each token's last use (time and address).
-- **The audit log**, `<data>/api/audit.log`, written by the server: one JSON line per connection, refused
-  authentication or TLS handshake, and call: time, address, token name, what (`connect`, `auth_failed`,
-  `tls_failed`, a tool's name, a resource's path), its status. Never a token, a ticket, a body or typed text. At
-  1 MiB it becomes `audit.log.1` (replacing the older one) and a new file starts (*the designer's call*: 2 MiB at
-  most).
+- **The audit log**, `<data>/api/audit.log`, written by the server: one JSON line per call: time, address, token
+  name, what (a tool's name, a resource's path), its status; and, if calls were given up because the disk could not
+  keep up, one `lost` line with the count (`more`). Never a token, a ticket, a body or typed text. At 1 MiB it becomes
+  `audit.log.1` (replacing the older one) and a new file starts (*the designer's call*: 2 MiB at most).
+- **The noise log**, `<data>/api/noise.log`: what anyone can make without a token (connections, refused or failed
+  authentications, failed TLS handshakes), one line per address and minute with `more` counting the rest, in a file pair
+  of its own (1 MiB, then `noise.log.1`), so a flood of strangers from any number of addresses can never rotate the
+  calls out of `audit.log`.
 
 ### Persistence
 
@@ -474,7 +484,7 @@ don't know. A change that would break a client is `/v2`, served beside `/v1` for
 | **A stolen data folder** (a backup, a synced copy) | No working token: SHA-256 hashes of 256 random bits. The certificate's key is there: an attacker who also sits on the network could pose as this Templum to clients that pinned it: **New certificate** (clients re-pin) and Revoke all. Files are `0600`, the folder `0700`, against other users of the computer. |
 | **An exposed LAN port** | Off by default, loopback by default. Off loopback, TLS only. Bearer only, on every route but CORS preflights. Rate limits. The title bar shows it is open. |
 | **A malicious web page** in the person's browser | No ambient credential (no cookie), so it can't call in the person's name; JSON only, so no form posts; CORS off unless listed; DNS rebinding gets nothing without a token; tickets single-use, 30 s. Security headers keep an answer from being framed or read as HTML. |
-| **Brute force** | 2²⁵⁶ tokens; per-address growing refusal; tunnel-aware addresses; the audit log. |
+| **Brute force** | 2²⁵⁶ tokens: that is what stops guessing. The per-address growing refusal answers failures sooner and keeps the log quiet; it does not slow guessing (authentication runs first). Tunnel-aware addresses; the audit log. |
 | **A client that floods or reads slowly** | 64 connections, header and body limits, 20 calls a second per token, 256 events queued per stream, then a snapshot. The UI thread builds the state 4 times a second at most, only while a stream is open. |
 | **Someone on the network between** | TLS off loopback; a tunnel's hop to Templum is loopback; HSTS over TLS; pinning. |
 | **An agent on this computer** | The bus refuses `api` hellos; tokens never reach terminals. A Full token pasted into an agent gives it the person's hand: docs/api.md says to keep tokens out of agents. |
@@ -571,4 +581,117 @@ tools' own, the audit line's field names, and how the server's tasks are arrange
 
 ## As built
 
-*Filled in as each batch lands.*
+### Batch 1
+
+What the builder chose where the design left it open, and what differs:
+
+- **Code:** `crates/templum-api/` (`store.rs` settings, tokens and their file; `tls.rs`; `model.rs` the state and its
+  comparison; `registry.rs` and `openapi.rs`; `server.rs`; `events.rs`; `audit.rs`), the glue in
+  `crates/templum/src/workspace/{api.rs,api_state.rs}`, `settings/api.rs` and `title_bar.rs`'s pill. The control
+  server's `control_call` takes an `Actor` (the Templum Agent, or a token).
+- **Failed authentications:** the address's failures are refused from its **tenth** (the plan's unit test said the
+  eleventh; the spec's sentence and the integration test say the tenth). A failure made after a refusal ends, while the
+  address is still in trouble (within 10 minutes of it), doubles the wait; ten minutes of calm start it over.
+- **A POST, PUT or PATCH with a body must say `application/json`;** with no body, no type is needed (the review's
+  finding: a body-less `curl -X POST` was `415`).
+- **Body limits:** an oversize body is read on to 1 MiB more and dropped so the client can read the `413`; past that
+  the connection closes. A body must arrive within 30 seconds.
+- **Connections past 64** are answered `503 busy` in plain HTTP (64 more at once, then dropped); over TLS they are
+  closed. A handshake takes at most 10 seconds.
+- **Workspace limits** also cover what the spec lists only by argument name: `save_automation`'s `id`, its
+  `automation.workspace` (required for a limited token, and one it sees) and the blocks its `do` types into.
+  `for` (a card's assignee) takes `anyone`, an agent's id or a block the token sees. `create_workspace` is `403 scope`.
+  The server filters every state it gets for the token as well, whatever the UI thread sent.
+- **The streams' waker** is a stored `Waker`, not a `Notify`; a stream ends and leaves the hub at once on revoke, and
+  its `Connection: close` ends the connection with it.
+- **A closed `delegate` with `wait`** frees the task it handed (`handed` is none); other waits just go, as an agent's
+  closed connection drops them.
+- **Origins** change on a running server (`Server::set_origins`); any other setting restarts it. `api.json` is written
+  at once on the UI thread; a token's last use only once a minute and at quit.
+- **Cargo.lock** gains `templum-api`, `rcgen`, `yasna`, `pem`, and, as lock-only entries that are not compiled,
+  rcgen's optional `x509-parser` and its dependencies (`asn1-rs`, `der-parser`, `oid-registry`, `nom`…).
+- **After the security review (sixteen findings):**
+  - A token limited to some workspaces: `overview` is refused; `list_cards` and `create_card` must name a board it sees
+    (and the error never lists the others); a workspace or board in an argument is resolved as the tool resolves it
+    (an id first, then a name in either case) and the id is what is checked and passed on; `add_block`/`open_agent`
+    folders must lie, once canonicalized, inside a folder of its workspaces (so must an automation's); a deleted
+    workspace's id leaves every token's list.
+  - `move_block` clamps the size to the biggest grid a terminal may have and bounds x and y to ±10⁷.
+  - Setting, running or replacing a command automation takes a Full token.
+  - Authentication comes first and the limiter slows only failures, keyed on the last `X-Forwarded-For` of a loopback
+    peer (`CF-Connecting-IP` is not believed), IPv6 by /64, 4096 addresses at most, swept once a second; a failure's
+    connection closes; 16 connections per token; a full table evicts the oldest stranger.
+  - The audit log is written by a thread of its own and aggregates connection and authentication noise per address
+    and minute (`more` counts the rest); HSTS is gone.
+
+- **After the second security review (nine findings):**
+  - An automation a limited token saves: `do.agent.folder` and `do.command.folder` (and `folder` of `add_block` and
+    `open_agent`) are written back as the canonical path that was checked, so what is stored and run is what was
+    checked (`"."` is the workspace's absolute folder); with no folder, a workspace without one is refused. The store
+    keeps, per automation, the real folders of the token's workspaces (`confined` in `api.json`); each run checks the
+    folder it opens in against them and is Skipped "Target missing: …" when a link was swapped in. The person's own
+    save in the editor, or deleting it, lifts that. A limited token's `worktree` on `open_agent` needs the
+    repository's main tree to lie inside one of its workspaces' folders.
+  - Connections: off loopback, 8 that showed no token per address (an IPv6 /64); a full table evicts the oldest
+    stranger of the address holding the most. (A peer the limiter refuses was refused at accept here; the third review
+    undid that.)
+  - The audit log counts noise in `Audit::write`, before the queue (a table capped at 4096, keyed like the limiter),
+    queues only a key's first line and writes its count when the window ends (looked at once a second at most); a
+    call line waited up to 200 ms for room in a full queue instead of being dropped. (Never waits now: see the third
+    review.)
+  - An open stream ends when its token's workspace list is no longer the one it opened with (the sweep compares
+    them); the client opens it again.
+  - `flush_api` (quit) drains the uses the server still holds before writing.
+  - Settings ▸ API: a field is taken on Enter or Blur; a value its setter refuses (a port outside 1024–65535) is
+    replaced in the field by the setting, with the reason under it.
+  - Streams: an expired token's end at the next publish; the state is compared only when it changed or a stream opened,
+    once per kind of caller. A client coming or going is told to the UI (`templum/clients`), which keeps the pill's
+    count. A body-less POST needs no Content-Type. The address, port and certificate fields take Enter or leaving the
+    field; an edit that changes nothing restarts nothing.
+- **After the third security review (nine findings):**
+  - Nobody is refused at accept: the limiter only slows failed authentications, so a good token from a shared address
+    (CGNAT, an office, a VPN exit, a proxy that isn't loopback) gets in. (The third review also held a refused address
+    to one stranger; the fourth undid that, see below.)
+  - `api.json` keeps `saved_by` (automation → the id of the token that saved it) beside `confined`, for every rule
+    saved through the API. Revoke, Revoke all and expiry (swept at each snapshot, every 5 s) turn those rules off and
+    notify "Automation <name>, saved by token '<token name>', was turned off."; the person's own save or delete clears
+    `saved_by` as it clears `confined`.
+  - The audit writer keeps its files open (reopened after a rotation), collects the noise lines due under the lock and
+    writes them after releasing it, and a call line never waits: noise may fill only half of the queue (a counter the
+    writer decrements), a call that finds the queue full is counted as `lost` and the writer logs it as one line.
+    `Drop` closes the channel (the writer drains it and ends) and waits about a second for a done signal instead of
+    joining without a limit. Noise has its own file pair, `noise.log` (1 MiB + one old file); `audit.log` holds only
+    lines with a token (and the `lost` line).
+  - The canonical path a rule keeps and a folder is opened in is written back in the simplified form (`dunce`):
+    `C:\x`, not `\\?\C:\x`, which cmd.exe refuses as a folder. Paths are compared canonical; only the form written
+    back changes.
+  - A limited token's `worktree` is checked in the background task, before `add_worktree`, against the main tree *git*
+    reports (`Repo::main_tree`, which obeys `commondir` and `core.worktree`); the workspace no longer reads `.git`
+    files itself, so a planted one can't move the worktree outside the token's folders.
+  - On Windows a folder on `UNC`, `VerbatimUNC` or `DeviceNS` is refused before the filesystem is asked about it
+    (the SMB session would offer the person's NTLM hash), unless one of the token's workspace folders is on that
+    share (`refuses_share`, over `std::path::Prefix`, tested on every platform).
+  - `start_api` drains the old server's uses first.
+  - **Folder limits are not a sandbox.** They guard what a token can *name* (where it opens a terminal, an editor, an
+    agent or a worktree). A process the token starts inside a folder has the person's reach.
+- **After the fourth security review (ten findings):**
+  - Connections: the cap of 8 strangers per address is the same for an address the limiter refuses: its users open
+    connections in parallel (a dashboard, a proxy on a docker bridge, CGNAT), and a cap of one had them abort each
+    other. "A good token always gets in" holds against guessing; whoever shares the address and floods connections
+    can still starve the connections of that address that haven't authenticated yet.
+  - The credentials are checked and the connection marked as authenticated under one lock, so an accept in between
+    can't evict it as a stranger. (No test: it needs an accept interleaved with a request; the lock is the proof.)
+  - On Windows `share_of` fails closed: only `Disk` and `VerbatimDisk` are the computer's own. `std` matches `\\?\UNC\`
+    case-sensitively, so `\\?\unc\x\y` and `\\?\GLOBALROOT\Device\Mup\…` come as a plain `Verbatim` and reach an
+    SMB share all the same; a `Verbatim` prefix is refused unless a folder of the token is on the same one. Tested on
+    every platform over `Prefix` values.
+  - The audit log cuts `what` to 200 characters (a `/v1/tools/{name}` name was the caller's, up to 16 KiB). Noise is
+    counted by (address, what, token): a `slow_down` carries a token, and another token's was added to the first's line.
+  - A rule saved by a token that is revoked or expired is Skipped "Target missing: its token was revoked" (in
+    `automation_target`) until the sweep turns it off; one the token had already turned off is told of ("…stays off.")
+    instead of dropped silently.
+  - `confined` and `saved_by` entries for automations that don't exist are dropped at load (the ids restart when
+    `automations.json` was set aside), unless the automations couldn't be read.
+  - A limited token's worktree outside its folders is `403` `scope`, as any other folder.
+- **Unfinished, in [minors.md](../minors.md#api):** `cooldown` is always null, an approval's `since` is when it first
+  showed, and a changed certificate on disk is read at the next start.

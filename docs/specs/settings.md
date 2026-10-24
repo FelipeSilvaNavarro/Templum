@@ -170,6 +170,14 @@ Where, Agents and Text. A change applies at once: the next session's start reads
   - A notification says which command has it.
   - "Reset All" decides its resets together, so two commands that traded keys both get their defaults back.
 
+### API (card 171)
+
+The section after Connections ([api.md](../api.md), [specs/api.md](api.md#settings--api)): *Turn on the API* (and where
+it listens, or why it can't), *Who can reach it*, *Port*, *HTTPS* (with Templum's certificate's fingerprint, *Save
+certificate…* and *New certificate*), *Allowed web pages*, the tokens (*New token…*, *Revoke*, *Revoke all*) and
+*Connected now* (*Disconnect*). These are kept in `<data>/api/api.json`, not `config.toml`: a port, tokens and a
+certificate belong to one computer. A title-bar pill ("API", "API · 2", yellow "API off") shows while it is on.
+
 ## Start at login
 
 Templum can start when the person logs in to the computer. The system's own entry for it is the only record: there
