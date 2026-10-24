@@ -1,8 +1,7 @@
 # The requests inbox: what agents ask, in one place
 
 - **Date:** 2026-10-23
-- **Status:** Implemented (kanban card 144; commits 0089726, 287c53d and the one that adds the sidebar button,
-  the pulse, the notifications' click, `go_to_waiting`, the long preview and these specs); plan:
+- **Status:** Implemented (kanban card 144; commits 0089726, 287c53d and e5f22cd); plan:
   [2026-10-23-ask-inbox.md](../plans/2026-10-23-ask-inbox.md)
 - **Builds on:** [ask-user.md](ask-user.md) (the questions' dialog, its keys, its answers),
   [connections.md](connections.md#requests-from-agents) (the former balloon, `connect`),
