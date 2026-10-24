@@ -5,10 +5,10 @@
 
 use serde_json::{Value, json};
 
-use super::bus::{after, answered, call_later, event, me};
+use super::bus::{after, answered, call_later, event, me, screen_until};
 #[cfg(unix)]
 use super::delegate::hand_over;
-use super::delegate::two_agents;
+use super::delegate::{entered, two_agents};
 use super::*;
 
 /// The Claude Code hook input `input`, from the agent in `terminal`, as `templum hook claude`
@@ -74,6 +74,26 @@ fn tool(id: Option<&str>) -> Value {
     }
 }
 
+/// `delegate` with `wait` from `terminal` to block `theirs`, then Claude Code's `UserPromptSubmit`
+/// of it once Templum typed it and pressed Enter: a hook heard before the task is typed doesn't
+/// take it, and its screen (Windows' `cmd` runs it as a command) would say it wasn't taken.
+fn handed(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    (terminal, theirs): (&str, BlockId),
+    task: Value,
+) -> std::sync::mpsc::Receiver<String> {
+    let (worker, _) = me(ws, cx, theirs);
+    let before = screen_until(ws, cx, theirs, |_| true);
+    let answers = call_later(handle, ws, cx, terminal, 1, "delegate", task);
+    screen_until(ws, cx, theirs, |shown| shown != before);
+    entered(ws, cx, theirs);
+    let prompt = json!({ "hook_event_name": "UserPromptSubmit", "prompt": "[from …] task" });
+    hook(handle, ws, cx, &worker, prompt);
+    answers
+}
+
 /// What the dot of terminal block `id` says.
 fn dot(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Option<String> {
     ws.read_with(cx, |ws, _| {
@@ -92,9 +112,7 @@ fn a_task_ends_with_the_turn_after_its_subagents_reports(cx: &mut TestAppContext
     let (terminal, _) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
     let task = json!({ "block": them, "task": "review the parser", "wait": true });
-    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
-    let prompt = json!({ "hook_event_name": "UserPromptSubmit", "prompt": "[from …] review" });
-    hook(handle, &ws, cx, &worker, prompt);
+    let answers = handed(handle, &ws, cx, (&terminal, theirs), task);
     hook(handle, &ws, cx, &worker, started("a1", "Explore"));
     hook(handle, &ws, cx, &worker, started("a2", "general-purpose"));
     hook(handle, &ws, cx, &worker, tool(Some("a1")));
@@ -166,9 +184,7 @@ fn a_report_taken_inside_a_turn_doesnt_keep_the_task_open(cx: &mut TestAppContex
         let (terminal, _) = me(&ws, cx, mine);
         let (worker, them) = me(&ws, cx, theirs);
         let task = json!({ "block": them, "task": "find it", "wait": true });
-        let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
-        let prompt = json!({ "hook_event_name": "UserPromptSubmit", "prompt": "[from …] find" });
-        hook(handle, &ws, cx, &worker, prompt);
+        let answers = handed(handle, &ws, cx, (&terminal, theirs), task);
         hook(handle, &ws, cx, &worker, started("a1", "Explore"));
         hook(handle, &ws, cx, &worker, tool(None));
         hook(handle, &ws, cx, &worker, stopped("a1", &[]));
