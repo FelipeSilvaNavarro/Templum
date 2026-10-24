@@ -52,6 +52,7 @@ fn runs(ws: &Entity<Workspace>, cx: &mut TestAppContext, agent: Option<&str>) {
 }
 
 /// One snapshot period, with the background write finished.
+#[cfg(unix)]
 fn tick(cx: &mut TestAppContext) {
     cx.executor().advance_clock(crate::session::EVERY);
     cx.run_until_parked();

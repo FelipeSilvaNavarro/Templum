@@ -139,10 +139,9 @@ fn a_task_ends_with_the_turn_after_its_subagents_reports(cx: &mut TestAppContext
     assert_eq!(dot(&ws, cx, theirs).as_deref(), Some("Working"));
     hook(handle, &ws, cx, &worker, report("a2"));
     after(cx, 6_000);
-    assert!(
-        answers.try_recv().is_err(),
-        "the turn taking the report is under way"
-    );
+    if let Ok(early) = answers.try_recv() {
+        panic!("the turn taking the report is under way, yet it answered: {early}");
+    }
     hook(
         handle,
         &ws,
