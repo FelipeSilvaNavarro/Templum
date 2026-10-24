@@ -1051,6 +1051,7 @@ impl Workspace {
                         id,
                         usage,
                         until,
+                        text: Handed::text_of(task),
                         ..Handed::new(from, Duration::from_secs(timeout))
                     })
                 }

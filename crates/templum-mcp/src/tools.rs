@@ -660,7 +660,8 @@ pub fn list() -> Value {
                             until the person answers: no limit unless you give timeout (seconds) or the \
                             person set one; if your client stops waiting, the answer is typed into your \
                             terminal later. The older question with options (strings) still works and \
-                            returns the answer as text.",
+                            returns the answer as text. Give why: what you are doing and what the answer \
+                            decides, so the person can answer without reading your terminal.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -674,6 +675,7 @@ pub fn list() -> Value {
                         "items": { "type": "string" },
                         "description": "The older shape's answers to offer; none for a text field.",
                     },
+                    "why": { "type": "string" },
                     "timeout": {
                         "type": "integer",
                         "minimum": 1,
@@ -1849,7 +1851,7 @@ mod tests {
             .unwrap();
         let schema = &ask["inputSchema"];
         assert_eq!(schema["required"], Value::Null);
-        for key in ["questions", "question", "options", "timeout"] {
+        for key in ["questions", "question", "options", "why", "timeout"] {
             assert!(schema["properties"][key].is_object(), "{key}");
         }
         let question = &schema["properties"]["questions"]["items"]["properties"];

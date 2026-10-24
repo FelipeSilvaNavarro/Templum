@@ -327,6 +327,7 @@ impl Workspace {
             );
             let handed = Handed {
                 id,
+                text: Handed::text_of(prompt),
                 // Its session starts with its task: all it spends is the task's.
                 usage: Some(templum_usage::Session {
                     cost_usd: Some(0.0),

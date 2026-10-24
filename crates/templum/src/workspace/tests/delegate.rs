@@ -247,6 +247,14 @@ fn done_task(
     after(cx, 1000);
 }
 
+/// A handed task keeps at most 2000 characters, cut between two characters.
+#[test]
+fn a_handed_tasks_text_is_cut_at_2000_characters() {
+    let long = "é".repeat(2001);
+    assert_eq!(crate::workspace::Handed::text_of(&long), "é".repeat(2000));
+    assert_eq!(crate::workspace::Handed::text_of("short"), "short");
+}
+
 #[cfg(unix)]
 #[gpui_kit::test]
 fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
@@ -278,6 +286,7 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
             .expect("handed over");
         assert_eq!(handed.by, terminal);
         assert_eq!(handed.id, 1);
+        assert_eq!(handed.text, "fix the tests\nthen push");
     });
     // What `cat` was given, in order: the header, a paste of its own, then the task's lines and
     // how to answer, then one Enter. The task is longer than the screen: its start is read in the

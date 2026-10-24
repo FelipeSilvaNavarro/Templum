@@ -330,6 +330,7 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
                 (Some(0.0), Some(0)),
                 "its session is its task's"
             );
+            assert_eq!(handed.text, "say hi", "the task as written");
         });
         // The prompt ends with how to answer it.
         ws.read_with(cx, |ws, _| {

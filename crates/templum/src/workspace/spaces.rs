@@ -250,6 +250,8 @@ impl Workspace {
         self.others.insert(self.active, current);
         self.space = self.others.remove(to);
         self.active = to;
+        // Its requests are another workspace's: the first is selected.
+        self.inbox_at = None;
         if self.space.stopped {
             self.start_space(window, cx);
         }
@@ -351,6 +353,12 @@ impl Workspace {
             ws.space.pristine = false;
             (ws.space.name.clone(), moved)
         });
+        // The selected request's block may have moved away with the others.
+        if let Some(at) = self.inbox_at
+            && !self.inbox().iter().any(|w| w.key == at)
+        {
+            self.inbox_settle(&[at]);
+        }
         self.write_index(window, cx);
         if let Some((name, moved)) = moved
             && let Some(&first) = moved.first()

@@ -44,6 +44,9 @@ pub(crate) struct Wait {
     /// another workspace.
     pub from: String,
     pub what: Waiting,
+    /// When it was made, by the executor's clock: the inbox says how long it has waited.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub since: Instant,
     /// When the balloon first drew it, by the executor's clock.
     pub shown: Cell<Option<Instant>>,
     /// The scroll of the balloon's body, past what fits of its terminal's height.
@@ -196,6 +199,7 @@ impl Workspace {
             reply: asked.reply,
             from: asked.from,
             what,
+            since: cx.background_executor().now(),
             shown: Cell::new(None),
             body: Default::default(),
             reveal: Rc::default(),
@@ -228,6 +232,7 @@ impl Workspace {
             return false;
         };
         let wait = self.waits.remove(i);
+        self.inbox_settle(&[key]);
         self.unwatch(&wait);
         if !matches!(wait.what, Waiting::Question { stopped: true, .. }) {
             let _ = wait.reply.send(tools::tool_result(&wait.id, &reply));
@@ -297,6 +302,7 @@ impl Workspace {
         for wait in &gone {
             self.unwatch(wait);
         }
+        self.inbox_settle(&gone.iter().map(|w| w.key).collect::<Vec<_>>());
         cx.notify();
     }
 
@@ -315,6 +321,7 @@ impl Workspace {
         for wait in &gone {
             self.unwatch(wait);
         }
+        self.inbox_settle(&gone.iter().map(|w| w.key).collect::<Vec<_>>());
         cx.notify();
     }
 
@@ -465,6 +472,7 @@ impl Workspace {
                     return;
                 };
                 let wait = self.waits.remove(at);
+                self.inbox_settle(&[key]);
                 cx.notify();
                 cx.spawn(async move |_, _| {
                     let reply = job.await;

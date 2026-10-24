@@ -18,6 +18,8 @@ pub struct Ask {
     pub json: bool,
     /// `propose_plan`'s: its one question is Approve or Reject, with a comment.
     pub plan: Option<Plan>,
+    /// Said with `why` (trimmed): what the agent is doing and what the answer decides.
+    pub why: Option<String>,
 }
 
 /// A plan the person approves or rejects (docs/specs/agent-tools.md, propose_plan).
@@ -42,6 +44,7 @@ pub fn plan(title: Option<String>, text: String) -> Ask {
         }],
         json: false,
         plan: Some(Plan { title, text }),
+        why: None,
     }
 }
 
@@ -63,7 +66,15 @@ pub struct Choice {
 
 /// `ask_user`'s arguments, in either shape; Err names the place that is wrong.
 pub fn parse(args: &Value) -> Result<Ask, String> {
-    match (&args["question"], &args["questions"]) {
+    let why = match &args["why"] {
+        Value::Null => None,
+        Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        Value::String(_) => {
+            return Err("why is blank: say why you ask, or leave it out.".into());
+        }
+        _ => return Err("\"why\" is a text".into()),
+    };
+    let ask = match (&args["question"], &args["questions"]) {
         (Value::Null, Value::Null) => {
             Err("ask_user needs \"questions\" (or \"question\", a string)".into())
         }
@@ -91,10 +102,12 @@ pub fn parse(args: &Value) -> Result<Ask, String> {
                 questions: vec![question],
                 json: false,
                 plan: None,
+                why: None,
             })
         }
         _ => Err("Give question or questions, not both.".into()),
-    }
+    }?;
+    Ok(Ask { why, ..ask })
 }
 
 fn questions_of(value: &Value) -> Result<Ask, String> {
@@ -152,6 +165,7 @@ fn questions_of(value: &Value) -> Result<Ask, String> {
         questions,
         json: true,
         plan: None,
+        why: None,
     })
 }
 
@@ -692,6 +706,27 @@ mod tests {
             } }),
             "no note when blank; a multiSelect with one pick is still a list"
         );
+    }
+
+    #[test]
+    fn why_is_kept_trimmed() {
+        let ask = parse(
+            &json!({ "question": "Ship it?", "options": ["Yes"], "why": "  Releasing 1.2. " }),
+        )
+        .unwrap();
+        assert_eq!(ask.why, Some("Releasing 1.2.".into()));
+        let ask =
+            parse(&json!({ "questions": [{ "question": "Ship it?" }], "why": "Now" })).unwrap();
+        assert_eq!(ask.why, Some("Now".into()), "in either shape");
+        assert_eq!(parse(&json!({ "question": "Ship it?" })).unwrap().why, None);
+    }
+
+    #[test]
+    fn a_blank_why_is_refused() {
+        let err = parse(&json!({ "question": "Ship it?", "why": "  " })).unwrap_err();
+        assert!(err.contains("why"), "{err}");
+        let err = parse(&json!({ "question": "Ship it?", "why": 3 })).unwrap_err();
+        assert!(err.contains("why"), "{err}");
     }
 
     #[test]

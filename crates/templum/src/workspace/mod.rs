@@ -26,6 +26,7 @@ mod git_ops;
 mod git_switch;
 mod git_sync;
 mod history;
+pub(crate) mod inbox;
 mod input;
 mod note_tabs;
 mod ops;
@@ -154,6 +155,9 @@ pub(crate) struct Handed {
     pub since: Instant,
     /// After this it is no longer awaited: its dot stops, and another task may be handed over.
     pub until: Instant,
+    /// The task as its sender wrote it, cut to `Handed::TEXT_MAX` characters (the inbox shows its
+    /// first lines as why the agent asks); empty for one made with `new`.
+    pub text: String,
     /// Its agent took it (`Submitted`, the first after it was typed): only now may a turn's end
     /// answer it.
     pub taken: bool,
@@ -172,6 +176,14 @@ pub(crate) struct Handed {
 }
 
 impl Handed {
+    /// The most characters of a task's text kept.
+    const TEXT_MAX: usize = 2000;
+
+    /// `task` as `text` keeps it.
+    pub(crate) fn text_of(task: &str) -> String {
+        task.chars().take(Self::TEXT_MAX).collect()
+    }
+
     /// Handed over by the terminal `by` now, awaited for `timeout`; not taken yet.
     pub(crate) fn new(by: &str, timeout: Duration) -> Self {
         let since = Instant::now();
@@ -180,6 +192,7 @@ impl Handed {
             by: by.to_string(),
             since,
             until: since + timeout,
+            text: String::new(),
             taken: false,
             behind: false,
             quiet: false,
@@ -1298,6 +1311,13 @@ pub struct Workspace {
     pub(crate) usage_open: bool,
     /// The Git popup (the sidebar's bottom button) is open, on the workspace shown's Git.
     pub(crate) git_open: bool,
+    /// The requests inbox (docs/specs/ask-inbox.md) is open, on the requests of the workspace
+    /// shown. Never together with the Git popup.
+    pub(crate) inbox_open: bool,
+    /// The key of the request the inbox has selected; none, or one it doesn't list: the first.
+    pub(crate) inbox_at: Option<u64>,
+    /// What holds the keyboard while the inbox has it.
+    pub(crate) inbox_focus: FocusHandle,
     /// The plan's limits as Claude Code's `/usage` last told them, by account (the agent's id
     /// for its own folder).
     pub(crate) claude_polled: HashMap<String, templum_usage::Limits>,
@@ -1725,6 +1745,9 @@ impl Workspace {
             watch: templum_usage::Watch::new(crate::notes::now()),
             usage_open: false,
             git_open: false,
+            inbox_open: false,
+            inbox_at: None,
+            inbox_focus: cx.focus_handle(),
             claude_polled: HashMap::new(),
             claude_asked: HashMap::new(),
             claude_queue: Default::default(),
