@@ -718,3 +718,208 @@ leaves the board as agents read it and puts the mark on the face, reopening and 
 a new card's Save draft is not a card and "Continue draft" reopens it; an agent's change to what the person left
 alone survives Done; Done on a deleted card closes without bringing it back; the draft round-trips `boards.json` and
 an older file without `drafts` loads. **Not seen in a window:** the question's look and the pencil mark.
+
+## Attachments (kanban card 152)
+
+*Designed; plan: [docs/plans/2026-10-24-card-attachments.md](../plans/2026-10-24-card-attachments.md).* The card, as
+the person wrote it: *"Sistema de anexar arquivos, imagens etc no card do kanban."* A card held only words: the
+screenshot of a bug, a spec's PDF or a log lived somewhere else, and an agent handed the card never saw them.
+
+### Intent
+
+A card carries the files its work needs. The person attaches them in the open card (a button, a drop, a pasted
+screenshot); Templum keeps its own copy, so the card still has the file when the original moves or is deleted; the
+card's face says how many it has; and an agent that reads the card gets each file's path and reads it there (Claude
+Code reads images).
+
+### Goals
+
+1. Any file can be attached, up to 50 MB each: images, PDFs, text, anything.
+2. Three ways in, all in the open card: **Attach** (the system's file picker, several files at once), files dropped
+   from the system onto the open card, and a pasted image (a screenshot) while the clipboard holds an image and no
+   text.
+3. The open card shows them: images as small thumbnails, other files as rows (icon, name, size); a click opens one
+   in the system's default app; each has a remove button. The card's face shows a paperclip and their count.
+4. They are part of the dialog's work: they reach the board at Done like the other fields, and Save draft keeps them.
+5. Nothing is left behind for good: what a discarded draft, a removed attachment or a deleted card leaves on disk is
+   deleted at the next start.
+6. `list_cards` with `card`, and `templum kanban list --card`, list each one's name, size and absolute path.
+
+### Non-goals
+
+- A tool for agents to add or remove attachments.
+- Attaching without opening the card (a drop on a card's face), or pasting files copied in a file manager (the
+  clipboard's list of files): a drop on the open card covers both.
+- Previews past a thumbnail: the system's app opens the file. Renaming or reordering attachments.
+- A folder attached whole: it is refused (zip it first).
+- One file shared by two cards: each card keeps its own copy.
+
+### Anti-goals
+
+- A file outside the card's folder opened, listed or deleted, whatever `boards.json` says.
+- A file deleted while something can still bring it back to a card: Ctrl+Z of a delete or of a Done, a kept draft.
+- Painting that waits on a copy: files are copied off the UI thread.
+- A new dependency: GPUI has the picker, the file drop, the clipboard's image, the image element and the system's
+  opener.
+
+### What a person sees
+
+- **The open card's Attachments section**, between Description and Checklist: the section header (lucide `paperclip`,
+  "Attachments", their number at the right) and, at its right end, **Attach** (`attach-files`, gpui-kit's small ghost
+  button with `plus`). Under it, its box (`card-attachments`):
+  - **Images** first, as thumbnails in a wrapping row (gap 8): 72 × 72, the image cropped to fill
+    (`ObjectFit::Cover`), rounded 6, a hairline border, a tooltip with the name and size. An image is a file whose
+    name ends in `png`, `jpg`, `jpeg`, `gif`, `webp` or `bmp`, in any case, of 10 MB or less (designer's call: GPUI
+    decodes it whole; a bigger one is a row). One that doesn't decode shows the `image` icon on `ui.card`.
+  - **Other files** under them, a row each (a checklist item's padding, rounding and hover): lucide `file` 14 in
+    `title_dim`, the name (13, truncated at its end), its size at the right (11, `title_dim`: "12 B", "47 KB",
+    "1.2 MB", 1 KB being 1024 bytes).
+  - **Remove:** an 18 × 18 ✕ (`attachment-remove-{name}`, tooltip "Remove the attachment"), shown while the pointer is
+    over the row, or at a thumbnail's top right on a `ui.surface` disc. It takes the attachment out of the work.
+  - **A click** on a row or a thumbnail (`attachment-{name}`) opens the file with the system's default app
+    (`cx.open_with_system`).
+  - **Copying:** a file whose copy hasn't ended shows as a row with its name and "Copying…" for its size
+    (`attachment-copying-{name}`), with no ✕ and no click.
+  - **None yet:** a dashed hairline box with `paperclip` and "Drop files here or paste a screenshot", as "No comments
+    yet" is drawn.
+  - **Files dragged over the open card:** its body shows a 2-wide accent ring until they leave or drop.
+- **The face:** lucide `paperclip` 12 and the count, gap 3 (`attachments-{block}-{card}`), in the meta row after the
+  description's icon and before the draft's pencil, when the card has any.
+- **A file refused** (over 50 MB, a folder, unreadable): a warning notification, one for the files of one action:
+  "Not attached: video.mov (over 50 MB), build (a folder)."
+- **No data folder** (a benchmark, a second Templum): no Attachments section; a drop or a paste attaches nothing.
+
+### Ways to attach
+
+- **Attach:** `cx.prompt_for_paths` for files, not folders, several at once (as `space_dialog.rs` asks for one).
+  Cancel attaches nothing; a picker that fails to open says so, as there. Files picked after the card closed (a
+  picker that isn't modal) attach nothing.
+- **A drop:** GPUI turns the platform's file drop into a drag of `ExternalPaths` (gpui-fast's `window.rs`), on Linux
+  (X11 and Wayland), macOS and Windows alike; the dialog's body takes it with `drag_over::<ExternalPaths>` and
+  `on_drop::<ExternalPaths>`.
+- **A paste:** Ctrl+V (Cmd+V) while a field of the open card has the keyboard (the title has it when the card opens).
+  When the clipboard holds an image (`ClipboardEntry::Image`) and no text that isn't blank, the image is attached as
+  `Pasted image.<its format's extension>` and the field gets nothing. With text on it, even beside an image (some
+  apps put both), the field pastes the text as it does today and nothing is attached. The dialog's body takes
+  gpui-kit's input `Paste` action in the capture phase, ahead of any field's own paste handler (the item field's).
+- All three end in one function: the copies run in the background, then each lands in the work.
+
+### Files
+
+- **The folder:** `<data folder>/attachments/<card id>/<name>`, one folder per card and the file under its own name,
+  so the system's app knows it by its extension and an agent reads a name that means something.
+- **A name taken** in the card's folder gets " (2)", " (3)"… before its extension (`report (2).pdf`,
+  `Makefile (2)`). It is taken on disk (`create_new`), so two copies at once never share one, and a removed file
+  still on disk keeps its name until a start deletes it (undoing its removal finds it).
+- **A new card** has no id until Done: its first attachment takes one from the boards' `next_id`, set in its draft's
+  `base` and `work` alike (so the id alone is no change), and Done gives the card that id instead of a new one. A new
+  card with no attachment is created as today.
+- **The copy** runs on the background executor: the size read first (over 50 MB is refused before a byte is copied),
+  the name taken, the bytes copied (`io::copy`), the file removed if the copy fails. A pasted image's bytes are
+  written the same way. Only then does the attachment join the work, with the size copied.
+- **`boards.json`:** a card may hold `"attachments": [{ "name": "screenshot.png", "size": 48213 }]`, in the order
+  attached. Missing is none and none writes no key; `version` stays 1 (an older Templum skips the key). An entry that
+  doesn't read is dropped, as a checklist item's is, and so is one whose `name` isn't a plain file name (empty, `.`,
+  `..`, or holding `/`, `\` or NUL): a hand edit can't make a click open, or a start delete, a file outside the
+  card's folder. A draft's `base` and `work` carry them like any field.
+- **What is deleted, and when** (designer's call): nothing when it leaves a card. At start, right after `boards.json`
+  is read cleanly (`Loaded::Saved`), on the UI thread before any dialog can open, Templum deletes in
+  `<data folder>/attachments/` every entry no card and no kept draft names: the folders of cards that are gone, the
+  files a card no longer lists, a copy a crash cut short. A link there is removed as a link, never followed. Ctrl+Z
+  lives only in a session, so at start nothing can bring them back; until then, a Ctrl+Z of a Delete card, of a
+  column's or a board's delete, or of a Done that removed an attachment finds the file where it was. When
+  `boards.json` was set aside, unreadable or missing, nothing is deleted.
+- **Going back to an older Templum** drops the attachments of the cards it saves (it keeps only the keys it knows, as
+  it does priorities and checklists), and the next start of this one deletes their files.
+
+### The dialog's work
+
+- Attaching and removing change the work (`Draft::work.attachments`), never the board: Done applies them with the
+  rest as one step of Ctrl+Z, Discard drops them, Save draft keeps them. A copy still running counts as a change, so
+  Esc asks as it does for any.
+- **Done applies what the person changed** (`Draft::merge_into`): attachments in `work` and not in `base` are added
+  to the card unless it has them, ones in `base` and not in `work` are removed, by name (unique in a card's folder);
+  the others stay as the card has them.
+- **A copy that ends after the dialog closed** (designer's call) goes where the dialog's work went: into the dialog
+  while it is still open on that work; else into the kept draft of that card (Save draft, or the window closing);
+  else, after Done, onto the card, as a step of Ctrl+Z of its own; after Discard or Delete card, nowhere (a start
+  deletes its file). Done never waits for a copy.
+
+### For agents
+
+- `list_cards`: a card's line adds "1 attachment" or "3 attachments" after its comments. With `card`, an
+  `attachments:` part after the checklist, a line each, the path whole (`<data folder>` written out), so the agent
+  reads the file there:
+
+  ```
+  attachments:
+    screenshot.png  47 KB  <data folder>/attachments/152/screenshot.png
+  ```
+
+- `templum kanban list --card <card>` prints the same answer: it is the same call. The Templum Agent's control server
+  shares the operation (`cards_of`, workspace/ops.rs), so it sees them too.
+- The tool's description says so: "…, checklist progress, comment and attachment counts. With card, that card whole:
+  its description, checklist items, attachments (each one's name, size and path) and comments too."
+- **Send to ▸** in a card's menu types its text and, after it, `Attachments:` and each path on its own line
+  (designer's call): a card handed to an agent that way brings its screenshot.
+
+### Calls made for card 152
+
+The person was asleep. The calls given with the card (any file, a copy per card in the data folder, a size limit,
+Attach with the system's picker, a drop, a pasted image with no text, thumbnails and rows, a click opens, a remove
+button, the face's paperclip, the work reaching the board at Done, nothing left behind, `list_cards` and the CLI with
+paths, no tool to add) are followed; these were the designer's, and each can be changed:
+
+1. **50 MB a file** (designer's call), 1 MB being 1024 × 1024 bytes as in the sizes shown: a screen recording fits,
+   and the data folder doesn't fill by accident.
+2. **The file's own name in its card's folder** (designer's call), " (2)" when taken, rather than an id: the system's
+   app and an agent both read it.
+3. **A new card takes its id at its first attachment** (designer's call), so its files are in their card's folder
+   from the start and nothing moves at Done.
+4. **Deleted at start, never before** (designer's call): one rule covers a discarded draft, a removed attachment, a
+   deleted card, column or board, and a crash, and it can't race Ctrl+Z, which lives only in a session. The price: a
+   discarded file takes disk space until the next start.
+5. **Copied in the background; Done never waits** (designer's call), and a copy that ends late follows the work.
+6. **Thumbnails up to 10 MB** (designer's call): bigger images are rows.
+7. **A pasted image is `Pasted image.png`** (designer's call), numbered when taken.
+8. **Send to ▸ carries the paths** (designer's call).
+9. **A folder is refused** (designer's call), named in the notification: copying a tree is another feature.
+10. **The section sits between Description and Checklist** (designer's call): it belongs with what the card says,
+    before what is done about it.
+
+### Constraints
+
+- CLAUDE.md: `board.rs` and the new `attachments.rs` stay pure and unit-tested; the dialog's behavior has headless
+  tests (crates/templum/src/workspace/tests/attachments.rs); its look is checked by hand and said so; minors go to
+  docs/minors.md; no new crate, trait or setting; docs ≤ 120 columns.
+- `boards.json` stays readable by older Templums (serde `default` and `skip_serializing_if`).
+- No new dependency (above).
+- The face is painting: `--bench-mixed` stays at p95 ≤ 16.7 ms.
+- Docs to update: this file's Status and Out of scope, connections.md (`list_cards`), ARCHITECTURE.md (the
+  attachments folder, `attachments.rs`).
+
+### Testing
+
+**Unit (`board`):** attachments read back equal, and a card with none writes no key; an entry named `../x`, `a/b` or
+`""` is dropped and the rest of the card loads; Done adds and removes what the person did and keeps the rest; a new
+card's reserved id is its id at Done; a card's text ends with its attachments' paths.
+**Unit (`attachments`):** a copy keeps the name, and takes a free one when it is taken, with or without an extension;
+a file over 50 MB and a folder are refused with why and leave nothing behind; a pasted image is written; sizes read
+"12 B", "47 KB", "1.2 MB"; the sweep removes what no card or draft names and keeps the rest, a new card's draft's
+folder among them.
+**Headless UI:** Attach and the picker's two files show a thumbnail and a row, Done puts both on the card and its face
+counts 2, one Ctrl+Z takes them off; ✕ changes nothing on the board before Done; a refused file notifies and attaches
+nothing; a copy ending after Done reaches the card, after Save draft the draft, after Discard nothing; a pasted image
+is attached and the title is unchanged, a paste with text pastes the text; a drop attaches; no data folder, no
+section; `list_cards` lists the attachments with paths that exist; a start deletes a deleted card's folder and keeps
+everything when `boards.json` was set aside or is missing; Ctrl+Z of a Delete card brings the card back with its file.
+**Manual (Hyprland, and once on macOS and Windows):** a drop from the file manager; a screenshot pasted (`grim -g
+"$(slurp)" - | wl-copy` on Hyprland); a click opening an image, a PDF and a text file; thumbnails in light and dark
+themes; a 9 MB image.
+
+### Left to the builder
+
+The section's sizes past those above; how a copy's result finds the dialog's work (`Rc::ptr_eq` on `card_work`, or a
+weak handle); where the refusals' notification is raised; the path of gpui-kit's input `Paste` action; whether a
+file drop reaches the dialog in the headless harness (a card's drop doesn't: [minors.md](../minors.md), Kanban). If it
+doesn't, the test calls the drop's function, the drop is checked by hand, and a minor says so.
