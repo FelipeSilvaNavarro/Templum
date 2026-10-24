@@ -339,6 +339,13 @@ fn the_templum_agent_section_edits_its_keys(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         window.click("settings-tab-templum-agent", cx);
         window.render_frame(cx);
+        // Without Claude Code installed (CI), the rows run taller and the pill is below the fold.
+        window.scroll(
+            "settings-scroll",
+            ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+            cx,
+        );
+        window.render_frame(cx);
         window.click("field-templum_agent.pill", cx);
         window.render_frame(cx);
         window.render_frame(cx);
