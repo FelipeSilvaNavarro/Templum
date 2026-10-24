@@ -1547,11 +1547,14 @@ fn in_worktree(
     (worker, them, repo.join(".worktrees").join(name))
 }
 
-/// The balloon of block `mine` drawn, long enough ago for presses to count; then its yes (allow)
-/// or its no (deny) pressed.
-fn press_balloon(handle: AnyWindowHandle, cx: &mut TestAppContext, mine: BlockId, what: &str) {
-    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
-        .unwrap();
+/// The inbox opened and drawn, long enough ago for presses to count; then the part `what` of the
+/// request of block `mine` (its yes, allow, or its no, deny) pressed.
+fn press_in_inbox(handle: AnyWindowHandle, cx: &mut TestAppContext, mine: BlockId, what: &str) {
+    cx.update_window(handle, |_, window, cx| {
+        inbox_open(window, cx);
+        window.render_frame(cx)
+    })
+    .unwrap();
     after(cx, 600);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
@@ -1611,13 +1614,13 @@ fn merge_worktree_asks_the_person_then_merges_and_remove_worktree_removes_it(
     );
     assert!(answers.try_recv().is_err(), "it waits for the person");
     let line = ws.read_with(cx, |ws, cx| {
-        ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)
+        ws.allow_line(ws.asking(&terminal).unwrap().0, cx)
     });
     assert!(
         line.ends_with(" wants to merge w (1 commits) into main."),
         "{line}"
     );
-    press_balloon(handle, cx, mine, "allow");
+    press_in_inbox(handle, cx, mine, "allow");
     let (failed, text) = answer_soon(cx, &answers);
     assert_eq!(
         (failed, text.as_str()),
@@ -1710,14 +1713,14 @@ fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
         remove(true),
     );
     assert_eq!(
-        ws.read_with(cx, |ws, _| ws.balloon(&terminal).map(|(_, n)| n)),
+        ws.read_with(cx, |ws, _| ws.asking(&terminal).map(|(_, n)| n)),
         Some(2)
     );
-    press_balloon(handle, cx, mine, "q0-option-0");
-    press_balloon(handle, cx, mine, "send");
+    press_in_inbox(handle, cx, mine, "q0-option-0");
+    press_in_inbox(handle, cx, mine, "send");
     assert_eq!(answer_soon(cx, &question), (false, "Yes".into()));
     let line = ws.read_with(cx, |ws, cx| {
-        ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)
+        ws.allow_line(ws.asking(&terminal).unwrap().0, cx)
     });
     assert!(
         line.ends_with(
@@ -1725,7 +1728,7 @@ fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
         ),
         "{line}"
     );
-    press_balloon(handle, cx, mine, "deny");
+    press_in_inbox(handle, cx, mine, "deny");
     assert_eq!(
         answer_soon(cx, &answers),
         (true, "The person said no.".into())
@@ -1740,7 +1743,7 @@ fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
         "remove_worktree",
         remove(true),
     );
-    press_balloon(handle, cx, mine, "allow");
+    press_in_inbox(handle, cx, mine, "allow");
     assert_eq!(
         answer_soon(cx, &answers),
         (false, "Removed the worktree d and its branch.".into())
@@ -1765,7 +1768,7 @@ fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
     git_run(&root, &["commit", "-qam", "ours"]);
     let merge = json!({ "worktree": "c", "folder": root });
     let answers = call_later(handle, &ws, cx, &terminal, 8, "merge_worktree", merge);
-    press_balloon(handle, cx, mine, "allow");
+    press_in_inbox(handle, cx, mine, "allow");
     assert_eq!(
         answer_soon(cx, &answers),
         (
@@ -1862,7 +1865,7 @@ fn a_worktree_changed_since_the_question_isnt_deleted(cx: &mut TestAppContext) {
     let answers = call_later(handle, &ws, cx, &terminal, 5, "remove_worktree", remove);
     // More work while the person reads the question.
     std::fs::write(wt.join("c.txt"), "more work\n").unwrap();
-    press_balloon(handle, cx, mine, "allow");
+    press_in_inbox(handle, cx, mine, "allow");
     assert_eq!(
         answer_soon(cx, &answers),
         (
@@ -1898,7 +1901,7 @@ fn a_merge_allowed_into_a_branch_isnt_made_into_another(cx: &mut TestAppContext)
     let answers = call_later(handle, &ws, cx, &terminal, 5, "merge_worktree", merge);
     // The person checks out another branch while they read the question.
     git_run(&root, &["checkout", "-q", "-b", "other"]);
-    press_balloon(handle, cx, mine, "allow");
+    press_in_inbox(handle, cx, mine, "allow");
     assert_eq!(
         answer_soon(cx, &answers),
         (
@@ -1993,7 +1996,7 @@ fn remove_worktree_names_the_ignored_files_it_would_delete(cx: &mut TestAppConte
     let discard = json!({ "worktree": "e", "folder": root, "discard": true });
     let answers = call_later(handle, &ws, cx, &terminal, 5, "remove_worktree", discard);
     let line = ws.read_with(cx, |ws, cx| {
-        ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)
+        ws.allow_line(ws.asking(&terminal).unwrap().0, cx)
     });
     assert!(
         line.ends_with(
@@ -2002,7 +2005,7 @@ fn remove_worktree_names_the_ignored_files_it_would_delete(cx: &mut TestAppConte
         ),
         "{line}"
     );
-    press_balloon(handle, cx, mine, "allow");
+    press_in_inbox(handle, cx, mine, "allow");
     assert_eq!(
         answer_soon(cx, &answers),
         (false, "Removed the worktree e and its branch.".into())

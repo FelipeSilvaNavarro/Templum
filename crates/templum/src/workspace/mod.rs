@@ -51,7 +51,7 @@ mod worktrees;
 pub(crate) use bus::templum_in;
 pub(crate) use find::FindBar;
 pub(crate) use git_message::TryIt;
-pub(crate) use waits::{Wait, Waiting};
+pub(crate) use waits::{Approved, Wait, Waiting};
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
@@ -1318,6 +1318,9 @@ pub struct Workspace {
     pub(crate) inbox_at: Option<u64>,
     /// What holds the keyboard while the inbox has it.
     pub(crate) inbox_focus: FocusHandle,
+    /// A request ended while the inbox was open: the next frame gives the inbox the keyboard back
+    /// if one of its fields (which ended with it) had it.
+    inbox_refocus: bool,
     /// The plan's limits as Claude Code's `/usage` last told them, by account (the agent's id
     /// for its own folder).
     pub(crate) claude_polled: HashMap<String, templum_usage::Limits>,
@@ -1748,6 +1751,7 @@ impl Workspace {
             inbox_open: false,
             inbox_at: None,
             inbox_focus: cx.focus_handle(),
+            inbox_refocus: false,
             claude_polled: HashMap::new(),
             claude_asked: HashMap::new(),
             claude_queue: Default::default(),

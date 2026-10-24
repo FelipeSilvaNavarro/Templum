@@ -18,6 +18,7 @@ mod editor;
 mod gallery;
 mod git_block;
 mod grid;
+mod inbox;
 mod ink;
 mod kanban;
 mod keys;

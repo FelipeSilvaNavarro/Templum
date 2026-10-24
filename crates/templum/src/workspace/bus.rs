@@ -553,7 +553,7 @@ impl Workspace {
 
     /// The block whose terminal is `terminal` (its `TEMPLUM_TERMINAL`): its workspace's id and
     /// its id. Looked up at each call: a block moved to another workspace keeps its terminal.
-    pub(super) fn caller(&self, terminal: &str) -> Option<(String, BlockId)> {
+    pub(crate) fn caller(&self, terminal: &str) -> Option<(String, BlockId)> {
         self.spaces().find_map(|space| {
             space
                 .terminals()
@@ -725,7 +725,6 @@ impl Workspace {
                     ask,
                     others: Vec::new(),
                     note: None,
-                    away: false,
                     stopped: false,
                     scroll: Default::default(),
                 };
@@ -738,7 +737,6 @@ impl Workspace {
                     ask,
                     others: Vec::new(),
                     note: None,
-                    away: false,
                     stopped: false,
                     scroll: Default::default(),
                 };

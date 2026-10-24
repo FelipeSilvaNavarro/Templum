@@ -1761,6 +1761,15 @@ those of `development` at f8c3ec9.
   agent may still take them for its person's text. Claude Code's suggested next prompt, shown after a turn, wasn't
   probed (it takes a paid turn): only its placeholder and Codex's were. Fix: probe a long suggestion; if it wraps,
   leave out the faint rows right under it too.
+- [ ] **A request's age in the inbox stays as it was drawn.** `inbox::list` (`crates/templum/src/inbox.rs`) tells "2m"
+  from the clock when it draws, and nothing redraws a window at rest, so a row says "now" until something else
+  redraws it (a click, an agent's output). Fix: while the inbox is open, a timer that notifies once a minute.
+- [ ] **A text selected in the inbox loses the keyboard when any wait ends.** `inbox_keeps_keys`
+  (`crates/templum/src/workspace/inbox.rs`) gives the keyboard back to the inbox when something inside the popup that
+  is neither the inbox nor a live request's field has it; a plan's Markdown (a selectable gpui-kit `TextView`) is such
+  a thing, so a line selected to copy loses the keyboard when another agent's `wait_for` ends, and Ctrl+C copies
+  nothing. Fix: refocus only on the focus handles of the fields that left (`answer`/`closed`/`cancel` hold the wait:
+  make `inbox_refocus` a list of its fields' handles), with a test.
 
 ## Placing new blocks
 

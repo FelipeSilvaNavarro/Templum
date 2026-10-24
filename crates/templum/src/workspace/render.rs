@@ -729,6 +729,18 @@ impl Render for Workspace {
                 )
                 .child(popup)
         });
+        // The requests inbox: where the Git popup sits (they are never open together), with no
+        // backdrop: a press on the canvas reaches it, and the inbox stays open beside it.
+        self.inbox_keeps_keys(window, cx);
+        let inbox = self.inbox_open.then(|| {
+            let Size { w, h } = self.git_popup_size();
+            let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
+            div()
+                .absolute()
+                .left(px(left))
+                .bottom(px(GIT_GAP))
+                .child(crate::inbox::popup(self, w, h, cx))
+        });
         // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
         let open = self.templum_agent.open;
         let full = open && self.templum_agent.full;
@@ -811,6 +823,7 @@ impl Render for Workspace {
             // The Git popup over the Templum agent.
             .children(agent)
             .children(git)
+            .children(inbox)
             // Under what the title bar opens: the settings, the theme picker, the screen.
             .children(welcome)
             .children(panel)

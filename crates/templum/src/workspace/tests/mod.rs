@@ -129,7 +129,26 @@ fn open_welcomed(
     // The startup block at rest: tests that measure elements must not depend on how far its
     // pop-in got (new_terminals_pop_in_then_settle checks the animation itself).
     opened.1.update(cx, |ws, _| ws.space.appearing.clear());
+    OPENED.with(|ws| *ws.borrow_mut() = Some(opened.1.downgrade()));
     opened
+}
+
+thread_local! {
+    /// The workspace of the window this test opened last (each test runs on a thread of its own),
+    /// for helpers that are given the window alone; weak, as the test's own handle keeps it alive.
+    static OPENED: std::cell::RefCell<Option<gpui_kit::WeakEntity<Workspace>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The inbox, opened the way the person does (it never opens by itself), if it isn't.
+fn inbox_open(window: &mut Window, cx: &mut gpui_kit::App) {
+    let ws = OPENED
+        .with(|ws| ws.borrow().as_ref().and_then(|ws| ws.upgrade()))
+        .expect("a window was opened");
+    ws.update(cx, |ws, cx| {
+        if !ws.inbox_open {
+            ws.open_inbox(None, window, cx)
+        }
+    });
 }
 
 fn click(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32), count: usize) {

@@ -1470,7 +1470,7 @@ fn a_balloon_in_a_task_isnt_told(cx: &mut TestAppContext) {
     after(cx, 300);
     let told = notices(&ws, cx);
     assert!(told.is_empty(), "{told:?}");
-    let shown = ws.read_with(cx, |ws, _| ws.balloon(&worker).is_some());
+    let shown = ws.read_with(cx, |ws, _| ws.asking(&worker).is_some());
     assert!(shown, "the person sees it");
 }
 
@@ -2538,7 +2538,7 @@ fn a_wait_for_times_out_goes_with_its_block_and_shows_no_balloon(cx: &mut TestAp
         json!({ "block": them, "event": "attention", "timeout": 1 }),
     );
     assert!(
-        ws.read_with(cx, |ws, _| ws.balloon(&terminal).is_none()),
+        ws.read_with(cx, |ws, _| ws.asking(&terminal).is_none()),
         "a wait asks the person nothing"
     );
     after(cx, 1000);

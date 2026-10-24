@@ -110,16 +110,12 @@ pub(crate) fn render(
         Body::Terminal(_) => templum_canvas::level(ws.cell.font_size, ws.space.rest),
         _ => templum_canvas::level(font, ws.space.rest),
     };
-    // The block worked in: focused, holding the keyboard, or its balloon's field holding it.
-    let typing = live
-        && matches!(body, Body::Terminal(pane)
-            if ws.balloon_typing(window, cx) == Some(pane.term.id()));
-    let level =
-        if level != Level::Full && (focused || typing || (live && body.has_focus(window, cx))) {
-            Level::Full
-        } else {
-            level
-        };
+    // The block worked in: focused, or holding the keyboard.
+    let level = if level != Level::Full && (focused || (live && body.has_focus(window, cx))) {
+        Level::Full
+    } else {
+        level
+    };
     let hovered = live && ws.space.hovered == Some(id);
     let ui = ws.ui;
     // 0 at rest, 1 hovered; eased both ways.
@@ -574,11 +570,9 @@ pub(crate) fn render(
                 .child(fade_in(close, ("close-fade", n)))
         });
 
-    // Both are drawn at the Full level only.
+    // Drawn at the Full level only.
     let covered = match body {
-        Body::Terminal(pane) => {
-            level == Level::Full && (ws.balloon(pane.term.id()).is_some() || pane.find.is_some())
-        }
+        Body::Terminal(pane) => level == Level::Full && pane.find.is_some(),
         _ => false,
     };
     let terminal = matches!(body, Body::Terminal(_));
@@ -596,8 +590,8 @@ pub(crate) fn render(
         // takes it out. A far label over the body's top is the title: there it is the title's press
         // (a click keeps the selection), taken here because the body's content, a kanban's or a
         // checklist's, hears presses ahead of the label. Left to the block's own handlers: the
-        // resize zones over the body, a terminal's balloon and find field (they're drawn over it,
-        // and don't occlude it), and a terminal's Ctrl+click (a link opens).
+        // resize zones over the body and a terminal's find field (drawn over it, and not occluding
+        // it; the notice of a request does occlude it), and a terminal's Ctrl+click (a link opens).
         .when(
             live && !tiled && !covered && ws.space.selected.contains(&id),
             |el| {
@@ -821,10 +815,10 @@ pub(crate) fn render(
         .when(hovered && !tiled, |el| {
             el.child(fade_in(handle, ("handle-fade", n)))
         })
-        // What its agent asks the person, a dialog centered on the terminal, up close only.
+        // That its agent waits for an answer, up close only; the inbox has the request.
         .children(match body {
             Body::Terminal(pane) if live && level == Level::Full => {
-                crate::balloon::render(ws, id, pane.term.id(), z, cx)
+                crate::inbox::notice(ws, id, pane.term.id(), z, cx)
             }
             _ => None,
         })
@@ -1107,13 +1101,13 @@ fn shadow(color: Hsla, focused: bool, lift: f32, z: f32) -> BoxShadow {
 
 /// The dot before a terminal's title, and what it says. News first: yellow when it asked for
 /// attention, red or green when a long command ended. Then a question its agent asks the person
-/// (yellow; the balloon shows it up close). Then an agent's turn (its hooks) before the shell's:
+/// (yellow; the notice on the block says so up close). Then an agent's turn (its hooks) before the shell's:
 /// yellow while it waits for the person, the accent while it works. Then a command running, then
 /// a last command that failed. Nothing when the shell doesn't say (no shell integration). Its
 /// text names the block that pressed keys in it, for ANSWERED_FOR.
 pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedString)> {
     let ansi = |i: usize| hsla(ws.theme.palette.ansi[i], 1.0);
-    let (color, text) = match (&pane.alert, ws.balloon(pane.term.id())) {
+    let (color, text) = match (&pane.alert, ws.asking(pane.term.id())) {
         // A request waits: its own alert ("Asks you: …") or a bell's says less than this.
         (None | Some(Alert::Attention(_)), Some((wait, _))) => {
             (ansi(3), format!("Waiting for you: {}", wait.summary()))

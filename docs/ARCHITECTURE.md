@@ -130,7 +130,7 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   `git_message.rs` (commit messages from an agent) (the workspace's Git popup), `usage.rs` (the agents' usage read after each
   snapshot, the limits' notifications, what the Claude Code and Codex Templum opens are given), `bus.rs` (the bus's
   messages: the caller found by its `TEMPLUM_TERMINAL`, the tools, the agents' hook events), `waits.rs` (tool calls
-  that wait: a question, a request to connect, an agent's turn; their deadlines, cancels and the balloon's answers),
+  that wait: a question, a request to connect, an agent's turn; their deadlines, cancels and the inbox's answers),
   `delegate.rs` (tasks handed between agents: typing them, their answers, `reply`, `wait_for_idle`, `send_keys` and
   `interrupt`), `spawn.rs` (`spawn_agent`: an agent beside the caller, its worktree, its model and effort, its prompt
   once it is ready, `close_block`), `subagents.rs` (a Claude Code subagent's block: a viewer fed its transcript off the UI
@@ -169,7 +169,10 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 - `usage.rs`: the title bar's usage meter, its popover and a terminal's usage chip.
 - `wires.rs`: painting the wires in the layer under the blocks, with the dot grid, and the dot that travels along one
   while a task is handed over ([specs/connections.md](specs/connections.md#wires)).
-- `balloon.rs`: the balloon on a terminal block whose agent asks the person something
+- `inbox.rs`: the requests inbox, one popup per workspace for what agents ask the person, and the notice on a
+  terminal whose agent waits for an answer ([specs/ask-inbox.md](specs/ask-inbox.md));
+  `workspace/inbox.rs` is its model.
+- `balloon.rs`: the request itself as the inbox draws it: a question's dialog, a plan to approve, a yes/no request
   ([specs/connections.md](specs/connections.md#requests-from-agents)).
 - `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;
   `workspace/update.rs` checks GitHub at start and every day, downloads through `templum-update`, tells the news,

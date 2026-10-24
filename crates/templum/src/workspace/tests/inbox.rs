@@ -6,7 +6,11 @@ use std::time::Duration;
 use serde_json::json;
 use templum_mcp::Reply;
 
-use super::bus::{call_later, me};
+use std::sync::mpsc::{Receiver, TryRecvError};
+
+use gpui_kit::{ElementId, Focusable as _};
+
+use super::bus::{after, answered, bus_note, call_later, me};
 use super::*;
 use crate::board::Assignee;
 use crate::workspace::inbox::Why;
@@ -457,4 +461,639 @@ fn a_request_keeps_when_it_arrived(cx: &mut TestAppContext) {
         cx.background_executor().now() - wait.since
     });
     assert_eq!(waited, Duration::from_secs(90));
+}
+
+fn name(text: String) -> ElementId {
+    ElementId::Name(text.into())
+}
+
+/// The inbox open and drawn, long enough ago for presses and keys to count (`TOO_SOON`).
+fn drawn_inbox(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            if !ws.inbox_open {
+                ws.open_inbox(None, window, cx)
+            }
+        });
+        window.render_frame(cx)
+    })
+    .unwrap();
+    after(cx, 600);
+}
+
+/// Clicks the element `id`, the window drawn before and after.
+fn click_id(handle: AnyWindowHandle, cx: &mut TestAppContext, id: ElementId) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(id, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+fn drawn(handle: AnyWindowHandle, cx: &mut TestAppContext, id: ElementId) -> bool {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).is_some()
+    })
+    .unwrap()
+}
+
+fn part(n: BlockId, what: &str) -> ElementId {
+    crate::balloon::part(n.0 as usize, what)
+}
+
+fn asks(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    terminal: &str,
+    conn: u64,
+) -> Receiver<String> {
+    let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
+    call_later(handle, ws, cx, terminal, conn, "ask_user", asked)
+}
+
+#[test]
+fn a_wait_is_told_in_minutes_and_hours() {
+    use crate::inbox::age;
+    let secs = Duration::from_secs;
+    assert_eq!(age(secs(0)), "now");
+    assert_eq!(age(secs(59)), "now");
+    assert_eq!(age(secs(60)), "1m");
+    assert_eq!(age(secs(125)), "2m");
+    assert_eq!(age(secs(3600)), "1h");
+    assert_eq!(age(secs(90_000)), "1d");
+}
+
+#[gpui_kit::test]
+fn a_question_is_answered_from_the_inbox(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let answers = asks(handle, &ws, cx, &terminal, 1);
+    drawn_inbox(handle, &ws, cx);
+    click_id(handle, cx, part(a, "q0-option-1"));
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "Send answers");
+    click_id(handle, cx, part(a, "send"));
+    assert_eq!(answered(&answers), (false, "No".to_string()));
+    ws.read_with(cx, |ws, _| assert!(ws.waits.is_empty()));
+}
+
+#[gpui_kit::test]
+fn connect_is_allowed_from_the_inbox(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let (k, n) = ws.read_with(cx, |ws, _| {
+        (ws.space.uids[&kanban].clone(), ws.space.uids[&note].clone())
+    });
+    let allow = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "connect",
+        json!({ "block": k }),
+    );
+    let deny = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "connect",
+        json!({ "block": n }),
+    );
+    drawn_inbox(handle, &ws, cx);
+    click_id(handle, cx, part(a, "allow"));
+    assert_eq!(answered(&allow), (false, format!("Connected to {k}.")));
+    ws.read_with(cx, |ws, _| assert!(ws.space.wired(a, kanban)));
+    // The next request is selected: Deny it.
+    after(cx, 600);
+    click_id(handle, cx, part(a, "deny"));
+    let (failed, text) = answered(&deny);
+    assert!(failed && text.contains("didn't connect you"), "{text}");
+    ws.read_with(cx, |ws, _| assert!(!ws.space.wired(a, note)));
+}
+
+#[gpui_kit::test]
+fn go_to_terminal_reveals_the_block_and_closes_the_inbox(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    ws.update(cx, |ws, _| ws.space.focused = Some(kanban));
+    drawn_inbox(handle, &ws, cx);
+    click_id(handle, cx, name("inbox-go".into()));
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.inbox_open, "closed");
+        assert_eq!(ws.space.focused, Some(a), "revealed");
+        assert_eq!(ws.waits.len(), 1, "the request waits");
+    });
+}
+
+#[gpui_kit::test]
+fn the_last_answer_shows_nothing_waits(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    drawn_inbox(handle, &ws, cx);
+    assert!(!drawn(handle, cx, name("inbox-empty".into())));
+    let key = ws.read_with(cx, |ws, _| ws.waits[0].key);
+    ws.update(cx, |ws, cx| ws.answer(key, Reply::ok("Yes"), cx));
+    assert!(drawn(handle, cx, name("inbox-empty".into())));
+    ws.read_with(cx, |ws, _| assert!(ws.inbox_open, "still open"));
+}
+
+#[gpui_kit::test]
+fn why_is_shown_when_something_is_known(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let _plain = asks(handle, &ws, cx, &terminal, 1);
+    drawn_inbox(handle, &ws, cx);
+    assert!(
+        !drawn(handle, cx, name("inbox-why".into())),
+        "nothing known"
+    );
+    let said = json!({ "question": "Which?", "options": ["A"], "why": "Need the format" });
+    let _said = call_later(handle, &ws, cx, &terminal, 2, "ask_user", said);
+    let second = ws.read_with(cx, |ws, _| ws.waits[1].key);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.select_request(second, window, cx))
+    })
+    .unwrap();
+    assert!(
+        drawn(handle, cx, name("inbox-why".into())),
+        "the agent's words"
+    );
+}
+
+/// A question whose client stopped waiting says so in the inbox, and its answer is still typed
+/// into its terminal (Review Focus 3).
+#[gpui_kit::test]
+fn a_stopped_question_keeps_its_banner_in_the_inbox(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(a).unwrap().seen.agent = Some("claude".into())
+    });
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    drawn_inbox(handle, &ws, cx);
+    assert!(!drawn(handle, cx, part(a, "stopped")));
+    let cancel = json!({ "requestId": 1, "reason": "The person pressed Esc" });
+    bus_note(handle, &ws, cx, 1, "notifications/cancelled", cancel);
+    assert!(drawn(handle, cx, part(a, "stopped")), "the banner");
+    click_id(handle, cx, part(a, "q0-option-0"));
+    click_id(handle, cx, part(a, "send"));
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.waits.is_empty());
+        assert_eq!(ws.notices.len(), 1, "typed into its terminal");
+        assert!(ws.notices[0].text.contains("Yes"), "{}", ws.notices[0].text);
+    });
+}
+
+/// The inbox has no backdrop: a click on a terminal reaches it, gives it the keyboard, and the
+/// inbox stays open beside it.
+#[gpui_kit::test]
+fn a_press_outside_the_inbox_reaches_the_canvas_and_keeps_it_open(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    // Right of the popup, which sits at the canvas's bottom left.
+    let b = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open(Rect::new(900.0, 60.0, 300.0, 300.0), window, cx);
+                ws.space.appearing.clear();
+                ws.space.canvas.top().unwrap()
+            })
+        })
+        .unwrap();
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    drawn_inbox(handle, &ws, cx);
+    let has_keys = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.read(cx).inbox_keys(window, cx).is_some()
+        })
+        .unwrap()
+    };
+    assert!(has_keys(cx), "opened with the keyboard");
+    let at = at(&ws, cx, (1050.0, 210.0));
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, at, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.focused, Some(b), "the terminal was clicked");
+        assert!(ws.inbox_open, "the inbox stays");
+    });
+    assert!(!has_keys(cx), "the keyboard went where it was clicked");
+}
+
+#[gpui_kit::test]
+fn a_terminal_shows_a_notice_not_a_balloon(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let notice = name(format!("waiting-notice-{}", a.0));
+    assert!(!drawn(handle, cx, notice.clone()), "nothing asked");
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    assert!(drawn(handle, cx, notice), "the notice");
+    for what in ["waiting", "q0-option-0", "send", "dismiss"] {
+        assert!(!drawn(handle, cx, part(a, what)), "no balloon: {what}");
+    }
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.inbox_open, "nothing opened by itself")
+    });
+    assert_eq!(
+        crate::inbox::notice_text(1),
+        "Waiting for your answer",
+        "what it reads"
+    );
+}
+
+/// Two requests of one terminal are both listed, its notice says 2, and a click on it opens the
+/// inbox at the oldest (Review Focus 5).
+#[gpui_kit::test]
+fn two_requests_of_one_terminal_count_on_its_notice(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let _one = asks(handle, &ws, cx, &terminal, 1);
+    let _two = asks(handle, &ws, cx, &terminal, 2);
+    let keys = listed(&ws, cx);
+    assert_eq!(keys.len(), 2);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.asking(&terminal).map(|(w, count)| (w.key, count)),
+            Some((keys[0], 2))
+        );
+    });
+    assert_eq!(
+        crate::inbox::notice_text(2),
+        "Waiting for your answer · 2",
+        "what it reads"
+    );
+    // The inbox was left on the newer one; the notice opens it at the older.
+    open_inbox(handle, &ws, cx, Some(keys[1]));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close_inbox(window, cx))
+    })
+    .unwrap();
+    click_id(handle, cx, name(format!("waiting-notice-{}", a.0)));
+    ws.read_with(cx, |ws, _| assert!(ws.inbox_open));
+    assert_eq!(selected(&ws, cx), Some(keys[0]));
+}
+
+/// What the terminal of block `id` shows, once its program had time to echo.
+#[cfg(unix)]
+fn screen(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> String {
+    std::thread::sleep(Duration::from_millis(300));
+    ws.read_with(cx, |ws, _| {
+        let mut snap = templum_terminal::Snapshot::default();
+        snap.refresh(
+            ws.space.terminal(id).unwrap().term.shared(),
+            &ws.theme.palette,
+        );
+        snap.text()
+    })
+}
+
+/// A request arriving while the person types in a terminal leaves the keyboard where it is: the
+/// inbox closed, and open without the keyboard (Review Focus 1).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_request_arriving_never_takes_the_keyboard(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(a, window, cx));
+        window.input("one", cx);
+    })
+    .unwrap();
+    assert!(screen(&ws, cx, a).contains("one"));
+    // Closed.
+    let _first = asks(handle, &ws, cx, &terminal, 1);
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, cx| window.input("two", cx))
+        .unwrap();
+    assert!(
+        screen(&ws, cx, a).contains("onetwo"),
+        "typed on: {}",
+        screen(&ws, cx, a)
+    );
+    // Open, but the keyboard is the terminal's again after a click on it.
+    open_inbox(handle, &ws, cx, None);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(a, window, cx));
+    })
+    .unwrap();
+    let _second = asks(handle, &ws, cx, &terminal, 2);
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, cx| window.input("three", cx))
+        .unwrap();
+    assert!(
+        screen(&ws, cx, a).contains("onetwothree"),
+        "{}",
+        screen(&ws, cx, a)
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.waits.len(), 2, "nothing was answered")
+    });
+}
+
+#[gpui_kit::test]
+fn the_inbox_keys_answer_the_selected_request(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let first = asks(handle, &ws, cx, &terminal, 1);
+    let second = asks(handle, &ws, cx, &terminal, 2);
+    let keys = listed(&ws, cx);
+    drawn_inbox(handle, &ws, cx);
+    let press = |cx: &mut TestAppContext, keys: &[&str]| {
+        cx.update_window(handle, |_, window, cx| {
+            for key in keys {
+                window.press(key, cx);
+                window.render_frame(cx);
+            }
+        })
+        .unwrap();
+    };
+    // ↓ highlights Yes, Space picks it, Enter sends.
+    press(cx, &["down", "space", "enter"]);
+    assert_eq!(answered(&first), (false, "Yes".to_string()));
+    assert_eq!(second.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(selected(&ws, cx), Some(keys[1]), "the next one");
+    // Alt+↓ and Alt+↑ move in the list; Esc closes the inbox.
+    let third = asks(handle, &ws, cx, &terminal, 3);
+    let keys = listed(&ws, cx);
+    press(cx, &["alt-down"]);
+    assert_eq!(selected(&ws, cx), Some(keys[1]), "the last: no further");
+    press(cx, &["alt-up"]);
+    assert_eq!(selected(&ws, cx), Some(keys[0]));
+    press(cx, &["alt-down"]);
+    assert_eq!(selected(&ws, cx), Some(keys[1]));
+    press(cx, &["escape"]);
+    ws.read_with(cx, |ws, _| assert!(!ws.inbox_open));
+    assert_eq!(
+        third.try_recv(),
+        Err(TryRecvError::Empty),
+        "nothing answered"
+    );
+}
+
+/// Esc in a field of the request closes the inbox too.
+#[gpui_kit::test]
+fn esc_in_a_field_closes_the_inbox(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let free = json!({ "questions": [{ "question": "Why?" }] });
+    let _answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", free);
+    drawn_inbox(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.press("tab", cx);
+        window.render_frame(cx);
+        let field = match &ws.read(cx).waits[0].what {
+            Waiting::Question { others, .. } => others[0].0.clone(),
+            _ => panic!("a question"),
+        };
+        assert!(
+            field.read(cx).focus_handle(cx).is_focused(window),
+            "the field has the keyboard"
+        );
+        window.press("escape", cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert!(!ws.inbox_open));
+}
+
+/// The theme picker takes no focus: with the inbox holding the keyboard, its keys are the
+/// picker's, and the request waits.
+#[gpui_kit::test]
+fn the_theme_pickers_keys_are_its_own_while_the_inbox_has_the_keyboard(cx: &mut TestAppContext) {
+    let config = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(config.path().to_path_buf()));
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let answers = asks(handle, &ws, cx, &terminal, 1);
+    drawn_inbox(handle, &ws, cx);
+    let theme = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.theme.name.clone());
+    let before = theme(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.press(PICKER, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.picker.is_some(), "the picker opened")
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.press("down", cx);
+        window.press("down", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    assert_ne!(theme(cx), before, "the theme moved");
+    ws.read_with(cx, |ws, _| assert!(ws.picker.is_none(), "chosen"));
+    assert_eq!(
+        answers.try_recv(),
+        Err(TryRecvError::Empty),
+        "the question waits"
+    );
+    ws.read_with(cx, |ws, _| match &ws.waits[0].what {
+        Waiting::Question { form, .. } => assert_eq!(form.highlight, None),
+        _ => panic!("a question"),
+    });
+}
+
+/// An editor's commands are nothing in the inbox: Ctrl+W doesn't close the tab of an editor on the
+/// canvas.
+#[gpui_kit::test]
+fn an_editors_commands_are_nothing_while_the_inbox_has_the_keyboard(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let (terminal, _) = me(&ws, cx, first);
+    let editor = open_editor(handle, &ws, cx, dir.path());
+    click_file(handle, 0, cx);
+    let tabs = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.editor(editor).unwrap().tabs.len())
+    };
+    assert_eq!(tabs(cx), 1);
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    drawn_inbox(handle, &ws, cx);
+    ws.read_with(cx, |ws, _| assert!(ws.inbox_open));
+    cx.update_window(handle, |_, window, cx| window.press("ctrl-w", cx))
+        .unwrap();
+    assert_eq!(tabs(cx), 1, "the editor's tab stays");
+}
+
+/// Dragging the body of a selected terminal that asks moves the group, as for any block; a click
+/// on its notice opens the inbox and neither focuses nor selects the terminal.
+#[gpui_kit::test]
+fn a_selected_asking_terminal_moves_the_group_and_its_notice_only_opens_the_inbox(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    ws.update(cx, |ws, _| {
+        ws.space.focused = None;
+        ws.space.selected = vec![kanban, a];
+    });
+    frame(handle, cx);
+    let rects = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            [kanban, a].map(|id| ws.space.canvas.get(id).unwrap().rect)
+        })
+    };
+    let before = rects(cx);
+    // Well inside the terminal's body, away from the notice at its bottom center.
+    let body = at(&ws, cx, (100.0, 500.0));
+    cx.update_window(handle, |_, window, cx| {
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            Modifiers::default(),
+            body,
+            (body.0 + 60.0, body.1),
+        );
+    })
+    .unwrap();
+    for (was, now) in before.iter().zip(rects(cx)) {
+        assert!(
+            now.x > was.x + 30.0,
+            "moved by the drag: {was:?} -> {now:?}"
+        );
+    }
+    // The notice: the inbox opens, and the terminal is neither focused nor picked anew.
+    ws.update(cx, |ws, _| {
+        ws.space.focused = Some(kanban);
+        ws.space.selected.clear();
+    });
+    click_id(handle, cx, name(format!("waiting-notice-{}", a.0)));
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.inbox_open);
+        assert_eq!(ws.space.focused, Some(kanban), "not focused");
+        assert!(ws.space.selected.is_empty(), "not selected");
+    });
+}
+
+/// The popup occludes what it covers: a press on a row over a block reaches the row, not the
+/// block, and the inbox keeps the keyboard.
+#[gpui_kit::test]
+fn a_press_on_a_row_over_a_block_doesnt_reach_the_block(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let _answers = asks(handle, &ws, cx, &terminal, 1);
+    let key = listed(&ws, cx)[0];
+    // A block under the list's first row (the popup is at the canvas's bottom left).
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open(Rect::new(10.0, 280.0, 300.0, 300.0), window, cx);
+            ws.space.appearing.clear();
+            ws.space.focused = Some(kanban);
+        })
+    })
+    .unwrap();
+    drawn_inbox(handle, &ws, cx);
+    click_id(handle, cx, name(format!("inbox-row-{key}")));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.focused,
+            Some(kanban),
+            "the block under it heard nothing"
+        );
+    });
+    let has_keys = cx
+        .update_window(handle, |_, window, cx| {
+            ws.read(cx).inbox_keys(window, cx).is_some()
+        })
+        .unwrap();
+    assert!(has_keys, "the inbox has the keyboard");
+}
+
+/// The request whose Other field had the keyboard ends (a deadline, its agent leaving): the
+/// keyboard is the inbox's again, so Esc still closes it.
+#[gpui_kit::test]
+fn a_request_ending_under_a_field_gives_the_keyboard_back_to_the_inbox(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, a);
+    let free = json!({ "questions": [{ "question": "Why?" }] });
+    let _answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", free);
+    drawn_inbox(handle, &ws, cx);
+    let key = ws.read_with(cx, |ws, _| ws.waits[0].key);
+    cx.update_window(handle, |_, window, cx| {
+        window.press("tab", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    // Withdrawn without the person.
+    ws.update(cx, |ws, cx| {
+        ws.answer(key, Reply::err("No one answered"), cx)
+    });
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    ws.read_with(cx, |ws, _| assert!(!ws.inbox_open, "Esc reached the inbox"));
+}
+
+/// Typing in a request's Other field goes on when something else ends meanwhile: an unrelated
+/// `wait_for`, or another terminal's request.
+#[gpui_kit::test]
+fn a_wait_ending_elsewhere_leaves_the_field_the_keyboard(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, a) = three_blocks(handle, &ws, cx);
+    let b = open_terminal(handle, &ws, cx, 0);
+    let (e, f) = (
+        open_terminal(handle, &ws, cx, 1),
+        open_terminal(handle, &ws, cx, 2),
+    );
+    let ((terminal, _), (other, _)) = (me(&ws, cx, a), me(&ws, cx, b));
+    let (watcher, _) = me(&ws, cx, e);
+    let (_, watched) = me(&ws, cx, f);
+    ws.update(cx, |ws, cx| assert!(ws.connect(e, f, cx)));
+    let free = json!({ "questions": [{ "question": "When?" }] });
+    let _answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", free);
+    let first = ws.read_with(cx, |ws, _| ws.waits[0].key);
+    let unrelated = watching(handle, &ws, cx, &watcher, &watched, 2);
+    let _theirs = asks(handle, &ws, cx, &other, 3);
+    let theirs = ws.read_with(cx, |ws, _| ws.waits.last().unwrap().key);
+    drawn_inbox(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.press("tab", cx);
+        window.render_frame(cx);
+        window.input("ship on", cx);
+    })
+    .unwrap();
+    let typed = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, cx| match &ws.waits[0].what {
+            Waiting::Question { others, .. } => others[0].0.read(cx).value().to_string(),
+            _ => panic!("a question"),
+        })
+    };
+    assert_eq!(typed(cx), "ship on");
+    for (ended, more) in [(unrelated, " fri"), (theirs, "day")] {
+        ws.update(cx, |ws, cx| ws.answer(ended, Reply::err("ended"), cx));
+        frame(handle, cx);
+        cx.update_window(handle, |_, window, cx| window.input(more, cx))
+            .unwrap();
+        frame(handle, cx);
+    }
+    assert_eq!(typed(cx), "ship on friday", "every key went to the field");
+    ws.read_with(cx, |ws, _| assert_eq!(ws.waits[0].key, first));
 }

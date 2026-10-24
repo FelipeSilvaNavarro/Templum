@@ -822,23 +822,6 @@ impl Workspace {
             }
             return;
         }
-        // A balloon's dialog has the keyboard (docs/specs/ask-user.md, Keyboard): its keys first;
-        // what it leaves (shortcuts aside) never reaches the shell of the focused terminal.
-        if let Some(terminal) = self.balloon_keys(window, cx).map(str::to_string) {
-            let typing = self.balloon_typing(window, cx).is_some();
-            if self.question_key(&terminal, &e.keystroke, window, cx) {
-                cx.stop_propagation();
-            } else if let Some(command) =
-                command.filter(|c| !matches!(c, Command::Copy | Command::Paste))
-            {
-                self.command_key(e, Some(command), window, cx);
-                cx.stop_propagation();
-            } else if !typing {
-                // Nor its text, which would go to the terminal's input handler.
-                cx.stop_propagation();
-            }
-            return;
-        }
         if self.picker.is_some() || command.is_some() {
             // While the picker is open, typing and shortcuts don't reach the terminal.
             self.command_key(e, command, window, cx);
@@ -1239,13 +1222,10 @@ impl EntityInputHandler for Workspace {
         &mut self,
         _: Option<Range<usize>>,
         text: &str,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.marked = None;
-        if self.balloon_keys(window, cx).is_some() {
-            return;
-        }
         if let Some(pane) = self
             .space
             .focused_terminal()

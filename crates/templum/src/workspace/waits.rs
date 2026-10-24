@@ -34,7 +34,7 @@ const DRAWN: Duration = Duration::from_millis(300);
 
 /// A tool call waiting for its answer.
 pub(crate) struct Wait {
-    /// Names it for its deadline and the balloon's buttons; counts up, so the oldest is first.
+    /// Names it for its deadline and the inbox's buttons; counts up, so the oldest is first.
     pub key: u64,
     /// The connection it came on, and its JSON-RPC id: a cancel names both.
     pub conn: u64,
@@ -45,11 +45,10 @@ pub(crate) struct Wait {
     pub from: String,
     pub what: Waiting,
     /// When it was made, by the executor's clock: the inbox says how long it has waited.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub since: Instant,
-    /// When the balloon first drew it, by the executor's clock.
+    /// When the inbox first drew it, by the executor's clock.
     pub shown: Cell<Option<Instant>>,
-    /// The scroll of the balloon's body, past what fits of its terminal's height.
+    /// The scroll of the request's body in the inbox.
     pub body: crate::markdown::PreviewScroll,
     /// The row the keys just moved the highlight to: the body scrolls to show it once, when it is
     /// drawn (a wheel that scrolled it away since isn't fought).
@@ -63,14 +62,12 @@ pub(crate) type Field = (Entity<InputState>, Subscription);
 pub(crate) enum Waiting {
     /// `ask_user` (docs/specs/ask-user.md): its questions, what the person picked, each
     /// question's Other field, and the note (asked with `questions` only). `wait` makes the
-    /// fields. `away`: Esc gave the keyboard back to the terminal, until a press on the dialog.
-    /// `stopped`: its client gave up on the call; the answer is typed into its terminal.
+    /// fields. `stopped`: its client gave up on the call; the answer is typed into its terminal.
     Question {
         ask: Ask,
         form: Form,
         others: Vec<Field>,
         note: Option<Field>,
-        away: bool,
         stopped: bool,
         /// A plan's Markdown frame's scroll (`propose_plan`).
         scroll: crate::markdown::PreviewScroll,
@@ -215,7 +212,7 @@ impl Workspace {
             self.tell_asking(&wait, window, cx);
             self.chime(cx);
             // Its block waits for its person now. The agent that handed it a task hears nothing:
-            // the person sees the balloon, and that agent can't answer it.
+            // the person sees the request in the inbox, and that agent can't answer it.
             self.needs_you(&wait.from, Some(&wait.summary()), false, cx);
         }
         self.waits.push(wait);
@@ -421,7 +418,7 @@ impl Workspace {
 
     /// The person's yes (`yes`) or no to the request `key`: Allow wires the two blocks, a step
     /// Ctrl+Z takes back, as wiring by hand is; Delete and Merge run on the background executor,
-    /// the request gone from the balloon at once, and answer once git is done.
+    /// the request gone from the inbox at once, and answer once git is done.
     pub(crate) fn answer_allow(&mut self, key: u64, yes: bool, cx: &mut Context<Self>) {
         let Some(at) = self.waits.iter().position(|w| w.key == key) else {
             return;
@@ -554,36 +551,13 @@ impl Workspace {
     }
 
     /// What the agent in terminal `terminal` asks the person, oldest first: the first, and how
-    /// many.
-    pub(crate) fn balloon(&self, terminal: &str) -> Option<(&Wait, usize)> {
+    /// many. Its block shows a notice, and the inbox lists them.
+    pub(crate) fn asking(&self, terminal: &str) -> Option<(&Wait, usize)> {
         let mut asking = self.waits.iter().filter(|w| {
             w.from == terminal && matches!(w.what, Waiting::Question { .. } | Waiting::Allow { .. })
         });
         let first = asking.next()?;
         Some((first, 1 + asking.count()))
-    }
-
-    /// The terminal whose dialog has the keyboard: one of its fields has it, or its block does
-    /// (focused, the workspace holding the keyboard), its oldest request is a question, and Esc
-    /// didn't give the keyboard back.
-    pub(crate) fn balloon_keys(&self, window: &Window, cx: &App) -> Option<&str> {
-        if let Some(terminal) = self.balloon_typing(window, cx) {
-            return Some(terminal);
-        }
-        if !self.canvas_has_keys(window) {
-            return None;
-        }
-        let pane = self.space.focused_terminal()?;
-        let (wait, _) = self.balloon(pane.term.id())?;
-        matches!(wait.what, Waiting::Question { away: false, .. }).then_some(wait.from.as_str())
-    }
-
-    /// The terminal whose balloon's field has the keyboard, if one does: the keys are the field's.
-    pub(crate) fn balloon_typing(&self, window: &Window, cx: &App) -> Option<&str> {
-        self.waits
-            .iter()
-            .find(|w| field_focused(w, window, cx))
-            .map(|w| w.from.as_str())
     }
 
     /// A request's short sound, unless `[connections] sound` is off or one played under
@@ -643,7 +617,7 @@ impl Workspace {
     }
 
     /// `wait_for` from the terminal `from`: `event` in the terminal `block`. `idle` is
-    /// `wait_for_idle`; `needs_you` answers at once when its agent, or its balloon, already asks
+    /// `wait_for_idle`; `needs_you` answers at once when its agent, or its request, already asks
     /// its person; `output` waits for a line matching `pattern`, at once when one of its last
     /// `lines` does, or with `wait` false keeps watching while the caller works, its match typed
     /// back; the others wait for the next command or alert.
@@ -697,7 +671,7 @@ impl Workspace {
         if event == Event::NeedsYou {
             let asks = match &pane.state {
                 Some(AgentState::NeedsYou(what)) => Some(what.clone()),
-                _ => self.balloon(&of).map(|(wait, _)| Some(wait.summary())),
+                _ => self.asking(&of).map(|(wait, _)| Some(wait.summary())),
             };
             if let Some(what) = asks {
                 return Outcome::Now(waiting_for_person(block, what.as_deref(), &pane.tail()));
@@ -758,7 +732,7 @@ impl Workspace {
     }
 
     /// The block of the terminal `terminal` waits for its person (its agent asks for `what`, or
-    /// its balloon does): the `wait_for(needs_you)` on it are answered DRAWN later, with its
+    /// its request does): the `wait_for(needs_you)` on it are answered DRAWN later, with its
     /// screen as drawn by then. `tell`: a new wait, which the agent that handed it a task hears of,
     /// unless a `wait_for(needs_you)` of its was just answered with it.
     pub(super) fn needs_you(

@@ -4,7 +4,6 @@
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Focusable as _, Keystroke, Window, point, px};
-use templum_canvas::BlockId;
 use templum_mcp::Reply;
 use templum_mcp::ask::{Ask, Form, Row};
 
@@ -68,16 +67,15 @@ fn field(
     let events = cx.subscribe_in(
         &input,
         window,
-        move |ws, input, event: &InputEvent, window, cx| match event {
+        move |ws, input, event: &InputEvent, _, cx| match event {
             InputEvent::Change => {
                 if let Some(q) = q {
                     let text = input.read(cx).value().to_string();
                     ws.other_typed(key, q, &text, cx);
                 }
             }
-            // Enter also goes on to the workspace's keys (`question_key`): answered there, once.
-            InputEvent::PressEnter { .. } | InputEvent::Blur => {}
-            InputEvent::Focus => ws.question_field_focused(key, window, cx),
+            // Enter also goes on to the inbox's keys (`question_key`): answered there, once.
+            InputEvent::PressEnter { .. } | InputEvent::Blur | InputEvent::Focus => {}
         },
     );
     (input, events)
@@ -219,21 +217,19 @@ impl Workspace {
             .is_none_or(|w| w.too_soon(cx))
     }
 
-    /// The dialog's keys, while it has the keyboard (`balloon_keys`): ↑ ↓ Tab Shift+Tab move the
-    /// highlight, ← → show the previous or next question (out of a field), Space picks, Enter
-    /// picks and sends or moves on, Esc gives the keyboard back to the terminal. True: the dialog
-    /// took the key.
+    /// The keys of the request `key` while the inbox has the keyboard (`inbox_keys`): ↑ ↓ Tab
+    /// Shift+Tab move the highlight, ← → show the previous or next question (out of a field),
+    /// Space picks, Enter picks and sends or moves on. True: the dialog took the key.
     pub(crate) fn question_key(
         &mut self,
-        terminal: &str,
+        key: u64,
         keystroke: &Keystroke,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some((wait, _)) = self.balloon(terminal) else {
+        let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
             return false;
         };
-        let key = wait.key;
         let m = &keystroke.modifiers;
         if m.control || m.alt || m.platform || m.function {
             return false;
@@ -243,7 +239,7 @@ impl Workspace {
             ("up", false) | ("tab", true) => (Some(-1), None),
             ("left", false) => (None, Some(-1)),
             ("right", false) => (None, Some(1)),
-            ("space" | "enter" | "escape", false) => (None, None),
+            ("space" | "enter", false) => (None, None),
             _ => return false,
         };
         // In a field, the highlight is its row, and Space and ← → are the field's: at the start
@@ -279,22 +275,10 @@ impl Workspace {
                     form.pick(ask, q, i);
                 }
             }
-            (_, _, "enter") => {
-                if form.highlight.is_some() {
-                    self.question_enter(key, window, cx);
-                }
+            (_, _, "enter") if form.highlight.is_some() => {
+                self.question_enter(key, window, cx);
             }
-            _ => {
-                if let Some(Waiting::Question { away, .. }) = self
-                    .waits
-                    .iter_mut()
-                    .find(|w| w.key == key)
-                    .map(|w| &mut w.what)
-                {
-                    *away = true;
-                }
-                window.focus(&self.focus_handle, cx);
-            }
+            _ => {}
         }
         cx.notify();
         true
@@ -367,7 +351,7 @@ impl Workspace {
     }
 
     /// The highlight on an Other row or the note: its field takes the keyboard; elsewhere the
-    /// workspace has it again (the block stays focused).
+    /// inbox has it again.
     fn focus_highlight(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
             return;
@@ -385,66 +369,11 @@ impl Workspace {
         };
         match field {
             Some((input, _)) => input.update(cx, |input, cx| input.focus(window, cx)),
-            None => window.focus(&self.focus_handle, cx),
+            None => window.focus(&self.inbox_focus, cx),
         }
     }
 
-    /// A field of the question `key` took the keyboard (a press in it): its block is the one
-    /// worked in now, so the keys stay its dialog's once the highlight leaves the field. The
-    /// field keeps GPUI's focus.
-    fn question_field_focused(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(from) = self
-            .waits
-            .iter()
-            .find(|w| w.key == key)
-            .map(|w| w.from.clone())
-        else {
-            return;
-        };
-        let Some((space, id)) = self.caller(&from) else {
-            return;
-        };
-        if space != self.space.id || self.space.focused == Some(id) {
-            return;
-        }
-        if let Some(had) = self.space.focused {
-            self.stop_editing(had, window, cx);
-        }
-        self.space.focused = Some(id);
-        cx.notify();
-    }
-
-    /// A press on the balloon of the request `key`, over block `id`: the block takes the keyboard,
-    /// as a press on it does, unless the press put it in one of the dialog's fields (its block
-    /// comes with it, `question_field_focused`); a question takes it again after Esc.
-    pub(crate) fn press_on_balloon(
-        &mut self,
-        key: u64,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self
-            .waits
-            .iter()
-            .find(|w| w.key == key)
-            .is_some_and(|w| !field_focused(w, window, cx))
-        {
-            self.focus_block(id, window, cx);
-        }
-        if let Some(Waiting::Question { away, .. }) = self
-            .waits
-            .iter_mut()
-            .find(|w| w.key == key)
-            .map(|w| &mut w.what)
-            && *away
-        {
-            *away = false;
-            cx.notify();
-        }
-    }
-
-    /// Answers the question `key` with `reply`; the keyboard goes back to the canvas when one of
+    /// Answers the question `key` with `reply`; the keyboard goes back to the inbox when one of
     /// its fields had it.
     fn close_question(
         &mut self,
@@ -461,7 +390,7 @@ impl Workspace {
         self.answer(key, reply, cx);
         self.seen_asking(&from);
         if typing {
-            window.focus(&self.focus_handle, cx);
+            window.focus(&self.inbox_focus, cx);
         }
     }
 
