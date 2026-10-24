@@ -258,6 +258,15 @@ impl Workspace {
         // Keys typed before this event answer nothing it brings (a dialog opening now).
         pane.looks.heard();
         pane.typed.set(false);
+        // A prompt taken at its Enter, or an agent that started or quit, leaves nothing the person
+        // typed. Another's `Submitted` comes once a turn takes a prompt in: the person may be
+        // writing the next meanwhile.
+        if matches!(
+            event,
+            AgentEvent::Submitted { at_enter: true } | AgentEvent::Started | AgentEvent::Ended
+        ) {
+            pane.draft.set(false);
+        }
         if !matches!(event, AgentEvent::Stopped { .. }) {
             pane.speaks = true;
         }

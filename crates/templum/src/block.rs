@@ -11,9 +11,9 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Hsla,
-    MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div,
-    point, px,
+    Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, Context, ElementId,
+    FontWeight, Hsla, MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt,
+    Window, div, point, px,
 };
 use templum_canvas::{Block, BlockId, Edges, Level, Point, Rect, chrome};
 
@@ -815,15 +815,85 @@ pub(crate) fn render(
         .when(hovered && !tiled, |el| {
             el.child(fade_in(handle, ("handle-fade", n)))
         })
-        // That its agent waits for an answer, up close only; the inbox has the request.
-        .children(match body {
-            Body::Terminal(pane) if live && level == Level::Full => {
-                crate::inbox::notice(ws, id, pane.term.id(), z, cx)
+        // That its agent waits for an answer, up close only; the inbox has the request. And that
+        // answers wait for the person's message to be sent.
+        .children(
+            match body {
+                Body::Terminal(pane) if live && level == Level::Full => [
+                    crate::inbox::notice(ws, id, pane.term.id(), z, cx),
+                    answers_chip(ws, id, pane.term.id(), z),
+                ],
+                _ => [None, None],
             }
-            _ => None,
-        })
+            .into_iter()
+            .flatten(),
+        )
         .test_support()
         .into_any_element()
+}
+
+/// What the chip of a terminal whose agent has answers waiting for its person's message reads.
+pub(crate) fn answers_text(count: usize) -> String {
+    match count {
+        1 => "1 answer waiting".to_string(),
+        count => format!("{count} answers waiting"),
+    }
+}
+
+/// The chip over the terminal block `id`, whose terminal is `terminal`, at zoom `z`: answers from
+/// other agents wait for its person's unsent message (`Pane::has_draft`). A click does nothing but
+/// show why. It sits over the inbox's notice when that shows. None when no answer waits.
+fn answers_chip(ws: &Workspace, id: BlockId, terminal: &str, z: f32) -> Option<AnyElement> {
+    let count = ws.answers_waiting(terminal);
+    if count == 0 {
+        return None;
+    }
+    let lift = if ws.asking(terminal).is_some() {
+        34.0
+    } else {
+        0.0
+    };
+    // The yellow of the dot of a block waiting for its person.
+    let waiting = hsla(ws.theme.palette.ansi[3], 1.0);
+    Some(
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom(px((12.0 + lift) * z))
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .id(ElementId::Name(format!("answers-waiting-{}", id.0).into()))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0 * z))
+                    .px(px(10.0 * z))
+                    .py(px(5.0 * z))
+                    .rounded(px(8.0 * z))
+                    .bg(ws.ui.surface)
+                    .border_1()
+                    .border_color(waiting)
+                    .text_size(px(12.0 * z))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(hsla(ws.theme.palette.foreground, 1.0))
+                    // A press on it reaches neither its block nor the terminal under it.
+                    .occlude()
+                    .child(
+                        Icon::new(IconName::Clock)
+                            .size(px(14.0 * z))
+                            .text_color(waiting),
+                    )
+                    .child(answers_text(count))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("They go in once your message is sent or cleared")
+                            .build(window, cx)
+                    })
+                    .test_support(),
+            )
+            .into_any_element(),
+    )
 }
 
 /// Over an agent's terminal while it starts (`starting.rs`): its name and a spinner, not its

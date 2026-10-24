@@ -267,6 +267,9 @@ pub(crate) struct Pane {
     /// When the person last typed into it (a key, a paste, text): a second Enter for a task
     /// would send their half-written line.
     pub keyed: Cell<Option<Instant>>,
+    /// Text the person typed or pasted into its agent's input and hasn't sent: no notice is
+    /// typed over it, however long ago the last key was (`Pane::person_keyed`).
+    pub draft: Cell<bool>,
     /// The person scrolled it, or its program heard their mouse, since the last look, which then
     /// tells nothing.
     pub scrolled: Cell<bool>,
@@ -1491,6 +1494,9 @@ pub struct Workspace {
     /// What tasks' agents did, waiting to be typed into the agents that handed them over, oldest
     /// first (`delegate.rs`).
     pub(crate) notices: Vec<delegate::Notice>,
+    /// How many ends of tasks each agent handed (by terminal) are on their way to `notices`, the
+    /// short delay before what they spent is read (`tell_end`): tasks still running to it.
+    ending: HashMap<String, usize>,
     /// Texts agents asked to have delivered later, and the last one's id (`schedules.rs`).
     pub(crate) schedules: Vec<schedules::Schedule>,
     pub(crate) next_schedule: u64,
@@ -1845,6 +1851,7 @@ impl Workspace {
             tool_conns: HashMap::new(),
             templum_agent: Default::default(),
             notices: Vec::new(),
+            ending: HashMap::new(),
             schedules: Vec::new(),
             next_schedule: 0,
             scheduling: false,

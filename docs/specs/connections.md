@@ -303,10 +303,29 @@ later starts with none.
     its request waits in the inbox (`ask_user`, `connect`: the person sees it there, and the asker can't answer
     it), nor its timeout, which only the asker's call that waits for it tells (the agent may still work, and its end
     comes then). While the asker waits for its person, its agent is starting
-    (no snapshot found it yet), its person typed into it in the last 3 seconds, or Templum typed into it (a task, a
-    reply, a notice) in the last 8.1 seconds (that text's Enter, up to 2 s after it, a second one 3 seconds later, and
-    the looks after it 3 seconds more, may still be due), a notice waits, oldest first. Into a terminal whose agent is
-    gone (its shell is in front, as when `templum delegate` ran from a script), never: the notice is dropped.
+    (no snapshot found it yet), its person typed into it in the last 3 seconds, its input holds text its person typed
+    and didn't send (a draft, however long ago they typed it), or Templum typed into it (a task, a reply, a notice) in
+    the last 8.1 seconds (that text's Enter, up to 2 s after it, a second one 3 seconds later, and the looks after it 3
+    seconds more, may still be due), a notice waits, oldest first. Into a terminal whose agent is gone (its shell is
+    in front, as when `templum delegate` ran from a script), never: the notice is dropped. A draft starts with the
+    person's text or paste (not while the agent waits for them: that answers its dialog), or a Shift+Enter, Alt+Enter,
+    Tab, Up, Down or Ctrl+Y; it ends with their Enter (Codex's and the others'; not Claude Code's, whose `\` and Enter
+    is a new line: its `Submitted` at the Enter ends it; and not while the agent waits for them), Ctrl+C, an agent's
+    start or quit, or a look at the screen, once their last key is 3 seconds old, that finds the input empty (in the
+    last six rows, a prompt marker, `›`, `❯` or `>`, with nothing after it). A `Submitted` that comes once a turn takes
+    a prompt in (Codex, Qwen Code, OpenCode) ends nothing: the person may be writing the next.
+    Where the signals disagree the notice waits. The terminal says so while notices wait behind a draft: "3 answers
+    waiting" (one: "1 answer waiting"), a chip whose click shows a tooltip, "They go in once your message is sent or
+    cleared" ([notice-batching.md](notice-batching.md)).
+    The notices about a task (its end, stuck, quiet, waits for its person) come in batches: one waits 15 seconds for
+    others to the same agent, each new one restarting the 15; it goes at once when no other task of that agent still
+    runs (an end on its way, in its SPENT_AFTER second, counts as running; one waiting for its person or quiet does
+    not), and no notice waits more than 60 seconds. A batch of one is typed as above; several are one paste with one
+    Enter, a first line, `[3 tasks ended] They are in the pasted text.` (`[3 notices: 2 tasks ended, 1 needs a look]`
+    when they differ), then each notice as above, a blank line between, oldest first. A draft or the gaps
+    above hold a batch due, and what comes meanwhile joins it. The other notices (a `wait_for` with `wait: false`, a
+    schedule's reminder or failure, a question's answer after its client stopped waiting) go as soon as the draft and
+    the gaps allow.
 11. **A change** (batch 8). `delegate` from the agent whose task it is changes that task: typed at once under
     `[from Claude Code · api (b7k2m), a change to task t7] The change is in the pasted text: do it, then answer the task with
     reply.` (and how, as 2), even while it
@@ -1514,7 +1533,7 @@ results](../plans/2026-10-16-connections-batch-8.md#spike-results)).
 | An agent reads a paste as keys and takes an Enter just after them for a new line (Codex and Copilot CLI on Windows) | From card 118 the Enter waits for the screen to stand still, and a screen that didn't move after it gets a second one |
 | An agent no hook speaks for takes a task and draws nothing while it works | Its first Enter changed its screen: it took the task (a second Enter, only after a paste that went as keys, goes into an empty input); only an agent no Enter changed is told "typed but not submitted" |
 | Codex's hooks need its person's trust | Asked once, about one fixed command (`templum hook codex`); never `--dangerously-bypass-hook-trust` |
-| A notice typed into an agent the person is typing into | It waits until the person stopped typing for 3 seconds; never into a shell |
+| A notice typed into an agent the person is typing into | It waits until the person stopped typing for 3 seconds and sent or cleared what they typed; never into a shell |
 | What a task spent, read before its agent wrote its last figure | Read again a second after its end: Claude Code's status line gives its last cost 0.3 s after its `Stop`, Codex writes its tokens just before its own (batch 8's spikes) |
 | Claude Code's status-line token totals are its last call's context, not what it used (batch 8's spikes) | The notice gives its cost, as its usage chip does |
 | Two notices into one agent in a moment would share an Enter | The next waits 5.1 seconds after the last text Templum typed into it, its Enters past |

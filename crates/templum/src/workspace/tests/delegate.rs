@@ -23,7 +23,7 @@ pub(super) fn two_agents(
 
 /// `two_agents`, theirs running `command` (`agent_cat` when None), each once its program is in
 /// front, where a snapshot found theirs.
-fn agents_running(
+pub(super) fn agents_running(
     cx: &mut TestAppContext,
     command: Option<(String, Vec<String>)>,
 ) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
@@ -78,7 +78,7 @@ fn bracketed_cat(
 
 /// A third terminal at (40, 500), 700 × 300, running Codex as far as Templum knows, found in front
 /// of its shell (Unix) and wired to `to`.
-fn another_agent(
+pub(super) fn another_agent(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
@@ -204,7 +204,7 @@ pub(super) fn hand_over(
 
 /// Mine runs Claude Code too, found by a snapshot: what comes back is typed into it.
 #[cfg(unix)]
-fn asker(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) {
+pub(super) fn asker(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) {
     ws.update(cx, |ws, _| {
         ws.space.terminal_mut(mine).unwrap().seen.agent = Some("claude".into())
     });
@@ -213,7 +213,7 @@ fn asker(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) {
 
 /// The notices waiting to be typed, oldest first: to whom, and what.
 #[cfg(unix)]
-fn notices(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<(String, String)> {
+pub(super) fn notices(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<(String, String)> {
     ws.read_with(cx, |ws, _| {
         ws.notices
             .iter()
@@ -225,7 +225,7 @@ fn notices(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<(String, Stri
 /// The terminal `from` hands block `theirs` the task `said` without waiting; its agent takes it
 /// and ends with the answer `said`; then a second passes (what it spent is read then).
 #[cfg(unix)]
-fn done_task(
+pub(super) fn done_task(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
@@ -1059,10 +1059,14 @@ fn a_notice_waits_while_its_asker_asks_its_person(cx: &mut TestAppContext) {
         pane.keyed.set(Instant::now().checked_sub(TYPING));
     });
     after(cx, 1000);
-    screen_with(&ws, cx, mine, "[task t1 from ");
-    assert_eq!(queued(cx), ["Two."], "one, the oldest");
+    // Both go as one paste: no other task of its agent runs (docs/specs/notice-batching.md).
+    screen_with(&ws, cx, mine, "[2 tasks ended]");
+    assert!(queued(cx).is_empty());
+    // A third comes while their Enters may still be due: it waits.
+    done_task(handle, &ws, cx, &terminal, theirs, "Three.");
+    assert_eq!(queued(cx), ["Three."], "its Enter may still be due");
     after(cx, 1000);
-    assert_eq!(queued(cx), ["Two."], "its Enter may still be due");
+    assert_eq!(queued(cx), ["Three."], "its Enter may still be due");
     // Its first Enter may have come up to ENTER_LOOKS looks after it was typed, its second CONFIRM
     // after that.
     let sent = |cx: &mut TestAppContext, ago| {
@@ -1072,15 +1076,15 @@ fn a_notice_waits_while_its_asker_asks_its_person(cx: &mut TestAppContext) {
     };
     sent(cx, CONFIRM);
     after(cx, 1000);
-    assert_eq!(queued(cx), ["Two."], "its second Enter may still be due");
+    assert_eq!(queued(cx), ["Three."], "its second Enter may still be due");
     sent(cx, NOTICE_GAP);
     after(cx, 1000);
-    screen_with(&ws, cx, mine, "[task t2 from ");
+    screen_with(&ws, cx, mine, "[task t3 from ");
     assert!(queued(cx).is_empty());
     // It asks again, and quits while a notice waits: dropped.
     event(handle, &ws, cx, &terminal, asks);
-    done_task(handle, &ws, cx, &terminal, theirs, "Three.");
-    assert_eq!(queued(cx), ["Three."]);
+    done_task(handle, &ws, cx, &terminal, theirs, "Four.");
+    assert_eq!(queued(cx), ["Four."]);
     ws.update(cx, |ws, _| {
         ws.space.terminal_mut(mine).unwrap().seen.pid = Some(1)
     });
@@ -1104,6 +1108,7 @@ fn a_notice_waits_after_a_reply_typed_into_its_asker(cx: &mut TestAppContext) {
         ws.queue_notice(
             terminal.clone(),
             "[task t9 from x: done in 1 s] y\nz".into(),
+            crate::workspace::delegate::NoticeKind::Other,
             cx,
         )
     });

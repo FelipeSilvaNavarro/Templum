@@ -2985,6 +2985,58 @@ fn a_reply_ends_the_templum_agents_task(cx: &mut TestAppContext) {
     rows_until(&ws, cx, ended);
 }
 
+/// Its chat shows each notice when it comes; only what its engine is told waits for the others
+/// (docs/specs/notice-batching.md): the last task running ends, and it hears them as one message.
+#[gpui_kit::test]
+fn the_chat_shows_each_notice_at_once_and_the_engine_hears_a_batch(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    let tasks: Vec<_> = (0..3)
+        .map(|_| handed_by_the_templum_agent(handle, &ws, cx))
+        .collect();
+    let spent = crate::workspace::delegate::SPENT_AFTER.as_millis() as u64;
+    for (i, (_, _, terminal)) in tasks[..2].iter().enumerate() {
+        ws.update(cx, |ws, cx| {
+            ws.end_turn(terminal, templum_mcp::Reply::ok(format!("Answer {i}.")), cx)
+        });
+    }
+    super::bus::after(cx, spent);
+    assert_eq!(notices(&ws, cx).len(), 2, "its chat shows both");
+    assert!(
+        ws.read_with(cx, |ws, _| ws.templum_agent.sent.is_empty()),
+        "its engine waits for the third"
+    );
+    let (_, _, terminal) = &tasks[2];
+    ws.update(cx, |ws, cx| {
+        ws.end_turn(terminal, templum_mcp::Reply::ok("Answer 2."), cx)
+    });
+    super::bus::after(cx, spent);
+    assert_eq!(notices(&ws, cx).len(), 3);
+    let sent = ws.read_with(cx, |ws, _| ws.templum_agent.sent.clone());
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].starts_with("[3 tasks ended] "), "{sent:?}");
+    for i in 0..3 {
+        assert!(sent[0].contains(&format!("Answer {i}.")), "{sent:?}");
+    }
+}
+
+#[gpui_kit::test]
+fn a_lone_notice_reaches_the_engine_at_once(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    let (_, _, terminal) = handed_by_the_templum_agent(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        ws.end_turn(&terminal, templum_mcp::Reply::ok("Only."), cx)
+    });
+    super::bus::after(
+        cx,
+        crate::workspace::delegate::SPENT_AFTER.as_millis() as u64,
+    );
+    let sent = ws.read_with(cx, |ws, _| ws.templum_agent.sent.clone());
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].starts_with("[task t1 from "), "{sent:?}");
+}
+
 #[gpui_kit::test]
 fn a_failed_task_is_red(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();

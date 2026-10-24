@@ -195,6 +195,8 @@ again):
 - an asker with no call waiting gets the notice `[task t7 from Codex · api (k9x1d) hasn't answered: its screen is
   still] Its screen is in the pasted text.` and the last 20 lines, as a dialog's notice is typed (its level
   Waiting for the Templum Agent);
+  the notices about a task come in batches, one message for what comes within 15 seconds of each other
+  ([connections.md](connections.md), Delegating 10; [notice-batching.md](notice-batching.md));
 - other agents' calls that wait for the subagent's turn (`wait_for_idle` on an agent they didn't hand the task) get
   today's still-screen text: for them, its turn ended.
 

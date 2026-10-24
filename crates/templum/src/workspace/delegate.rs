@@ -8,7 +8,7 @@ use gpui_kit::{App, Context, Task};
 use templum_agent::NoticeLevel;
 use templum_canvas::BlockId;
 use templum_mcp::{Reply, tools};
-use templum_terminal::{KEY_NAMES, named_key};
+use templum_terminal::{KEY_NAMES, KeyInput, named_key};
 use templum_usage::Session;
 
 use super::activity::STILL;
@@ -94,13 +94,54 @@ fn spent(from: Option<&Session>, to: Option<&Session>) -> Option<String> {
     let a = from.and_then(|f| f.tokens).unwrap_or(0);
     (b > a).then(|| format!("{} tokens", b - a))
 }
+/// How many rows at the bottom of a screen an agent's input and its footer take at most: a row
+/// with a prompt marker higher up is output.
+const INPUT_ROWS: usize = 6;
+
+/// The input of the agent whose screen is `screen` holds no text: its last line that opens with
+/// a prompt marker (Codex's `›`, Claude Code's `❯` or `>`, a plain agent's `>`), inside the box
+/// some draw around it, has nothing after the marker. Its faint suggestion isn't on `screen`
+/// (`SharedTerm::lines`). False when none is found in the last `INPUT_ROWS` rows: a dialog, or an
+/// input of another shape (Claude Code's shell mode has none).
+fn input_empty(screen: &str) -> bool {
+    screen
+        .lines()
+        .rev()
+        .take(INPUT_ROWS)
+        .map(|line| line.trim_matches(|c: char| c.is_whitespace() || matches!(c, '│' | '┃')))
+        .find_map(|line| line.strip_prefix(['›', '❯', '>']))
+        .is_some_and(|rest| rest.trim().is_empty())
+}
 /// How long a terminal says which block pressed keys in it ("answered by").
 pub(crate) const ANSWERED_FOR: Duration = Duration::from_secs(10);
+
+/// How long a notice about a task waits for others to the same agent, from the newest one.
+pub(super) const BATCH_WAIT: Duration = Duration::from_secs(15);
+/// The most a notice about a task waits, however many come after it.
+pub(super) const BATCH_MOST: Duration = Duration::from_secs(60);
+/// What the first line of a batch of notices says follows it.
+const BATCH_LEAD: &str = "They are in the pasted text.";
+
+/// What a notice is about, and so whether it waits for others (docs/specs/notice-batching.md).
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum NoticeKind {
+    /// A task Templum types into the agent that handed it: its end, stuck, quiet, or waits for its
+    /// person. These go in batches (`deliver_notices`).
+    Task(NoticeLevel),
+    /// Anything else (a watch that matched, a schedule's reminder, a question's answer): as soon
+    /// as its agent takes it.
+    Other,
+}
 
 /// What a task's agent did, to type into the agent that handed it (its terminal `to`).
 pub(crate) struct Notice {
     pub to: String,
     pub text: String,
+    pub kind: NoticeKind,
+    /// The terminal of the agent it is about and the task's id, for a notice about a task.
+    pub about: Option<(String, u64)>,
+    /// When it was queued, by the executor's clock.
+    pub at: Instant,
 }
 
 /// What a look at an agent's screen, while a typed task waits for its Enter, says to do.
@@ -367,6 +408,58 @@ impl Pane {
         self.keyed.set(Some(Instant::now()));
     }
 
+    /// The person typed or pasted text into it: its agent's input holds a draft, unless the
+    /// agent waits for its person (a dialog takes the text as its answer).
+    pub(super) fn person_wrote(&self) {
+        self.person_typed();
+        if !matches!(self.state, Some(AgentState::NeedsYou(_))) {
+            self.draft.set(true);
+        }
+    }
+
+    /// The person pressed `key` (not text: that is `person_wrote`) in it, and what it does to its
+    /// agent's input, as far as keys tell. Shift+Enter and Alt+Enter add a line to the draft; so
+    /// does Claude Code's `\` and Enter, which is why its Enter ends nothing: its `Submitted`
+    /// does (`bus.rs`). Another agent's Enter sends the draft. Tab takes the suggestion the input
+    /// shows, Up and Down recall history into it, Ctrl+Y yanks back what was deleted; Ctrl+C
+    /// empties it. Backspace, Esc and Ctrl+U (to the start of the line only) say nothing: the
+    /// screen does (`settle_draft`). Keys that answer a dialog change nothing in the input.
+    pub(super) fn person_keyed(&self, key: &KeyInput) {
+        self.person_typed();
+        if matches!(self.state, Some(AgentState::NeedsYou(_))) {
+            return;
+        }
+        // Claude Code whose hooks were heard says `Submitted` at its Enter; without them (no bus,
+        // `disableAllHooks`) only the screen can end a draft, so its Enter does.
+        let claude = self.seen.agent.as_deref() == Some("claude");
+        match (key.key, key.ctrl) {
+            ("enter", false) if key.shift || key.alt => self.draft.set(true),
+            ("enter", false) if !(claude && self.speaks) => self.draft.set(false),
+            ("c", true) => self.draft.set(false),
+            ("tab", false) if !key.shift => self.draft.set(true),
+            ("up" | "down", false) | ("y", true) => self.draft.set(true),
+            _ => {}
+        }
+    }
+
+    /// A draft its person's last key is not recent for (TYPING) ends when the screen shows its
+    /// agent's input empty: Backspace to empty, an Esc that cleared it, or a send Templum never
+    /// heard. An input Templum can't read stays a draft: it waits.
+    /// True when it did.
+    pub(super) fn settle_draft(&self) -> bool {
+        let still_typing = self.keyed.get().is_some_and(|at| at.elapsed() < TYPING);
+        let ends = self.has_draft() && !still_typing && input_empty(&self.screen());
+        if ends {
+            self.draft.set(false);
+        }
+        ends
+    }
+
+    /// Its agent's input holds text its person typed and didn't send.
+    pub fn has_draft(&self) -> bool {
+        self.draft.get()
+    }
+
     /// The last `TAIL_LINES` lines its terminal shows, as an agent is answered with them.
     pub(super) fn tail(&self) -> String {
         self.term.shared().lines(TAIL_LINES).join("\n")
@@ -446,6 +539,7 @@ impl Pane {
         let recent = |at: Option<Instant>, within| at.is_some_and(|at| at.elapsed() < within);
         Some(
             !matches!(self.state, Some(AgentState::NeedsYou(_)))
+                && !self.has_draft()
                 && !recent(self.keyed.get(), TYPING)
                 && !recent(self.sent, NOTICE_GAP),
         )
@@ -1398,7 +1492,7 @@ impl Workspace {
                 self.signature_of(terminal, cx),
                 self.pane(terminal).map(Pane::tail).unwrap_or_default()
             );
-            self.notice_to(by, text, terminal, NoticeLevel::Waiting, cx);
+            self.notice_to(by, text, terminal, NoticeLevel::Waiting, Some(id), cx);
         }
         for key in asked {
             let lines = self
@@ -1422,7 +1516,7 @@ impl Workspace {
     /// SPENT_AFTER later, with what it spent then (docs/specs/connections.md, Delegating 10). Its
     /// time and transcript are the end's.
     pub(super) fn tell_end(
-        &self,
+        &mut self,
         terminal: &str,
         handed: &Handed,
         reply: &Reply,
@@ -1434,7 +1528,7 @@ impl Workspace {
         } else {
             ("done", DONE_LEAD, NoticeLevel::Done)
         };
-        let since = handed.since.elapsed().as_secs();
+        let (id, since) = (handed.id, handed.since.elapsed().as_secs());
         let head = format!(
             "[task t{} from {}: {word} in {since} s",
             handed.id,
@@ -1453,6 +1547,8 @@ impl Workspace {
             reply.text.clone(),
         );
         let terminal = terminal.to_string();
+        // Still running, to the agent that handed it, until its notice is queued.
+        *self.ending.entry(to.clone()).or_default() += 1;
         cx.spawn(async move |ws, cx| {
             cx.background_executor().timer(SPENT_AFTER).await;
             let read = match (data, proc) {
@@ -1470,6 +1566,7 @@ impl Workspace {
                 _ => None,
             };
             let _ = ws.update(cx, |ws, cx| {
+                ws.ended(&to);
                 // The next task handed before a snapshot reads it again starts from this read.
                 if let (Some(read), Some(pane)) = (&read, ws.pane_mut(&terminal)) {
                     pane.usage = Some(read.clone());
@@ -1480,10 +1577,20 @@ impl Workspace {
                     .map(|s| format!(", {s}"))
                     .unwrap_or_default();
                 let text = format!("{head}{spent}{transcript}] {lead}\n{body}");
-                ws.notice_to(to, text, &terminal, level, cx);
+                ws.notice_to(to, text, &terminal, level, Some(id), cx);
             });
         })
         .detach();
+    }
+
+    /// The end of a task `asker` handed is queued, or lost: it is no longer on its way.
+    fn ended(&mut self, asker: &str) {
+        if let Some(n) = self.ending.get_mut(asker) {
+            *n -= 1;
+            if *n == 0 {
+                self.ending.remove(asker);
+            }
+        }
     }
 
     /// The agent in `terminal` started waiting for its person, asking `what`, its `screen` as
@@ -1512,33 +1619,187 @@ impl Workspace {
             "[task t{id} from {} waits for its person{asks}] {SCREEN_LEAD}\n{screen}",
             self.signature_of(terminal, cx)
         );
-        self.notice_to(by, text, terminal, NoticeLevel::Waiting, cx);
+        self.notice_to(by, text, terminal, NoticeLevel::Waiting, Some(id), cx);
+    }
+
+    /// How many notices wait in the queue for the message its person is writing to the agent in
+    /// `terminal`; none without a draft (its chip, `block.rs`).
+    pub(crate) fn answers_waiting(&self, terminal: &str) -> usize {
+        if !self.pane(terminal).is_some_and(Pane::has_draft) {
+            return 0;
+        }
+        self.notices.iter().filter(|n| n.to == terminal).count()
     }
 
     /// Queues the notice `text` for the agent in the terminal `to`, then types what may go now.
-    pub(super) fn queue_notice(&mut self, to: String, text: String, cx: &mut Context<Self>) {
-        self.notices.push(Notice { to, text });
+    pub(super) fn queue_notice(
+        &mut self,
+        to: String,
+        text: String,
+        kind: NoticeKind,
+        cx: &mut Context<Self>,
+    ) {
+        self.push_notice(to, text, kind, None, cx);
+    }
+
+    /// `queue_notice`, for a notice `about` a task: its worker's terminal and its id.
+    pub(super) fn push_notice(
+        &mut self,
+        to: String,
+        text: String,
+        kind: NoticeKind,
+        about: Option<(String, u64)>,
+        cx: &mut Context<Self>,
+    ) {
+        let at = cx.background_executor().now();
+        self.notices.push(Notice {
+            to,
+            text,
+            kind,
+            about,
+            at,
+        });
+        // Its chip, if a draft holds it (`answers_waiting`).
+        cx.notify();
         self.deliver_notices(cx);
     }
 
-    /// Types the notices whose agents take them now, oldest first; drops those whose terminal
-    /// runs no agent any more (docs/specs/connections.md, Delegating 10).
+    /// A notice that a task waits for its person, or went quiet, tells nothing once its worker
+    /// doesn't any more: its person answered the dialog, or the task ended or was replaced while
+    /// the notice waited for the others. The asker would act on a screen that is gone.
+    fn stale(&self, notice: &Notice) -> bool {
+        let NoticeKind::Task(NoticeLevel::Waiting) = notice.kind else {
+            return false;
+        };
+        let Some((worker, id)) = &notice.about else {
+            return false;
+        };
+        !self
+            .pane(worker)
+            .and_then(|pane| Some((pane, pane.handed.as_ref().filter(|h| h.id == *id)?)))
+            .is_some_and(|(pane, handed)| {
+                handed.quiet || matches!(pane.state, Some(AgentState::NeedsYou(_)))
+            })
+    }
+
+    /// Some task the agent in the terminal `asker` handed is still running: awaited and not stuck
+    /// (waiting for its person, or gone quiet: its notice is on its way or was told), or its end is
+    /// on its way (`tell_end`).
+    pub(super) fn still_running(&self, asker: &str) -> bool {
+        let now = Instant::now();
+        self.ending.contains_key(asker)
+            || self.spaces().any(|space| {
+                space.terminals().any(|(_, pane)| {
+                    pane.task(now).is_some_and(|h| h.by == asker && !h.quiet)
+                        && !matches!(pane.state, Some(AgentState::NeedsYou(_)))
+                })
+            })
+    }
+
+    /// The notices about tasks waiting for the agent in the terminal `to` go now: the newest came
+    /// BATCH_WAIT ago, or the oldest BATCH_MOST ago, or no other task of its agent is running.
+    fn batch_due(&self, to: &str, now: Instant) -> bool {
+        let tasks: Vec<&Notice> = self
+            .notices
+            .iter()
+            .filter(|n| n.to == to && matches!(n.kind, NoticeKind::Task(_)))
+            .collect();
+        let (Some(oldest), Some(newest)) = (tasks.first(), tasks.last()) else {
+            return false;
+        };
+        now.saturating_duration_since(newest.at) >= BATCH_WAIT
+            || now.saturating_duration_since(oldest.at) >= BATCH_MOST
+            || !self.still_running(to)
+    }
+
+    /// Types the notices whose agents take them now; drops those whose terminal runs no agent any
+    /// more (docs/specs/connections.md, Delegating 10). The notices about tasks go together, as
+    /// one paste, once `batch_due`; the others one at a time, oldest first. The Templum Agent's are
+    /// told to its engine, in the same batches.
     pub(super) fn deliver_notices(&mut self, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        let before = self.notices.len();
+        let mut freed = false;
+        let stale: Vec<bool> = self.notices.iter().map(|n| self.stale(n)).collect();
+        let mut stale = stale.into_iter();
+        self.notices.retain(|_| !stale.next().unwrap_or(false));
         let mut i = 0;
         while i < self.notices.len() {
-            match self.pane(&self.notices[i].to).and_then(Pane::takes_notice) {
+            let to = self.notices[i].to.clone();
+            let task = matches!(self.notices[i].kind, NoticeKind::Task(_));
+            // The Templum Agent's engine takes a message at any time, and no person writes to it.
+            let engine = to == templum_agent::ASKER;
+            let takes = if engine {
+                Some(true)
+            } else {
+                freed |= self.pane(&to).is_some_and(Pane::settle_draft);
+                self.pane(&to).and_then(Pane::takes_notice)
+            };
+            match takes {
                 None => {
                     self.notices.remove(i);
                 }
                 Some(false) => i += 1,
+                Some(true) if task && !self.batch_due(&to, now) => i += 1,
                 Some(true) => {
-                    let notice = self.notices.remove(i);
-                    // Its next notice waits, also in this pass: two never share an Enter.
-                    drop(self.send_task(&notice.to, &notice.text, None, cx));
+                    let batch = if task {
+                        let (batch, rest) = std::mem::take(&mut self.notices)
+                            .into_iter()
+                            .partition(|n| n.to == to && matches!(n.kind, NoticeKind::Task(_)));
+                        self.notices = rest;
+                        batch
+                    } else {
+                        vec![self.notices.remove(i)]
+                    };
+                    let text = batch_text(&batch);
+                    if engine {
+                        self.tell_engine(&text, cx);
+                    } else {
+                        // Its next notice waits, also in this pass: two never share an Enter.
+                        drop(self.send_task(&to, &text, None, cx));
+                    }
                 }
             }
         }
+        // The chips of those that wait (`answers_waiting`) follow the person's drafts.
+        if freed || self.notices.len() != before {
+            cx.notify();
+        }
     }
+}
+
+/// What is typed for `batch`, the notices of one agent, oldest first: one as it is; several as one
+/// text, a title line (what they are, and where their words are) and each of them, a blank line
+/// between. A notice that isn't an end (`Waiting`: a dialog, or a screen gone still) "needs a
+/// look".
+fn batch_text(batch: &[Notice]) -> String {
+    if let [only] = batch {
+        return only.text.clone();
+    }
+    let ended = batch
+        .iter()
+        .filter(|n| !matches!(n.kind, NoticeKind::Task(NoticeLevel::Waiting)))
+        .count();
+    let waiting = batch.len() - ended;
+    let title = match (ended, waiting) {
+        (n, 0) => format!("{n} tasks ended"),
+        (0, n) => format!("{n} tasks need a look"),
+        (a, b) => {
+            let ended = if a == 1 {
+                "1 task ended".into()
+            } else {
+                format!("{a} tasks ended")
+            };
+            let waits = if b == 1 {
+                "1 needs a look".into()
+            } else {
+                format!("{b} need a look")
+            };
+            format!("{} notices: {ended}, {waits}", batch.len())
+        }
+    };
+    let texts: Vec<&str> = batch.iter().map(|n| n.text.as_str()).collect();
+    format!("[{title}] {BATCH_LEAD}\n\n{}", texts.join("\n\n"))
 }
 
 #[cfg(test)]
@@ -1550,6 +1811,81 @@ mod tests {
 
     fn wait() -> EnterWait {
         EnterWait::new("› ".into(), SIZE)
+    }
+
+    /// The bare prompt of each agent family is an empty input; text after it, or a screen with no
+    /// prompt Templum knows (a dialog), is not.
+    #[test]
+    fn an_input_is_empty_when_its_prompt_has_nothing_after_it() {
+        // Claude Code, in a box (older) and with rules (newer).
+        let boxed = "╭────────────────╮\n│ >              │\n╰────────────────╯\n  ? for shortcuts";
+        let ruled = "● Done.\n\n────────────────\n❯\n────────────────\n  ? for shortcuts";
+        assert!(input_empty(boxed) && input_empty(ruled));
+        assert!(!input_empty(&boxed.replace("│ >  ", "│ > hi")));
+        assert!(!input_empty(&ruled.replace('❯', "❯ fix the")));
+        // Codex.
+        assert!(input_empty(
+            "• Ran cargo test\n\n›\n\n  ⏎ send   ⌃J newline"
+        ));
+        assert!(!input_empty(
+            "• Ran cargo test\n\n› fix the tests\n\n  ⏎ send"
+        ));
+        // A plain agent: an earlier prompt with text above the bare one is history.
+        assert!(input_empty("> run it\nran it\n> "));
+        assert!(!input_empty("ran it\n> run it"));
+        // A dialog's choice is not an input; nothing known is no answer.
+        assert!(!input_empty("Allow Edit?\n❯ 1. Yes\n  2. No"));
+        assert!(!input_empty("compiling…"));
+        assert!(!input_empty(""));
+        // Claude Code's shell mode has no marker: a bare one far up is output, not its input.
+        let shell = "❯\nran it\n1\n2\n3\n4\n5\n6\n! git sta";
+        assert!(!input_empty(shell));
+    }
+
+    /// A batch of one is the notice as it is; several have a title that says what they are.
+    #[test]
+    fn a_batch_has_a_title_that_names_what_it_holds() {
+        let notice = |level, text: &str| Notice {
+            to: "t".into(),
+            text: text.into(),
+            kind: NoticeKind::Task(level),
+            about: None,
+            at: Instant::now(),
+        };
+        let (done, failed, waits) = (NoticeLevel::Done, NoticeLevel::Failed, NoticeLevel::Waiting);
+        let title = |levels: &[NoticeLevel]| {
+            let batch: Vec<Notice> = levels.iter().map(|l| notice(*l, "x")).collect();
+            batch_text(&batch).lines().next().unwrap().to_string()
+        };
+        assert_eq!(
+            batch_text(&[notice(done, "[task t1] one\nbody")]),
+            "[task t1] one\nbody"
+        );
+        assert_eq!(
+            title(&[done, failed]),
+            "[2 tasks ended] They are in the pasted text."
+        );
+        assert_eq!(
+            title(&[waits, waits, waits]),
+            "[3 tasks need a look] They are in the pasted text."
+        );
+        assert_eq!(
+            title(&[done, done, waits]),
+            "[3 notices: 2 tasks ended, 1 needs a look] They are in the pasted text."
+        );
+        assert_eq!(
+            title(&[done, waits, waits]),
+            "[3 notices: 1 task ended, 2 need a look] They are in the pasted text."
+        );
+        // Each notice as it is, a blank line between, oldest first.
+        let batch = [
+            notice(done, "[task t1] a\nA"),
+            notice(failed, "[task t2] b\nB"),
+        ];
+        assert_eq!(
+            batch_text(&batch),
+            "[2 tasks ended] They are in the pasted text.\n\n[task t1] a\nA\n\n[task t2] b\nB"
+        );
     }
 
     #[test]

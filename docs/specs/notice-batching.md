@@ -1,7 +1,7 @@
 # Notices that wait their turn: the person's text first, and answers in batches
 
 - **Date:** 2026-10-24
-- **Status:** Design (kanban card 146), not implemented
+- **Status:** Implemented (kanban card 146)
 - **Builds on:** [connections.md](connections.md) (Delegating: notices typed back),
   [agent-protocol.md](agent-protocol.md) (a task's end, stuck, quiet), [templum-agent.md](templum-agent.md) (its chat's
   notices)
@@ -89,7 +89,30 @@ person (`Workspace::notices`, `deliver_notices`, crates/templum/src/workspace/de
 - Specs to update: connections.md (Delegating, notices), agent-protocol.md (notices), templum-agent.md (its chat's
   notices), this file's Status.
 
-## Left to the builder
+## As built
+
+- **The draft's signals** (`Pane::person_wrote`, `person_keyed`, `settle_draft`, `input_empty`). Set by the person's
+  text, a paste, text typed for them (`send_to`; not while the agent waits for them), Shift+Enter, Alt+Enter, Tab (not
+  Shift+Tab; it takes the suggestion), Up, Down and Ctrl+Y. Cleared by Enter, except Claude Code's (`\` and Enter is a
+  new line there; its `Submitted` at the Enter clears it), by Ctrl+C, by a `Submitted` that comes at the Enter (Claude
+  Code's only: the others come once a turn takes a prompt in, while the person may be writing the next), by `Started`
+  or `Ended`, and by a look at the screen once their last key is `TYPING` old that finds, in the last six rows, the
+  last row opening with a prompt marker (`›` Codex, `❯` or `>` Claude Code, `>` a plain agent, inside the box some
+  draw) with nothing after it. A screen with no such row (a dialog, Claude Code's shell mode) never ends a draft.
+  Tested for Claude Code, Codex and a plain agent without hooks. Backspace, Esc and Ctrl+U (to the start of the
+  line only) say nothing: the screen does.
+- **The chip** is `answers-waiting-{block}` (`block.rs`), at the bottom center like the inbox's, lifted above it when
+  that shows; it shows while a draft holds a notice and a click on it does nothing.
+- **Titles:** `[3 tasks ended]`, `[3 tasks need a look]` (a dialog, or a screen gone still), and `[3 notices: 2 tasks
+  ended, 1 needs a look]`, each followed by `They are in the pasted text.`: the first line is the one typed, the rest
+  is the paste. A notice that a task waits for its person or went quiet is dropped if, before it goes, its worker
+  doesn't any more (the dialog was answered, the task ended).
+- **Still running** leaves out a task that waits for its person or went quiet: its own notice is on its way.
+- **The Templum Agent's engine** hears its batches from the same queue (`Workspace::notices`, recipient
+  `templum_agent::ASKER`): no second queue, and `deliver_notices` skips the draft and gap rules for it. Constants:
+  `BATCH_WAIT`, `BATCH_MOST`.
+
+## Left to the builder (as the design wrote it)
 
 The draft's exact signals per agent family (with tests for Claude Code, Codex and a plain agent without hooks), where
 the "answers waiting" chip sits, the batch title's words, how the Templum Agent's batch reaches its engine (one message

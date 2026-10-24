@@ -506,7 +506,11 @@ The Templum Agent hands work out as an agent block does, with the tasks of
 - **A task's end** comes as the notice connections.md writes (`[task t7 from Codex · api (k9x1d): done in 31 s, …]
   Its answer is in the pasted text.` and the answer), as a notice row in the chat and as a message to the engine: at
   once when it is idle (a new turn), else taken into the turn under way when Claude Code takes queued messages there,
-  else after it. So the Templum Agent wakes up when an agent finishes, without the person.
+  else after it. So the Templum Agent wakes up when an agent finishes, without the person. The chat shows each notice
+  as it comes; only what the engine is told waits, as a terminal's notices do (up to 15 seconds for the next end, 60
+  at most, at once when no other task of its runs), and it hears several as one message under a first line,
+  `[3 tasks ended] They are in the pasted text.` ([notice-batching.md](notice-batching.md)). No draft rule applies: the
+  chat's field isn't the engine's input.
 - **Waiting for its person** sends the waiting notice the same way (once per wait), and the notice row turns yellow;
   clicking it shows the block.
 - **Agents at once:** `open_agent` with a prompt and `delegate` are refused while `templum_agent.max_agents` of its

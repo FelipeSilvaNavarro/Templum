@@ -1740,6 +1740,21 @@ those of `development` at f8c3ec9.
   a thing, so a line selected to copy loses the keyboard when another agent's `wait_for` ends, and Ctrl+C copies
   nothing. Fix: refocus only on the focus handles of the fields that left (`answer`/`closed`/`cancel` hold the wait:
   make `inbox_refocus` a list of its fields' handles), with a test.
+- [ ] **A notice and the person's first key can share an Enter.** `send_task`
+  (`crates/templum/src/workspace/delegate.rs`) types a notice, then waits for its paste to show before its Enter
+  (`Step::Typing`); a person who starts typing in that moment gets no Enter, and the paste stays in the input with their
+  keys (docs/specs/notice-batching.md, Non-goals). Fix to consider: queue the notice again, accepting a duplicate if the
+  person sends both.
+- [ ] **A draft that begins with a new line reads as an empty input.** `input_empty`
+  (`crates/templum/src/workspace/delegate.rs`) looks at the last row that opens with a prompt marker; a message the
+  person began with Shift+Enter has a bare marker row and its text under it, so once their last key is TYPING old and
+  the keys can't tell, the notice goes in over it. Fix: read the rows under the marker up to the input's rule or box
+  edge too.
+- [ ] **A draft emptied under a tall Claude Code footer never ends from the screen.** `INPUT_ROWS` = 6
+  (`crates/templum/src/workspace/delegate.rs`, `input_empty`) reads the bottom six rows; with a status line of 4 or more
+  lines the input row sits above them, so a draft emptied with Backspace or Esc (or one an Up, Down, Tab or Ctrl+Y left
+  over an empty input) is never seen empty, and the notices wait for the person's next message (with hooks, its
+  `Submitted`). Fix to consider: look for the input between the last two rule or box rows instead of a fixed count.
 
 ## Placing new blocks
 

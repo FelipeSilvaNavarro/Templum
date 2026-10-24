@@ -8,6 +8,7 @@ use templum_mcp::Reply;
 use templum_mcp::ask::{Ask, Form, Row};
 
 use super::Workspace;
+use super::delegate::NoticeKind;
 use super::waits::{Field, Wait, Waiting, field_focused};
 
 /// A dismissed question's answer.
@@ -201,7 +202,7 @@ impl Workspace {
             .then(|| (wait.from.clone(), ask.notice(&reply.text)));
         self.close_question(key, reply, window, cx);
         if let Some((to, notice)) = notice {
-            self.queue_notice(to, notice, cx);
+            self.queue_notice(to, notice, NoticeKind::Other, cx);
         }
     }
 

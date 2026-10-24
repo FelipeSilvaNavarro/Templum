@@ -752,6 +752,8 @@ mod menus;
 mod moving;
 mod navigation;
 mod notes;
+#[cfg(unix)]
+mod notices;
 mod persistence;
 mod requests;
 mod screen;
