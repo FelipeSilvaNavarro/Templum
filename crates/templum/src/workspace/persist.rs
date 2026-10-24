@@ -9,6 +9,7 @@ use gpui_kit::{App, Context, Window};
 use templum_canvas::{BlockId, Camera, Point, Rect, Size, chrome};
 
 use crate::agents::AgentEntry;
+use crate::automations::{self, Automations};
 use crate::board::{self, Boards};
 use crate::checklist::{self, Checklist};
 use crate::checklists::{self, Checklists};
@@ -442,8 +443,11 @@ impl Workspace {
         let standing = (!self.standing_frozen
             && self.standing_saved.as_ref() != Some(&self.standing))
         .then(|| self.standing.clone());
+        let routines = (!self.automations_frozen
+            && self.automations_saved.as_ref() != Some(&self.automations))
+        .then(|| self.automations.clone());
         cx.spawn_in(window, async move |ws, cx| {
-            let (done, boards, notes, checklists, standing) = cx
+            let (done, boards, notes, checklists, standing, routines) = cx
                 .background_executor()
                 .spawn(async move {
                     let notes = notes.map(|n| {
@@ -475,11 +479,17 @@ impl Workspace {
                         let written = instructions::save(&dir, &s, generation);
                         (s, written)
                     });
-                    (done, boards, notes, checklists, standing)
+                    let routines = routines.map(|r| {
+                        let written = automations::save(&dir, &r, generation);
+                        (r, written)
+                    });
+                    (done, boards, notes, checklists, standing, routines)
                 })
                 .await;
             ws.update_in(cx, |ws, window, cx| {
-                ws.snapshot_done(done, boards, notes, checklists, standing, window, cx)
+                ws.snapshot_done(
+                    done, boards, notes, checklists, standing, routines, window, cx,
+                )
             })
             .ok();
         })
@@ -495,6 +505,7 @@ impl Workspace {
         notes: Option<(notes::Notes, std::io::Result<()>)>,
         checklists: Option<(Checklists, std::io::Result<()>)>,
         standing: Option<(Instructions, std::io::Result<()>)>,
+        routines: Option<(Automations, std::io::Result<()>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -529,6 +540,14 @@ impl Workspace {
             Some((standing, Ok(()))) => {
                 wrote = true;
                 self.standing_saved = Some(standing);
+            }
+            Some((_, Err(err))) => failed = Some(err),
+            None => {}
+        }
+        match routines {
+            Some((routines, Ok(()))) => {
+                wrote = true;
+                self.automations_saved = Some(routines);
             }
             Some((_, Err(err))) => failed = Some(err),
             None => {}
@@ -603,6 +622,12 @@ impl Workspace {
             match instructions::save(&dir, &self.standing, generation) {
                 Ok(()) => self.standing_saved = Some(self.standing.clone()),
                 Err(err) => eprintln!("templum: couldn't save the instructions: {err}"),
+            }
+        }
+        if !self.automations_frozen && self.automations_saved.as_ref() != Some(&self.automations) {
+            match automations::save(&dir, &self.automations, generation) {
+                Ok(()) => self.automations_saved = Some(self.automations.clone()),
+                Err(err) => eprintln!("templum: couldn't save the automations: {err}"),
             }
         }
         if !self.notes_frozen && self.notes_saved.as_ref() != Some(&self.notes) {

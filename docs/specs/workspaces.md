@@ -42,7 +42,9 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
   - Rename opens a dialog with a text field. Enter or **Rename** applies it, Esc cancels.
   - Delete asks first: "Delete *name*? Its terminals will close." It is disabled while only one workspace exists.
 - **At the foot, apart:** the Agents button ("Agents"; [agents-view.md](agents-view.md)) above the requests inbox
-  button ("Requests"; [ask-inbox.md](ask-inbox.md)) above the Git button ([git.md](git.md)). A yellow badge at the
+  button ("Requests"; [ask-inbox.md](ask-inbox.md)) above the Automations button ("Automations";
+  [automations.md](automations.md); a red badge counts the automations whose last run failed, was skipped or was
+  missed since the popup was last opened) above the Git button ([git.md](git.md)). A yellow badge at the
   Requests button's top right counts the requests waiting in the workspace shown, "99+" past 99, and the button
   pulses for 3 seconds when one arrives there (not with reduced motion). An accent badge at the Agents button's top
   right counts the agents of every running workspace that finished unseen, "99+" past 99; it never pulses.

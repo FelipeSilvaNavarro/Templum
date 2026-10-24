@@ -176,6 +176,13 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   sidebar's button with its count of the agents that finished unseen ([specs/agents-view.md](specs/agents-view.md));
   `workspace/agents_view.rs` is its model: each agent's state as its block's dot tells it, the watch that ages
   states and marks Done, the grouped rows and the popup's keys.
+- `automations/`: the person's cron, as a pure layer ([specs/automations.md](specs/automations.md)): `mod.rs` the
+  saved rules (`Automations`, `When`, `Do`, the last run) and `automations.json`, app-wide and written with the
+  snapshot like the instructions; `clock.rs` the next times, cron's five fields, daylight saving and the words.
+  `workspace/automations.rs` runs them (a look every second: due, held, missed, Stop after, Target missing; each Do
+  through `hand_task`, `type_text`, `add_block_in`, `open_agent_in` and a notification) and keeps the popup's state
+  and the drafts; `automations_view/` draws the Automations popup (`mod.rs`: the list, Asked by agents and the
+  sidebar's button; `editor.rs`: the form) like `agents_view.rs`.
 - `balloon.rs`: the request itself as the inbox draws it: a question's dialog, a plan to approve, a yes/no request
   ([specs/connections.md](specs/connections.md#requests-from-agents)).
 - `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;

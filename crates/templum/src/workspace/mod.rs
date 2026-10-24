@@ -4,6 +4,7 @@ mod activity;
 mod agent;
 pub(crate) mod agents_view;
 mod approvals;
+pub(crate) mod automations;
 mod autostart;
 mod blocks;
 mod bus;
@@ -1253,6 +1254,29 @@ pub struct Workspace {
     standing_saved: Option<crate::instructions::Instructions>,
     /// `instructions.json` couldn't be read: it isn't written this session.
     standing_frozen: bool,
+    /// The person's rules that run at a time (`automations/`, `workspace/automations.rs`).
+    pub(crate) automations: crate::automations::Automations,
+    /// The automations as last read or written, to write only what changed.
+    automations_saved: Option<crate::automations::Automations>,
+    /// `automations.json` couldn't be read: it isn't written this session.
+    automations_frozen: bool,
+    /// What each automation is doing, by id (`automations.rs`).
+    pub(crate) automation_runs: automations::Runs,
+    /// The window the automations act in, for the look that has none of its own.
+    window_handle: gpui_kit::AnyWindowHandle,
+    /// The look at the automations runs (`automations::look_at_automations`).
+    automating: bool,
+    /// The Automations popup is open. Never together with the Git popup, the inbox or Agents.
+    pub(crate) automations_open: bool,
+    /// The automation its editor shows (`automations::NEW`: the one being written); None: the
+    /// first.
+    pub(crate) automations_at: Option<u64>,
+    /// The popup, or one of its fields, has the keyboard.
+    pub(crate) automations_focus: FocusHandle,
+    /// What the person edited and didn't save, by id (`automations::NEW` for a new one).
+    pub(crate) automation_drafts: HashMap<u64, crate::automations::Automation>,
+    /// The editor's fields, made at the first open.
+    pub(crate) automation_form: Option<crate::automations_view::editor::Form>,
     /// The open card dialog's work, kept as a draft when the window closes (see `kanban::Work`).
     pub(crate) card_work: Option<crate::kanban::Open>,
     /// `boards` before each change, newest last, at most BOARD_UNDO (see `edit_boards`).
@@ -1755,6 +1779,17 @@ impl Workspace {
             standing: Default::default(),
             standing_saved: None,
             standing_frozen: false,
+            automations: Default::default(),
+            automations_saved: None,
+            automations_frozen: false,
+            automation_runs: Default::default(),
+            window_handle: window.window_handle(),
+            automating: false,
+            automations_open: false,
+            automations_at: None,
+            automations_focus: cx.focus_handle(),
+            automation_drafts: Default::default(),
+            automation_form: None,
             notes_frozen: false,
             index_frozen: false,
             sidebar: true,

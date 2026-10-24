@@ -278,6 +278,16 @@ shows it working (accent) or waiting for you (yellow, "Waiting for you: …"). I
 command line.
 Every block has a short id (`b7k2m`) that lasts through restarts. Turn it off with `[connections] enabled = false`. See [specs/connections.md](specs/connections.md).
 
+## Automations
+
+The clock button in the sidebar's foot, above Git (Ctrl+Shift+J), opens **Automations**: rules that run at a time and
+do one thing. **New** writes one: when it runs (once at a date and time, every N minutes or hours, every day at a time,
+on chosen weekdays or days of the month, or a cron expression) and what it does (type a prompt into an agent, run a
+command in a terminal or a new one, start an agent, or notify you). Each row tells when it runs next and how its last
+run went. A prompt waits while its agent works, asks you something or while you type in it, and is never typed into a
+shell; a time that passes while Templum is closed is marked Missed, not run. What agents asked for with `schedule` is
+listed under **Asked by agents**, where you can cancel it.
+
 ## Shell integration
 
 Templum loads a small script into bash, zsh, fish and PowerShell (Git Bash and Windows PowerShell included), as

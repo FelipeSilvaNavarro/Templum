@@ -719,6 +719,7 @@ mod accounts;
 mod agents;
 mod agents_view;
 mod attachments;
+mod automations;
 mod block_ids;
 mod blocks;
 mod bus;

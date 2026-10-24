@@ -6,6 +6,8 @@ mod agents;
 mod agents_view;
 mod alert;
 mod attachments;
+mod automations;
+mod automations_view;
 mod autostart;
 mod balloon;
 mod bench;

@@ -1,9 +1,10 @@
 # Automations: Templum's cron
 
 - **Date:** 2026-10-24
-- **Status:** Designed (kanban card 150, "a cron system (a button in the sidebar near Git)"). Delivered in two
-  batches: batch 1, time (plan: [2026-10-24-automations.md](../plans/2026-10-24-automations.md)); batch 2, agent
-  and command events (its plan comes after batch 1 ships).
+- **Status:** Batch 1 (time) implemented (kanban card 150, "a cron system (a button in the sidebar near Git)"),
+  uncommitted until reviewed. Delivered in two batches: batch 1, time (plan:
+  [2026-10-24-automations.md](../plans/2026-10-24-automations.md)); batch 2, agent and command events (its plan comes
+  after batch 1's As built).
 - **Builds on:** [agent-tools.md](agent-tools.md#schedule-and-cancel_schedule) (an agent's `schedule`: deliveries
   later, the clock), [agents-view.md](agents-view.md) and [ask-inbox.md](ask-inbox.md) (the sibling popups this one is
   drawn like), [connections.md](connections.md) (Delegating: how a task is typed into an agent; Spawning; an agent's
@@ -308,7 +309,7 @@ named by its title and uid as the blocks list names it; a folder as typed.
 | **Time** | its Do decides (below) | Skipped, "Target missing" before | Skipped, "Target missing" before | each runs, in the list's order | missed times are Missed, not run; next times from now |
 | **Agent event** (2) | — | Target missing: doesn't run | not heard there | each automation an event fires runs, in the list's order | nothing replays; cooldowns start over |
 | **Command ends** (2) | — | Target missing: doesn't run | not heard there | one firing per look for the last command | nothing replays |
-| **Prompt** | held up to 60 min, then Skipped | Failed "abc12 isn't open" (shown as Target missing before) | as gone | two prompts for one agent: the first typed, the next held until it is free again | a held prompt is lost: its time shows as Missed |
+| **Prompt** | held up to 60 min, then Skipped | Skipped, "Target missing: abc12 isn't open" (shown so before) | as gone | two prompts for one agent: the first typed, the next held until it is free again | a held prompt is lost: its time shows as Missed |
 | **Command in a terminal** | held up to 60 min, then Skipped | as a prompt | as a prompt | as a prompt | as a prompt |
 | **Command in a new terminal** | its kept terminal busy: another opens | its kept terminal closed: another opens | Target missing | each opens or reuses its own | its kept terminal is reused (uids survive) |
 | **Start an agent** | — | agent removed: Target missing | Target missing | each opens one | — |
@@ -475,4 +476,39 @@ fields are kept, the constants' and functions' names, the exact words of the emp
 
 ## As built
 
-*To be written by the builder of each batch.*
+### Batch 1
+
+What the builder chose where the spec left it open, and what differs:
+
+- **Code:** `crates/templum/src/automations/` (`mod.rs` the rules and their file, `clock.rs` the times),
+  `workspace/automations.rs` (the look, the Do's, the popup's state and the drafts),
+  `automations_view/{mod.rs,editor.rs}` (the popup and the form). `schedules::next_at` resolves its moment through
+  `clock::resolve`: one daylight-saving rule.
+- **`Held` has a `counts` field** (a Run now that is held must not count when it finally runs; a due time that joins
+  it makes it count), and the method that ends a run is `run_ended` (`ended` is taken by `delegate.rs`).
+- **A rule saved with no `since`** (a hand-edited file) counts from the start of that session, and a run that
+  is turned on again counts from then.
+- **Drafts** are compared with the saved rule on the fields the editor changes (name, workspace, When, Do, Stop
+  after): a draft typed back to what is saved is no draft, and loading the form makes none (`set_value` emits no
+  change). The form keeps its text boxes in `Workspace::automation_form`; `prepare_automation_form` fills them before
+  a frame, for the rule selected.
+- **The editor's controls:** gpui-kit `Input`/`Textarea`, `settings::row::menu_button` for every dropdown (now
+  `pub(crate)`), and plain toggles drawn as the Agents chips for the weekdays and the days of the month. The date of
+  a Once is a `YYYY-MM-DD` field and the model and the effort are free text (see docs/minors.md). A box the form
+  can't read (a time, a date, a number) keeps the draft as it was and says so above Save at once.
+- **The popup** has the keyboard on its own focus handle: ↑ ↓ act while that handle (not a field) holds it; Esc in a
+  field returns the keyboard to it, Esc on it closes the popup. The row's three buttons are drawn over its right side
+  while the pointer is on it (`group_hover`) and always on the selected row.
+- **Asked by agents** is `Workspace::schedule_rows()` (no `cx`): the asker's block as the Agents view names it, "to
+  itself" for its own block.
+- **A command in a terminal** is held while an agent runs there, a command runs there (shell integration's
+  `running`, or a program in front of its shell) or the person pressed a key in the last 3 seconds; a draft of theirs
+  that Templum can't see is the minor in docs/minors.md.
+- **The look runs only while something is on** (a rule on, or a run held by hand), as the schedules' does; it is
+  started by the first rule turned on, saved or run by hand, and by a start with rules on.
+- **A run whose answer is still on its way** when its rule is saved or turned off writes only `last` (and the badge
+  when it went wrong): the new rule counts from its save, and a time of it that falls due meanwhile runs at the next
+  look. Saving another kind, terminal or folder forgets the terminal the old one kept (`opened`); another command in
+  it keeps it.
+- **Looked at:** the popup's look (spacing, hover buttons, the form) was checked by the headless tests that draw
+  it (its elements, its widths); no display was at hand to see it by eye, so a person should open it once.

@@ -90,6 +90,7 @@ theme_picker   = "ctrl-shift-p"
 open_config    = "ctrl-,"
 go_to_waiting  = "ctrl-shift-a"   # the terminal waiting for you
 all_agents     = "ctrl-shift-l"   # every agent, in one list
+automations    = "ctrl-shift-j"   # the Automations popup
 find           = "ctrl-shift-f"   # in the focused terminal's history
 open_file      = "ctrl-p"         # in a focused editor: a file by name
 ```

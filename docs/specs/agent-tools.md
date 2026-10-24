@@ -380,7 +380,9 @@ conversation.
   <the text's first line, 60 characters>`.
 - **What the person sees:** a clock and the count after the caller's title (`◷ 2`, `title_dim`, at the Full level),
   whose tooltip lists them as `whoami` does; the block's menu gains **Cancel schedules ▸**, one row per schedule and
-  **All**. A schedule that delivers shows on the target as any task or typed text.
+  **All**. A schedule that delivers shows on the target as any task or typed text. The person also sees every
+  agent's schedules, and cancels them, under **Asked by agents** in the Automations popup
+  ([automations.md](automations.md#asked-by-agents)).
 - **The clock:** a schedule's times are the computer's clock (`SystemTime`), looked at every 15 seconds while there
   are schedules: Templum's timers count only time awake, and a computer asleep at a schedule's time would deliver it
   late by as long as it slept. A time missed while asleep goes at the first look after waking, once; a repeating one

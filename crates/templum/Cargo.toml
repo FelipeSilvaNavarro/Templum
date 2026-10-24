@@ -44,7 +44,7 @@ lyon_tessellation = "1"
 # Already in the tree: an editor's files for Ctrl+P, as .gitignore leaves them.
 ignore = "0.4"
 # Already in the tree (GPUI's, with its clock): when an agent's plan limit resets, in local time.
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 # Already in the tree (uuid's): a downloaded theme checked against the git hash GitHub lists.
 sha1_smol = { version = "1", features = ["std"] }
 # Already in the tree, with its random source: the id of a session an agent is started on.

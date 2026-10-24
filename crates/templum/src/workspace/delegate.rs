@@ -561,7 +561,7 @@ impl Pane {
     /// cover is still on), or no snapshot found it yet, though STARTS_WITHIN hasn't passed since
     /// its command was typed (after that, it never started). A task handed to it waits, as a
     /// spawn's prompt does (docs/specs/connections.md, Delegating 5).
-    fn agent_starting(&self) -> bool {
+    pub(super) fn agent_starting(&self) -> bool {
         let young = self
             .typed_agent
             .is_some_and(|at| at.elapsed() < super::spawn::STARTS_WITHIN);

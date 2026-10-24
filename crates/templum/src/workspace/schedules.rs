@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
-use chrono::{Local, TimeZone as _};
+use chrono::Local;
 use gpui_kit::Context;
 use templum_mcp::{Reply, tools};
 
@@ -15,6 +15,7 @@ use super::Workspace;
 use super::bus::{Outcome, target};
 use super::delegate::NoticeKind;
 use super::waits::{EVENT_LOOK, PRINTED_LINES};
+use crate::automations::clock;
 
 /// How often the schedules are looked at, while there are any.
 pub(crate) const SCHEDULE_LOOK: Duration = Duration::from_secs(15);
@@ -43,11 +44,7 @@ fn next_at(hour: u8, minute: u8) -> SystemTime {
         .flat_map(|days| {
             let day = now.date_naive() + chrono::Days::new(days);
             let at = day.and_hms_opt(hour.into(), minute.into(), 0)?;
-            Local.from_local_datetime(&at).earliest().or_else(|| {
-                Local
-                    .from_local_datetime(&(at + chrono::Duration::hours(1)))
-                    .earliest()
-            })
+            clock::resolve(&Local, at)
         })
         .find(|at| *at > now)
         .map_or_else(SystemTime::now, SystemTime::from)

@@ -139,6 +139,7 @@ pub(crate) fn render(
                 .border_color(ui.hairline)
                 .child(crate::agents_view::button(ws, TILE, cx))
                 .child(crate::inbox::button(ws, pulse, TILE, cx))
+                .child(crate::automations_view::button(ws, TILE, cx))
                 .child(git),
         )
 }

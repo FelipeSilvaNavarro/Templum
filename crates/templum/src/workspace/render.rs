@@ -758,6 +758,18 @@ impl Render for Workspace {
                     crate::agents_view::popup(self, w, h, &all, listed, window, cx),
                 )
             });
+        // The Automations popup: the same place, size and layering again (never open together).
+        self.prepare_automation_form(window, cx);
+        self.follow_automation_draft(window, cx);
+        let automations = self.automations_open.then(|| {
+            let Size { w, h } = self.git_popup_size();
+            let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
+            div()
+                .absolute()
+                .left(px(left))
+                .bottom(px(GIT_GAP))
+                .child(crate::automations_view::popup(self, w, h, cx))
+        });
         // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
         let open = self.templum_agent.open;
         let full = open && self.templum_agent.full;
@@ -844,6 +856,7 @@ impl Render for Workspace {
             .children(git)
             .children(inbox)
             .children(agents)
+            .children(automations)
             // Under what the title bar opens: the settings, the theme picker, the screen.
             .children(welcome)
             .children(panel)

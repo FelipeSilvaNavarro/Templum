@@ -30,7 +30,7 @@ mod fonts;
 mod general;
 mod git;
 mod instructions;
-mod row;
+pub(crate) mod row;
 mod sections;
 pub(crate) mod templum_agent;
 #[cfg(test)]

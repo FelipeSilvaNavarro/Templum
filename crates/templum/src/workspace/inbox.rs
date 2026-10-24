@@ -60,6 +60,7 @@ impl Workspace {
         self.inbox_open = true;
         self.git_open = false;
         self.agents_open = false;
+        self.automations_open = false;
         if let Some(at) = at
             && self.inbox().iter().any(|w| w.key == at)
         {

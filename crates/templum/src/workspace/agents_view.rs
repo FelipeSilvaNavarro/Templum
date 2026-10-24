@@ -462,6 +462,7 @@ impl Workspace {
         self.agents_open = true;
         self.inbox_open = false;
         self.git_open = false;
+        self.automations_open = false;
         // The list was gone when the pointer left it, if it was over it as the popup closed.
         self.agents_hover = false;
         let search = match self.agents_search.clone() {

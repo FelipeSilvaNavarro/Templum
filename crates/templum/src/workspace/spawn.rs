@@ -17,10 +17,11 @@ use crate::agents::AgentEntry;
 /// How often a spawned agent's readiness for its prompt is looked at.
 pub(super) const READY_LOOK: Duration = Duration::from_secs(1);
 /// Who opens an agent: a block's agent with `spawn_agent` (its terminal's `TEMPLUM_TERMINAL` and
-/// its block), or the Templum Agent.
+/// its block), the Templum Agent, or an automation (its task's asker and its signature).
 pub(super) enum Opener {
     Block { terminal: String, id: BlockId },
     TemplumAgent,
+    Automation { asker: String, by: String },
 }
 
 /// How long after the spawn a shell may take to start its agent (its startup files): a snapshot
@@ -237,6 +238,8 @@ impl Workspace {
                 templum_agent::ASKER.to_string(),
                 Some(templum_agent::ASKER.to_string()),
             ),
+            // Wired to nothing, closed by the person only.
+            Opener::Automation { asker, by } => (by.clone(), asker.clone(), None),
         };
         let opened = self
             .in_space(space, |ws| {
@@ -285,6 +288,7 @@ impl Workspace {
         let wired = match &opener {
             Opener::Block { .. } => ", connected to you".to_string(),
             Opener::TemplumAgent if wire_to.is_empty() => String::new(),
+            Opener::Automation { .. } => String::new(),
             Opener::TemplumAgent => {
                 let home = self.space_named(space);
                 let uids: Vec<String> = wire_to
@@ -302,7 +306,7 @@ impl Workspace {
             Opener::Block { .. } => {
                 format!("Opened {what} as {uid} in {}{wired}{on}.", folder.display())
             }
-            Opener::TemplumAgent => {
+            Opener::TemplumAgent | Opener::Automation { .. } => {
                 format!("Opened {what} as {uid} in {}{on}{wired}.", folder.display())
             }
         };

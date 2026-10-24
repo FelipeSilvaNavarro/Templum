@@ -163,7 +163,7 @@ pub(super) fn remove(
 }
 
 /// A button showing the current option, opening a menu of them; the current one is checked.
-pub(super) fn menu_button(
+pub(crate) fn menu_button(
     id: impl Into<ElementId>,
     options: Vec<(SharedString, SharedString)>,
     current: SharedString,

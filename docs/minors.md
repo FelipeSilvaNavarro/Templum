@@ -2179,3 +2179,24 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **The details have no scrollbar.** The right column scrolls with the wheel but, unlike the inbox's, draws no
   `scrollbar_over` (`crates/templum/src/agents_view.rs`, `detail`): a tall details column (many subagents, a long
   task) gives no hint that it goes on. Fix: keep a `ScrollHandle` for it in the Workspace and draw `scrollbar_over`.
+
+## Automations
+
+- [ ] **A command typed into a terminal at its prompt joins what the person half-typed and left there.** Templum can't
+  read the input line (`command_busy` in `crates/templum/src/workspace/automations.rs` only knows a command runs, an
+  agent runs, or the person pressed a key in the last 3 seconds). What a person sees: `make test` appended to their
+  half-written `git comm`. Fix: read the line between the prompt's mark (OSC 133 A) and the cursor, and hold the command
+  while it isn't empty. A command in a new terminal, the default, has no such risk.
+- [ ] **Run now on a held run does nothing.** `run_automation_now`
+  (`crates/templum/src/workspace/automations.rs`) returns while the rule is already held or its answer is on its way,
+  so pressing Run now on "Waiting for abc12" gives no feedback. Fix: flash the row, or let the press turn the held run
+  into a counted one.
+- [ ] **The editor's date is a plain `YYYY-MM-DD` field.** `crates/templum/src/automations_view/editor.rs` has no date
+  picker, so a person must type the date of a Once. Fix: gpui-kit's date picker for the Once's date.
+- [ ] **A cron's preview is computed every frame the popup is open.** `cron_preview`
+  (`crates/templum/src/automations_view/editor.rs`) parses the expression and walks three next times on each draw.
+  Cheap for one rule, but it runs while the person types. Fix: keep the preview with the draft and recompute it only
+  when the expression changes.
+- [ ] **A model and an effort are free text.** The Start an agent form takes both as typed words
+  (`crates/templum/src/automations_view/editor.rs`) and only Save says if the agent refuses them. Fix: dropdowns of the
+  agent's own models and efforts (`Agent::launch_args`' lists).

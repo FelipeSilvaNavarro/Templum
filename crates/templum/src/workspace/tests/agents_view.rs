@@ -21,7 +21,7 @@ use crate::workspace::{AgentState, Handed};
 
 /// A terminal at row `row` of the canvas whose agent runs, as a snapshot found it: its block and
 /// its terminal.
-fn agent(
+pub(super) fn agent(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
@@ -158,7 +158,7 @@ fn a_rows_state_follows_its_dot(cx: &mut TestAppContext) {
 }
 
 /// A turn of the agent in `terminal` starts.
-fn begins(
+pub(super) fn begins(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
@@ -169,7 +169,12 @@ fn begins(
 }
 
 /// A turn of the agent in `terminal` ends.
-fn ends(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext, terminal: &str) {
+pub(super) fn ends(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    terminal: &str,
+) {
     let input = json!({ "hook_event_name": "Stop", "last_assistant_message": "ok" });
     hook(handle, ws, cx, terminal, input);
 }
@@ -644,7 +649,11 @@ const ALL_AGENTS: &str = "cmd-shift-l";
 #[cfg(not(target_os = "macos"))]
 const ALL_AGENTS: &str = "ctrl-shift-l";
 
-fn open_agents(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+pub(super) fn open_agents(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) {
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| ws.open_agents(window, cx));
         window.render_frame(cx);
@@ -652,7 +661,7 @@ fn open_agents(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestApp
     .unwrap();
 }
 
-fn press(handle: AnyWindowHandle, cx: &mut TestAppContext, key: &str) {
+pub(super) fn press(handle: AnyWindowHandle, cx: &mut TestAppContext, key: &str) {
     cx.update_window(handle, |_, window, cx| {
         window.press(key, cx);
         window.render_frame(cx);

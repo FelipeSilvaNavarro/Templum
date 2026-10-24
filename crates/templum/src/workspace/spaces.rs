@@ -1,7 +1,7 @@
 //! The workspaces: loading, switching, adding, renaming and deleting them, and their index.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, ImageSource, Window};
@@ -9,6 +9,7 @@ use templum_canvas::{BlockId, Rect, Size, chrome};
 
 use crate::alert;
 use crate::attachments;
+use crate::automations;
 use crate::board;
 use crate::checklists;
 use crate::instructions;
@@ -120,6 +121,30 @@ impl Workspace {
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::error(message));
                 self.standing_frozen = true;
+            }
+            Some(Loaded::Nothing) | None => {}
+        }
+        match self.data_dir.as_deref().map(automations::load) {
+            Some(Loaded::Saved(saved)) => {
+                self.automations_saved = Some(saved.clone());
+                self.automations = saved;
+                self.start_automations(SystemTime::now(), cx);
+            }
+            Some(Loaded::Moved { to, why }) => {
+                let message = format!(
+                    "Couldn't read the automations ({why}); they were kept as {}",
+                    to.display()
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
+            Some(Loaded::Unreadable(why)) => {
+                let message = format!(
+                    "Couldn't read the automations ({why}); they won't be saved this session"
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+                self.automations_frozen = true;
             }
             Some(Loaded::Nothing) | None => {}
         }

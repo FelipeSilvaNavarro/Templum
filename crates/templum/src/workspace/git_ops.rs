@@ -47,6 +47,7 @@ impl Workspace {
         self.git_open = true;
         self.inbox_open = false;
         self.agents_open = false;
+        self.automations_open = false;
         // A field (the summary, a filter) keeps the keyboard it just took on a click.
         if !git.focus.contains_focused(window, cx) {
             git.focus.focus(window, cx);

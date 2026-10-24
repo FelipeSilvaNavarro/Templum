@@ -783,7 +783,7 @@ pub(crate) fn ghost(
 }
 
 /// A foot's solid button (Send, Approve, Allow): the accent, the surface's color on it.
-fn solid(
+pub(crate) fn solid(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     icon: Option<IconName>,
