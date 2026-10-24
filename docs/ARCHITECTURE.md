@@ -182,7 +182,12 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   `workspace/automations.rs` runs them (a look every second: due, held, missed, Stop after, Target missing; each Do
   through `hand_task`, `type_text`, `add_block_in`, `open_agent_in` and a notification) and keeps the popup's state
   and the drafts; `automations_view/` draws the Automations popup (`mod.rs`: the list, Asked by agents and the
-  sidebar's button; `editor.rs`: the form) like `agents_view.rs`.
+  sidebar's button; `editor.rs`: the form) like `agents_view.rs`. The event rules (an agent's turn end or need, a
+  command's end) add no loop: `watch_agents` queues what the Agents view's watch hears (`Watch::see`) in
+  `automation_heard`, only while an event rule is on, and the look acts on the queue and on each command rule's
+  terminal count (`status().finished`) within a second. A rule's run state is split into slots, one per block that
+  fired it, so each agent's run is held or typed apart; "the agent that fired it" is the saved block `fired-it`,
+  swapped for that block before a run.
 - `balloon.rs`: the request itself as the inbox draws it: a question's dialog, a plan to approve, a yes/no request
   ([specs/connections.md](specs/connections.md#requests-from-agents)).
 - `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;

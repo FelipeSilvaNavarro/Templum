@@ -17,8 +17,7 @@ use gpui_kit::{
     MouseButton, ScrollWheelEvent, Stateful, TestSupportExt, div, point, px,
 };
 
-use crate::automations::Went;
-use crate::automations::clock::when_words;
+use crate::automations::{Do, FIRED, Went};
 use crate::git_block::widgets::icon_button;
 use crate::grid::hsla;
 use crate::inbox::{count_badge, section};
@@ -30,6 +29,8 @@ const ROW: f32 = 48.0;
 /// The text's sizes: the names, and what is said about them.
 pub(super) const TEXT: f32 = 13.0;
 pub(super) const SMALL: f32 = 11.5;
+/// What the empty list says under "No automations yet".
+pub(crate) const EMPTY_HINT: &str = "Type a prompt, run a command, start an agent or notify you at a time you choose, or when an agent finishes.";
 /// The most pixels of a row's last run: the words after it give way.
 const LAST_W: f32 = 150.0;
 
@@ -149,9 +150,7 @@ fn list(ws: &Workspace, selected: Option<u64>, cx: &mut Context<Workspace>) -> D
                     .font_weight(FontWeight::MEDIUM)
                     .child("No automations yet"),
             )
-            .child(div().text_size(px(SMALL)).text_center().child(
-                "Type a prompt, run a command, start an agent or notify you at a time you choose.",
-            ))
+            .child(div().text_size(px(SMALL)).text_center().child(EMPTY_HINT))
             .test_support()
     });
     let asked = ws.schedule_rows();
@@ -260,8 +259,7 @@ fn automation_row(
     };
     let missing = saved.and_then(|s| ws.automation_target(s).err());
     let off = saved.is_some_and(|s| !s.on) || missing.is_some();
-    let today = chrono::Local::now().date_naive();
-    let when = when_words(&a.when, today);
+    let when = ws.when_said(a, cx);
     let (last, tone) = match ws.last_words(id, now) {
         Some(words) => {
             let tone = match saved.and_then(|s| s.last.as_ref()).map(|l| l.went) {
@@ -289,6 +287,7 @@ fn automation_row(
                 entity.update(cx, |ws, cx| ws.set_automation_on(id, on, cx));
             })
     });
+    let fired = saved.is_some_and(|s| matches!(&s.act, Do::Prompt { block, .. } if block == FIRED));
     let buttons = saved.map(|_| {
         let button = |what: &'static str, icon: IconName, tip: &'static str| {
             icon_button(
@@ -316,9 +315,15 @@ fn automation_row(
                     .group_hover("automation-row", |s| s.visible())
             })
             .child(
-                button("run", IconName::Play, "Run now").on_click(cx.listener(
-                    move |ws, _: &ClickEvent, window, cx| ws.run_automation_now(id, window, cx),
-                )),
+                match fired {
+                    // The agent that fired it is no one's here: Run now has no one to act on.
+                    true => button("run", IconName::Play, "It acts on the agent that fires it")
+                        .opacity(0.4),
+                    false => button("run", IconName::Play, "Run now").on_click(cx.listener(
+                        move |ws, _: &ClickEvent, window, cx| ws.run_automation_now(id, window, cx),
+                    )),
+                }
+                .test_support(),
             )
             .child(
                 button("duplicate", IconName::CopyPlus, "Duplicate").on_click(cx.listener(
@@ -380,10 +385,14 @@ fn automation_row(
                 }))
                 .child(
                     div()
+                        .id(ElementId::Name(format!("automation-next-{id}").into()))
                         .flex_shrink_0()
+                        .max_w(px(LAST_W))
+                        .truncate()
                         .text_size(px(SMALL))
                         .text_color(dim)
-                        .child(next),
+                        .child(next)
+                        .test_support(),
                 ),
         )
         .child(

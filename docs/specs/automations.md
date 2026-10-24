@@ -2,7 +2,7 @@
 
 - **Date:** 2026-10-24
 - **Status:** Batch 1 (time) implemented and committed (kanban card 150, "a cron system (a button in the sidebar near
-  Git)"); batch 2 planned. Delivered in two batches: batch 1, time (plan:
+  Git)"); batch 2 (events) implemented, uncommitted until reviewed. Delivered in two batches: batch 1, time (plan:
   [2026-10-24-automations.md](../plans/2026-10-24-automations.md)); batch 2, agent and command events (plan:
   [2026-10-24-automations-events.md](../plans/2026-10-24-automations-events.md)).
 - **Builds on:** [agent-tools.md](agent-tools.md#schedule-and-cancel_schedule) (an agent's `schedule`: deliveries
@@ -579,3 +579,39 @@ What the builder chose where the spec left it open, and what differs:
   it keeps it.
 - **Looked at:** the popup's look (spacing, hover buttons, the form) was checked by the headless tests that draw
   it (its elements, its widths); no display was at hand to see it by eye, so a person should open it once.
+
+### Batch 2
+
+What the builder chose where the plan left it open, and what differs:
+
+- **Code:** no new module. `automations/mod.rs` has `Heard`, `Who`, `When::Agent`, `When::Command`,
+  `Automation.cooldown`, `event_words` and `event_short`; `workspace/agents_view.rs` `Watch::see` returns what it
+  heard and `watch_agents` queues it in `Workspace::automation_heard` (only while an event rule is on);
+  `workspace/automations.rs` acts on the queue and on each command rule's terminal count at the look (`events_due`,
+  `fire_event`, `look_slot`).
+- **Slots:** `Run` keeps `slots: BTreeMap<Option<String>, Slot>` (None a time's or Run now's, Some(uid) the block that
+  fired an event) with `held`, `typing` and `typing_counts` moved onto `Slot`, `cooled` (the cooldown's stamps by
+  block, "" for All of them) and `finished` (a command rule's count). `Run::reset` is what turning a rule on and
+  saving it do: held runs dropped, runs being typed no longer count, cooldowns and the count start over. A slot
+  that isn't held or typing is not kept, so an idle rule has none.
+- **The agent that fired it** is swapped into a copy of the rule (`for_firer`) before a run; `automation_target`
+  checks the rule as saved (its blocks, the word `fired-it` only for an agent event) and then the copy (the firing
+  block is open). Every check of batch 1 (busy, never into a shell, Target missing) applies unchanged.
+- **Joining:** inside the cooldown an event does nothing, so a held run joins an event only when the cooldown has
+  passed (a cooldown of 0, or a hold longer than it): as the spec says, it then starts no new cooldown.
+- **All of them** counts a block that isn't open, runs no agent, or is Idle or Starting as resting; the last of the
+  set heard ending in a look is the agent that fired it. A set of one block, whatever its flag, is that block.
+- **Several events of one block in a look** (it ended twice between two looks) fire once.
+- **Run now** of an event rule runs its Do with no agent that fired it (new blocks at the view's middle, a
+  notification whose click opens the popup); for a prompt to the agent that fired it the function returns at once,
+  and the list's button is dimmed with no click.
+- **The editor:** the Who toggles are `automation-who-<uid>`, the set's dropdown `automation-who-all`, a kind's
+  `automation-kind`, a command's terminal `automation-event-terminal` and `automation-failures`; the loop warning is
+  `automation-loop`. A toggle's label is clipped (`block_label` already cuts the title and the workspace) and the
+  weekday and month toggles use the same clipped helper. The empty list's words are the constant
+  `automations_view::EMPTY_HINT`.
+- **Looked at:** as in batch 1, the headless tests that draw the popup check the elements and widths (the Who toggles
+  and the loop warning are drawn, a long kind title keeps the row and its next column inside their widths); no
+  display was at hand to see the spacing, the toggles' wrap or the dimmed Run now by eye, so a person should open it
+  once. The notification's click is one line (`open_fired`, tested) with no headless click on a notification.
+

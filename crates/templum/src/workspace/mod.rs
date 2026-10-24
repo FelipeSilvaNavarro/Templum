@@ -1262,6 +1262,9 @@ pub struct Workspace {
     automations_frozen: bool,
     /// What each automation is doing, by id (`automations.rs`).
     pub(crate) automation_runs: automations::Runs,
+    /// What agents did that an event rule may hear, oldest first: (the block's uid, what); filled
+    /// only while an event rule is on and taken at every look.
+    pub(crate) automation_heard: Vec<(String, crate::automations::Heard)>,
     /// The window the automations act in, for the look that has none of its own.
     window_handle: gpui_kit::AnyWindowHandle,
     /// The look at the automations runs (`automations::look_at_automations`).
@@ -1783,6 +1786,7 @@ impl Workspace {
             automations_saved: None,
             automations_frozen: false,
             automation_runs: Default::default(),
+            automation_heard: Vec::new(),
             window_handle: window.window_handle(),
             automating: false,
             automations_open: false,

@@ -13,6 +13,7 @@ use templum_canvas::BlockId;
 
 use super::{AgentState, Pane, Workspace};
 use crate::alert::Alert;
+use crate::automations::Heard;
 use crate::keys::Command;
 
 /// What an agent does, as its row says it. Never inferred anew: `Workspace::doing` follows the
@@ -141,8 +142,10 @@ pub(crate) struct Watch {
 
 impl Watch {
     /// The agent does `doing` at `now`: its age restarts when the kind changes, and a turn that
-    /// ends marks it done until it works again or its person looks.
-    fn see(&mut self, doing: Doing, now: Instant) {
+    /// ends marks it done until it works again or its person looks. What an automation hears:
+    /// `Idle` when the turn ended, `NeedsYou` when a wait began (not on the first sight).
+    pub(super) fn see(&mut self, doing: Doing, now: Instant) -> Option<Heard> {
+        let mut heard = None;
         let since = match &self.was {
             Some((was, since)) if std::mem::discriminant(was) == std::mem::discriminant(&doing) => {
                 *since
@@ -150,15 +153,20 @@ impl Watch {
             Some((was, _)) => {
                 if was.works() && doing == Doing::Idle {
                     self.done = true;
+                    heard = Some(Heard::Idle);
                 }
                 if doing.works() {
                     self.done = false;
+                }
+                if matches!(doing, Doing::NeedsYou(_)) {
+                    heard = Some(Heard::NeedsYou);
                 }
                 now
             }
             None => now,
         };
         self.was = Some((doing, since));
+        heard
     }
 
     /// Its turn ended unseen and it has not worked since.
@@ -195,6 +203,8 @@ impl Workspace {
             })
             .collect();
         let focused = self.space.focused;
+        // Empty, so free, on the frames where nothing changed.
+        let mut heard: Vec<(String, Heard)> = Vec::new();
         for (i, id, doing) in doings {
             let space = match i {
                 0 => &mut self.space,
@@ -203,13 +213,25 @@ impl Workspace {
             let Some(pane) = space.terminal_mut(id) else {
                 continue;
             };
-            match doing {
-                None => pane.watch = Watch::default(),
+            let said = match doing {
+                None => {
+                    pane.watch = Watch::default();
+                    None
+                }
                 Some(doing) => pane.watch.see(doing, now),
-            }
+            };
             if active && i == 0 && focused == Some(id) {
                 pane.watch.done = false;
             }
+            if let Some(said) = said
+                && let Some(uid) = space.uids.get(&id)
+            {
+                heard.push((uid.clone(), said));
+            }
+        }
+        // Noted only while an event rule is on to hear it.
+        if !heard.is_empty() && self.automations_listen() {
+            self.automation_heard.extend(heard);
         }
     }
 

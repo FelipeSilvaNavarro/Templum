@@ -288,6 +288,17 @@ run went. A prompt waits while its agent works, asks you something or while you 
 shell; a time that passes while Templum is closed is marked Missed, not run. What agents asked for with `schedule` is
 listed under **Asked by agents**, where you can cancel it.
 
+A rule can also wait for an **event** instead of a time: **When an agent finishes its turn**, **When an agent needs
+you**, or **When a command ends** (in a terminal you choose, all exits or failures only). **Who** is one agent, several
+(**Any of them**, or for a turn's end **All of them**: the last to finish fires it once the others are idle) or **any
+agent of a kind**, like every Claude Code. The rule's **Cooldown** (5 minutes unless you change it, 0 to 1440) is
+counted for each agent that fires it, so an agent that finishes again soon doesn't run it twice. A prompt can go to
+**The agent that fired it**: two Claudes that finish together each get their own, and one that is busy or has your
+half-written message waits without holding up the other. New terminals and agents open beside the agent that fired
+the rule, and a click on its notification shows that agent. The editor warns when a rule can loop (a prompt that ends
+a turn of the agent it hears, an agent it starts that it hears again, a command that ends where it runs). Nothing runs
+for what happened before the rule was turned on or Templum started.
+
 ## Shell integration
 
 Templum loads a small script into bash, zsh, fish and PowerShell (Git Bash and Windows PowerShell included), as

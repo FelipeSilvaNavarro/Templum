@@ -14,8 +14,9 @@ use super::terminals::set_active;
 use super::*;
 use crate::agents_view::{dot_color, empty_words, header_text, tone};
 use crate::alert::Alert;
+use crate::automations::Heard;
 use crate::board::Assignee;
-use crate::workspace::agents_view::{AgentRow, Doing, Show, by_state, hold, matches};
+use crate::workspace::agents_view::{AgentRow, Doing, Show, Watch, by_state, hold, matches};
 use crate::workspace::subagents::Follows;
 use crate::workspace::{AgentState, Handed};
 
@@ -64,6 +65,35 @@ fn a_states_words() {
             matches!(s, Show::All | Show::Working)
         );
     }
+}
+
+#[test]
+fn the_watch_says_a_turns_end_and_a_new_need_once() {
+    let now = Instant::now();
+    let mut w = Watch::default();
+    assert_eq!(
+        w.see(Doing::NeedsYou("Allow?".into()), now),
+        None,
+        "first sight"
+    );
+    assert_eq!(
+        w.see(Doing::NeedsYou("Other?".into()), now),
+        None,
+        "the same wait"
+    );
+    assert_eq!(w.see(Doing::Working(0), now), None);
+    assert_eq!(w.see(Doing::AwaitsSubagents(1), now), None);
+    assert_eq!(w.see(Doing::Idle, now), Some(Heard::Idle));
+    assert_eq!(w.see(Doing::Idle, now), None);
+    assert_eq!(
+        w.see(Doing::NeedsYou(String::new()), now),
+        Some(Heard::NeedsYou)
+    );
+    assert_eq!(
+        w.see(Doing::Idle, now),
+        None,
+        "a wait that ends is no turn's end"
+    );
 }
 
 #[gpui_kit::test]

@@ -231,6 +231,8 @@ pub(crate) fn next_after<Tz: TimeZone>(
                 vec![]
             }
         }),
+        // An event has no time: it is heard.
+        When::Agent { .. } | When::Command { .. } => None,
         When::Cron { expr } => {
             let cron = Cron::parse(expr).ok()?;
             walk(&|date| {
@@ -246,6 +248,10 @@ pub(crate) fn next_after<Tz: TimeZone>(
 
 /// What stops `when` from being saved at `now` (local), in the editor's words; None: nothing.
 pub(crate) fn when_problem(when: &When, now: NaiveDateTime) -> Option<String> {
+    // The checks of an event are the Workspace's: what it hears must be open.
+    if when.is_event() {
+        return None;
+    }
     match when {
         When::Weekly { days, .. } if days.is_empty() => {
             return Some("Choose at least one weekday.".into());
@@ -283,12 +289,12 @@ fn ordinal(n: u8) -> String {
     format!("{n}{suffix}")
 }
 
-/// "a", "a and b", "a, b and c".
-fn list(items: &[String]) -> String {
+/// "a", "a and b", "a, b and c" (`and` is the last joiner: "or" for "a, b or c").
+pub(super) fn list(items: &[String], and: &str) -> String {
     match items {
         [] => String::new(),
         [only] => only.clone(),
-        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+        [init @ .., last] => format!("{} {and} {last}", init.join(", ")),
     }
 }
 
@@ -323,7 +329,10 @@ pub(crate) fn when_words(when: &When, today: NaiveDate) -> String {
                     match names[..] {
                         [] => "no weekday".to_string(),
                         [one] => one.to_string(),
-                        _ => list(&names.iter().map(|n| n[..3].to_string()).collect::<Vec<_>>()),
+                        _ => list(
+                            &names.iter().map(|n| n[..3].to_string()).collect::<Vec<_>>(),
+                            "and",
+                        ),
                     }
                 }
             };
@@ -336,11 +345,15 @@ pub(crate) fn when_words(when: &When, today: NaiveDate) -> String {
             let days: Vec<String> = days.into_iter().map(ordinal).collect();
             format!(
                 "On the {} of each month at {}",
-                list(&days),
+                list(&days, "and"),
                 at.format("%H:%M")
             )
         }
         When::Cron { expr } => format!("At cron \"{expr}\""),
+        When::Agent { .. } | When::Command { .. } => {
+            super::event_words(when, &|u| u.to_string(), &|k| k.to_string(), None)
+                .unwrap_or_default()
+        }
     }
 }
 
@@ -680,6 +693,27 @@ mod tests {
                 minutes: EVERY_MOST
             }),
             None
+        );
+    }
+
+    #[test]
+    fn an_event_has_no_time() {
+        use super::super::{Heard, Who};
+        let idle = When::Agent {
+            event: Heard::Idle,
+            who: Who::Blocks {
+                blocks: vec!["abc12".into()],
+                all: false,
+            },
+        };
+        assert_eq!(
+            next_after(&idle, &utc("2027-01-04T08:00"), &utc("2027-01-04T08:00")),
+            None
+        );
+        assert_eq!(when_problem(&idle, dt("2027-01-04T08:00")), None);
+        assert_eq!(
+            when_words(&idle, dt("2027-01-04T08:00").date()),
+            "When abc12 finishes its turn"
         );
     }
 

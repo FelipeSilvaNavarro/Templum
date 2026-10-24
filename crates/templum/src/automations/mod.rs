@@ -34,6 +34,134 @@ pub(crate) enum When {
     Cron {
         expr: String,
     },
+    /// An agent finishes its turn or needs the person.
+    Agent {
+        event: Heard,
+        who: Who,
+    },
+    /// A command ends in the terminal `terminal` (a uid); `failures`: only with an exit code
+    /// other than 0.
+    Command {
+        terminal: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        failures: bool,
+    },
+}
+
+/// What an agent does that an event hears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Heard {
+    /// Its turn ended.
+    Idle,
+    /// It began to ask for the person.
+    NeedsYou,
+}
+
+/// Whose events an agent event hears.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Who {
+    /// Chosen blocks (uids): any of them, or (`all`) the last of them once every one is idle.
+    Blocks {
+        blocks: Vec<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all: bool,
+    },
+    /// Any agent of a kind: an id of Settings ▸ Agents.
+    Kind { kind: String },
+}
+
+impl When {
+    /// An event, not a time.
+    pub(crate) fn is_event(&self) -> bool {
+        matches!(self, When::Agent { .. } | When::Command { .. })
+    }
+}
+
+/// The minutes between two runs of an event automation, when it says none.
+pub(crate) const COOLDOWN: u32 = 5;
+/// The most minutes a cooldown may be.
+pub(crate) const COOLDOWN_MOST: u32 = 1440;
+/// The block a prompt names for "the agent that fired it": a word no block id can be.
+pub(crate) const FIRED: &str = "fired-it";
+
+/// An event as the list and the preview say it: "When Claude Code (abc12) finishes its turn".
+/// `block` names a block ("Claude Code (abc12)"), `kind` an agent of Settings ▸ Agents; `space`
+/// is the workspace a kind's events come from. None for a time.
+pub(crate) fn event_words(
+    when: &When,
+    block: &dyn Fn(&str) -> String,
+    kind: &dyn Fn(&str) -> String,
+    space: Option<&str>,
+) -> Option<String> {
+    Some(match when {
+        When::Agent { event, who } => {
+            // All of them is for a turn's end only: several that need you fire on any of them.
+            let all = *event == Heard::Idle
+                && matches!(who, Who::Blocks { blocks, all: true } if blocks.len() > 1);
+            let (names, subject) = match who {
+                Who::Blocks { blocks, .. } => {
+                    let names: Vec<String> = blocks.iter().map(|b| block(b)).collect();
+                    let joiner = if all { "and" } else { "or" };
+                    (names.len(), clock::list(&names, joiner))
+                }
+                Who::Kind { kind: k } => {
+                    let space = space.map_or(String::new(), |s| format!(" in {s}"));
+                    (1, format!("any {}{space}", kind(k)))
+                }
+            };
+            let subject = if names == 0 {
+                "an agent".into()
+            } else {
+                subject
+            };
+            match (event, all) {
+                (Heard::Idle, true) => format!("When {subject} have all finished their turns"),
+                (Heard::Idle, false) => format!("When {subject} finishes its turn"),
+                (Heard::NeedsYou, _) => format!("When {subject} needs you"),
+            }
+        }
+        When::Command { terminal, failures } => {
+            let verb = if *failures { "fails" } else { "ends" };
+            format!("When a command {verb} in {}", block(terminal))
+        }
+        _ => return None,
+    })
+}
+
+/// An event as a row's right side says it: "on abc12's turn's end", "when a Codex needs you".
+/// `kind` names an agent of Settings ▸ Agents. None for a time.
+pub(crate) fn event_short(when: &When, kind: &dyn Fn(&str) -> String) -> Option<String> {
+    Some(match when {
+        When::Agent { event, who } => match (event, who) {
+            (Heard::Idle, Who::Blocks { blocks, all }) => match blocks.as_slice() {
+                [one] => format!("on {one}'s turn's end"),
+                many if *all => format!("once all {} agents finish", many.len()),
+                many => format!("on a turn's end of {} agents", many.len()),
+            },
+            (Heard::Idle, Who::Kind { kind: k }) => format!("on a {}'s turn's end", kind(k)),
+            (Heard::NeedsYou, Who::Blocks { blocks, .. }) => match blocks.as_slice() {
+                [one] => format!("when {one} needs you"),
+                many => format!("when one of {} agents needs you", many.len()),
+            },
+            (Heard::NeedsYou, Who::Kind { kind: k }) => format!("when a {} needs you", kind(k)),
+        },
+        When::Command {
+            terminal,
+            failures: true,
+        } => format!("on a failure in {terminal}"),
+        When::Command { terminal, .. } => format!("on a command's end in {terminal}"),
+        _ => return None,
+    })
+}
+
+fn cooldown() -> u32 {
+    COOLDOWN
+}
+
+fn is_cooldown(minutes: &u32) -> bool {
+    *minutes == COOLDOWN
 }
 
 use std::io;
@@ -83,6 +211,9 @@ pub(crate) struct Automation {
     /// The uid of the terminal its command last opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened: Option<String>,
+    /// Minutes between two runs of an event automation, per agent that fired it.
+    #[serde(default = "cooldown", skip_serializing_if = "is_cooldown")]
+    pub cooldown: u32,
 }
 
 fn on() -> bool {
@@ -239,6 +370,7 @@ mod tests {
             since: 0,
             last: None,
             opened: None,
+            cooldown: COOLDOWN,
         }
     }
 
@@ -281,6 +413,237 @@ mod tests {
             panic!("the saved file loads");
         };
         assert_eq!(again, loaded);
+    }
+
+    const EVENTS: &str = r#"{ "version": 1, "next_id": 3, "automations": [
+      { "id": 1, "when": { "agent": { "event": "idle", "who": { "blocks": ["abc12", "k9x1d"], "all": true } } },
+        "do": { "prompt": { "block": "fired-it", "text": "Go on." } }, "cooldown": 10 },
+      { "id": 2, "when": { "agent": { "event": "needs_you", "who": { "kind": "codex" } } },
+        "do": { "notify": { "text": "Look" } } },
+      { "id": 3, "when": { "command": { "terminal": "q3x9z", "failures": true } },
+        "do": { "notify": { "text": "Broke" } } } ] }"#;
+
+    #[test]
+    fn an_event_rule_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(path(dir.path()), EVENTS).unwrap();
+        let Loaded::Saved(loaded) = load(dir.path()) else {
+            panic!("the events load");
+        };
+        let [first, second, third] = &loaded.automations[..] else {
+            panic!("three rules");
+        };
+        assert_eq!(
+            first.when,
+            When::Agent {
+                event: Heard::Idle,
+                who: Who::Blocks {
+                    blocks: vec!["abc12".into(), "k9x1d".into()],
+                    all: true
+                }
+            }
+        );
+        assert_eq!(
+            (first.cooldown, &first.act),
+            (
+                10,
+                &Do::Prompt {
+                    block: FIRED.into(),
+                    text: "Go on.".into()
+                }
+            )
+        );
+        assert_eq!(
+            (second.when.clone(), second.cooldown),
+            (
+                When::Agent {
+                    event: Heard::NeedsYou,
+                    who: Who::Kind {
+                        kind: "codex".into()
+                    }
+                },
+                COOLDOWN
+            )
+        );
+        assert_eq!(
+            third.when,
+            When::Command {
+                terminal: "q3x9z".into(),
+                failures: true
+            }
+        );
+        save(dir.path(), &loaded, 1).unwrap();
+        let text = std::fs::read_to_string(path(dir.path())).unwrap();
+        assert_eq!(text.matches("\"cooldown\": 10").count(), 1, "{text}");
+        assert_eq!(
+            text.matches("cooldown").count(),
+            1,
+            "only the odd one: {text}"
+        );
+        let mut plain = loaded.clone();
+        plain.automations[0].when = When::Agent {
+            event: Heard::Idle,
+            who: Who::Blocks {
+                blocks: vec!["abc12".into()],
+                all: false,
+            },
+        };
+        plain.automations[2].when = When::Command {
+            terminal: "q3x9z".into(),
+            failures: false,
+        };
+        save(dir.path(), &plain, 2).unwrap();
+        let text = std::fs::read_to_string(path(dir.path())).unwrap();
+        assert!(
+            !text.contains("\"all\"") && !text.contains("failures"),
+            "{text}"
+        );
+        let Loaded::Saved(again) = load(dir.path()) else {
+            panic!("the saved file loads");
+        };
+        assert_eq!(again, plain);
+    }
+
+    fn block_name(uid: &str) -> String {
+        let title = match uid {
+            "abc12" => "Claude Code",
+            "k9x1d" => "Codex",
+            _ => "zsh",
+        };
+        format!("{title} ({uid})")
+    }
+
+    fn kind_name(kind: &str) -> String {
+        match kind {
+            "claude" => "Claude Code".into(),
+            "codex" => "Codex".into(),
+            other => other.into(),
+        }
+    }
+
+    fn agent(event: Heard, blocks: &[&str], all: bool) -> When {
+        let blocks = blocks.iter().map(|b| b.to_string()).collect();
+        When::Agent {
+            event,
+            who: Who::Blocks { blocks, all },
+        }
+    }
+
+    fn kind_of(event: Heard, kind: &str) -> When {
+        When::Agent {
+            event,
+            who: Who::Kind { kind: kind.into() },
+        }
+    }
+
+    #[test]
+    fn an_events_words() {
+        let say = |when: &When, space| event_words(when, &block_name, &kind_name, space);
+        let idle = Heard::Idle;
+        let cases = [
+            (
+                agent(idle, &["abc12"], false),
+                None,
+                "When Claude Code (abc12) finishes its turn",
+            ),
+            (
+                agent(idle, &["abc12"], true),
+                None,
+                "When Claude Code (abc12) finishes its turn",
+            ),
+            (
+                kind_of(Heard::NeedsYou, "codex"),
+                Some("api"),
+                "When any Codex in api needs you",
+            ),
+            (
+                kind_of(idle, "claude"),
+                None,
+                "When any Claude Code finishes its turn",
+            ),
+            (
+                agent(idle, &["abc12", "k9x1d"], false),
+                None,
+                "When Claude Code (abc12) or Codex (k9x1d) finishes its turn",
+            ),
+            (
+                agent(idle, &["abc12", "k9x1d", "q3x9z"], false),
+                None,
+                "When Claude Code (abc12), Codex (k9x1d) or zsh (q3x9z) finishes its turn",
+            ),
+            (
+                agent(idle, &["abc12", "k9x1d"], true),
+                None,
+                "When Claude Code (abc12) and Codex (k9x1d) have all finished their turns",
+            ),
+            (
+                agent(Heard::NeedsYou, &["abc12", "k9x1d"], true),
+                None,
+                "When Claude Code (abc12) or Codex (k9x1d) needs you",
+            ),
+            (
+                When::Command {
+                    terminal: "q3x9z".into(),
+                    failures: true,
+                },
+                None,
+                "When a command fails in zsh (q3x9z)",
+            ),
+            (
+                When::Command {
+                    terminal: "q3x9z".into(),
+                    failures: false,
+                },
+                None,
+                "When a command ends in zsh (q3x9z)",
+            ),
+        ];
+        for (when, space, words) in cases {
+            assert_eq!(say(&when, space).as_deref(), Some(words));
+        }
+        assert_eq!(say(&When::Every { minutes: 10 }, None), None);
+    }
+
+    #[test]
+    fn an_events_short_words() {
+        let say = |when: &When| event_short(when, &kind_name);
+        let (idle, needs) = (Heard::Idle, Heard::NeedsYou);
+        let cases = [
+            (agent(idle, &["abc12"], false), "on abc12's turn's end"),
+            (
+                agent(idle, &["a", "b", "c"], false),
+                "on a turn's end of 3 agents",
+            ),
+            (
+                agent(idle, &["a", "b", "c"], true),
+                "once all 3 agents finish",
+            ),
+            (kind_of(idle, "claude"), "on a Claude Code's turn's end"),
+            (agent(needs, &["abc12"], false), "when abc12 needs you"),
+            (
+                agent(needs, &["a", "b"], false),
+                "when one of 2 agents needs you",
+            ),
+            (kind_of(needs, "codex"), "when a Codex needs you"),
+            (
+                When::Command {
+                    terminal: "q3x9z".into(),
+                    failures: false,
+                },
+                "on a command's end in q3x9z",
+            ),
+            (
+                When::Command {
+                    terminal: "q3x9z".into(),
+                    failures: true,
+                },
+                "on a failure in q3x9z",
+            ),
+        ];
+        for (when, words) in cases {
+            assert_eq!(say(&when).as_deref(), Some(words));
+        }
+        assert_eq!(say(&When::Every { minutes: 10 }), None);
     }
 
     #[test]

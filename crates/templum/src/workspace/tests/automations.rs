@@ -4,6 +4,7 @@
 use std::time::{Duration, SystemTime};
 
 use chrono::{Local, NaiveTime};
+use serde_json::json;
 
 #[cfg(unix)]
 use super::agents_view::{agent, begins, ends};
@@ -11,13 +12,16 @@ use super::agents_view::{open_agents, press as press_key};
 #[cfg(unix)]
 use super::bus::{history_with, me, screen_until};
 #[cfg(unix)]
-use super::delegate::entered;
+use super::delegate::{entered, two_agents};
 use super::inbox::{click_id, drawn, name};
 #[cfg(unix)]
 use super::spawn::spawner;
+#[cfg(unix)]
+use super::subagents::hook;
 use super::*;
-use crate::automations::{Automation, Automations, Do, Went, When};
+use crate::automations::{Automation, Automations, COOLDOWN, Do, FIRED, Heard, Went, When, Who};
 use crate::session::Loaded;
+use crate::workspace::agents_view::Doing;
 use crate::workspace::automations::{AUTOMATION_LOOK, unix};
 
 /// A rule that notifies every day at 09:00, on, unnamed.
@@ -36,6 +40,7 @@ fn notify(text: &str) -> Automation {
         since: 0,
         last: None,
         opened: None,
+        cooldown: COOLDOWN,
     }
 }
 
@@ -379,7 +384,7 @@ fn prompt(name: &str, uid: &str, text: &str) -> Automation {
 fn held(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: u64) -> Option<String> {
     ws.read_with(cx, |ws, _| {
         let run = ws.automation_runs.get(&id)?;
-        run.held.as_ref().map(|held| held.why.clone())
+        run.held().map(|(_, held)| held.why.clone())
     })
 }
 
@@ -510,7 +515,7 @@ fn a_prompt_waits_while_its_agent_works(cx: &mut TestAppContext) {
             why: "Waiting".into(),
             counts: true,
         };
-        ws.automation_runs.entry(late).or_default().held = Some(held);
+        ws.automation_runs.entry(late).or_default().slot(None).held = Some(held);
     });
     look(cx);
     assert_eq!(
@@ -1527,7 +1532,7 @@ fn a_held_run_now_of_an_off_rule_gives_up_after_an_hour(cx: &mut TestAppContext)
             why: "Waiting".into(),
             counts: false,
         };
-        ws.automation_runs.entry(rule).or_default().held = Some(held);
+        ws.automation_runs.entry(rule).or_default().slot(None).held = Some(held);
         ws.look_at_automations(cx);
     });
     look(cx);
@@ -1644,9 +1649,9 @@ fn a_drafts_next_counts_from_now(cx: &mut TestAppContext) {
     };
     let since = crate::workspace::automations::local(unix(now) - 100 * 60);
     let preview = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
-        ws.read_with(cx, |ws, _| {
+        ws.read_with(cx, |ws, cx| {
             let a = ws.automation_draft(id).unwrap();
-            crate::automations_view::editor::preview_next(ws, id, a, now)
+            crate::automations_view::editor::preview_next(ws, id, a, now, cx)
         })
     };
     assert_eq!(
@@ -1678,13 +1683,13 @@ fn a_held_prompt_that_falls_due_again_counts_once(cx: &mut TestAppContext) {
     .unwrap();
     assert!(held(&ws, cx, rule).is_some());
     ws.read_with(cx, |ws, _| {
-        assert!(!ws.automation_runs[&rule].held.as_ref().unwrap().counts)
+        assert!(!ws.automation_runs[&rule].held().unwrap().1.counts)
     });
     // ...until its time comes: the time joins it.
     due(&ws, cx, rule);
     look(cx);
     ws.read_with(cx, |ws, _| {
-        assert!(ws.automation_runs[&rule].held.as_ref().unwrap().counts)
+        assert!(ws.automation_runs[&rule].held().unwrap().1.counts)
     });
     ends(handle, &ws, cx, &terminal);
     rested(&ws, cx, id);
@@ -1991,5 +1996,1310 @@ fn a_once_saved_while_its_old_task_is_typed_runs_and_turns_off(cx: &mut TestAppC
         let a = ws.automations.get(rule).unwrap();
         assert_eq!(a.runs, 1, "the Once ran");
         assert_eq!(ws.next_task, 2);
+    });
+}
+
+/// A rule on `event` from `who` that does `act`, on, counted from now.
+fn on_event(event: Heard, who: Who, act: Do) -> Automation {
+    rule(When::Agent { event, who }, act)
+}
+
+/// Chosen blocks, any of them.
+fn chosen(uids: &[&str]) -> Who {
+    Who::Blocks {
+        blocks: uids.iter().map(|u| u.to_string()).collect(),
+        all: false,
+    }
+}
+
+/// The agent in `terminal` (block `id`) ends its turn; returns once its watch shows Idle.
+#[cfg(unix)]
+fn finishes(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    terminal: &str,
+) {
+    ends(handle, ws, cx, terminal);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ws.read_with(cx, |ws, _| {
+        let watch = &ws.space.terminal(id).unwrap().watch;
+        matches!(watch.was, Some((Doing::Idle, _)))
+    }) {
+        assert!(std::time::Instant::now() < deadline, "not idle");
+        std::thread::sleep(Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+}
+
+/// The agent in `terminal` (block `id`) works, then ends its turn.
+#[cfg(unix)]
+fn turn(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    terminal: &str,
+) {
+    begins(handle, ws, cx, terminal);
+    finishes(handle, ws, cx, id, terminal);
+}
+
+fn runs_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, rule: u64) -> u32 {
+    ws.read_with(cx, |ws, _| ws.automations.get(rule).unwrap().runs)
+}
+
+/// The block's uid, and its terminal.
+#[cfg(unix)]
+fn agent_at(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    row: u8,
+) -> (BlockId, String, String) {
+    let (id, terminal) = agent(handle, ws, cx, row);
+    let (_, uid) = me(ws, cx, id);
+    (id, terminal, uid)
+}
+
+/// The tasks Templum typed (`tasks` of them in all) are told submitted by their agents, the
+/// looks moving the clock on, until `done` holds.
+#[cfg(unix)]
+fn confirmed(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    terminals: &[&str],
+    tasks: u32,
+    done: impl Fn(&Workspace) -> bool,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ws.read_with(cx, |ws, _| done(ws)) {
+        assert!(std::time::Instant::now() < deadline, "never happened");
+        if ws.read_with(cx, |ws, _| ws.next_task >= u64::from(tasks)) {
+            for terminal in terminals {
+                let said = serde_json::json!({ "event": "submitted" });
+                super::bus::event(handle, ws, cx, terminal, said);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        super::bus::after(
+            cx,
+            crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+        );
+    }
+}
+
+/// A rule that types `text` into the agent that fired it, on `event` from `who`, named `name`.
+fn reply_to_firer(name: &str, event: Heard, who: Who) -> Automation {
+    let act = Do::Prompt {
+        block: FIRED.into(),
+        text: "Go on.".into(),
+    };
+    Automation {
+        name: name.into(),
+        ..on_event(event, who, act)
+    }
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_turns_end_is_queued_only_while_an_event_rule_is_on(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (id, terminal) = agent(handle, &ws, cx, 0);
+    let (_, uid) = me(&ws, cx, id);
+    add(&ws, cx, rule(every(10), say("A time")));
+    turn(handle, &ws, cx, id, &terminal);
+    ws.read_with(cx, |ws, _| assert!(ws.automation_heard.is_empty()));
+    add(&ws, cx, on_event(Heard::Idle, chosen(&[&uid]), say("Done")));
+    turn(handle, &ws, cx, id, &terminal);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.automation_heard, [(uid.clone(), Heard::Idle)])
+    });
+    look(cx);
+    ws.read_with(cx, |ws, _| assert!(ws.automation_heard.is_empty()));
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_turns_end_fires_its_rule_and_the_cooldown_holds_the_next(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (id, terminal, uid) = agent_at(handle, &ws, cx, 0);
+    let rule = add(&ws, cx, on_event(Heard::Idle, chosen(&[&uid]), say("Done")));
+    let before = notification_count(handle, cx);
+    turn(handle, &ws, cx, id, &terminal);
+    look(cx);
+    assert_eq!(last(&ws, cx, rule), (Went::Ran, "Notified.".into()));
+    assert_eq!(runs_of(&ws, cx, rule), 1);
+    assert_eq!(notification_count(handle, cx), before + 1);
+    // Inside the cooldown: nothing, and nothing written.
+    ws.update(cx, |ws, _| {
+        ws.automations
+            .get_mut(rule)
+            .unwrap()
+            .last
+            .as_mut()
+            .unwrap()
+            .at = 7
+    });
+    turn(handle, &ws, cx, id, &terminal);
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 1);
+    assert_eq!(notification_count(handle, cx), before + 1);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.automations.get(rule).unwrap().last.as_ref().unwrap().at,
+            7
+        );
+    });
+    ws.update(cx, |ws, _| {
+        ws.automations.get_mut(rule).unwrap().cooldown = 0
+    });
+    turn(handle, &ws, cx, id, &terminal);
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 2);
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn each_agent_that_fires_it_has_its_own_cooldown(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (a, a_terminal, _) = agent_at(handle, &ws, cx, 0);
+    let (b, b_terminal, _) = agent_at(handle, &ws, cx, 1);
+    let kind = Who::Kind {
+        kind: "claude".into(),
+    };
+    let rule = add(&ws, cx, on_event(Heard::Idle, kind, say("Done")));
+    turn(handle, &ws, cx, a, &a_terminal);
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 1);
+    turn(handle, &ws, cx, b, &b_terminal);
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 2);
+    turn(handle, &ws, cx, a, &a_terminal);
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 2, "A is inside its own cooldown");
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_need_fires_once_per_wait(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, terminal, uid) = agent_at(handle, &ws, cx, 0);
+    let mut asks = on_event(Heard::NeedsYou, chosen(&[&uid]), say("Look"));
+    asks.cooldown = 0;
+    let rule = add(&ws, cx, asks);
+    let permission =
+        |tool: &str| json!({ "hook_event_name": "PermissionRequest", "tool_name": tool });
+    begins(handle, &ws, cx, &terminal);
+    hook(handle, &ws, cx, &terminal, permission("Bash"));
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 1);
+    hook(handle, &ws, cx, &terminal, permission("Edit"));
+    look(cx);
+    assert_eq!(
+        runs_of(&ws, cx, rule),
+        1,
+        "another request is the same wait"
+    );
+    begins(handle, &ws, cx, &terminal);
+    hook(handle, &ws, cx, &terminal, permission("Bash"));
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 2);
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_event_is_heard_only_in_its_rules_workspace(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (id, terminal, _) = agent_at(handle, &ws, cx, 0);
+    let (other, shown) = ws.update(cx, |ws, _| (ws.make_space(), ws.space.id.clone()));
+    let kind = || Who::Kind {
+        kind: "claude".into(),
+    };
+    let mut elsewhere = on_event(Heard::Idle, kind(), say("Done"));
+    elsewhere.workspace = Some(other);
+    let rule = add(&ws, cx, elsewhere);
+    turn(handle, &ws, cx, id, &terminal);
+    look(cx);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.automations.get(rule).unwrap().last.is_none())
+    });
+    let mut here = on_event(Heard::Idle, kind(), say("Done"));
+    here.workspace = Some(shown);
+    let rule = add(&ws, cx, here);
+    turn(handle, &ws, cx, id, &terminal);
+    look(cx);
+    assert_eq!(last(&ws, cx, rule).0, Went::Ran);
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_prompt_goes_to_the_agent_that_fired_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (a, _, _) = agent_at(handle, &ws, cx, 0);
+    let (b, b_terminal, b_uid) = agent_at(handle, &ws, cx, 1);
+    let kind = || Who::Kind {
+        kind: "claude".into(),
+    };
+    let rule = add(&ws, cx, reply_to_firer("Next", Heard::Idle, kind()));
+    let a_before = shown(&ws, cx, a);
+    turn(handle, &ws, cx, b, &b_terminal);
+    look(cx);
+    history_with(&ws, cx, b, "[from automation \"Next\", task t1]");
+    taken_by_hook(handle, &ws, cx, b, &b_terminal, rule);
+    assert_eq!(
+        last(&ws, cx, rule),
+        (Went::Ran, format!("Typed into {b_uid} as task t1."))
+    );
+    assert_eq!(shown(&ws, cx, a), a_before, "A was not told");
+    // Unnamed, the task is from the rule's words.
+    let unnamed = add(&ws, cx, reply_to_firer("", Heard::Idle, kind()));
+    turn(handle, &ws, cx, b, &b_terminal);
+    rested(&ws, cx, b);
+    look(cx);
+    let from = "[from automation \"When any Claude Code finishes its turn\", task t2]";
+    history_with(&ws, cx, b, from);
+    let _ = unnamed;
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn two_agents_that_finish_together_each_get_their_prompt(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (a, a_terminal, _) = agent_at(handle, &ws, cx, 0);
+    let (b, b_terminal, _) = agent_at(handle, &ws, cx, 1);
+    let kind = Who::Kind {
+        kind: "claude".into(),
+    };
+    let rule = add(&ws, cx, reply_to_firer("Next", Heard::Idle, kind));
+    turn(handle, &ws, cx, a, &a_terminal);
+    turn(handle, &ws, cx, b, &b_terminal);
+    look(cx);
+    for id in [a, b] {
+        history_with(&ws, cx, id, "[from automation \"Next\"");
+    }
+    confirmed(handle, &ws, cx, &[&a_terminal, &b_terminal], 2, |ws| {
+        ws.automations.get(rule).unwrap().runs == 2
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn all_of_them_fires_when_the_last_one_finishes(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (a, a_terminal, a_uid) = agent_at(handle, &ws, cx, 0);
+    let (b, b_terminal, b_uid) = agent_at(handle, &ws, cx, 1);
+    let both = Who::Blocks {
+        blocks: vec![a_uid, b_uid],
+        all: true,
+    };
+    let rule = add(&ws, cx, reply_to_firer("Both", Heard::Idle, both));
+    begins(handle, &ws, cx, &a_terminal);
+    begins(handle, &ws, cx, &b_terminal);
+    let (a_before, b_before) = (shown(&ws, cx, a), shown(&ws, cx, b));
+    finishes(handle, &ws, cx, a, &a_terminal);
+    look(cx);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.automations.get(rule).unwrap().last.is_none())
+    });
+    assert_eq!(shown(&ws, cx, b), b_before, "B still works");
+    finishes(handle, &ws, cx, b, &b_terminal);
+    look(cx);
+    history_with(&ws, cx, b, "[from automation \"Both\"");
+    assert_eq!(shown(&ws, cx, a), a_before, "typed into the last one only");
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_chosen_agent_that_is_not_open_is_target_missing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (id, terminal, uid) = agent_at(handle, &ws, cx, 0);
+    let missing = |why: &str| Err(format!("Target missing: {why}"));
+    let target = |ws: &Entity<Workspace>, cx: &mut TestAppContext, a: &Automation| {
+        ws.read_with(cx, |ws, _| ws.automation_target(a))
+    };
+    let notify_on = |who: Who| on_event(Heard::Idle, who, say("Done"));
+    let first = notify_on(chosen(&[&uid, "zzzzz"]));
+    assert_eq!(target(&ws, cx, &first), missing("zzzzz isn't open"));
+    let rule = add(&ws, cx, first);
+    turn(handle, &ws, cx, id, &terminal);
+    look(cx);
+    assert_eq!(
+        last(&ws, cx, rule),
+        (Went::Skipped, "Target missing: zzzzz isn't open".into())
+    );
+    // All of them: a block that isn't open doesn't hold the others back, but the rule is missing it.
+    let all = Who::Blocks {
+        blocks: vec![uid.clone(), "zzzzz".into()],
+        all: true,
+    };
+    let rule = add(&ws, cx, notify_on(all));
+    turn(handle, &ws, cx, id, &terminal);
+    look(cx);
+    assert_eq!(
+        last(&ws, cx, rule),
+        (Went::Skipped, "Target missing: zzzzz isn't open".into())
+    );
+    let nosuch = Who::Kind {
+        kind: "nosuch".into(),
+    };
+    assert_eq!(
+        target(&ws, cx, &notify_on(nosuch)),
+        missing("nosuch isn't in Settings ▸ Agents")
+    );
+    let other = ws.update(cx, |ws, _| ws.make_space());
+    let mut elsewhere = notify_on(chosen(&[&uid]));
+    elsewhere.workspace = Some(other);
+    let name = ws.read_with(cx, |ws, _| ws.space.name.clone());
+    assert_eq!(
+        target(&ws, cx, &elsewhere),
+        missing(&format!("{uid} is in {name}"))
+    );
+    let fired = Do::Prompt {
+        block: FIRED.into(),
+        text: "Go".into(),
+    };
+    assert_eq!(
+        target(&ws, cx, &rule_of_time(fired)),
+        missing("only an agent event has an agent that fired it")
+    );
+}
+
+#[cfg(unix)]
+fn rule_of_time(act: Do) -> Automation {
+    rule(every(10), act)
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_event_while_it_is_off_is_not_replayed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (id, terminal, uid) = agent_at(handle, &ws, cx, 0);
+    let mut off = on_event(Heard::Idle, chosen(&[&uid]), say("Done"));
+    off.on = false;
+    let rule = add(&ws, cx, off);
+    turn(handle, &ws, cx, id, &terminal);
+    ws.update(cx, |ws, cx| ws.set_automation_on(rule, true, cx));
+    look(cx);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.automations.get(rule).unwrap().last.is_none())
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_answer_after_a_save_frees_the_agents_run(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (id, terminal, uid) = agent_at(handle, &ws, cx, 0);
+    let rule = add(&ws, cx, reply_to_firer("", Heard::Idle, chosen(&[&uid])));
+    ws.update(cx, |ws, _| ws.automations.get_mut(rule).unwrap().since = 1);
+    turn(handle, &ws, cx, id, &terminal);
+    look(cx);
+    history_with(&ws, cx, id, "from automation");
+    // Saved while the task is being confirmed.
+    ws.update(cx, |ws, cx| {
+        ws.edit_automation(rule, |a| a.name = "Renamed".into(), cx);
+        ws.save_automation(rule, cx).unwrap();
+    });
+    confirmed(handle, &ws, cx, &[&terminal], 1, |ws| {
+        ws.automations.get(rule).unwrap().last.is_some()
+    });
+    ws.read_with(cx, |ws, _| {
+        let a = ws.automations.get(rule).unwrap();
+        assert_eq!((a.runs, a.last.as_ref().unwrap().went), (0, Went::Ran));
+        assert!(
+            ws.automation_runs[&rule].slots.is_empty(),
+            "the slot is free"
+        );
+    });
+    // Its next turn's end fires again: the save started the cooldown over.
+    turn(handle, &ws, cx, id, &terminal);
+    rested(&ws, cx, id);
+    look(cx);
+    confirmed(handle, &ws, cx, &[&terminal], 2, |ws| {
+        ws.automations.get(rule).unwrap().runs == 1
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_answer_after_a_delete_does_nothing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (id, terminal, uid) = agent_at(handle, &ws, cx, 0);
+    let rule = add(&ws, cx, reply_to_firer("", Heard::Idle, chosen(&[&uid])));
+    turn(handle, &ws, cx, id, &terminal);
+    look(cx);
+    history_with(&ws, cx, id, "from automation");
+    ws.update(cx, |ws, cx| ws.delete_automation(rule, cx));
+    entered(&ws, cx, id);
+    for _ in 0..3 {
+        super::bus::after(
+            cx,
+            crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.automation_runs.contains_key(&rule));
+        assert!(ws.automations.get(rule).is_none());
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn one_agents_held_run_holds_no_other_and_stop_after_drops_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (a, a_terminal, a_uid) = agent_at(handle, &ws, cx, 0);
+    let (b, b_terminal, b_uid) = agent_at(handle, &ws, cx, 1);
+    let kind = Who::Kind {
+        kind: "claude".into(),
+    };
+    let mut once = reply_to_firer("", Heard::Idle, kind);
+    once.max_runs = Some(1);
+    let rule = add(&ws, cx, once);
+    let a_before = shown(&ws, cx, a);
+    turn(handle, &ws, cx, a, &a_terminal);
+    turn(handle, &ws, cx, b, &b_terminal);
+    // Their half-written message is in A's input (a turn's start clears it).
+    ws.read_with(cx, |ws, _| ws.space.terminal(a).unwrap().draft.set(true));
+    look(cx);
+    history_with(&ws, cx, b, "from automation");
+    ws.read_with(cx, |ws, _| {
+        let run = &ws.automation_runs[&rule];
+        let (by, held) = run.held().expect("A's run waits");
+        assert_eq!(by, Some(a_uid.as_str()));
+        assert_eq!(
+            held.why,
+            format!("Waiting for {a_uid}: you are typing in it")
+        );
+        assert_eq!(
+            ws.last_words(rule, SystemTime::now()),
+            Some(format!("Waiting for {a_uid}"))
+        );
+    });
+    confirmed(handle, &ws, cx, &[&b_terminal], 1, |ws| {
+        ws.automations.get(rule).unwrap().last.is_some()
+    });
+    ws.read_with(cx, |ws, _| {
+        let a = ws.automations.get(rule).unwrap();
+        assert_eq!((a.runs, a.on), (1, false));
+        assert!(
+            a.last
+                .as_ref()
+                .unwrap()
+                .about
+                .ends_with("Ran 1 of 1 times, now off.")
+        );
+        assert!(ws.automation_runs[&rule].held().is_none());
+        let _ = &b_uid;
+    });
+    assert_eq!(shown(&ws, cx, a), a_before, "nothing typed into A");
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_agents_run_held_for_an_hour_is_skipped(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, uid) = agent_at(handle, &ws, cx, 0);
+    let rule = add(&ws, cx, reply_to_firer("", Heard::Idle, chosen(&[&uid])));
+    ws.update(cx, |ws, _| {
+        let since = SystemTime::now() - Duration::from_secs(61 * 60);
+        let held = crate::workspace::automations::Held {
+            since,
+            why: "Waiting".into(),
+            counts: true,
+        };
+        let run = ws.automation_runs.entry(rule).or_default();
+        run.slot(Some(&uid)).held = Some(held);
+    });
+    look(cx);
+    assert_eq!(
+        last(&ws, cx, rule),
+        (Went::Skipped, format!("{uid} stayed busy for an hour."))
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.automation_runs[&rule].slots.is_empty())
+    });
+}
+
+/// How many commands finished in the terminal block `id`.
+#[cfg(unix)]
+fn finished(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> u64 {
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(id).unwrap().term.status().finished
+    })
+}
+
+/// A command ends in the terminal block `id` with `code` (None: the shell said none), as shell
+/// integration tells it; returns once the terminal counts it.
+#[cfg(unix)]
+fn command_ends(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, code: Option<i32>) {
+    let before = finished(ws, cx, id);
+    let code = code.map_or(String::new(), |code| format!(";{code}"));
+    let bytes = format!("\x1b]133;C\x07\x1b]133;D{code}\x07\r").into_bytes();
+    ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.write(bytes));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while finished(ws, cx, id) == before {
+        assert!(std::time::Instant::now() < deadline, "not counted");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A rule that notifies when a command ends in `uid`, with no cooldown.
+#[cfg(unix)]
+fn on_command(uid: &str, failures: bool) -> Automation {
+    let when = When::Command {
+        terminal: uid.into(),
+        failures,
+    };
+    Automation {
+        cooldown: 0,
+        ..rule(when, say("Ended"))
+    }
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_command_end_fires_once_for_the_last(cx: &mut TestAppContext) {
+    let (_, ws, terminal, _) = two_agents(cx);
+    let (_, uid) = me(&ws, cx, terminal);
+    let rule = add(&ws, cx, on_command(&uid, false));
+    look(cx);
+    // Two commands end between two looks: one run.
+    command_ends(&ws, cx, terminal, Some(0));
+    command_ends(&ws, cx, terminal, Some(0));
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 1);
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 1, "nothing new, nothing run");
+    let gone = on_command("zzzzz", false);
+    let why = ws.read_with(cx, |ws, _| ws.automation_target(&gone));
+    assert_eq!(why, Err("Target missing: zzzzz isn't open".into()));
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn failures_only_fires_on_a_failing_exit(cx: &mut TestAppContext) {
+    let (_, ws, terminal, _) = two_agents(cx);
+    let (_, uid) = me(&ws, cx, terminal);
+    let rule = add(&ws, cx, on_command(&uid, true));
+    look(cx);
+    command_ends(&ws, cx, terminal, Some(0));
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 0, "it went well");
+    command_ends(&ws, cx, terminal, Some(2));
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 1);
+    command_ends(&ws, cx, terminal, None);
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 1, "no exit code is no failure");
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn commands_that_ended_before_it_was_on_fire_nothing(cx: &mut TestAppContext) {
+    let (_, ws, terminal, _) = two_agents(cx);
+    let (_, uid) = me(&ws, cx, terminal);
+    let mut off = on_command(&uid, true);
+    off.on = false;
+    let rule = add(&ws, cx, off);
+    command_ends(&ws, cx, terminal, Some(1));
+    ws.update(cx, |ws, cx| ws.set_automation_on(rule, true, cx));
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 0);
+    command_ends(&ws, cx, terminal, Some(1));
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 1);
+}
+
+/// The terminal blocks of the shown workspace.
+#[cfg(unix)]
+fn terminal_ids(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<BlockId> {
+    ws.read_with(cx, |ws, _| ws.space.terminals().map(|(id, _)| id).collect())
+}
+
+/// The new terminal beside `a` made by one turn of its end: not over it, nearer it than the
+/// middle of the view.
+#[cfg(unix)]
+fn opened_beside(ws: &Entity<Workspace>, cx: &mut TestAppContext, before: &[BlockId], a: BlockId) {
+    let opened: Vec<BlockId> = (terminal_ids(ws, cx).into_iter())
+        .filter(|id| !before.contains(id))
+        .collect();
+    assert_eq!(opened.len(), 1, "one block opened");
+    ws.read_with(cx, |ws, _| {
+        let (new, firer) = (
+            ws.space.canvas.get(opened[0]).unwrap().rect,
+            ws.space.canvas.get(a).unwrap().rect,
+        );
+        assert!(!new.intersects(&firer), "never over it");
+        let middle = |r: crate::workspace::Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        let apart =
+            |p: (f32, f32), q: (f32, f32)| ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2)).sqrt();
+        let (near, far) = (
+            apart(middle(new), middle(firer)),
+            apart(middle(new), (640.0, 360.0)),
+        );
+        assert!(
+            near < far,
+            "beside it ({near}), not at the view's middle ({far})"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn new_blocks_open_beside_the_agent_that_fired_it(cx: &mut TestAppContext) {
+    let (handle, ws, _) = spawner(cx);
+    let (a, a_terminal, a_uid) = agent_at(handle, &ws, cx, 0);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(a).unwrap().rect = Rect::new(4000.0, 3000.0, 400.0, 300.0)
+    });
+    let space = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let folder = tempfile::tempdir().unwrap();
+    let opens = |act: Do| Automation {
+        workspace: Some(space.clone()),
+        cooldown: 0,
+        ..on_event(Heard::Idle, chosen(&[&a_uid]), act)
+    };
+    let command = Do::Command {
+        terminal: None,
+        folder: Some(folder.path().display().to_string()),
+        text: "true".into(),
+    };
+    let agent_do = Do::Agent {
+        agent: "claude".into(),
+        folder: Some(folder.path().display().to_string()),
+        model: None,
+        effort: None,
+        prompt: None,
+    };
+    for act in [command, agent_do] {
+        let before = terminal_ids(&ws, cx);
+        let rule = add(&ws, cx, opens(act));
+        turn(handle, &ws, cx, a, &a_terminal);
+        look(cx);
+        assert_eq!(last(&ws, cx, rule).0, Went::Ran);
+        opened_beside(&ws, cx, &before, a);
+        ws.update(cx, |ws, cx| ws.delete_automation(rule, cx));
+    }
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_notifications_click_shows_the_block_that_fired_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let rule = add(&ws, cx, rule(every(10), say("Hi")));
+    let (other, b, uid) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_space(window, cx);
+                ws.open(Rect::new(0.0, 0.0, 600.0, 400.0), window, cx);
+                let b = ws.space.canvas.top().unwrap();
+                let (other, uid) = (ws.space.id.clone(), ws.space.uids[&b].clone());
+                ws.switch_to(0, window, cx);
+                (other, b, uid)
+            })
+        })
+        .unwrap();
+    let shows = |ws: &Entity<Workspace>, cx: &mut TestAppContext, by: Option<&str>| {
+        let by = by.map(str::to_string);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.open_fired(rule, by, window, cx))
+        })
+        .unwrap();
+    };
+    shows(&ws, cx, Some(&uid));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            (ws.space.id.as_str(), ws.space.focused),
+            (other.as_str(), Some(b))
+        );
+        assert!(!ws.automations_open);
+    });
+    for by in [Some("zzzzz"), None] {
+        shows(&ws, cx, by);
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.automations_open);
+            assert_eq!(ws.automations_at, Some(rule));
+        });
+        ws.update(cx, |ws, _| ws.automations_open = false);
+    }
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn run_now_does_nothing_for_the_agent_that_fired_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (id, _, uid) = agent_at(handle, &ws, cx, 0);
+    let rule = add(&ws, cx, reply_to_firer("", Heard::Idle, chosen(&[&uid])));
+    let before = shown(&ws, cx, id);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.run_automation_now(rule, window, cx))
+    })
+    .unwrap();
+    // Its button in the list is dimmed and does nothing either.
+    open_popup(handle, &ws, cx);
+    click_id(handle, cx, name(format!("automation-run-{rule}")));
+    look(cx);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.automations.get(rule).unwrap().last.is_none());
+        assert!(
+            ws.automation_runs
+                .get(&rule)
+                .is_none_or(|run| run.slots.is_empty())
+        );
+    });
+    assert_eq!(shown(&ws, cx, id), before);
+}
+
+// Batch 2's list and editor.
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_event_rules_words_in_the_list_and_the_editor(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (id, _, uid) = agent_at(handle, &ws, cx, 0);
+    let title = ws.read_with(cx, |ws, cx| ws.uid_title(&uid, cx).unwrap());
+    let said = format!("When {title} ({uid}) finishes its turn");
+    let rule = add(&ws, cx, on_event(Heard::Idle, chosen(&[&uid]), say("Hi")));
+    let (words, sentence, preview) = ws.read_with(cx, |ws, cx| {
+        let a = ws.automation_draft(rule).unwrap();
+        (
+            (ws.next_words(rule, SystemTime::now()), ws.when_said(a, cx)),
+            ws.automation_sentence(a, cx),
+            crate::automations_view::editor::preview_next(ws, rule, a, SystemTime::now(), cx),
+        )
+    });
+    assert_eq!(words, (format!("on {uid}'s turn's end"), said.clone()));
+    assert_eq!(sentence, format!("{said}, notify you: \"Hi\"."));
+    let lowered = said.replacen("When", "when", 1);
+    assert_eq!(preview, format!("Runs {lowered}"));
+    let typed = Do::Prompt {
+        block: FIRED.into(),
+        text: "Go on.".into(),
+    };
+    ws.update(cx, |ws, cx| ws.edit_automation(rule, |a| a.act = typed, cx));
+    let sentence = ws.read_with(cx, |ws, cx| {
+        ws.automation_sentence(ws.automation_draft(rule).unwrap(), cx)
+    });
+    assert_eq!(
+        sentence,
+        format!("{said}, type \"Go on.\" into the agent that fired it.")
+    );
+    let _ = id;
+}
+
+#[gpui_kit::test]
+fn save_checks_an_event_draft(cx: &mut TestAppContext) {
+    let (_, ws) = open(cx);
+    let id = add(&ws, cx, rule(every(10), say("ok")));
+    let problem = |ws: &Entity<Workspace>, cx: &mut TestAppContext, edit: fn(&mut Automation)| {
+        ws.update(cx, |ws, cx| ws.edit_automation(id, edit, cx));
+        let found = saves(ws, cx, id);
+        ws.update(cx, |ws, cx| ws.revert_automation(id, cx));
+        found
+    };
+    let agents = |who: Who| When::Agent {
+        event: Heard::Idle,
+        who,
+    };
+    assert_eq!(
+        problem(&ws, cx, |a| a.when = When::Agent {
+            event: Heard::Idle,
+            who: chosen(&[])
+        }),
+        Err("Choose at least one agent.".into())
+    );
+    let _ = agents;
+    assert_eq!(
+        problem(&ws, cx, |a| a.when = When::Agent {
+            event: Heard::NeedsYou,
+            who: Who::Kind {
+                kind: String::new()
+            }
+        }),
+        Err("Choose a kind of agent.".into())
+    );
+    assert_eq!(
+        problem(&ws, cx, |a| a.when = When::Command {
+            terminal: String::new(),
+            failures: false
+        }),
+        Err("Choose a terminal.".into())
+    );
+    assert_eq!(
+        problem(&ws, cx, |a| {
+            a.when = When::Command {
+                terminal: "abc12".into(),
+                failures: false,
+            };
+            a.cooldown = 1441;
+        }),
+        Err("The cooldown runs from 0 to 1440 minutes.".into())
+    );
+    assert_eq!(
+        problem(&ws, cx, |a| a.act = Do::Prompt {
+            block: FIRED.into(),
+            text: "Go".into()
+        }),
+        Err("Choose an agent.".into())
+    );
+    // A good one saves, its cooldown kept and its cooldowns started over.
+    ws.update(cx, |ws, cx| {
+        ws.automation_runs
+            .entry(id)
+            .or_default()
+            .cooled
+            .insert("abc12".into(), SystemTime::now());
+        ws.edit_automation(
+            id,
+            |a| {
+                a.when = When::Agent {
+                    event: Heard::Idle,
+                    who: chosen(&["abc12"]),
+                };
+                a.cooldown = 10;
+            },
+            cx,
+        );
+    });
+    assert_eq!(saves(&ws, cx, id), Ok(id));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.automations.get(id).unwrap().cooldown, 10);
+        assert!(ws.automation_runs[&id].cooled.is_empty());
+    });
+}
+
+#[gpui_kit::test]
+fn choosing_an_event_kind_keeps_who_and_drops_the_fired_target(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let nine = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+    let id = add(&ws, cx, rule(When::Daily { at: nine }, say("Hi")));
+    open_popup(handle, &ws, cx);
+    let kind = |ws: &Entity<Workspace>, cx: &mut TestAppContext, kind: &'static str| {
+        ws.update(cx, |ws, cx| ws.set_when_kind(kind, cx));
+        draft_of(ws, cx, id)
+    };
+    assert_eq!(
+        kind(&ws, cx, "idle").when,
+        When::Agent {
+            event: Heard::Idle,
+            who: chosen(&[])
+        }
+    );
+    let both = |event| When::Agent {
+        event,
+        who: Who::Blocks {
+            blocks: vec!["abc12".into(), "k9x1d".into()],
+            all: true,
+        },
+    };
+    ws.update(cx, |ws, cx| {
+        ws.edit_automation(id, |a| a.when = both(Heard::Idle), cx)
+    });
+    assert_eq!(
+        kind(&ws, cx, "needs_you").when,
+        When::Agent {
+            event: Heard::NeedsYou,
+            who: Who::Blocks {
+                blocks: vec!["abc12".into(), "k9x1d".into()],
+                all: false
+            }
+        },
+        "All of them is for a turn's end"
+    );
+    let fired = Do::Prompt {
+        block: FIRED.into(),
+        text: "Go".into(),
+    };
+    ws.update(cx, |ws, cx| ws.edit_automation(id, |a| a.act = fired, cx));
+    let daily = kind(&ws, cx, "daily");
+    assert!(matches!(daily.when, When::Daily { .. }));
+    assert_eq!(
+        daily.act,
+        Do::Prompt {
+            block: String::new(),
+            text: "Go".into()
+        }
+    );
+    assert_eq!(
+        kind(&ws, cx, "command").when,
+        When::Command {
+            terminal: String::new(),
+            failures: false
+        }
+    );
+    // Who comes back as a kind, from Settings ▸ Agents.
+    kind(&ws, cx, "idle");
+    ws.update(cx, |ws, cx| ws.set_who_kind("kind", cx));
+    let first = ws.read_with(cx, |ws, _| ws.agents[0].id.clone());
+    assert_eq!(
+        draft_of(&ws, cx, id).when,
+        When::Agent {
+            event: Heard::Idle,
+            who: Who::Kind { kind: first }
+        }
+    );
+}
+
+#[gpui_kit::test]
+fn typing_a_cooldown_edits_the_draft(cx: &mut TestAppContext) {
+    use crate::automations_view::editor::Field;
+    let (handle, ws) = open(cx);
+    let id = add(
+        &ws,
+        cx,
+        on_event(Heard::Idle, chosen(&["abc12"]), say("Hi")),
+    );
+    open_popup(handle, &ws, cx);
+    assert!(drawn(handle, cx, name("automation-sentence".into())));
+    type_in(handle, &ws, cx, Field::Cooldown, "10");
+    assert_eq!(draft_of(&ws, cx, id).cooldown, 10);
+    type_in(handle, &ws, cx, Field::Cooldown, "");
+    assert_eq!(draft_of(&ws, cx, id).cooldown, COOLDOWN);
+    type_in(handle, &ws, cx, Field::Cooldown, "20");
+    type_in(handle, &ws, cx, Field::Cooldown, "x");
+    assert_eq!(
+        draft_of(&ws, cx, id).cooldown,
+        20,
+        "what can't be read changes nothing"
+    );
+    click_id(handle, cx, name("automation-save".into()));
+    assert!(drawn(handle, cx, name("automation-problem".into())));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.automations.get(id).unwrap().cooldown,
+            COOLDOWN,
+            "not saved"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_who_toggles_choose_blocks(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, uid) = agent_at(handle, &ws, cx, 0);
+    let id = add(&ws, cx, on_event(Heard::Idle, chosen(&[]), say("Hi")));
+    open_popup(handle, &ws, cx);
+    let who = |ws: &Entity<Workspace>, cx: &mut TestAppContext| match draft_of(ws, cx, id).when {
+        When::Agent {
+            who: Who::Blocks { blocks, .. },
+            ..
+        } => blocks,
+        other => panic!("{other:?}"),
+    };
+    click_id(handle, cx, name(format!("automation-who-{uid}")));
+    assert_eq!(who(&ws, cx), std::slice::from_ref(&uid));
+    click_id(handle, cx, name(format!("automation-who-{uid}")));
+    assert!(who(&ws, cx).is_empty());
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_loop_warning(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, uid) = agent_at(handle, &ws, cx, 0);
+    let loops = |ws: &Entity<Workspace>, cx: &mut TestAppContext, a: &Automation| {
+        ws.read_with(cx, |ws, _| ws.automation_loop(a))
+    };
+    let prompt_to = |block: &str| Do::Prompt {
+        block: block.into(),
+        text: "Go".into(),
+    };
+    let claude = || Who::Kind {
+        kind: "claude".into(),
+    };
+    let turn_end = format!(
+        "This can loop: its prompt ends a turn of {uid}, which fires it again. The cooldown spaces the runs out."
+    );
+    for who in [chosen(&[&uid]), claude()] {
+        let a = on_event(Heard::Idle, who, prompt_to(&uid));
+        assert_eq!(loops(&ws, cx, &a), Some(turn_end.clone()));
+    }
+    let fired = on_event(Heard::Idle, chosen(&[&uid]), prompt_to(FIRED));
+    assert_eq!(
+        loops(&ws, cx, &fired).as_deref(),
+        Some(
+            "This can loop: its prompt ends a turn of the agent that fired it, which fires it again. The cooldown spaces the runs out."
+        )
+    );
+    let needs = on_event(Heard::NeedsYou, chosen(&[&uid]), prompt_to(&uid));
+    assert_eq!(
+        loops(&ws, cx, &needs),
+        None,
+        "a prompt to an agent that needs you is held"
+    );
+    let needs_fired = on_event(Heard::NeedsYou, chosen(&[&uid]), prompt_to(FIRED));
+    assert_eq!(
+        loops(&ws, cx, &needs_fired),
+        None,
+        "nor to the one that needs you"
+    );
+    let starts = Do::Agent {
+        agent: "claude".into(),
+        folder: None,
+        model: None,
+        effort: None,
+        prompt: None,
+    };
+    for event in [Heard::Idle, Heard::NeedsYou] {
+        let a = on_event(event, claude(), starts.clone());
+        assert_eq!(
+            loops(&ws, cx, &a).as_deref(),
+            Some(
+                "This can loop: the agent it starts can fire it again, and each new agent has its own cooldown. Stop after bounds it."
+            )
+        );
+    }
+    let command = |when_in: &str, runs_in: &str| {
+        rule(
+            When::Command {
+                terminal: when_in.into(),
+                failures: false,
+            },
+            Do::Command {
+                terminal: Some(runs_in.into()),
+                folder: None,
+                text: "make".into(),
+            },
+        )
+    };
+    assert_eq!(
+        loops(&ws, cx, &command("q3x9z", "q3x9z")).as_deref(),
+        Some("This can loop: its command ends in q3x9z, which fires it again.")
+    );
+    assert_eq!(loops(&ws, cx, &command("q3x9z", "k9x1d")), None);
+    // Drawn under the Do.
+    let id = add(&ws, cx, fired);
+    open_popup(handle, &ws, cx);
+    assert!(drawn(handle, cx, name("automation-loop".into())));
+    ws.update(cx, |ws, cx| {
+        ws.edit_automation(id, |a| a.act = say("Hi"), cx)
+    });
+    assert!(!drawn(handle, cx, name("automation-loop".into())));
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_long_event_word_stays_in_its_row(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        for entry in &mut ws.agents {
+            if entry.id == "claude" {
+                entry.title = "Claude Code with a very long title ".repeat(4);
+            }
+        }
+    });
+    let kind = Who::Kind {
+        kind: "claude".into(),
+    };
+    let id = add(&ws, cx, on_event(Heard::Idle, kind, say("Hi")));
+    open_popup(handle, &ws, cx);
+    let (row, next) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let width = |window: &mut Window, what: String| {
+                window
+                    .try_find(name(what))
+                    .expect("drawn")
+                    .bounds()
+                    .size
+                    .width
+            };
+            (
+                width(window, format!("automation-row-{id}")),
+                width(window, format!("automation-next-{id}")),
+            )
+        })
+        .unwrap();
+    assert!(row <= px(crate::agents_view::LIST_W), "{row:?}");
+    assert!(next <= px(150.0), "{next:?}");
+}
+
+#[gpui_kit::test]
+fn the_empty_list_says_events_too(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    open_popup(handle, &ws, cx);
+    assert!(drawn(handle, cx, name("automations-empty".into())));
+    assert!(crate::automations_view::EMPTY_HINT.ends_with(", or when an agent finishes."));
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn several_events_of_one_look_stop_at_stop_after(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (a, a_terminal, _) = agent_at(handle, &ws, cx, 0);
+    let (b, b_terminal, _) = agent_at(handle, &ws, cx, 1);
+    let kind = Who::Kind {
+        kind: "claude".into(),
+    };
+    let mut once = on_event(Heard::Idle, kind, say("Done"));
+    once.max_runs = Some(1);
+    let rule = add(&ws, cx, once);
+    let before = notification_count(handle, cx);
+    turn(handle, &ws, cx, a, &a_terminal);
+    turn(handle, &ws, cx, b, &b_terminal);
+    look(cx);
+    assert_eq!(runs_of(&ws, cx, rule), 1);
+    assert_eq!(notification_count(handle, cx), before + 1);
+    ws.read_with(cx, |ws, _| assert!(!ws.automations.get(rule).unwrap().on));
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_command_rule_hears_only_its_workspaces_terminal(cx: &mut TestAppContext) {
+    let (_, ws, terminal, _) = two_agents(cx);
+    let (_, uid) = me(&ws, cx, terminal);
+    let other = ws.update(cx, |ws, _| ws.make_space());
+    let mut elsewhere = on_command(&uid, false);
+    elsewhere.workspace = Some(other);
+    let rule = add(&ws, cx, elsewhere);
+    look(cx);
+    command_ends(&ws, cx, terminal, Some(1));
+    look(cx);
+    ws.read_with(cx, |ws, _| {
+        let none = ws.automations.get(rule).unwrap().last.is_none();
+        assert!(none, "not Skipped on every end");
+        assert_eq!(ws.automations_unseen(), 0);
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_event_that_joins_a_run_saved_meanwhile_still_runs(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (a, a_terminal, a_uid) = agent_at(handle, &ws, cx, 0);
+    let (b, b_terminal, b_uid) = agent_at(handle, &ws, cx, 1);
+    let to_b = Do::Prompt {
+        block: b_uid,
+        text: "Go".into(),
+    };
+    let rule = add(&ws, cx, on_event(Heard::Idle, chosen(&[&a_uid]), to_b));
+    ws.update(cx, |ws, _| ws.automations.get_mut(rule).unwrap().since = 1);
+    turn(handle, &ws, cx, a, &a_terminal);
+    look(cx);
+    history_with(&ws, cx, b, "from automation");
+    // Saved while B's task is being confirmed, and A finishes again: it joins the run.
+    ws.update(cx, |ws, cx| {
+        ws.edit_automation(rule, |a| a.name = "Renamed".into(), cx);
+        ws.save_automation(rule, cx).unwrap();
+    });
+    turn(handle, &ws, cx, a, &a_terminal);
+    look(cx);
+    confirmed(handle, &ws, cx, &[&b_terminal], 1, |ws| {
+        ws.automations.get(rule).unwrap().last.is_some()
+    });
+    assert_eq!(
+        runs_of(&ws, cx, rule),
+        0,
+        "the old run is not the new rule's"
+    );
+    // B's task ends with its turn: the joined event runs.
+    turn(handle, &ws, cx, b, &b_terminal);
+    rested(&ws, cx, b);
+    look(cx);
+    confirmed(handle, &ws, cx, &[&b_terminal], 2, |ws| {
+        ws.automations.get(rule).unwrap().runs == 1
+    });
+}
+
+#[gpui_kit::test]
+fn the_same_who_option_keeps_the_choice(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = add(
+        &ws,
+        cx,
+        on_event(Heard::Idle, chosen(&["abc12"]), say("Hi")),
+    );
+    open_popup(handle, &ws, cx);
+    ws.update(cx, |ws, cx| ws.set_who_kind("blocks", cx));
+    assert_eq!(
+        draft_of(&ws, cx, id).when,
+        When::Agent {
+            event: Heard::Idle,
+            who: chosen(&["abc12"])
+        }
+    );
+    let kind = |kind: &str| When::Agent {
+        event: Heard::Idle,
+        who: Who::Kind { kind: kind.into() },
+    };
+    ws.update(cx, |ws, cx| {
+        ws.edit_automation(id, |a| a.when = kind("codex"), cx);
+        ws.set_who_kind("kind", cx);
+    });
+    assert_eq!(draft_of(&ws, cx, id).when, kind("codex"));
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn turning_a_command_rule_off_and_on_forgets_the_count(cx: &mut TestAppContext) {
+    let (_, ws, terminal, _) = two_agents(cx);
+    let (_, uid) = me(&ws, cx, terminal);
+    let rule = add(&ws, cx, on_command(&uid, false));
+    look(cx);
+    ws.update(cx, |ws, cx| ws.set_automation_on(rule, false, cx));
+    command_ends(&ws, cx, terminal, Some(0));
+    ws.update(cx, |ws, cx| ws.set_automation_on(rule, true, cx));
+    look(cx);
+    assert_eq!(
+        runs_of(&ws, cx, rule),
+        0,
+        "what ended while it was off is not heard"
+    );
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_run_being_typed_counts_toward_stop_after(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (a, a_terminal, _) = agent_at(handle, &ws, cx, 0);
+    let (b, b_terminal, _) = agent_at(handle, &ws, cx, 1);
+    let kind = Who::Kind {
+        kind: "claude".into(),
+    };
+    let mut once = reply_to_firer("", Heard::Idle, kind);
+    once.max_runs = Some(1);
+    let rule = add(&ws, cx, once);
+    let b_before = shown(&ws, cx, b);
+    turn(handle, &ws, cx, a, &a_terminal);
+    turn(handle, &ws, cx, b, &b_terminal);
+    // A's task is being typed when B's event comes in the same look: it starts no second run.
+    look(cx);
+    history_with(&ws, cx, a, "from automation");
+    for _ in 0..2 {
+        look(cx);
+    }
+    ws.read_with(cx, |ws, _| assert_eq!(ws.next_task, 1, "one task only"));
+    assert_eq!(shown(&ws, cx, b), b_before, "nothing typed into B");
+    confirmed(handle, &ws, cx, &[&a_terminal], 1, |ws| {
+        ws.automations.get(rule).unwrap().runs == 1
+    });
+    ws.read_with(cx, |ws, _| assert_eq!(ws.next_task, 1));
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_event_that_reaches_a_rule_turned_off_runs_nothing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, uid) = agent_at(handle, &ws, cx, 0);
+    let mut off = on_event(Heard::Idle, chosen(&[&uid]), say("Done"));
+    off.on = false;
+    off.cooldown = 0;
+    let rule = add(&ws, cx, off);
+    let before = notification_count(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.fire_event(rule, &uid, uid.clone(), SystemTime::now(), window, cx)
+        })
+    })
+    .unwrap();
+    assert_eq!(notification_count(handle, cx), before);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.automations.get(rule).unwrap().last.is_none());
+        assert_eq!(ws.automations.get(rule).unwrap().runs, 0);
     });
 }

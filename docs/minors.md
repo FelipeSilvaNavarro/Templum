@@ -2200,3 +2200,13 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **A model and an effort are free text.** The Start an agent form takes both as typed words
   (`crates/templum/src/automations_view/editor.rs`) and only Save says if the agent refuses them. Fix: dropdowns of the
   agent's own models and efforts (`Agent::launch_args`' lists).
+- [ ] **A rule turned on or saved can hear an event from the second before.** `automation_heard` is filled while any
+  event rule is on and emptied at each look (`crates/templum/src/workspace/automations.rs`); a rule turned on or saved
+  between an agent's turn end and the next look also fires for it. What a person sees: a rule they just turned on runs
+  once for a turn that ended a moment earlier. Fix: stamp each queued event and fire a rule only for events after its
+  `since`.
+- [ ] **A save in the second of the run's start counts the old task for the new rule.** The answer of a task being
+  typed counts only if `since` still equals the one it started with, and `since` is in whole seconds
+  (`crates/templum/src/workspace/automations.rs`, `attempt`). What a person sees: a rule edited within a second of
+  firing counts that run once. Fix: keep a counter that every save and switch-on bumps, and compare it.
+

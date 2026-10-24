@@ -15,7 +15,7 @@ use gpui_kit::{
 
 use super::{SMALL, TEXT};
 use crate::automations::clock::{Cron, next_after, time_words};
-use crate::automations::{Automation, Do, When};
+use crate::automations::{Automation, COOLDOWN, Do, FIRED, Heard, When, Who};
 use crate::balloon;
 use crate::grid::hsla;
 use crate::settings::row::menu_button;
@@ -34,6 +34,7 @@ pub(crate) enum Field {
     Model,
     Effort,
     Stop,
+    Cooldown,
     Command,
     Notify,
     Prompt,
@@ -52,6 +53,7 @@ pub(crate) struct Form {
     model: Entity<InputState>,
     effort: Entity<InputState>,
     stop: Entity<InputState>,
+    cooldown: Entity<InputState>,
     command: Entity<InputState>,
     notify: Entity<InputState>,
     prompt: Entity<TextareaState>,
@@ -205,6 +207,7 @@ impl Workspace {
             Field::Model => say(&form.model, window, cx),
             Field::Effort => say(&form.effort, window, cx),
             Field::Stop => say(&form.stop, window, cx),
+            Field::Cooldown => say(&form.cooldown, window, cx),
             Field::Command => say(&form.command, window, cx),
             Field::Notify => say(&form.notify, window, cx),
             Field::Prompt => say_area(&form.prompt, window, cx),
@@ -312,6 +315,16 @@ impl Workspace {
                     }
                 }
             }
+            Field::Cooldown => {
+                if trimmed.is_empty() {
+                    edit = Box::new(|a| a.cooldown = COOLDOWN);
+                } else {
+                    match trimmed.parse::<u32>() {
+                        Err(_) => bad("Write the cooldown in minutes."),
+                        Ok(n) => edit = Box::new(move |a| a.cooldown = n),
+                    }
+                }
+            }
             Field::Command => {
                 let command = trimmed.to_string();
                 edit = Box::new(move |a| {
@@ -378,7 +391,37 @@ impl Workspace {
         let expr = Some(text(&form.cron, cx).trim().to_string())
             .filter(|e| !e.is_empty())
             .unwrap_or_else(|| "0 9 * * 1-5".into());
+        let current = self.automation_draft(id).map(|a| a.when.clone());
         let when = match kind {
+            "idle" | "needs_you" => {
+                let (event, own) = match kind {
+                    "idle" => (Heard::Idle, true),
+                    _ => (Heard::NeedsYou, false),
+                };
+                // Who stays between the two events; All of them is for a turn's end only.
+                let who = match current {
+                    Some(When::Agent {
+                        who: Who::Blocks { blocks, all },
+                        ..
+                    }) => Who::Blocks {
+                        blocks,
+                        all: all && own,
+                    },
+                    Some(When::Agent { who, .. }) => who,
+                    _ => Who::Blocks {
+                        blocks: Vec::new(),
+                        all: false,
+                    },
+                };
+                When::Agent { event, who }
+            }
+            "command" => match current {
+                Some(command @ When::Command { .. }) => command,
+                _ => When::Command {
+                    terminal: String::new(),
+                    failures: false,
+                },
+            },
             // The boxes hold the last rule's date and time, often past: a new Once is the next hour.
             "once" => match self.automation_draft(id).map(|a| &a.when) {
                 Some(once @ When::Once { .. }) => once.clone(),
@@ -396,7 +439,21 @@ impl Workspace {
             },
             _ => When::Cron { expr },
         };
-        self.edit_automation(id, |a| a.when = when, cx);
+        let agent_event = matches!(when, When::Agent { .. });
+        self.edit_automation(
+            id,
+            |a| {
+                a.when = when;
+                // Only an agent event has an agent that fired it.
+                if let Do::Prompt { block, .. } = &mut a.act
+                    && block == FIRED
+                    && !agent_event
+                {
+                    block.clear();
+                }
+            },
+            cx,
+        );
         // The boxes the new kind uses show what the draft holds.
         self.reload_automation_form();
         cx.notify();
@@ -447,6 +504,56 @@ impl Workspace {
         );
         self.reload_automation_form();
         cx.notify();
+    }
+
+    /// The Who dropdown of an agent event: chosen blocks (none yet), or a kind (the first of
+    /// Settings ▸ Agents).
+    pub(crate) fn set_who_kind(&mut self, kind: &str, cx: &mut Context<Self>) {
+        let Some(id) = self.automation_form.as_ref().and_then(|f| f.for_id) else {
+            return;
+        };
+        // The option already chosen keeps the choice.
+        let chosen = self.automation_draft(id).map(|a| &a.when);
+        if matches!(
+            (kind, chosen),
+            (
+                "kind",
+                Some(When::Agent {
+                    who: Who::Kind { .. },
+                    ..
+                })
+            ) | (
+                "blocks",
+                Some(When::Agent {
+                    who: Who::Blocks { .. },
+                    ..
+                })
+            )
+        ) {
+            return;
+        }
+        let who = match kind {
+            "kind" => Who::Kind {
+                kind: self
+                    .agents
+                    .first()
+                    .map(|e| e.id.clone())
+                    .unwrap_or_default(),
+            },
+            _ => Who::Blocks {
+                blocks: Vec::new(),
+                all: false,
+            },
+        };
+        self.edit_automation(
+            id,
+            |a| {
+                if let When::Agent { who: w, .. } = &mut a.when {
+                    *w = who;
+                }
+            },
+            cx,
+        );
     }
 
     /// The Every unit dropdown.
@@ -512,6 +619,7 @@ impl Form {
         let model = input("The agent's own", Field::Model, window, cx);
         let effort = input("The agent's own", Field::Effort, window, cx);
         let stop = input("No limit", Field::Stop, window, cx);
+        let cooldown = input("5", Field::Cooldown, window, cx);
         let command = input("make test", Field::Command, window, cx);
         let notify = input("Stand-up in 5 minutes", Field::Notify, window, cx);
         let mut areas = Vec::new();
@@ -553,6 +661,7 @@ impl Form {
             model,
             effort,
             stop,
+            cooldown,
             command,
             notify,
             prompt,
@@ -592,6 +701,7 @@ impl Form {
             window,
             cx,
         );
+        show(&self.cooldown, &a.cooldown.to_string(), window, cx);
         match &a.act {
             Do::Prompt { text, .. } => show_area(&self.prompt, text, window, cx),
             Do::Command { folder, text, .. } => {
@@ -693,6 +803,7 @@ fn toggle(
     div()
         .id(id)
         .min_w(px(30.0))
+        .max_w_full()
         .h(px(26.0))
         .px(px(6.0))
         .flex()
@@ -707,7 +818,7 @@ fn toggle(
             el.bg(ui.pressed).font_weight(FontWeight::SEMIBOLD)
         })
         .hover(move |s| s.bg(ui.hover))
-        .child(words)
+        .child(div().min_w(px(0.0)).truncate().child(words))
         .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| click(ws, cx)))
 }
 
@@ -760,6 +871,14 @@ fn when_kind(when: &When) -> &'static str {
         When::Weekly { .. } => "weekly",
         When::Monthly { .. } => "monthly",
         When::Cron { .. } => "cron",
+        When::Agent {
+            event: Heard::Idle, ..
+        } => "idle",
+        When::Agent {
+            event: Heard::NeedsYou,
+            ..
+        } => "needs_you",
+        When::Command { .. } => "command",
     }
 }
 
@@ -853,7 +972,20 @@ fn block_menu(
 
 /// "Next: Tomorrow 09:00": when the draft `a` of `id` would run next. A draft counts from now,
 /// as Save will; a saved rule from its own `since`.
-pub(crate) fn preview_next(ws: &Workspace, id: u64, a: &Automation, now: SystemTime) -> String {
+pub(crate) fn preview_next(
+    ws: &Workspace,
+    id: u64,
+    a: &Automation,
+    now: SystemTime,
+    cx: &App,
+) -> String {
+    // An event has no time to name: it says what it waits for.
+    if a.when.is_event() {
+        let said = ws.when_said(a, cx);
+        let mut letters = said.chars();
+        let first = letters.next().map(|c| c.to_lowercase().to_string());
+        return format!("Runs {}{}", first.unwrap_or_default(), letters.as_str());
+    }
     let now = DateTime::<Local>::from(now);
     let since = match ws
         .automations
@@ -897,6 +1029,9 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                 ("weekly", "On weekdays"),
                 ("monthly", "On days of the month"),
                 ("cron", "Advanced (cron)"),
+                ("idle", "When an agent finishes its turn"),
+                ("needs_you", "When an agent needs you"),
+                ("command", "When a command ends"),
             ]),
             kind.into(),
             false,
@@ -935,6 +1070,204 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                 .into_any_element()
         }
         When::Daily { .. } => fixed(&form.time, 90.0).into_any_element(),
+        When::Agent { event, who } => {
+            let who_kind = match who {
+                Who::Blocks { .. } => "blocks",
+                Who::Kind { .. } => "kind",
+            };
+            let who_menu = {
+                let entity = entity.clone();
+                menu_button(
+                    "automation-who",
+                    options(&[("blocks", "Chosen agents"), ("kind", "Any agent of a kind")]),
+                    who_kind.into(),
+                    false,
+                    move |value, cx| entity.update(cx, |ws, cx| ws.set_who_kind(&value, cx)),
+                )
+            };
+            let choose: AnyElement = match who {
+                Who::Blocks {
+                    blocks: chosen,
+                    all,
+                } => {
+                    let mut offered = blocks(ws, a, true, cx);
+                    for uid in chosen {
+                        if !offered.iter().any(|(v, _)| v.as_ref() == uid.as_str()) {
+                            offered.push((uid.clone().into(), kept_label(ws, uid).into()));
+                        }
+                    }
+                    let chips = offered.into_iter().map(|(uid, words)| {
+                        let on = chosen.iter().any(|c| c.as_str() == uid.as_ref());
+                        let uid = uid.to_string();
+                        toggle(
+                            ws,
+                            ElementId::Name(format!("automation-who-{uid}").into()),
+                            words.to_string(),
+                            on,
+                            cx,
+                            move |ws, cx| {
+                                let Some(id) = ws.automation_form.as_ref().and_then(|f| f.for_id)
+                                else {
+                                    return;
+                                };
+                                ws.edit_automation(
+                                    id,
+                                    |a| {
+                                        let When::Agent {
+                                            who: Who::Blocks { blocks, all },
+                                            ..
+                                        } = &mut a.when
+                                        else {
+                                            return;
+                                        };
+                                        match blocks.iter().position(|b| *b == uid) {
+                                            Some(at) => {
+                                                blocks.remove(at);
+                                            }
+                                            None => blocks.push(uid.clone()),
+                                        }
+                                        // One block is not a set.
+                                        if blocks.len() < 2 {
+                                            *all = false;
+                                        }
+                                    },
+                                    cx,
+                                );
+                            },
+                        )
+                        .test_support()
+                    });
+                    // All of them is for a turn's end, and for a set.
+                    let set = (*event == Heard::Idle && chosen.len() > 1).then(|| {
+                        let entity = entity.clone();
+                        menu_button(
+                            "automation-who-all",
+                            options(&[("any", "Any of them"), ("all", "All of them")]),
+                            (if *all { "all" } else { "any" }).into(),
+                            false,
+                            move |value, cx| {
+                                entity.update(cx, |ws, cx| {
+                                    let Some(id) =
+                                        ws.automation_form.as_ref().and_then(|f| f.for_id)
+                                    else {
+                                        return;
+                                    };
+                                    ws.edit_automation(
+                                        id,
+                                        |a| {
+                                            if let When::Agent {
+                                                who: Who::Blocks { all, .. },
+                                                ..
+                                            } = &mut a.when
+                                            {
+                                                *all = value == "all";
+                                            }
+                                        },
+                                        cx,
+                                    );
+                                })
+                            },
+                        )
+                    });
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(4.0))
+                                .children(chips),
+                        )
+                        .children(set)
+                        .into_any_element()
+                }
+                Who::Kind { kind } => {
+                    let choices = ws
+                        .agents
+                        .iter()
+                        .map(|e| (e.id.clone().into(), e.title.clone().into()))
+                        .collect();
+                    block_menu(
+                        "automation-kind",
+                        choices,
+                        kind,
+                        format!("{kind} (removed)"),
+                        &entity,
+                        |a, value| {
+                            if let When::Agent {
+                                who: Who::Kind { kind },
+                                ..
+                            } = &mut a.when
+                            {
+                                *kind = value;
+                            }
+                        },
+                        id,
+                    )
+                    .into_any_element()
+                }
+            };
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(label(ws, "Who"))
+                .child(who_menu)
+                .child(choose)
+                .into_any_element()
+        }
+        When::Command { terminal, failures } => {
+            let on = *failures;
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(label(ws, "Terminal"))
+                .child(block_menu(
+                    "automation-event-terminal",
+                    blocks(ws, a, false, cx),
+                    terminal,
+                    kept_label(ws, terminal),
+                    &entity,
+                    |a, value| {
+                        if let When::Command { terminal, .. } = &mut a.when {
+                            *terminal = value;
+                        }
+                    },
+                    id,
+                ))
+                .child(
+                    div().flex().child(
+                        toggle(
+                            ws,
+                            ElementId::Name("automation-failures".into()),
+                            "Failures only".into(),
+                            on,
+                            cx,
+                            move |ws, cx| {
+                                let Some(id) = ws.automation_form.as_ref().and_then(|f| f.for_id)
+                                else {
+                                    return;
+                                };
+                                ws.edit_automation(
+                                    id,
+                                    |a| {
+                                        if let When::Command { failures, .. } = &mut a.when {
+                                            *failures = !on;
+                                        }
+                                    },
+                                    cx,
+                                );
+                            },
+                        )
+                        .test_support(),
+                    ),
+                )
+                .into_any_element()
+        }
         When::Weekly { days, .. } => {
             let chips = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
                 .into_iter()
@@ -1072,7 +1405,14 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
             .child(label(ws, "Agent"))
             .child(block_menu(
                 "automation-block",
-                blocks(ws, a, true, cx),
+                {
+                    // An agent event can type into the agent that fired it.
+                    let mut choices = blocks(ws, a, true, cx);
+                    if matches!(a.when, When::Agent { .. }) {
+                        choices.insert(0, (FIRED.into(), "The agent that fired it".into()));
+                    }
+                    choices
+                },
                 block,
                 kept_label(ws, block),
                 &entity,
@@ -1272,7 +1612,7 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
         let words = match (&missing, saved.is_some_and(|s| !s.on)) {
             (Some(why), _) => why.clone(),
             (None, true) => "Next: never, it is off".to_string(),
-            (None, false) => preview_next(ws, id, a, now),
+            (None, false) => preview_next(ws, id, a, now, cx),
         };
         Some((words, missing.is_some()))
     } else {
@@ -1302,6 +1642,15 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
         .child(label(ws, "Do"))
         .child(do_menu)
         .child(do_fields)
+        .children(ws.automation_loop(a).map(|words| {
+            div()
+                .id("automation-loop")
+                .w_full()
+                .text_size(px(SMALL))
+                .text_color(yellow)
+                .child(words)
+                .test_support()
+        }))
         .child(label(ws, "Where"))
         .child(where_menu)
         .child(label(ws, "Stop after"))
@@ -1313,6 +1662,21 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                 .child(div().w(px(90.0)).child(Input::new(&form.stop).small()))
                 .child(div().text_color(ui.title_dim).child("runs")),
         )
+        .children(a.when.is_event().then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(label(ws, "Cooldown"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(div().w(px(90.0)).child(Input::new(&form.cooldown).small()))
+                        .child(div().text_color(ui.title_dim).child("minutes")),
+                )
+        }))
         .child(
             div()
                 .id("automation-sentence")

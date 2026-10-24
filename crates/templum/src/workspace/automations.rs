@@ -4,7 +4,7 @@
 //! `chrono::Local`): GPUI's timers don't count time asleep, so a time missed while it slept goes
 //! at the first look after, once. The rules and their file are `crate::automations`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Local, NaiveDateTime, NaiveTime};
@@ -23,7 +23,10 @@ use super::ops::{NewBlock, Place};
 use super::spawn::Opener;
 use super::{Pane, Workspace, show_notification};
 use crate::automations::clock::{next_after, time_words, when_problem, when_words};
-use crate::automations::{Automation, Do, LastRun, NAME_MAX, Went, When};
+use crate::automations::{
+    Automation, COOLDOWN, COOLDOWN_MOST, Do, FIRED, Heard, LastRun, NAME_MAX, Went, When, Who,
+    event_short, event_words,
+};
 use crate::keys::Command;
 use crate::launcher;
 
@@ -44,14 +47,51 @@ pub(crate) fn asker(id: u64) -> String {
 pub(crate) struct Run {
     /// None: off, or never again.
     pub next: Option<SystemTime>,
+    /// Its runs under way: None a time's or Run now's, Some(uid) an event's, by the block that
+    /// fired it, so each agent's run is held or typed apart.
+    pub slots: BTreeMap<Option<String>, Slot>,
+    /// When an event last started a run, by the block that fired it ("" for All of them): the
+    /// cooldown.
+    pub cooled: HashMap<String, SystemTime>,
+    /// A command rule's terminal's count of finished commands at the last look.
+    pub finished: Option<u64>,
+    /// Its last run went other than Ran since the popup was opened.
+    pub unseen: bool,
+}
+
+/// One run under way.
+#[derive(Default)]
+pub(crate) struct Slot {
     /// Due, waiting for its target.
     pub held: Option<Held>,
     /// A try's answer is on its way (`Tried::Later`): no new try meanwhile.
     pub typing: bool,
     /// The run being typed counts toward Stop after; a time that falls due meanwhile joins it.
     pub typing_counts: bool,
-    /// Its last run went other than Ran since the popup was opened.
-    pub unseen: bool,
+}
+
+impl Run {
+    /// The slot of the run `by` fired (None: a time's), made when missing.
+    pub(crate) fn slot(&mut self, by: Option<&str>) -> &mut Slot {
+        self.slots.entry(by.map(str::to_string)).or_default()
+    }
+
+    /// The first run held, its own (a time's) first, and the block that fired it.
+    pub(crate) fn held(&self) -> Option<(Option<&str>, &Held)> {
+        (self.slots.iter()).find_map(|(by, slot)| Some((by.as_deref(), slot.held.as_ref()?)))
+    }
+
+    /// It was turned on, saved or off: the runs held are dropped, those being typed no longer
+    /// count, and the cooldowns and the command's count start over.
+    pub(crate) fn reset(&mut self) {
+        self.slots.retain(|_, slot| {
+            slot.held = None;
+            slot.typing_counts = false;
+            slot.typing
+        });
+        self.cooled.clear();
+        self.finished = None;
+    }
 }
 
 pub(crate) struct Held {
@@ -125,6 +165,17 @@ fn quote(text: &str) -> String {
     }
 }
 
+/// `a` with "the agent that fired it" made the block `by`.
+fn for_firer(a: &Automation, by: Option<&str>) -> Automation {
+    let mut a = a.clone();
+    if let (Do::Prompt { block, .. }, Some(by)) = (&mut a.act, by)
+        && block == FIRED
+    {
+        *block = by.to_string();
+    }
+    a
+}
+
 /// The uid a prompt or a command waits for: the block it is typed into.
 fn typed_into(a: &Automation) -> Option<&str> {
     match &a.act {
@@ -174,10 +225,15 @@ impl Workspace {
         self.look_at_automations(cx);
     }
 
+    /// Some rule that is on waits for an agent: the watch notes what agents do.
+    pub(super) fn automations_listen(&self) -> bool {
+        (self.automations.automations.iter()).any(|a| a.on && matches!(a.when, When::Agent { .. }))
+    }
+
     /// Some rule is on, or has a run held: there is something to look at.
     fn automations_active(&self) -> bool {
         self.automations.automations.iter().any(|a| a.on)
-            || self.automation_runs.values().any(|run| run.held.is_some())
+            || (self.automation_runs.values()).any(|run| run.held().is_some())
     }
 
     /// Looks at the automations every AUTOMATION_LOOK while there is something to look at; started
@@ -205,15 +261,19 @@ impl Workspace {
         .detach();
     }
 
-    /// One look: the rules whose time came run (or are held), the held ones are tried again. A rule
-    /// that is off is looked at only for a run held by hand. False once there is nothing to look at.
+    /// One look: the rules whose time came run (or are held), the events heard since the last
+    /// look fire their rules, the held runs are tried again. A rule that is off is looked at only
+    /// for a run held by hand. False once there is nothing to look at.
     pub(super) fn look_automations(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let now = SystemTime::now();
         let mut changed = false;
+        // The queue never outlives a look.
+        let heard = std::mem::take(&mut self.automation_heard);
+        let fires = self.events_due(&heard);
         let held = |ws: &Self, id| {
             ws.automation_runs
                 .get(&id)
-                .is_some_and(|run| run.held.is_some())
+                .is_some_and(|run| run.held().is_some())
         };
         let looked: Vec<Automation> = (self.automations.automations.iter())
             .filter(|a| a.on || held(self, a.id))
@@ -242,26 +302,21 @@ impl Workspace {
                 run.next = next_for(&a, now);
                 changed = true;
             }
-            if run.typing {
-                run.typing_counts |= due;
-                continue;
+            // Its own run (a time's), then the runs of the agents that fired it, held.
+            let mut keys = vec![None];
+            keys.extend(run.slots.iter().filter_map(|(by, slot)| {
+                by.as_ref()
+                    .filter(|_| slot.held.is_some())
+                    .map(|by| Some(by.clone()))
+            }));
+            for by in keys {
+                let own = by.is_none();
+                self.look_slot(&a, by.as_deref(), due && own, now, window, cx);
             }
-            let counts = match &mut run.held {
-                Some(held) => {
-                    held.counts |= due;
-                    if now.duration_since(held.since).unwrap_or_default() >= HOLD_MOST {
-                        let uid = typed_into(&a).unwrap_or_default();
-                        let why = format!("{uid} stayed busy for an hour.");
-                        let counts = held.counts;
-                        self.run_ended(id, Went::Skipped, why, counts, cx);
-                        continue;
-                    }
-                    held.counts
-                }
-                None if due => true,
-                None => continue,
-            };
-            self.attempt(id, counts, window, cx);
+        }
+        for (id, by, key) in fires {
+            self.fire_event(id, &by, key, now, window, cx);
+            changed = true;
         }
         if changed {
             cx.notify();
@@ -271,21 +326,200 @@ impl Workspace {
         more
     }
 
-    /// Tries the Do of `id` once: it ends (Ran, Failed, Skipped), is held, or waits for an answer.
-    /// `counts`: a due run, which counts toward Stop after; a Run now doesn't.
-    fn attempt(&mut self, id: u64, counts: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(a) = self.automations.get(id).cloned() else {
+    /// The look at one run of `a`: typed (a due time joins it), held (given up after HOLD_MOST,
+    /// else tried again), or a time that came.
+    fn look_slot(
+        &mut self,
+        a: &Automation,
+        by: Option<&str>,
+        due: bool,
+        now: SystemTime,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = a.id;
+        let Some(run) = self.automation_runs.get_mut(&id) else {
             return;
         };
-        if let Err(why) = self.automation_target(&a) {
-            self.run_ended(id, Went::Skipped, why, counts, cx);
+        let counts = match run.slots.get_mut(&by.map(str::to_string)) {
+            Some(slot) if slot.typing => {
+                slot.typing_counts |= due;
+                return;
+            }
+            Some(Slot {
+                held: Some(held), ..
+            }) => {
+                held.counts |= due;
+                if now.duration_since(held.since).unwrap_or_default() >= HOLD_MOST {
+                    let counts = held.counts;
+                    let target = for_firer(a, by);
+                    let uid = typed_into(&target).unwrap_or_default();
+                    let why = format!("{uid} stayed busy for an hour.");
+                    self.run_ended(id, Went::Skipped, why, counts, by, cx);
+                    return;
+                }
+                held.counts
+            }
+            _ if due => true,
+            _ => return,
+        };
+        self.attempt(id, counts, by, window, cx);
+    }
+
+    /// The events of `heard` that fire a rule that is on, in the list's order, and the commands
+    /// that ended since the last look: (rule, the block that fired it, the cooldown's key).
+    fn events_due(&mut self, heard: &[(String, Heard)]) -> Vec<(u64, String, String)> {
+        let mut fires = Vec::new();
+        for a in &self.automations.automations {
+            if !a.on {
+                continue;
+            }
+            match &a.when {
+                When::Agent { event, who } => {
+                    let mut ours: Vec<&String> = Vec::new();
+                    for (uid, said) in heard {
+                        if said == event && !ours.contains(&uid) && self.hears(a, who, uid) {
+                            ours.push(uid);
+                        }
+                    }
+                    let Some(last) = ours.last() else {
+                        continue;
+                    };
+                    match who {
+                        // The last of the set to finish, once, when the others rest.
+                        Who::Blocks { blocks, all: true }
+                            if *event == Heard::Idle && blocks.len() > 1 =>
+                        {
+                            if blocks.iter().all(|b| self.rests(b)) {
+                                fires.push((a.id, (*last).clone(), String::new()));
+                            }
+                        }
+                        _ => fires.extend(
+                            ours.iter()
+                                .map(|uid| (a.id, (*uid).clone(), (*uid).clone())),
+                        ),
+                    }
+                }
+                When::Command { terminal, failures } => {
+                    // Heard where the rule is: a terminal in another workspace is as missing.
+                    let status = (self.find_block(terminal))
+                        .filter(|(space, _)| a.workspace.as_ref().is_none_or(|home| home == space))
+                        .and_then(|(space, id)| self.space_named(&space)?.terminal(id))
+                        .map(|pane| pane.term.status());
+                    let run = self.automation_runs.entry(a.id).or_default();
+                    let Some(status) = status else {
+                        run.finished = None;
+                        continue;
+                    };
+                    let seen = run.finished.replace(status.finished);
+                    let failed = status.last.and_then(|o| o.code).is_some_and(|c| c != 0);
+                    if seen.is_some_and(|seen| status.finished > seen) && (!failures || failed) {
+                        fires.push((a.id, terminal.clone(), terminal.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        fires
+    }
+
+    /// The block `uid` is heard by `a`: in its workspace (when it has one), and chosen in `who`
+    /// or of its kind.
+    fn hears(&self, a: &Automation, who: &Who, uid: &str) -> bool {
+        let Some((space, id)) = self.find_block(uid) else {
+            return false;
+        };
+        if a.workspace.as_ref().is_some_and(|home| *home != space) {
+            return false;
+        }
+        match who {
+            Who::Blocks { blocks, .. } => blocks.iter().any(|b| b == uid),
+            Who::Kind { kind } => (self.space_named(&space))
+                .and_then(|space| space.terminal(id))
+                .is_some_and(|pane| self.runs(pane.seen.agent.as_deref(), kind)),
+        }
+    }
+
+    /// The block `uid` doesn't hold an All of them back: no agent there, idle, or not open.
+    fn rests(&self, uid: &str) -> bool {
+        let pane =
+            (self.find_block(uid)).and_then(|(space, id)| self.space_named(&space)?.terminal(id));
+        pane.is_none_or(|pane| {
+            pane.agent().is_none() || matches!(self.doing(pane), Doing::Idle | Doing::Starting)
+        })
+    }
+
+    /// An event of the rule `id`, fired by the block `by`: outside its cooldown it starts a run
+    /// (or joins the one held or typed for that block).
+    pub(super) fn fire_event(
+        &mut self,
+        id: u64,
+        by: &str,
+        key: String,
+        now: SystemTime,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(a) = self.automations.get(id).filter(|a| a.on) else {
+            return;
+        };
+        let (minutes, runs, most) = (a.cooldown, a.runs, a.max_runs);
+        let run = self.automation_runs.entry(id).or_default();
+        let cooldown = Duration::from_secs(60 * u64::from(minutes));
+        if (run.cooled.get(&key))
+            .is_some_and(|at| now.duration_since(*at).unwrap_or_default() < cooldown)
+        {
+            // Inside the cooldown: nothing, not even written.
             return;
         }
-        match self.try_do(id, window, cx) {
-            Tried::Went(went, about) => self.run_ended(id, went, about, counts, cx),
+        let slot = run.slot(Some(by));
+        if slot.typing {
+            slot.typing_counts = true;
+        } else if let Some(held) = &mut slot.held {
+            held.counts = true;
+        } else {
+            // The runs being typed count too: Stop after is not passed by a crowd. (A held one
+            // may be dropped by it, as it is when the rule turns off.)
+            let coming = run
+                .slots
+                .values()
+                .filter(|slot| slot.typing && slot.typing_counts);
+            if most.is_some_and(|most| runs + coming.count() as u32 >= most) {
+                return;
+            }
+            run.cooled.insert(key, now);
+            self.attempt(id, true, Some(by), window, cx);
+        }
+    }
+
+    /// Tries the Do of `id` once: it ends (Ran, Failed, Skipped), is held, or waits for an answer.
+    /// `counts`: a due run, which counts toward Stop after; a Run now doesn't. `by`: the block
+    /// whose event made it due.
+    fn attempt(
+        &mut self,
+        id: u64,
+        counts: bool,
+        by: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(saved) = self.automations.get(id) else {
+            return;
+        };
+        let a = for_firer(saved, by);
+        // The rule as saved (its When's blocks, the agent that fired it), then as it runs.
+        let target = self
+            .automation_target(saved)
+            .and_then(|()| self.automation_target(&a));
+        if let Err(why) = target {
+            self.run_ended(id, Went::Skipped, why, counts, by, cx);
+            return;
+        }
+        match self.try_do(&a, by, window, cx) {
+            Tried::Went(went, about) => self.run_ended(id, went, about, counts, by, cx),
             Tried::Hold(why) => {
-                let run = self.automation_runs.entry(id).or_default();
-                match &mut run.held {
+                let slot = self.automation_runs.entry(id).or_default().slot(by);
+                match &mut slot.held {
                     Some(held) if held.why == why => {}
                     Some(held) => {
                         held.why = why;
@@ -293,22 +527,26 @@ impl Workspace {
                     }
                     None => {
                         let (since, counts) = (SystemTime::now(), counts);
-                        run.held = Some(Held { since, why, counts });
+                        slot.held = Some(Held { since, why, counts });
                         cx.notify();
                     }
                 }
             }
             Tried::Later(task) => {
-                let run = self.automation_runs.entry(id).or_default();
-                (run.typing, run.typing_counts, run.held) = (true, counts, None);
+                let slot = self.automation_runs.entry(id).or_default().slot(by);
+                (slot.typing, slot.typing_counts, slot.held) = (true, counts, None);
                 let since = a.since;
+                let key = by.map(str::to_string);
                 cx.spawn(async move |ws, cx| {
                     let answer = task.await;
                     ws.update(cx, |ws, cx| {
+                        let by = key.as_deref();
                         // A time that fell due while it was typed counted into it.
-                        let counts = ws.automation_runs.get_mut(&id).map_or(counts, |run| {
-                            run.typing = false;
-                            run.typing_counts
+                        let slot = (ws.automation_runs.get_mut(&id))
+                            .and_then(|run| run.slots.get_mut(&key));
+                        let counts = slot.map_or(counts, |slot| {
+                            slot.typing = false;
+                            slot.typing_counts
                         });
                         let (went, about) = match answer {
                             Ok(about) => (Went::Ran, about),
@@ -321,14 +559,26 @@ impl Workspace {
                             .get(id)
                             .is_some_and(|a| a.on && a.since == since);
                         if same {
-                            ws.run_ended(id, went, about, counts, cx);
+                            ws.run_ended(id, went, about, counts, by, cx);
                         } else {
-                            ws.run_ended(id, went, about, false, cx);
-                            // A time of the new rule fell due while the old task was typed: it
-                            // runs at the next look, and a Once then turns off.
+                            ws.run_ended(id, went, about, false, by, cx);
+                            // A time or an event of the new rule fell due while the old task was
+                            // typed: it runs at the next look, and a Once then turns off.
                             if counts && ws.automations.get(id).is_some_and(|a| a.on) {
-                                if let Some(run) = ws.automation_runs.get_mut(&id) {
-                                    run.next = Some(SystemTime::now());
+                                match by {
+                                    None => {
+                                        if let Some(run) = ws.automation_runs.get_mut(&id) {
+                                            run.next = Some(SystemTime::now());
+                                        }
+                                    }
+                                    Some(by) => {
+                                        let run = ws.automation_runs.entry(id).or_default();
+                                        run.slot(Some(by)).held = Some(Held {
+                                            since: SystemTime::now(),
+                                            why: String::new(),
+                                            counts: true,
+                                        });
+                                    }
                                 }
                                 ws.look_at_automations(cx);
                             }
@@ -341,32 +591,36 @@ impl Workspace {
         }
     }
 
-    /// One try of the Do of `id`.
-    fn try_do(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) -> Tried {
-        let Some(a) = self.automations.get(id).cloned() else {
-            return Tried::Went(Went::Skipped, "It was deleted.".into());
-        };
+    /// One try of the Do of `a`, already made `for_firer(by)`.
+    fn try_do(
+        &mut self,
+        a: &Automation,
+        by: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Tried {
         let a_id = a.id;
         match &a.act {
             Do::Notify { text } => {
                 let title = match a.name.as_str() {
-                    "" => self.automation_sentence(&a, cx),
+                    "" => self.automation_sentence(a, cx),
                     name => name.to_string(),
                 };
                 let ws = cx.entity().downgrade();
+                let fired = by.map(str::to_string);
                 let notification = Notification::new()
                     .with_type(NotificationType::Info)
                     .title(title)
                     .message(text.clone())
                     .delivery(self.delivery(window))
                     .on_click(move |_, window, cx| {
-                        ws.update(cx, |ws, cx| ws.show_automation(a_id, window, cx))
+                        ws.update(cx, |ws, cx| ws.open_fired(a_id, fired.clone(), window, cx))
                             .ok();
                     });
                 show_notification(window, cx, notification);
                 Tried::Went(Went::Ran, "Notified.".into())
             }
-            Do::Prompt { block, text } => self.try_prompt(&a, block, text, cx),
+            Do::Prompt { block, text } => self.try_prompt(a, block, text, cx),
             Do::Command {
                 terminal: Some(uid),
                 text,
@@ -374,12 +628,13 @@ impl Workspace {
             } => match self.find_block(uid) {
                 Some(at) => match self.command_busy_at(&at) {
                     Some(why) => Tried::Hold(format!("Waiting for {uid}: {why}")),
-                    None => self.type_command(&a, at, uid, text, cx),
+                    None => self.type_command(a, at, uid, text, cx),
                 },
                 None => Tried::Went(Went::Skipped, format!("Target missing: {uid} isn't open")),
             },
             Do::Command { folder, text, .. } => {
-                self.command_in_new_terminal(&a, folder.as_deref(), text, window, cx)
+                let place = self.place_beside(a, by);
+                self.command_in_new_terminal(a, folder.as_deref(), text, place, window, cx)
             }
             Do::Agent {
                 agent,
@@ -387,14 +642,40 @@ impl Workspace {
                 model,
                 effort,
                 prompt,
-            } => self.start_agent_for(
-                &a,
-                agent,
-                folder.as_deref(),
-                (model, effort, prompt),
-                window,
-                cx,
-            ),
+            } => {
+                let place = self.place_beside(a, by);
+                self.start_agent_for(
+                    a,
+                    (agent, folder.as_deref()),
+                    (model, effort, prompt),
+                    place,
+                    window,
+                    cx,
+                )
+            }
+        }
+    }
+
+    /// Where a new block of `a` opens: beside the block that fired it when that one is in the
+    /// rule's workspace, else at the middle of the view.
+    fn place_beside(&self, a: &Automation, by: Option<&str>) -> Place {
+        let near = (by.and_then(|uid| self.find_block(uid)))
+            .filter(|(space, _)| a.workspace.as_ref() == Some(space));
+        near.map_or(Place::Free, |(_, id)| Place::Near(id))
+    }
+
+    /// A notification's click: the block that fired the run is shown, else (a time, Run now, a
+    /// block closed since) the popup opens on the automation.
+    pub(crate) fn open_fired(
+        &mut self,
+        id: u64,
+        by: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match by.as_deref().and_then(|uid| self.find_block(uid)) {
+            Some((space, block)) => self.reveal(&space, block, window, cx),
+            None => self.show_automation(id, window, cx),
         }
     }
 
@@ -474,6 +755,7 @@ impl Workspace {
         a: &Automation,
         folder: Option<&str>,
         text: &str,
+        place: Place,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Tried {
@@ -500,7 +782,7 @@ impl Workspace {
             folder: path,
             command: Some(text.to_string()),
         };
-        match self.add_block_in(&space, new, Place::Free, None, window, cx) {
+        match self.add_block_in(&space, new, place, None, window, cx) {
             Ok(id) => {
                 let uid = self
                     .space_named(&space)
@@ -520,9 +802,9 @@ impl Workspace {
     fn start_agent_for(
         &mut self,
         a: &Automation,
-        agent: &str,
-        folder: Option<&str>,
+        (agent, folder): (&str, Option<&str>),
         (model, effort, prompt): (&Option<String>, &Option<String>, &Option<String>),
+        place: Place,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Tried {
@@ -557,7 +839,7 @@ impl Workspace {
             args: None,
         };
         let called = match a.name.as_str() {
-            "" => when_words(&a.when, Local::now().date_naive()),
+            "" => self.when_said(a, cx),
             name => name.to_string(),
         };
         let opener = Opener::Automation {
@@ -570,7 +852,7 @@ impl Workspace {
             None,
             &path,
             &spawn,
-            Place::Free,
+            place,
             &[],
             opener,
             window,
@@ -631,7 +913,7 @@ impl Workspace {
             return Tried::Hold(format!("Waiting for {block}: {why}"));
         }
         let called = match a.name.as_str() {
-            "" => when_words(&a.when, Local::now().date_naive()),
+            "" => self.when_said(a, cx),
             name => name.to_string(),
         };
         let by = format!("automation \"{called}\"");
@@ -668,21 +950,28 @@ impl Workspace {
         }
     }
 
-    /// Its run ended: `last`, then for a due run (`counts`) its count, Stop after, and a Once
-    /// turned off.
+    /// Its run ended (the one `by` fired, None a time's): `last`, then for a due run (`counts`)
+    /// its count, Stop after, and a Once turned off.
     fn run_ended(
         &mut self,
         id: u64,
         went: Went,
         about: String,
         counts: bool,
+        by: Option<&str>,
         cx: &mut Context<Self>,
     ) {
         let Some(a) = self.automations.get_mut(id) else {
             return;
         };
         let run = self.automation_runs.entry(id).or_default();
-        run.held = None;
+        let key = by.map(str::to_string);
+        if let Some(slot) = run.slots.get_mut(&key) {
+            slot.held = None;
+            if !slot.typing {
+                run.slots.remove(&key);
+            }
+        }
         run.unseen |= went != Went::Ran;
         let mut about = about;
         if counts {
@@ -698,6 +987,8 @@ impl Workspace {
             }
             if !a.on {
                 run.next = None;
+                // Off: no agent's held run goes on.
+                run.slots.retain(|_, slot| slot.typing);
             }
         }
         a.last = Some(LastRun {
@@ -716,12 +1007,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let trying = self
-            .automation_runs
-            .get(&id)
-            .is_some_and(|run| run.typing || run.held.is_some());
-        if self.automations.get(id).is_some() && !trying {
-            self.attempt(id, false, window, cx);
+        let trying = (self.automation_runs.get(&id))
+            .and_then(|run| run.slots.get(&None))
+            .is_some_and(|slot| slot.typing || slot.held.is_some());
+        // The agent that fired it is no one's, here.
+        let fired = matches!(
+            self.automations.get(id).map(|a| &a.act),
+            Some(Do::Prompt { block, .. }) if block == FIRED
+        );
+        if self.automations.get(id).is_some() && !trying && !fired {
+            self.attempt(id, false, None, window, cx);
             // Held, it is tried again at each look.
             self.look_at_automations(cx);
         }
@@ -741,9 +1036,9 @@ impl Workspace {
         let next = on.then(|| next_for(a, now)).flatten();
         let run = self.automation_runs.entry(id).or_default();
         run.next = next;
-        run.held = None;
-        // A time that fell due while an older task was typed was the old rule's.
-        run.typing_counts = false;
+        // A held run is dropped; a time that fell due while an older task was typed was the old
+        // rule's.
+        run.reset();
         self.look_at_automations(cx);
         cx.notify();
     }
@@ -761,7 +1056,30 @@ impl Workspace {
                 Some(_) => {}
             }
         }
+        // What it hears must be open, where it is heard.
+        match &a.when {
+            When::Agent {
+                who: Who::Blocks { blocks, .. },
+                ..
+            } => {
+                for block in blocks {
+                    self.event_block(a, block)?;
+                }
+            }
+            When::Agent {
+                who: Who::Kind { kind },
+                ..
+            } if !self.agents.iter().any(|e| e.id == *kind) => {
+                return missing(format!("{kind} isn't in Settings ▸ Agents"));
+            }
+            When::Command { terminal, .. } => self.event_block(a, terminal)?,
+            _ => {}
+        }
         match &a.act {
+            Do::Prompt { block, .. } if block == FIRED => match a.when {
+                When::Agent { .. } => Ok(()),
+                _ => missing("only an agent event has an agent that fired it".into()),
+            },
             Do::Prompt { block, .. } if self.find_block(block).is_none() => {
                 missing(format!("{block} isn't open"))
             }
@@ -776,6 +1094,37 @@ impl Workspace {
         }
     }
 
+    /// Whether the block `uid`, which an event of `a` hears, is open in its workspace. Err: "Target
+    /// missing: abc12 isn't open", "…: abc12 is in api".
+    fn event_block(&self, a: &Automation, uid: &str) -> Result<(), String> {
+        let Some((space, _)) = self.find_block(uid) else {
+            return Err(format!("Target missing: {uid} isn't open"));
+        };
+        match (&a.workspace, self.space_named(&space)) {
+            (Some(home), Some(found)) if *home != space => {
+                Err(format!("Target missing: {uid} is in {}", found.name))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The When's words, the blocks as "Title (uid)", a kind by its title, a kind of a
+    /// one-workspace rule with its workspace: "When Claude Code (abc12) finishes its turn".
+    pub(crate) fn when_said(&self, a: &Automation, cx: &App) -> String {
+        let block = |uid: &str| match self.uid_title(uid, cx) {
+            Some(title) => format!("{title} ({uid})"),
+            None => uid.to_string(),
+        };
+        let space = a.workspace.as_deref().and_then(|id| self.space_named(id));
+        let said = event_words(
+            &a.when,
+            &block,
+            &|kind| self.agent_title(kind),
+            space.map(|space| space.name.as_str()),
+        );
+        said.unwrap_or_else(|| when_words(&a.when, Local::now().date_naive()))
+    }
+
     /// The preview sentence: "Every weekday at 09:00, type "review open PRs" into Claude Code
     /// (abc12)."
     pub(crate) fn automation_sentence(&self, a: &Automation, cx: &App) -> String {
@@ -784,6 +1133,9 @@ impl Workspace {
             None => uid.to_string(),
         };
         let does = match &a.act {
+            Do::Prompt { block: uid, text } if uid == FIRED => {
+                format!("type {} into the agent that fired it", quote(text))
+            }
             Do::Prompt { block: uid, text } => format!("type {} into {}", quote(text), block(uid)),
             Do::Command {
                 terminal: Some(uid),
@@ -809,8 +1161,63 @@ impl Workspace {
             }
             Do::Notify { text } => format!("notify you: {}", quote(text)),
         };
-        let today = Local::now().date_naive();
-        format!("{}, {does}.", when_words(&a.when, today))
+        format!("{}, {does}.", self.when_said(a, cx))
+    }
+
+    /// What could make the rule `a` run again and again, in the editor's words; None: nothing
+    /// does. An agent's prompt that ends a turn of an agent the event hears, a started agent the
+    /// event hears, a command that ends in the terminal it runs in.
+    pub(crate) fn automation_loop(&self, a: &Automation) -> Option<String> {
+        let cooldown = "The cooldown spaces the runs out.";
+        match (&a.when, &a.act) {
+            (
+                When::Command { terminal, .. },
+                Do::Command {
+                    terminal: Some(runs_in),
+                    ..
+                },
+            ) if terminal == runs_in => Some(format!(
+                "This can loop: its command ends in {terminal}, which fires it again."
+            )),
+            (
+                When::Agent {
+                    event: Heard::Idle, ..
+                },
+                Do::Prompt { block, .. },
+            ) if block == FIRED => Some(format!(
+                "This can loop: its prompt ends a turn of the agent that fired it, which fires it again. {cooldown}"
+            )),
+            (
+                When::Agent {
+                    event: Heard::Idle,
+                    who,
+                },
+                Do::Prompt { block, .. },
+            ) => {
+                let hears = match who {
+                    Who::Blocks { blocks, .. } => blocks.contains(block),
+                    Who::Kind { kind } => (self.find_block(block))
+                        .and_then(|(space, id)| self.space_named(&space)?.terminal(id))
+                        .is_some_and(|pane| self.runs(pane.seen.agent.as_deref(), kind)),
+                };
+                hears.then(|| {
+                    format!(
+                        "This can loop: its prompt ends a turn of {block}, which fires it again. {cooldown}"
+                    )
+                })
+            }
+            (
+                When::Agent {
+                    who: Who::Kind { kind },
+                    ..
+                },
+                Do::Agent { agent, .. },
+            ) if self.runs(Some(agent), kind) => Some(
+                "This can loop: the agent it starts can fire it again, and each new agent has its own cooldown. Stop after bounds it."
+                    .into(),
+            ),
+            _ => None,
+        }
     }
 
     /// How many automations ended other than Ran since the popup was opened.
@@ -827,6 +1234,9 @@ impl Workspace {
         let Some(a) = self.automations.get(id).filter(|a| a.on) else {
             return "Off".into();
         };
+        if let Some(event) = event_short(&a.when, &|kind| self.agent_title(kind)) {
+            return event;
+        }
         match self.automation_runs.get(&a.id).and_then(|run| run.next) {
             Some(next) => {
                 let (next, now) = (DateTime::<Local>::from(next), DateTime::<Local>::from(now));
@@ -844,8 +1254,15 @@ pub(crate) type Runs = HashMap<u64, Run>;
 pub(crate) const NEW: u64 = 0;
 
 /// What the editor changes of an automation: a draft equal to the saved one in these is no draft.
-fn edits(a: &Automation) -> (&str, &Option<String>, &When, &Do, Option<u32>) {
-    (&a.name, &a.workspace, &a.when, &a.act, a.max_runs)
+fn edits(a: &Automation) -> (&str, &Option<String>, &When, &Do, Option<u32>, u32) {
+    (
+        &a.name,
+        &a.workspace,
+        &a.when,
+        &a.act,
+        a.max_runs,
+        a.cooldown,
+    )
 }
 
 impl Workspace {
@@ -992,7 +1409,7 @@ impl Workspace {
     /// Why the run of `id` is held, in full: "Waiting for abc12: it is working".
     pub(crate) fn automation_held_why(&self, id: u64) -> Option<String> {
         let run = self.automation_runs.get(&id)?;
-        run.held.as_ref().map(|held| held.why.clone())
+        run.held().map(|(_, held)| held.why.clone())
     }
 
     /// The editor's last line: while a run is held, why it waits and nothing else; else the last
@@ -1013,12 +1430,9 @@ impl Workspace {
     /// "Waiting for abc12"; None before the first run.
     pub(crate) fn last_words(&self, id: u64, now: SystemTime) -> Option<String> {
         let a = self.automations.get(id)?;
-        if self
-            .automation_runs
-            .get(&id)
-            .is_some_and(|run| run.held.is_some())
-        {
-            return Some(match typed_into(a) {
+        if let Some((by, _)) = self.automation_runs.get(&id).and_then(|run| run.held()) {
+            let target = for_firer(a, by);
+            return Some(match typed_into(&target) {
                 Some(uid) => format!("Waiting for {uid}"),
                 None => "Waiting".into(),
             });
@@ -1148,6 +1562,7 @@ impl Workspace {
                 since: 0,
                 last: None,
                 opened: None,
+                cooldown: COOLDOWN,
             });
         self.automations_at = Some(NEW);
         cx.notify();
@@ -1196,8 +1611,29 @@ impl Workspace {
             return Some(problem);
         }
         let blank = |text: &str| text.trim().is_empty();
+        let event = match &a.when {
+            When::Agent {
+                who: Who::Blocks { blocks, .. },
+                ..
+            } if blocks.is_empty() => Some("Choose at least one agent."),
+            When::Agent {
+                who: Who::Kind { kind },
+                ..
+            } if blank(kind) => Some("Choose a kind of agent."),
+            When::Command { terminal, .. } if blank(terminal) => Some("Choose a terminal."),
+            _ if a.when.is_event() && a.cooldown > COOLDOWN_MOST => {
+                Some("The cooldown runs from 0 to 1440 minutes.")
+            }
+            _ => None,
+        };
+        if let Some(problem) = event {
+            return Some(problem.into());
+        }
+        let agent_event = matches!(a.when, When::Agent { .. });
         let own = match &a.act {
-            Do::Prompt { block, .. } if blank(block) => Some("Choose an agent."),
+            Do::Prompt { block, .. } if blank(block) || (block == FIRED && !agent_event) => {
+                Some("Choose an agent.")
+            }
             Do::Prompt { text, .. } if blank(text) => Some("Write the prompt."),
             Do::Command {
                 terminal: Some(t), ..
@@ -1254,13 +1690,13 @@ impl Workspace {
             (live.name, live.workspace, live.when, live.act) =
                 (draft.name, draft.workspace, draft.when, draft.act);
             (live.max_runs, live.since, live.runs) = (draft.max_runs, unix(now), 0);
+            live.cooldown = draft.cooldown;
             id
         };
         self.automation_drafts.remove(&id);
         let a = self.automations.get(saved).cloned().ok_or("It is gone.")?;
         let run = self.automation_runs.entry(saved).or_default();
-        run.held = None;
-        run.typing_counts = false;
+        run.reset();
         run.next = a.on.then(|| next_for(&a, now)).flatten();
         self.automations_at = Some(saved);
         self.look_at_automations(cx);
