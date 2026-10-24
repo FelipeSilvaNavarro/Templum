@@ -1,10 +1,10 @@
 # Automations: Templum's cron
 
 - **Date:** 2026-10-24
-- **Status:** Batch 1 (time) implemented (kanban card 150, "a cron system (a button in the sidebar near Git)"),
-  uncommitted until reviewed. Delivered in two batches: batch 1, time (plan:
-  [2026-10-24-automations.md](../plans/2026-10-24-automations.md)); batch 2, agent and command events (its plan comes
-  after batch 1's As built).
+- **Status:** Batch 1 (time) implemented and committed (kanban card 150, "a cron system (a button in the sidebar near
+  Git)"); batch 2 planned. Delivered in two batches: batch 1, time (plan:
+  [2026-10-24-automations.md](../plans/2026-10-24-automations.md)); batch 2, agent and command events (plan:
+  [2026-10-24-automations-events.md](../plans/2026-10-24-automations-events.md)).
 - **Builds on:** [agent-tools.md](agent-tools.md#schedule-and-cancel_schedule) (an agent's `schedule`: deliveries
   later, the clock), [agents-view.md](agents-view.md) and [ask-inbox.md](ask-inbox.md) (the sibling popups this one is
   drawn like), [connections.md](connections.md) (Delegating: how a task is typed into an agent; Spawning; an agent's
@@ -113,6 +113,9 @@ agent, notify them). Templum runs it while it runs, and shows each rule's next r
 - **Stop after N runs** (*the designer's call*: on every automation, not only events): it counts the runs that went
   (Ran), not those skipped, failed or missed; the Nth turns it off ("Ran 6 of 6 times, now off"). Saving it or turning
   it on starts the count again.
+- **Cooldown** (batch 2, *the designer's call*): saved only when it isn't 5 (no `cooldown` key: 5); an empty box is
+  5, its placeholder "5"; past 1440 Save says "The cooldown runs from 0 to 1440 minutes.", a box that isn't a whole
+  number "Write the cooldown in minutes.". Shown only for an event; a time keeps the value, unused.
 
 ### Where they are saved (*the orchestrator's call*: the instructions' pattern)
 
@@ -211,6 +214,42 @@ Missed, and the words about it), and the uid of the terminal its command last op
   cooldown.
 - **Events while Templum was closed** don't exist for it: nothing runs at start.
 
+The rest of batch 2's details are *the designer's call*:
+
+- **Heard at once, run at the next look:** an event is noted the moment Templum hears it (only while some event
+  automation is on) and acted on at the automations' next look, within a second. The events of one look fire their
+  automations in the list's order. An agent seen for the first time (Templum's start, a block restored) fires
+  nothing, whatever its state; a Needs you whose question changes (another request) is the same wait.
+- **Who and Where:** the blocks offered are the agents' blocks of the automation's workspace (all of them for All
+  workspaces), as the Do's Agent dropdown lists them; a kind's events come only from the automation's workspace when it
+  has one. Every chosen block must be open there, for one block, Any and All alike: one that isn't makes it **Target
+  missing** ("Target missing: abc12 isn't open", "…: abc12 is in api" when another workspace has it); so does a kind
+  no longer in Settings ▸ Agents ("…: claude2 isn't in Settings ▸ Agents") and a command's terminal that isn't open
+  ("…: q3x9z isn't open"). An event that still comes meanwhile (another block of an Any, an agent the removed kind
+  still names) is **Skipped** with those words, as a time is, and starts its cooldown.
+- **All of them** is offered only for "finishes its turn"; several blocks that "need you" fire on any of them. A
+  block of the set that runs no agent, or isn't open, doesn't hold it back. At the look, the last of the set heard
+  ending is the agent that fired it, and it fires if every other block of the set is idle then.
+- **The block that fired a command event** is its terminal: new blocks open beside it and the notification's click
+  shows it, but it takes no prompt ("The agent that fired it" is offered only for an agent event).
+- **One run per agent that fired it:** each agent's run is held or typed apart from the others' (two Claudes that
+  finish together each get their prompt, and two prompts for one block take turns as the edge table says); an event
+  from an agent whose run is still held or being typed joins that run, as a time joins a held run, and starts no
+  cooldown.
+- **The cooldown** starts when the event fires the automation, whatever the run then does (ran, held, skipped,
+  failed). It lives in memory: saving the automation or turning it on starts its cooldowns over; Run now neither waits
+  for one nor starts one.
+- **A command's count:** the first look after Templum starts, after the automation is saved or turned on, or after its
+  terminal is reopened notes the terminal's count of finished commands and fires nothing.
+- **The words:** Any of them "When Claude Code (abc12) or Codex (k9x1d) finishes its turn" ("A, B or C"); All of them
+  "When Claude Code (abc12) and Codex (k9x1d) have all finished their turns"; a kind names the automation's workspace
+  when it has one ("When any Codex in api needs you", "When any Claude Code finishes its turn" for All workspaces);
+  any exit "When a command ends in zsh (q3x9z)". The row's line 1 says the event it waits for: "on abc12's turn's
+  end", "on a turn's end of 3 agents", "once all 3 agents finish", "on a Claude Code's turn's end"; "when abc12 needs
+  you", "when one of 3 agents needs you", "when a Codex needs you"; "on a command's end in q3x9z", "on a failure in
+  q3x9z". The editor's preview says "Runs " and the When's words, their first letter lowered: "Runs when Claude Code
+  (abc12) finishes its turn".
+
 ## Do
 
 *The orchestrator's call* for the four; *the designer's call* for the details.
@@ -246,6 +285,12 @@ named by its title and uid as the blocks list names it; a folder as typed.
   `delegate` gives: "abc12 didn't take the task: typed but not submitted: …").
 - **Never into a shell:** a target whose agent quit (no agent seen there, or its shell in front) fails at once: "abc12
   runs no agent now: a prompt is never typed into a shell." A subagent's read-only block can't be chosen.
+- **The agent that fired it** (batch 2, *the designer's call*): saved as the block `"fired-it"` (`prompt: { block:
+  "fired-it", text }`), a word no block id can be, as the asker's `automation-<id>`. Its runs wait and are written as
+  any prompt's, with the id of the agent that fired it: "Waiting for abc12: it is working", "Typed into abc12 as task
+  t12.". Only an agent event has one: switching the When to a time or a command ends empties the Agent dropdown
+  ("Choose an agent." at Save), and a hand-edited file that pairs it with a time is Target missing: "Target missing:
+  only an agent event has an agent that fired it".
 
 ### Run a command
 
@@ -272,7 +317,9 @@ named by its title and uid as the blocks list names it; a folder as typed.
   above), on the model and effort, which are checked as `spawn_agent` checks them when saved and again when it runs;
   its first prompt typed once it is ready, as a task from `automation "<name>"`. It opens in the automation's
   workspace at its view's middle (batch 2: beside the agent that fired it when that one is in the same workspace),
-  wired to nothing; the person closes it as any block.
+  wired to nothing; the person closes it as any block. *The designer's call:* a new terminal of **Run a command**
+  opens beside it too (a kept terminal is reused wherever it is); Run now, or an agent that fired it and closed
+  before its run, opens it at the view's middle.
 - Each run opens a new agent (*the designer's call*); **Stop after N runs** is how to bound it.
 - **Ran:** "Opened Claude Code as k9x1d in ~/api."; **Failed** with what `spawn_agent` would refuse ("Claude Code
   isn't installed: …").
@@ -281,7 +328,9 @@ named by its title and uid as the blocks list names it; a folder as typed.
 
 - A notification at the bottom right, titled the automation's name (or its sentence), its text below; while Templum is
   in the background and `terminal.notifications` is on, a system notification too, as news is (*the designer's call*).
-  A click opens the Automations popup on it (batch 2: shows the block that fired it).
+  A click opens the Automations popup on it (batch 2: shows the block that fired it). *The designer's call:* shown as
+  Go to terminal shows a block (its workspace, the block focused, the camera on it); a block closed since, or a run
+  from a time or Run now, opens the popup on the automation.
 - **Ran:** "Notified."
 
 ## Safety
@@ -293,7 +342,13 @@ named by its title and uid as the blocks list names it; a folder as typed.
   Do's target: "This can loop: its prompt ends a turn of abc12, which fires it again. The cooldown spaces the runs
   out." (the same block, the agent that fired it, or a kind that matches the target's agent); and for a command that
   ends in the terminal its command runs in: "This can loop: its command ends in q3x9z, which fires it again." It
-  warns; it doesn't forbid (a review loop may be wanted).
+  warns; it doesn't forbid (a review loop may be wanted). *The designer's call:* the prompt's warning is for "finishes
+  its turn" only (a prompt to an agent that needs the person is held, it can't spin); for the agent that fired it:
+  "This can loop: its prompt ends a turn of the agent that fired it, which fires it again. The cooldown spaces the runs
+  out."; a kind matches the target as an event's who does (`Workspace::runs`), and a target that isn't open can't be
+  told. And **Start an agent** whose agent a kind matches, on either event, the one loop no cooldown spaces out (each
+  new agent has its own): "This can loop: the agent it starts can fire it again, and each new agent has its own
+  cooldown. Stop after bounds it."
 - **Target missing:** a target block that isn't open in a running workspace (closed, or its workspace stopped), the
   automation's workspace stopped or deleted, or an agent no longer in Settings ▸ Agents. The automation doesn't run;
   its row is drawn as an off one, its switch still as the person set it, and says "Target missing: abc12 isn't open"
@@ -315,7 +370,8 @@ named by its title and uid as the blocks list names it; a folder as typed.
 | **Start an agent** | — | agent removed: Target missing | Target missing | each opens one | — |
 | **Notify** | — | — | Target missing (a one-workspace rule) | one notification each | — |
 
-- A held run is dropped when the automation is turned off, saved again, or deleted (*the designer's call*).
+- A held run is dropped when the automation is turned off, saved again, or deleted (*the designer's call*); batch 2:
+  every agent's held run, also when Stop after turns it off.
 - An automation is never run twice by one time or one event.
 
 ## What a person sees
@@ -366,6 +422,8 @@ editor at the right.
 - **Run now** runs its Do now, also when it is off, through every check above (held, failed, skipped as any run);
   it doesn't move its next time and doesn't count toward Stop after (*the designer's call*). Batch 2: a Do on "the
   agent that fired it" has no one to act on: Run now is dimmed, its tooltip "It acts on the agent that fires it".
+  *The designer's call:* a click on it does nothing; Run now of any other event automation runs its Do with no agent
+  that fired it (a new block at the view's middle, a notification whose click opens the popup).
 - **Duplicate** adds a copy after the list's last, named "*name* (copy)", **off**, with no runs and no last run, and
   selects it (*the designer's call*: off, so two copies never run together by surprise).
 - **Delete** asks first (*the orchestrator's call*): "Delete "*name*"?", "It won't run again. This can't be undone.",
@@ -402,7 +460,14 @@ sentence and its next run; *the designer's call* for the rest):
     months."
   - Advanced: a field "minute hour day month weekday", and under it its next three times or its error.
   - Batch 2: who (a block, several with Any of them / All of them, or any agent of a kind; the blocks listed by
-    title and uid, the kinds by Settings ▸ Agents' titles); a terminal and "Failures only".
+    title and uid, the kinds by Settings ▸ Agents' titles); a terminal and "Failures only". *The designer's call:*
+    **Who**, a dropdown: **Chosen agents**, a toggle per agent block ("*Title* (*uid*) · *workspace*", a chosen one
+    that isn't open as "abc12 (not open)") and, once two are chosen for a turn's end, a dropdown **Any of them** /
+    **All of them**; or **Any agent of a kind**, a dropdown of Settings ▸ Agents' titles. A new agent event starts
+    with no block chosen; Save says "Choose at least one agent." (or "Choose a kind of agent." with none in
+    Settings ▸ Agents). A command ends: **Terminal**, a dropdown of the workspace's terminals ("Choose a terminal."
+    at Save), and a toggle **Failures only**, off when new. Switching between the two agent events keeps who (All of
+    them becomes Any of them for Needs you).
 - **Do**, a dropdown: Send a prompt to an agent, Run a command, Start an agent, Notify me. Under it its fields:
   - Send a prompt: **Agent**, a dropdown of the blocks running an agent in its workspace (in all, for All workspaces),
     "*Title* (*uid*) · *workspace*" (batch 2: first, "The agent that fired it", for an agent event); a saved block
@@ -412,7 +477,7 @@ sentence and its next run; *the designer's call* for the rest):
   - Start an agent: **Agent**, a dropdown of Settings ▸ Agents by title, accounts included; **Folder**; **Model** and
     **Effort**, fields (empty: the agent's own); **Prompt**, several lines, optional.
   - Notify me: **Text**.
-  - Batch 2: the loop warning, under the Do.
+  - Batch 2: the loop warning, under the Do (*the designer's call*: wrapped on as many lines as it takes, never cut).
 - **Where**, a dropdown: All workspaces, then the workspaces in the sidebar's order (only workspaces for a new
   terminal or Start an agent); new: the workspace shown.
 - **Stop after** (a number field, empty for no limit, "runs"); batch 2, for an event, **Cooldown** ("minutes").
@@ -465,8 +530,10 @@ Closing gives the keyboard back to the canvas only if the popup had it.
   agents, badge, button and shortcut.
 - **Batch 2:** the event triggers (an agent ends its turn or needs you; who: a block, several any/all, a kind; a
   command ends, failures only), the cooldown, the loop warning, "the agent that fired it" (as a Do's target, new blocks
-  beside it, the notification's click, Run now dimmed), and their words in the list and the editor. Its plan follows
-  batch 1's As built.
+  beside it, the notification's click, Run now dimmed), and their words in the list and the editor. Its plan,
+  [2026-10-24-automations-events.md](../plans/2026-10-24-automations-events.md), follows batch 1's As built; the
+  details the sections above left open are marked *the designer's call* in place (Cooldown; Events; The agent that
+  fired it; Start an agent; Notify me; Safety; the list's Run now; the editor's who; At the edges).
 
 ## Left to the builder
 
