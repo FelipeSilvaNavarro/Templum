@@ -2,7 +2,8 @@
 
 - **Date:** 2026-10-18
 - **Status:** Batches 1 and 2 implemented (kanban card 43); batches 3 and 4 planned:
-  [docs/plans/2026-10-18-templum-agent.md](../plans/2026-10-18-templum-agent.md)
+  [docs/plans/2026-10-18-templum-agent.md](../plans/2026-10-18-templum-agent.md); its look:
+  [templum-agent-look.md](templum-agent-look.md) (kanban card 143)
 - **Builds on:** [connections.md](connections.md) (the bus, the MCP server, tasks handed over, spawning, the
   balloon's rules), [agents.md](agents.md) (the agents and `[agents]`), [kanban.md](kanban.md),
   [checklist.md](checklist.md), [cockpit.md](cockpit.md) (block kinds, the toolbar, notes),
@@ -78,6 +79,9 @@ Later batches add their own criteria ([Delivery](#delivery)).
 
 ## What a person sees
 
+The look (sizes, colors, motion) is in [templum-agent-look.md](templum-agent-look.md); this section says what each
+piece does.
+
 ### The pill
 
 The pill is the Templum Agent's input, floating over the canvas at the bottom center, 8 px above the toolbar (above
@@ -87,7 +91,7 @@ the stroke options when a drawing tool shows them). It shows wherever the toolba
 | State | What it looks like |
 |---|---|
 | At rest | 300 × 36 px, radius 18, the theme's `popover` fill, a `hairline` border and the unfocused block's shadow (y 4, blur 12). Lucide's `sparkles` icon (16 px, `accent`), "Ask Templum" in `title_dim`, and the shortcut as dim keys (`Ctrl` `⇧` `Space`) on the right |
-| Typing | It grows to 640 px (at most the canvas's width − 32) over 0.18 s, the border turns `accent` (the focused block's ring) and it becomes a text field of 1 to 8 lines (gpui-kit `InputState::auto_grow(1, 8)`), placeholder "Ask Templum to build, run or tidy your canvas…". On the right, the engine chip ("Claude Code · opus" in `title_dim`; a click opens Settings ▸ Templum Agent) and the send button, an arrow up in an `accent` circle, shown while there is text |
+| Typing | It grows to 640 px (at most the canvas's width − 32) over 0.18 s, the border turns `accent` (the focused block's ring) and it becomes the composer: a text field of 1 to 8 lines (gpui-kit `InputState::auto_grow(1, 8)`), placeholder "Ask Templum to build, run or tidy your canvas…", over a bar with the model chip ("Claude Code · opus"; its menu is the chat's), the keys it answers to, and Send (an arrow up in an `accent` circle, dim and dead without text) or, while the agent works, Stop (Send beside it when text waits) |
 | Working | The icon becomes a small spinning `orbit` (`accent`), and the text, while nothing is typed, is the last action under way ("Opening Codex in api…"). A 2 px `accent` line runs along the pill's bottom edge, a light band sweeping across it every 1.6 s (still, at its middle, when the system asks for less motion) |
 | Asks you | A yellow border (the balloon's yellow, `normal.yellow`), a yellow dot and "Templum Agent asks you: *Close "Codex · api"?*" with **Review**, which opens the chat at the approval |
 | Something new | While the chat is closed and the Templum Agent wrote something since it was last open, a small `accent` dot on the icon |
@@ -107,7 +111,7 @@ the stroke options when a drawing tool shows them). It shows wherever the toolba
 The chat is a floating card that rises from the pill: the pill becomes its footer, the same field morphing in place.
 
 - **Size and place:** 640 px wide (at most the canvas's width − 32), bottom center over the toolbar, as tall as its
-  rows up to 70% of the canvas's height (at least 240 px), radius 14, `popover` fill, `hairline` border, the focused
+  rows up to 70% of the canvas's height (at least 300 px), radius 16, `popover` fill, `hairline` border, the focused
   block's shadow (y 10, blur 30). It rises 12 px and fades in over 0.22 s; with less motion it appears.
 - **It doesn't block the app.** The canvas works around it; a click outside it doesn't close it. Only Esc in its field,
   its ▾ button or the shortcut close it, and the conversation goes on while it is closed. It sits under the Git popup,
@@ -117,19 +121,22 @@ The chat is a floating card that rises from the pill: the pill becomes its foote
   the card fill the canvas, 16 px in from every side, in the same layer (under the Git popup); its footer stays at the
   bottom and its body grows. It stays full when the chat is closed and opened again, for as long as Templum runs (no
   option). Esc, ▾ and the shortcut work as before; the rise and the fade are the same.
-- **Its header** (36 px): `sparkles` and "Templum Agent" in `title`, the engine chip, then on the right **Stop** (a
-  `circle-stop`, only while it works), **Full screen**, **New chat** (`message-square-plus`) and **▾** (close). Batch 2
-  adds the run meter between them ([Orchestration](#orchestration)).
-- **The engine chip** ("Claude Code · opus") is a button: its menu lists Default (the agent's own model), the agent's
-  models (Claude Code: haiku, sonnet, opus) with a check on the current one, and **Another model…**, which opens
+- **Its header:** `sparkles` (a spinning `orbit` while it works) and "Templum Agent", then on the right the usage
+  chip ([Orchestration](#orchestration); a label, or the tasks drawer's button while tasks run), **New chat**
+  (`message-square-plus`), **Full screen** and **▾** (close). **Stop** and the model chip are in the composer; **Catch
+  me up** is in the tasks drawer.
+- **The model chip** ("Claude Code · opus"), in the composer, is a button: its menu opens upward and lists Default
+  (the agent's own model), the agent's models (Claude Code: haiku, sonnet, opus) with a check on the current one, and
+  **Another model…**, which opens
   Settings ▸ Templum Agent to type one. A choice writes `templum_agent.model` as Settings does, so it reaches the next
   start of the engine the same way, and the chip shows the model the engine reports once it has started, and the chosen
   one until then.
-- **Its body** scrolls; it follows new rows while it is at its end, and a small "↓ New" pill brings it back there
-  after the person scrolled up.
-- **An empty conversation** shows three suggestions as chips; a click puts its text in the field:
-  "Set up a workspace for a project, with a kanban and an agent per card", "Catch me up: what's going on?",
-  "Tidy this workspace into a grid".
+- **Its body** scrolls; it follows new rows while it is at its end, and a scroll-to-the-end button brings it back
+  there after the person scrolled up (a dot on it while rows came below meanwhile).
+- **An empty conversation** (no rows, or only notes: it comes back after New chat) greets and shows four suggestions as
+  chips; a click puts its text in the field (Catch me up is sent at once): "Set up a workspace for a project, with a
+  kanban and an agent per card", "Catch me up: what's going on?", "Tidy this workspace into a grid", "Open an agent
+  for each card on my board".
 
 ### Rows
 
@@ -137,19 +144,17 @@ The chat is a floating card that rises from the pill: the pill becomes its foote
 |---|---|---|
 | The person's message | Right-aligned bubble, at most 80% wide, `hover` fill, radius 12, plain text | yes |
 | The agent's text | Full width, Markdown through gpui-kit's `TextView` at the window's scale, growing as it streams | yes |
-| Thinking | "Thinking" in `title_dim` with a light band sweeping across it, while the engine thinks before its first text or tool; a message or notice that comes meanwhile goes above it | no |
-| An action | One line: an icon for the tool's kind, then a sentence. Running: a spinner and the tool's title ("Creating a workspace…"). Done: the first line of the tool's answer, which Templum writes ("Created workspace API (w3)."). Failed: a red icon and the refusal under it in dim red. Denied: "You denied this." in `title_dim`. A click shows what it touched (the workspace, then the block: `reveal`) | yes |
+| Thinking | A spinning `orbit` and "Thinking" in `title_dim` with a light band (gpui-kit's shimmer) sweeping across it, while the engine thinks before its first text or tool; a message or notice that comes meanwhile goes above it | no |
+| An action | One line: a status icon, then a sentence. Running: a spinner and the tool's title ("Creating a workspace…"). Done: the first line of the tool's answer, which Templum writes ("Created workspace API (w3)."). Failed: a red icon and the refusal under it in dim red. Denied: "You denied this." in `title_dim`. A click shows what it touched (the workspace, then the block: `reveal`); on a row that touched nothing it opens the row, and its chevron always opens or closes it, to show the whole sentence, the tool's name and its call (not saved; New chat closes them all) | yes |
 | Reads | Consecutive reads (`overview`, `list_*`, `read_*`, and the engine's own Read, Glob, Grep) fold into one dim row, "Looked at the canvas (4)" | yes |
 | An approval | The popup's record once answered: its sentence and "Allowed once", "Allowed for this conversation" or "Denied" | yes |
 | A notice (batch 2) | "● *Codex · card 3* done in 4 min · $0.31": an `accent` dot when done, red when failed, yellow while it waits for its person; a click shows its block | yes |
-| A turn's end | Right-aligned, dim: "14 s · $0.04" (its time and cost when the engine says them) | yes |
+| A turn's end | Left-aligned under the answer, dim: "14 s · $0.04" (its time and cost when the engine says them) | yes |
 | A failure | Red: "The turn failed: *the engine's message*", or "Claude Code stopped: *its last error line*. Your next message starts it again." | yes |
 | A note | Dim and centered: "Stopped by you.", "New conversation." | yes |
 
-Each tool has an icon (lucide, in gpui-kit's assets): workspaces `layout-grid`, terminals `square-terminal`, agents
-`bot`, boards and cards `kanban`, notes `sticky-note`, checklists `list-checks`, wires `cable`, settings `settings`,
-showing `eye`. The sentence of an action comes from Templum, never from the model: the model can't make a row say
-something other than what was done.
+The sentence of an action comes from Templum, never from the model: the model can't make a row say something other
+than what was done.
 
 ### On the canvas
 

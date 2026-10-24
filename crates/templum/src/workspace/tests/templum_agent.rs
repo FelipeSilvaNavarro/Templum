@@ -2373,6 +2373,491 @@ fn new_chat_and_stop_buttons(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// Types `text` in the pill's field (made by the shortcut), as the person would.
+fn set_pill(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext, text: &str) {
+    cx.update_window(handle, |_, window, cx| {
+        let input = ws
+            .read(cx)
+            .templum_agent
+            .input
+            .clone()
+            .expect("the field was made");
+        input.update(cx, |input, cx| {
+            input.set_value(text.to_string(), window, cx)
+        });
+    })
+    .unwrap();
+}
+
+/// Resizes the window to `w` × `h`.
+fn resize(handle: AnyWindowHandle, cx: &mut TestAppContext, w: f32, h: f32) {
+    gpui_kit::VisualTestContext::from_window(handle, cx).simulate_resize(size(px(w), px(h)));
+}
+
+#[gpui_kit::test]
+fn send_becomes_stop_while_it_works(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.toggle_agent(window, cx))
+    })
+    .unwrap();
+    let has = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    assert!(
+        has(cx, "agent-send") && !has(cx, "agent-stop"),
+        "idle: Send, dim while empty"
+    );
+    assert!(has(cx, "agent-hint"), "the keys while it has the keyboard");
+    ws.update(cx, |ws, _| ws.templum_agent.conversation.person("go"));
+    assert!(
+        has(cx, "agent-stop") && !has(cx, "agent-send"),
+        "working, nothing typed: Stop"
+    );
+    set_pill(handle, &ws, cx, "and then");
+    assert!(
+        has(cx, "agent-stop") && has(cx, "agent-send"),
+        "working with text: Send beside Stop"
+    );
+}
+
+#[gpui_kit::test]
+fn an_empty_send_does_nothing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.toggle_agent(window, cx))
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("agent-send", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(ws.read_with(cx, |ws, _| ws.templum_agent.conversation.rows.is_empty()));
+}
+
+#[gpui_kit::test]
+fn the_model_chip_sits_in_the_composer(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let pill = window.find("agent-pill").bounds();
+        assert!(pill.contains(&window.find("agent-model").bounds().center()));
+        assert!(
+            window.try_find("agent-engine").is_none(),
+            "the old engine label is gone"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_composer_grows_to_eight_lines_then_scrolls(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.toggle_agent(window, cx))
+    })
+    .unwrap();
+    let height = |cx: &mut TestAppContext, lines: usize| {
+        let text: Vec<String> = (0..lines).map(|i| format!("line {i}")).collect();
+        set_pill(handle, &ws, cx, &text.join("\n"));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            f32::from(window.find("agent-pill").bounds().size.height)
+        })
+        .unwrap()
+    };
+    let (one, three, eight, twenty) = (height(cx, 1), height(cx, 3), height(cx, 8), height(cx, 20));
+    assert!(one > 36.0 + 28.0, "the field and its bar: {one}");
+    assert!(three > one && eight > three, "{one} {three} {eight}");
+    assert_eq!(twenty, eight, "at most 8 lines, then it scrolls");
+}
+
+#[gpui_kit::test]
+fn a_narrow_canvas_keeps_the_composer_inside_itself(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    resize(handle, cx, 420.0, 700.0);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.toggle_agent(window, cx))
+    })
+    .unwrap();
+    set_pill(handle, &ws, cx, "hello");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let pill = window.find("agent-pill").bounds();
+        let (chip, send) = (
+            window.find("agent-model").bounds(),
+            window.find("agent-send").bounds(),
+        );
+        assert!(chip.right() <= send.left(), "in order");
+        assert!(send.right() <= pill.right() && chip.left() >= pill.left());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_usage_chip_is_a_label_without_tasks(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        let c = &mut ws.templum_agent.conversation;
+        c.person("go");
+        c.apply(::templum_agent::ChatEvent::TurnEnded {
+            ms: None,
+            cost_usd: Some(0.04),
+            error: None,
+        });
+        c.working = false;
+    });
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("agent-meter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!ws.read_with(cx, |ws, _| ws.templum_agent.tasks_open));
+}
+
+#[gpui_kit::test]
+fn a_code_blocks_copy_button_copies_its_code(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        let c = &mut ws.templum_agent.conversation;
+        c.person("hi");
+        c.apply(::templum_agent::ChatEvent::Text(
+            "Run:\n\n```bash\ncargo test\n```".into(),
+        ));
+    });
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        window.click("agent-copy", cx);
+    })
+    .unwrap();
+    let copied = cx.read_from_clipboard().and_then(|c| c.text());
+    assert_eq!(copied.as_deref().map(str::trim_end), Some("cargo test"));
+}
+
+#[gpui_kit::test]
+fn a_long_word_breaks_inside_its_bubble(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        ws.templum_agent.conversation.person(&"x".repeat(400))
+    });
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let row = window.find("agent-row-0").bounds();
+        let bubble = window.find("agent-bubble-0").bounds();
+        assert!(bubble.size.width <= row.size.width * 0.8 + gpui_kit::px(0.5));
+        assert!(
+            f32::from(bubble.size.height) > 2.0 * 22.0,
+            "it wrapped: {:?}",
+            bubble.size
+        );
+    })
+    .unwrap();
+}
+
+fn action(said: &str) -> ::templum_agent::Row {
+    ::templum_agent::Row::Action {
+        id: "t1".into(),
+        tool: "open_agent".into(),
+        input: json!({"agent": "codex"}),
+        state: ::templum_agent::ActionState::Done,
+        said: said.into(),
+        target: None,
+    }
+}
+
+#[gpui_kit::test]
+fn a_tool_row_opens_to_show_its_call(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        let rows = &mut ws.templum_agent.conversation.rows;
+        rows.push(action("Opened Codex as b1 in ~/proj."));
+        rows.push(::templum_agent::Row::Note {
+            text: "after".into(),
+        });
+    });
+    open_chat(handle, &ws, cx);
+    let click = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(handle, |_, window, cx| {
+            window.click(id, cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+        })
+        .unwrap()
+    };
+    let open_row = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, _| {
+            window.try_find("agent-row-0-call").is_some()
+        })
+        .unwrap()
+    };
+    assert!(!open_row(cx));
+    click(cx, "agent-row-0-more");
+    assert!(open_row(cx));
+    cx.update_window(handle, |_, window, _| {
+        let (row, below) = (
+            window.find("agent-row-0").bounds(),
+            window.find("agent-row-1").bounds(),
+        );
+        assert!(
+            below.top() >= row.bottom(),
+            "the row under it moved: {row:?} {below:?}"
+        );
+    })
+    .unwrap();
+    click(cx, "agent-row-0-more");
+    assert!(!open_row(cx));
+    click(cx, "agent-row-0");
+    assert!(open_row(cx), "a row that touched nothing opens on a click");
+}
+
+#[gpui_kit::test]
+fn an_open_rows_fade_is_dated_by_the_click_that_opened_it(cx: &mut TestAppContext) {
+    let (_, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        ws.templum_agent
+            .conversation
+            .rows
+            .push(action("Opened Codex."))
+    });
+    let toggle = |cx: &mut TestAppContext| {
+        ws.update(cx, |ws, cx| {
+            ws.toggle_row(0, cx);
+            (
+                cx.background_executor().now(),
+                ws.templum_agent.expanded.get(&0).copied(),
+            )
+        })
+    };
+    let (now, at) = toggle(cx);
+    assert_eq!(at, Some(now), "opened now");
+    assert_eq!(toggle(cx).1, None, "closed");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(5));
+    let (later, at) = toggle(cx);
+    assert!(later > now);
+    assert_eq!(at, Some(later), "opened again: dated again");
+}
+
+#[gpui_kit::test]
+fn new_chat_closes_every_open_row(cx: &mut TestAppContext) {
+    let (_, ws) = open(cx);
+    ws.update(cx, |ws, cx| {
+        ws.templum_agent
+            .conversation
+            .rows
+            .push(action("Opened Codex."));
+        ws.toggle_row(0, cx);
+        ws.new_chat(cx);
+    });
+    assert!(ws.read_with(cx, |ws, _| ws.templum_agent.expanded.is_empty()));
+}
+
+#[gpui_kit::test]
+fn a_long_sentence_stays_on_one_line(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        ws.templum_agent
+            .conversation
+            .rows
+            .push(action(&"x".repeat(300)))
+    });
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(f32::from(window.find("agent-row-0").bounds().size.height) <= 28.5);
+    })
+    .unwrap();
+}
+
+/// The open card's height and the canvas's, after `frames` frames.
+fn card_height(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    frames: usize,
+) -> (f32, f32) {
+    cx.update_window(handle, |_, window, cx| {
+        for _ in 0..frames {
+            window.render_frame(cx);
+        }
+        let vp = ws.read(cx).viewport(window);
+        (
+            f32::from(window.find("agent-chat").bounds().size.height),
+            vp.h,
+        )
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn the_card_is_as_tall_as_its_rows_up_to_its_cap(cx: &mut TestAppContext) {
+    let notes = |ws: &Entity<Workspace>, cx: &mut TestAppContext, n: usize| {
+        ws.update(cx, |ws, _| {
+            for i in 0..n {
+                ws.templum_agent.conversation.note(&format!("note {i}"));
+            }
+        })
+    };
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| ws.templum_agent.conversation.person("go"));
+    open_chat(handle, &ws, cx);
+    assert_eq!(
+        card_height(handle, &ws, cx, 3).0,
+        300.0,
+        "one row: its least"
+    );
+    notes(&ws, cx, 12);
+    let (h, _) = card_height(handle, &ws, cx, 3);
+    assert!(h > 300.0, "twelve more rows: {h}");
+    notes(&ws, cx, 400);
+    let (h, canvas) = card_height(handle, &ws, cx, 4);
+    assert!(
+        (h - canvas * 0.7).abs() <= 1.0,
+        "a long chat: {h} of {canvas}"
+    );
+    assert_eq!(card_height(handle, &ws, cx, 3).0, h, "and it stays there");
+}
+
+#[gpui_kit::test]
+fn stop_and_the_model_chip_stay_in_the_open_chat_without_the_keyboard(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| ws.templum_agent.conversation.person("go"));
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.blur(cx);
+        window.render_frame(cx);
+        let pill = window.find("agent-pill").bounds();
+        assert!(
+            window.try_find("agent-stop").is_some(),
+            "Stop while it works"
+        );
+        assert!(pill.contains(&window.find("agent-model").bounds().center()));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_model_menu_keeps_the_composer_of_a_pill_that_is_turned_off(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, cx| {
+        ws.edit(
+            Edit::set("templum_agent", "pill", false),
+            |c| c.templum_agent.pill = false,
+            cx,
+        )
+    });
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.toggle_agent(window, cx))
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("agent-model", cx);
+        window.render_frame(cx);
+        window.blur(cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("agent-pill").is_some(),
+            "the composer stays"
+        );
+        assert!(
+            window.try_find("popup-menu").is_some(),
+            "and so does the menu"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn only_the_one_with_the_keyboard_shows_a_focus_ring(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    let _answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    open_chat(handle, &ws, cx);
+    let hint = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("agent-hint").is_some()
+        })
+        .unwrap()
+    };
+    assert!(hint(cx), "the field has the keyboard: its keys");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_approval(window, cx))
+    })
+    .unwrap();
+    assert!(!pill_has_keys(handle, &ws, cx), "the approval took it");
+    assert!(
+        !hint(cx),
+        "the field shows no keys, nor ring, while the approval has them"
+    );
+}
+
+#[gpui_kit::test]
+fn a_pinned_approval_leaves_the_composer_inside_a_short_card(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    resize(handle, cx, 900.0, 600.0);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    ws.update(cx, |ws, _| ws.templum_agent.conversation.person("go"));
+    let _answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    ws.update(cx, |ws, _| {
+        let a = &mut ws.templum_agent.approvals[0];
+        a.details = (0..60).map(|i| format!("line {i}\n")).collect();
+    });
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let chat = window.find("agent-chat").bounds();
+        for id in ["approval-deny", "agent-pill"] {
+            let b = window.find(id).bounds();
+            assert!(
+                chat.contains(&b.origin) && chat.contains(&b.bottom_right()),
+                "{id}: {b:?} in {chat:?}"
+            );
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn an_open_failed_row_doesnt_say_its_refusal_twice(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        let mut row = action("Codex isn't installed.");
+        if let ::templum_agent::Row::Action { state, .. } = &mut row {
+            *state = ::templum_agent::ActionState::Failed;
+        }
+        ws.templum_agent.conversation.rows.push(row);
+    });
+    ws.update(cx, |ws, cx| ws.toggle_row(0, cx));
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let said = window.find("agent-row-0-said");
+        let call = window.find("agent-row-0-call").bounds();
+        assert!(
+            !call.contains(&said.bounds().center()),
+            "once, under the line, not in the box"
+        );
+    })
+    .unwrap();
+}
+
 #[gpui_kit::test]
 fn full_screen_fills_the_canvas_and_stays_when_the_chat_closes(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
@@ -2420,7 +2905,13 @@ fn full_screen_fills_the_canvas_and_stays_when_the_chat_closes(cx: &mut TestAppC
 #[gpui_kit::test]
 fn the_engine_chip_picks_the_model(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
-    open_chat(handle, &ws, cx);
+    // The floating composer (the chat is closed, its conversation empty): the chip's menu has the
+    // keyboard, and the composer stays for it while the field has none and holds no text.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.toggle_agent(window, cx))
+    })
+    .unwrap();
+    assert!(!ws.read_with(cx, |ws, _| ws.templum_agent.open));
     let model =
         |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.config.templum_agent.model.clone());
     let pick = |n: usize, cx: &mut TestAppContext| {
@@ -2526,7 +3017,7 @@ fn a_pick_mid_turn_is_not_undone_by_the_old_process_reporting_again(cx: &mut Tes
 }
 
 #[gpui_kit::test]
-fn an_approval_in_the_open_card_fits_inside_its_border_and_padding(cx: &mut TestAppContext) {
+fn an_approval_in_the_open_card_takes_the_column(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (_, uid) = busy_terminal(handle, &ws, cx);
     let _answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
@@ -2537,20 +3028,52 @@ fn an_approval_in_the_open_card_fits_inside_its_border_and_padding(cx: &mut Test
             window.render_frame(cx);
             let card = window.find("agent-chat").bounds();
             let approval = window.find("approval").bounds();
-            // 1 px of border and 8 of padding on each side.
             assert_eq!(
+                f32::from(approval.size.width),
+                crate::chat::look::column(f32::from(card.size.width)),
+                "full: {full}"
+            );
+            let (left, right) = (
                 approval.left() - card.left(),
-                gpui_kit::px(9.0),
-                "full: {full}"
-            );
-            assert_eq!(
                 card.right() - approval.right(),
-                gpui_kit::px(9.0),
-                "full: {full}"
             );
+            assert!(
+                (f32::from(left) - f32::from(right)).abs() <= 0.5,
+                "centered: {left:?} {right:?}"
+            );
+            if !full {
+                // 1 px of border and 16 of gutter.
+                assert_eq!(left, gpui_kit::px(17.0));
+            }
         })
         .unwrap();
     }
+}
+
+#[gpui_kit::test]
+fn full_screen_keeps_the_column_readable(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        let c = &mut ws.templum_agent.conversation;
+        c.person("hi");
+        c.apply(::templum_agent::ChatEvent::Text("an answer".into()));
+        ws.templum_agent.full = true;
+    });
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let card = window.find("agent-chat").bounds();
+        let row = window.find("agent-row-1").bounds();
+        let want = crate::chat::look::column(f32::from(card.size.width));
+        assert_eq!(f32::from(row.size.width), want);
+        assert!(want <= 720.0);
+        let (left, right) = (row.left() - card.left(), card.right() - row.right());
+        assert!(
+            (f32::from(left) - f32::from(right)).abs() <= 0.5,
+            "centered: {left:?} {right:?}"
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -2572,9 +3095,11 @@ fn an_approval_of_the_closed_chat_keeps_its_width_in_full_screen(cx: &mut TestAp
 #[gpui_kit::test]
 fn suggestions_fill_the_field(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
+    // Full screen: the normal card's body is too short for all four.
+    ws.update(cx, |ws, _| ws.templum_agent.full = true);
     open_chat(handle, &ws, cx);
     cx.update_window(handle, |_, window, cx| {
-        for n in 0..3 {
+        for n in 0..4 {
             assert!(window.try_find(format!("agent-suggestion-{n}")).is_some());
         }
         window.click("agent-suggestion-0", cx);
@@ -2585,6 +3110,131 @@ fn suggestions_fill_the_field(cx: &mut TestAppContext) {
         pill_text(&ws, cx),
         "Set up a workspace for a project, with a kanban and an agent per card"
     );
+    cx.update_window(handle, |_, window, cx| {
+        window.click("agent-suggestion-3", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(
+        pill_text(&ws, cx),
+        "Open an agent for each card on my board"
+    );
+}
+
+#[gpui_kit::test]
+fn the_greeting_comes_back_after_new_chat(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        ws.templum_agent.full = true;
+        ws.templum_agent.conversation.person("go")
+    });
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("agent-greeting").is_none());
+        window.click("agent-new", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("agent-greeting").is_some());
+        assert!(window.try_find("agent-suggestion-3").is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn scrolling_up_shows_the_way_back_to_the_end(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        let c = &mut ws.templum_agent.conversation;
+        c.person("go");
+        for i in 0..400 {
+            c.note(&format!("note {i}"));
+        }
+    });
+    open_chat(handle, &ws, cx);
+    let shown = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    assert!(!shown(cx, "agent-to-end"), "at its end");
+    ws.read_with(cx, |ws, _| {
+        ws.templum_agent.list.scroll_by(gpui_kit::px(-2000.0))
+    });
+    assert!(shown(cx, "agent-to-end"), "scrolled up");
+    assert!(!shown(cx, "agent-to-end-new"));
+    ws.update(cx, |ws, _| ws.templum_agent.conversation.note("new"));
+    assert!(shown(cx, "agent-to-end-new"), "a row came below");
+    cx.update_window(handle, |_, window, cx| window.click("agent-to-end", cx))
+        .unwrap();
+    assert!(!shown(cx, "agent-to-end"), "back at its end");
+    assert!(ws.read_with(cx, |ws, _| ws.templum_agent.list.is_following_tail()));
+}
+
+#[gpui_kit::test]
+fn rows_fade_in_only_when_they_arrive_while_the_chat_is_open(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| ws.templum_agent.conversation.note("one"));
+    open_chat(handle, &ws, cx);
+    let render = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap()
+    };
+    let arrival = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.templum_agent.arrival.get().map(|(from, _)| from)
+        })
+    };
+    render(cx);
+    assert_eq!(arrival(cx), None, "rows there when it opens show at once");
+    let n = ws.update(cx, |ws, _| {
+        let c = &mut ws.templum_agent.conversation;
+        c.note("two");
+        c.rows.len() - 1
+    });
+    render(cx);
+    assert_eq!(arrival(cx), Some(n));
+    ws.update(cx, |ws, _| ws.templum_agent.open = false);
+    render(cx);
+    ws.update(cx, |ws, _| ws.templum_agent.conversation.note("three"));
+    open_chat(handle, &ws, cx);
+    render(cx);
+    assert_eq!(
+        arrival(cx),
+        Some(n),
+        "rows that came while it was closed don't fade"
+    );
+}
+
+#[gpui_kit::test]
+fn a_short_card_keeps_its_composer_under_the_greeting(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    resize(handle, cx, 900.0, 420.0);
+    ws.update(cx, |ws, _| {
+        ws.templum_agent.conversation.note("New conversation.")
+    });
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let (chat, pill) = (
+            window.find("agent-chat").bounds(),
+            window.find("agent-pill").bounds(),
+        );
+        let body = window.find("agent-body").bounds();
+        assert!(window.try_find("agent-greeting").is_some());
+        assert_eq!(
+            f32::from(chat.bottom() - pill.bottom()),
+            17.0,
+            "16 px and the border"
+        );
+        assert!(
+            pill.top() >= body.bottom() - gpui_kit::px(0.5),
+            "the greeting stays in the body"
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -3460,6 +4110,9 @@ fn catch_me_up_sends_its_sentence(cx: &mut TestAppContext) {
     );
     handed_by_the_templum_agent(handle, &ws, cx);
     cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // Catch me up is in the usage chip's drawer.
+        window.click("agent-meter", cx);
         window.render_frame(cx);
         window.click("agent-catch-up", cx);
         window.render_frame(cx);

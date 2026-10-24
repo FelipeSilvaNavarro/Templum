@@ -228,6 +228,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   that delays `stop_agent` lets the job write its file. A person sees nothing; a contributor may see CI fail once.
   Fix: a longer job (`sleep 10`, the final wait to match) so the stop has seconds to spare, or have the job loop
   until a "stopped" file exists and fail the test if it ever ends by itself.
+- [ ] **`a_snapshot_before_the_agent_started_doesnt_stop_its_prompt` failed once in a full run.**
+  (`crates/templum/src/workspace/tests/spawn.rs`, seen during card 143 in a full `cargo test --workspace` on a loaded
+  machine; it passed alone three times and in the next two full runs.) A person sees nothing; a contributor may see CI
+  fail once. Fix: wait on the condition with a deadline (frames until it holds), not one look.
 - [ ] **`a_task_for_an_agent_still_starting_is_typed_once_it_is_ready` failed once in a full run.**
   (`crates/templum/src/workspace/tests/spawn.rs:707`, `said_twice`, seen during card 153 in a full
   `cargo test --workspace`; it passed alone eight times and on the next full run.) A person sees nothing; a
@@ -2082,8 +2086,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **No less-motion mode.** The spec stills the working line, the glow and the chat's rise when the system asks
   for less motion; Templum reads no such setting anywhere (`crates/templum/src/motion.rs`). Fix: read the system's
   reduced-motion preference once in `motion.rs` and skip those animations.
-- [ ] **The Thinking row has no sweeping band.** `rows::row` (`crates/templum/src/chat/rows.rs`) draws "Thinking"
-  still. Fix: the working line's band, over its text.
 - [ ] **A reads row doesn't say what it read.** `Row::Reads` (`crates/templum-agent/src/conversation.rs`) keeps a
   count only, so its tooltip ("Read `src/main.rs`") can't be shown. Fix: keep each read's tool and path in the row.
 - [ ] **The pill's working words are generic.** `pill::doing` says the tool's title ("Opening an agent…"), where the
@@ -2122,8 +2124,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **Esc after clicking the approval goes to the canvas.** A click on the approval (`chat/approval.rs`) while a
   terminal has the keyboard doesn't record `back`, so Esc afterwards gives the keyboard to the canvas, not that
   terminal. Fix: record `back` in `focus_approval` when the pill didn't have the keyboard.
-- [ ] **The suggestions don't come back after New chat.** `panel::render` shows them only for an empty conversation,
-  and New chat leaves a "New conversation." note. Fix: show them while the rows are only notes.
 - [ ] **After Stop, a task's end still wakes the engine.** `agent_notice` (`crates/templum/src/workspace/agent.rs`)
   sends every notice, so a run the person stopped goes on when an agent finishes. The spec doesn't say; ask the
   maintainer whether Stop should hold the notices as rows until the person writes.
@@ -2141,9 +2141,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   (`crates/templum/src/chat/panel.rs`) learns only of new rows; an action scrolled out of view that fails (it gains a
   line) or a person's row that stops being Queued keeps its old height until it scrolls into view, where the scroll
   can jump a few pixels. Fix: `ListState::remeasure_items` over the rows a turn changed (from the turn's first row).
-- [ ] **The approval's box has no visible scrollbar.** Text taller than 160 px (`crates/templum/src/chat/approval.rs`)
-  scrolls with the wheel, and "Scroll to its end to allow it." says so, but nothing shows how much is left. Fix:
-  gpui-base's `Scrollbar::vertical` over the box's `ScrollHandle`.
 - [ ] **The run meter never shows tokens.** `panel::meter` shows dollars only; the spec says tokens when there is no
   cost. Fix: keep the turns' and the notices' tokens and show them when the cost is 0.
 - [ ] **Stopping or interrupting what would refuse anyway asks first.** `stop_agent` on the person's idle shell and
@@ -2170,6 +2167,17 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   not a move with no button down, so a program that asked for every move (and highlights the option under the pointer)
   can have its choice moved before an Allow of `send_keys ["enter"]`. Counting the moves would ask again each time the
   pointer crosses it on the way to the approval. Fix: the screen hash above covers it.
+- [ ] **Closing an open tool row doesn't shrink the card.** The body's height for its rows (`TemplumAgent::rows_h`,
+  `crates/templum/src/chat/panel.rs`) only goes up until New chat, so after a long row is opened and closed the card
+  keeps the room. Fix: let it go down too, once the rows are measured under it, without the frame-to-frame jitter
+  that made it go up only.
+- [ ] **Answers' headings aren't semibold.** `markdown::chat_style` (`crates/templum/src/markdown.rs`) sets their sizes
+  only: gpui-kit's `TextViewStyle` has no heading weight. Fix: when gpui-kit offers one.
+- [ ] **Not seen by eye: the approval card and the pill that asks or works.** The Templum Agent's approvals come from
+  a running engine's control connection, which no fixture or test seam can start without a live Claude Code, so the
+  screenshots of card 143 lack them (and the queued label under a bubble, which loading a conversation clears).
+  Fix: a dev-only fixture flag that fills `TemplumAgent::approvals` and a queued row, or a look at them in the next
+  real session.
 
 ## Agents view
 

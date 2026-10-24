@@ -2,7 +2,8 @@
 //! builds and runs the canvas, and its state on the workspace.
 
 use std::cell::Cell;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
@@ -21,6 +22,7 @@ use crate::keys::Command;
 use crate::workspace::Workspace;
 
 pub(crate) mod approval;
+pub(crate) mod look;
 pub(crate) mod panel;
 pub(crate) mod pill;
 mod rows;
@@ -69,8 +71,20 @@ pub(crate) struct TemplumAgent {
     /// The rows the chat drew last, and whether some came below the view since.
     pub seen: Cell<usize>,
     pub unseen: Cell<bool>,
+    /// The first row of the last arrival while the chat was open, and when: those rows fade in.
+    pub arrival: Cell<Option<(usize, Instant)>>,
+    /// The chat was drawn open last frame: rows there when it opens show at once.
+    pub drawn: Cell<bool>,
     /// The run meter's list of its tasks is open.
     pub tasks_open: bool,
+    /// The height the chat's body has grown to for its rows: it only goes up, and New chat starts
+    /// it again.
+    pub rows_h: Rc<Cell<f32>>,
+    /// The rows opened to show their call, by number, and when: New chat closes them all.
+    pub expanded: BTreeMap<usize, Instant>,
+    /// The composer's model menu is open: the composer stays as it is while the menu has the
+    /// keyboard.
+    pub model_menu: bool,
     /// The blocks it just touched, by id, and when: their border glows for GLOW.
     pub glow: HashMap<String, Instant>,
     /// The approval's keyboard, and its field for the person's words, made with the first one.
@@ -121,7 +135,12 @@ impl Default for TemplumAgent {
             },
             seen: Cell::new(0),
             unseen: Cell::new(false),
+            arrival: Cell::new(None),
+            drawn: Cell::new(false),
             tasks_open: false,
+            rows_h: Rc::new(Cell::new(0.0)),
+            expanded: BTreeMap::new(),
+            model_menu: false,
             glow: HashMap::new(),
             approval_focus: None,
             words: None,
@@ -509,6 +528,17 @@ impl Workspace {
             }
             (None, None) => {}
         }
+    }
+
+    /// Row `n` opens to show its call, or closes; the rows under it move.
+    pub(crate) fn toggle_row(&mut self, n: usize, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        let agent = &mut self.templum_agent;
+        if agent.expanded.remove(&n).is_none() {
+            agent.expanded.insert(n, now);
+        }
+        agent.list.remeasure_items(n..n + 1);
+        cx.notify();
     }
 
     /// The models its agent offers (Claude Code: haiku, sonnet, opus) that Templum can type to

@@ -432,6 +432,8 @@ impl Workspace {
         agent.conversation = Conversation::new(&self.config.templum_agent.agent);
         agent.conversation.note("New conversation.");
         agent.grants.clear();
+        agent.expanded.clear();
+        agent.rows_h.set(0.0);
         self.save_conversation();
         cx.notify();
     }

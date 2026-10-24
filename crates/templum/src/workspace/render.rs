@@ -772,6 +772,10 @@ impl Render for Workspace {
         });
         // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
         let open = self.templum_agent.open;
+        // Rows that come while it is closed show at once when it opens.
+        if !open {
+            self.templum_agent.drawn.set(false);
+        }
         let full = open && self.templum_agent.full;
         let waiting = self.templum_agent.approvals.len();
         let approval = self.templum_agent.approvals.first().map(|a| {

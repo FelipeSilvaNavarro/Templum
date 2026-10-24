@@ -1,8 +1,8 @@
 # Templum Agent: a modern look
 
 - **Date:** 2026-10-24
-- **Status:** Designed (kanban card 143, "a visual refactor of the Templum Agent"); plan:
-  [docs/plans/2026-10-24-templum-agent-look.md](../plans/2026-10-24-templum-agent-look.md)
+- **Status:** Implemented (kanban card 143, "a visual refactor of the Templum Agent"), uncommitted until reviewed;
+  plan: [docs/plans/2026-10-24-templum-agent-look.md](../plans/2026-10-24-templum-agent-look.md)
 - **Builds on:** [templum-agent.md](templum-agent.md) (what the pill, the chat, its rows and the approval do: all of it
   stays), [design-system.md](design-system.md), [polish.md](polish.md) and [themes.md](themes.md) (the tokens and the
   motion rules)
@@ -114,7 +114,7 @@ for failures and `normal.yellow` for approvals.
 ### The card
 
 - **Size and place** unchanged: 640 px wide (at most the canvas's width − 32), as tall as its rows up to 70% of the
-  canvas's height and at least 240 px; full screen 16 px in from every side. **Radius 16** (was 14); `surface` fill,
+  canvas's height and at least 300 px; full screen 16 px in from every side. **Radius 16** (was 14); `surface` fill,
   `hairline` border, the focused block's shadow (y 10, blur 30); it rises 12 px and fades in over 0.22 s.
 - **Full screen** (*the orchestrator's call*: a readable line length): the card fills the canvas and the column stays
   at most 720 px, centered, for the rows, the composer and a pinned approval. Switching is instant (*the designer's

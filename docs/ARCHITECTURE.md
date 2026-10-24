@@ -154,9 +154,11 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   with their graph, or the commit shown. `git_block/words.rs` holds the Git words' tooltips and the sentences the Git says;
   `git_block/switcher.rs` the branch dialog (switch or create).
 - `chat/`: the Templum Agent's state on the workspace (`mod.rs`: `TemplumAgent`, the pill's keyboard, the
-  approval's), the pill (`pill.rs`), the chat (`panel.rs`) and its rows (`rows.rs`), and the approval popup
-  (`approval.rs`): window chrome over the canvas's bottom center, never scaled by the zoom
-  ([specs/templum-agent.md](specs/templum-agent.md#what-a-person-sees)).
+  approval's), the pill and its composer (`pill.rs`), the chat (`panel.rs`) and its rows (`rows.rs`), the approval
+  popup (`approval.rs`), and `look.rs` (the scale, the column, the row gaps, the fade): window chrome over the
+  canvas's bottom center, never scaled by the zoom
+  ([specs/templum-agent.md](specs/templum-agent.md#what-a-person-sees), its look:
+  [specs/templum-agent-look.md](specs/templum-agent-look.md)).
 - `sidebar.rs`: the workspaces' tiles, a workspace's face (its image, icon or initials, in its color) and the Git
   and inbox buttons at its foot;
   `spaces_screen.rs`: the workspaces screen (cards, search, keys, dragging to reorder); `space_dialog.rs`: a
