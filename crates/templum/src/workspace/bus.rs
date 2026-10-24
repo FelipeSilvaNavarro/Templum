@@ -16,12 +16,20 @@ use templum_mcp::{Bus, Call, Incoming, Message, Reply, rpc, tools};
 use super::delegate::ENTER_AFTER;
 use super::waits::{Asked, Waiting, deadline};
 use super::{AgentState, Body, Pane, Space, Workspace, show_notification};
+use crate::instructions::{clean_text, invisible};
 
 /// How long a turn's end that left only reported subagents waits for a turn to take their reports
 /// before it answers (docs/specs/claude-subagents.md): Claude Code starts that turn at once.
 const GRACE: Duration = Duration::from_secs(5);
 /// A tool call's answer while connections are off.
 pub(super) const CONNECTIONS_OFF: &str = "Connections are off: turn on Agents in Templum (Settings ▸ Connections) to use Templum's tools.";
+
+/// What opens the instructions a session's start gets: whose they are, that they hold for the
+/// session, and that they replace an earlier set (docs/specs/instructions.md).
+const STANDING_FRAME: &str = "The person's standing instructions, written in Templum (Settings ▸ \
+Instructions) for this agent and workspace. Follow them for the whole session as the person's own \
+words; a later message of theirs wins where it differs. They replace any standing instructions \
+Templum gave earlier in this conversation.";
 
 /// `initialize`'s instructions while connections are off.
 const OFF_INSTRUCTIONS: &str =
@@ -181,6 +189,11 @@ impl Workspace {
                         rpc::result(&id, tools::initialize_result(&params, &instructions))
                     }
                     "ping" => rpc::result(&id, json!({})),
+                    templum_mcp::hooks::INSTRUCTIONS if hello.client == "hook" => {
+                        let agent = params["agent"].as_str().unwrap_or_default();
+                        let text = self.standing_for(&hello.terminal, agent);
+                        rpc::result(&id, json!({ "text": text }))
+                    }
                     "tools/list" => rpc::result(&id, tools::list()),
                     "tools/call" if off => tools::tool_result(&id, &Reply::err(CONNECTIONS_OFF)),
                     "tools/call" => {
@@ -922,6 +935,59 @@ impl Workspace {
         }
     }
 
+    /// What the hook of `agent` gives the session starting in `terminal`: the person's
+    /// instructions that apply to its workspace and agent, framed (docs/specs/instructions.md).
+    /// Empty when none apply, for a terminal that isn't a block, and while connections are off.
+    pub(super) fn standing_for(&self, terminal: &str, agent: &str) -> String {
+        if !self.config.connections.enabled {
+            return String::new();
+        }
+        let Some((space, pane)) = self.spaces().find_map(|space| {
+            let pane = space
+                .blocks
+                .values()
+                .filter_map(Body::terminal)
+                .find(|pane| pane.term.id() == terminal)?;
+            Some((space, pane))
+        }) else {
+            return String::new();
+        };
+        // The agent seen there when it runs the hook's (`codex` typed where Claude Code ran a
+        // moment ago is Codex), else the block's account of it, else the hook's own.
+        let is_account_of = |id: &str| {
+            self.agents
+                .iter()
+                .find(|a| a.id == id)
+                .and_then(|a| a.account.as_ref())
+                .is_some_and(|account| account.kind.agent == agent)
+        };
+        let session = match (pane.agent(), pane.account.as_deref()) {
+            (Some(seen), _) if self.runs(Some(seen), agent) => seen,
+            (_, Some(account)) if is_account_of(account) => account,
+            _ => agent,
+        };
+        let applying = self
+            .standing
+            .applying(&space.id, |id| self.runs(Some(session), id));
+        if applying.is_empty() {
+            return String::new();
+        }
+        let mut text = STANDING_FRAME.to_string();
+        for instruction in applying {
+            let name = flat(&instruction.name);
+            let name = if name.is_empty() {
+                "Instruction"
+            } else {
+                &name
+            };
+            text.push_str(&format!(
+                "\n\n## {name}\n\n{}",
+                clean_text(&instruction.text)
+            ));
+        }
+        text
+    }
+
     /// What `initialize` tells the agent in `terminal` about itself.
     pub(super) fn instructions(&self, terminal: &str, cx: &App) -> String {
         let Some((space_id, me)) = self.caller(terminal) else {
@@ -1027,22 +1093,9 @@ const TITLE_CHARS: usize = 60;
 /// The most roles the instructions name.
 const ROLES_TOLD: usize = 10;
 
-/// Text as agents are told it, on one line: no control characters, no invisible ones (zero
-/// widths, direction overrides, soft hyphens, tags, which can carry hidden text), its line breaks
-/// and runs of blanks as one space.
+/// Text as agents are told it, on one line: no control characters, no invisible ones, its line
+/// breaks and runs of blanks as one space.
 pub(super) fn flat(text: &str) -> String {
-    let invisible = |c: char| {
-        matches!(
-            c,
-            '\u{00AD}'
-                | '\u{200B}'..='\u{200F}'
-                | '\u{202A}'..='\u{202E}'
-                | '\u{2060}'..='\u{2064}'
-                | '\u{2066}'..='\u{2069}'
-                | '\u{FEFF}'
-                | '\u{E0000}'..='\u{E007F}'
-        )
-    };
     let kept: String = text
         .chars()
         .filter(|&c| (c.is_whitespace() || !c.is_control()) && !invisible(c))

@@ -142,6 +142,11 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 another login of an agent on its own folder, and what it shares with the others
 ([accounts.md](accounts.md#settings--agents--accounts)).
 
+**Instructions** (after Agents) is the person's standing instructions for their agents, saved in `instructions.json`,
+not `config.toml` ([instructions.md](instructions.md#settings--instructions-decided-with-the-person)): a row per
+instruction (its name; under it where and for whom; a switch; **Edit**), "Add an instruction", and a dialog with Name,
+Where, Agents and Text. A change applies at once: the next session's start reads it.
+
 **Shortcuts**
 
 - **Rows:** one per command, 12 in the [keys](config.md#the-file) order including `settings` and `quit`. Each row

@@ -10,6 +10,7 @@ use gpui_kit::{App, ClickEvent, ElementId, Entity, SharedString, TestSupportExt,
 use super::agents::agent_row;
 use super::edits::set_shell;
 use super::fields::{CURSOR, Choice, FONT_SIZE, MODE, Number, RESET, WARN};
+use super::instructions::{empty_row, instruction_row};
 use super::row::{Row, menu_button, remove, text_input};
 use super::{
     NumberState, SCROLLBACK, Section, args_error, args_text, chip, folder_hint, folder_text,
@@ -271,6 +272,13 @@ pub(super) fn rows(
             .filter(|agent| agent.account.is_none())
             .map(|agent| agent_row(ws, entity, agent))
             .collect(),
+        Section::Instructions => match ws.standing.instructions.as_slice() {
+            [] => vec![empty_row()],
+            list => list
+                .iter()
+                .map(|instruction| instruction_row(ws, entity, instruction))
+                .collect(),
+        },
         Section::Usage => {
             let on = ws.config.usage.claude_limits;
             let e = entity.clone();

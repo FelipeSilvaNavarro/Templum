@@ -21,6 +21,7 @@ mod git_block;
 mod grid;
 mod inbox;
 mod ink;
+mod instructions;
 mod kanban;
 mod keys;
 mod launcher;

@@ -1243,6 +1243,12 @@ pub struct Workspace {
     checklists_saved: Option<Checklists>,
     /// `checklists.json` couldn't be read: it isn't written this session.
     checklists_frozen: bool,
+    /// What the person tells their agents, given as a session starts (`instructions.rs`).
+    pub(crate) standing: crate::instructions::Instructions,
+    /// The instructions as last read or written, to write only what changed.
+    standing_saved: Option<crate::instructions::Instructions>,
+    /// `instructions.json` couldn't be read: it isn't written this session.
+    standing_frozen: bool,
     /// The open card dialog's work, kept as a draft when the window closes (see `kanban::Work`).
     pub(crate) card_work: Option<crate::kanban::Open>,
     /// `boards` before each change, newest last, at most BOARD_UNDO (see `edit_boards`).
@@ -1725,6 +1731,9 @@ impl Workspace {
             checklists_undo: Vec::new(),
             checklists_saved: None,
             checklists_frozen: false,
+            standing: Default::default(),
+            standing_saved: None,
+            standing_frozen: false,
             notes_frozen: false,
             index_frozen: false,
             sidebar: true,

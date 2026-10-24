@@ -1,7 +1,7 @@
 # Instructions: what the person tells every session of an agent
 
 - **Date:** 2026-10-24
-- **Status:** Designed (kanban card 148)
+- **Status:** Implemented (kanban card 148)
 - **Builds on:** [connections.md](connections.md) (Hooks and agent state, The bus), [agent-parity.md](agent-parity.md)
   (which agents Templum hooks), [kanban.md](kanban.md#who-a-card-is-for) (the agents' half of the assignee picker),
   [accounts.md](accounts.md#cards-for-it) (an account's cards), [settings.md](settings.md),
@@ -215,3 +215,35 @@ Each agent's session start and what the hook prints there (from each agent's doc
 The frame's exact words (keeping its three points), the editor's gpui-kit controls, the rows' descriptions, the
 constants' and functions' names, how cli.rs splits the hook's work, and a run by hand of Copilot CLI if a sign-in is at
 hand (else a minor says its output is unchecked, as Qwen Code's is).
+
+## As built
+
+- **Three tasks, as the plan ordered them.** The hook (`crates/templum-mcp/src/hooks.rs` `INSTRUCTIONS`,
+  `session_start`, `start_output`; `cli.rs` `hook`, `hook_input`, `hook_event`, `instructions`, `ANSWER_WITHIN`), the
+  model and the answer (`crates/templum/src/instructions.rs`, `Workspace::standing`, `standing_for` in
+  `workspace/bus.rs`), and the section (`settings/instructions.rs`, `Workspace::save_instruction`,
+  `delete_instruction`, `set_instruction_on`).
+- **The hook reads its input apart from the event** (`hook_input`, then `hook_event` on it), so one read serves the
+  event and `session_start`. A hook with an event only (every other hook) finishes the connection as before; a session's
+  start keeps it open for the answer and then finishes it.
+- **A name is refused over 60 characters** (*builder's call*; the plan left "at most 60" without saying what then):
+  Save says "A name is at most 60 characters" and the dialog stays, rather than cutting what the person wrote. The
+  name is saved trimmed; the text is kept as typed, and only a blank one (spaces and line breaks) is refused.
+- **The editor's Agents** is a "Every agent" box and a box per agent in `Workspace::agents` order, side by side and
+  wrapping (a column of a dozen boxes pushed the text and Delete out of a small window). Unticking "Every agent" leaves
+  a choice with no agent yet, so Save asks for one; a chosen agent Settings ▸ Agents lost is still listed, ticked, as
+  "*id* (a removed agent)", so Save keeps it or the person unticks it. **Where** is the Shell list's dropdown: every
+  workspace, the workspaces in the sidebar's order, and a deleted workspace's id as "A deleted workspace".
+- **The list's row** for an instruction whose chosen agents are an empty list (a hand-edited file) says "No agent";
+  it applies to none.
+- **The empty list** shows a row, "No instructions yet".
+- **Which agent a session is** (`standing_for`): the one seen in the block when it runs the hook's agent
+  (`Workspace::runs`, now `pub(super)`), else the block's account when it is an account of the hook's agent
+  (`AgentEntry::account.kind.agent`), else the hook's agent.
+- **`snapshot_done` takes the instructions** as a fifth saved file (its tests pass `None`).
+- **Checked by tests only, not by eye:** no display was at hand to run `cargo run -p templum -- --dev`. The dialog was
+  driven in the headless GPUI tests (open from the row, pick a workspace in its menu, untick "Every agent", tick an
+  agent, Save, Delete); how it *looks* (spacing, the wrapped boxes, the eight-line field) is unseen. Qwen Code's and
+  Copilot CLI's output shapes are from their docs (docs/minors.md, Connections).
+- **Minors recorded** (docs/minors.md, Connections): Pi, OpenCode and Kilo Code; Qwen Code's and Copilot CLI's output
+  unchecked; Claude Code's subagents; a resume with none applying.

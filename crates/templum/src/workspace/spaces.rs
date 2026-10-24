@@ -11,6 +11,7 @@ use crate::alert;
 use crate::attachments;
 use crate::board;
 use crate::checklists;
+use crate::instructions;
 use crate::notes;
 use crate::prompt;
 use crate::session;
@@ -96,6 +97,29 @@ impl Workspace {
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::error(message));
                 self.checklists_frozen = true;
+            }
+            Some(Loaded::Nothing) | None => {}
+        }
+        match self.data_dir.as_deref().map(instructions::load) {
+            Some(Loaded::Saved(standing)) => {
+                self.standing_saved = Some(standing.clone());
+                self.standing = standing;
+            }
+            Some(Loaded::Moved { to, why }) => {
+                let message = format!(
+                    "Couldn't read the instructions ({why}); they were kept as {}",
+                    to.display()
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
+            Some(Loaded::Unreadable(why)) => {
+                let message = format!(
+                    "Couldn't read the instructions ({why}); they won't be saved this session"
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+                self.standing_frozen = true;
             }
             Some(Loaded::Nothing) | None => {}
         }

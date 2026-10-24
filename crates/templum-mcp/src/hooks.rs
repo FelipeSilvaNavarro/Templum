@@ -6,6 +6,42 @@ use serde_json::Value;
 /// The method of the notification `templum hook` sends.
 pub const METHOD: &str = "templum/event";
 
+/// The request a hook sends as a session starts: `{"agent": <the hook's agent>}`, answered with
+/// `{"text": <the person's instructions for it, empty when none apply>}`
+/// (docs/specs/instructions.md).
+pub const INSTRUCTIONS: &str = "templum/instructions";
+
+/// Whether a hook's input is a session's start, of any `source` (a new session, a resume, a
+/// `/clear`, a compaction), for the agents whose start takes context from the hook: Claude Code,
+/// Codex, Gemini CLI, Qwen Code, and Copilot CLI, whose `event` is its hook's command word. A
+/// Claude Code subagent's hook (it names an `agent_id`) is not one.
+pub fn session_start(agent: &str, event: Option<&str>, input: &Value) -> bool {
+    match agent {
+        "claude" | "qwen" => {
+            input["hook_event_name"] == "SessionStart" && input["agent_id"].is_null()
+        }
+        "codex" | "gemini" => input["hook_event_name"] == "SessionStart",
+        "copilot" => event == Some("sessionStart"),
+        _ => false,
+    }
+}
+
+/// What the hook of `agent` prints at a session's start to give it `text`, in the agent's own
+/// shape: a line of JSON. None for an agent whose start takes none, or an empty `text`.
+pub fn start_output(agent: &str, text: &str) -> Option<String> {
+    if text.is_empty() {
+        return None;
+    }
+    let output = match agent {
+        "claude" | "codex" | "gemini" | "qwen" => serde_json::json!({
+            "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": text }
+        }),
+        "copilot" => serde_json::json!({ "additionalContext": text }),
+        _ => return None,
+    };
+    Some(output.to_string())
+}
+
 /// An agent's turn, as its hooks report it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -1138,5 +1174,65 @@ mod tests {
             serde_json::from_value::<AgentEvent>(json!({ "event": "submitted" })).unwrap(),
             AgentEvent::Submitted { at_enter: false }
         );
+    }
+
+    #[test]
+    fn each_agent_takes_context_its_own_way() {
+        let nested = |agent: &str| -> Value {
+            serde_json::from_str(&start_output(agent, "a\nb \"q\"").unwrap()).unwrap()
+        };
+        for agent in ["claude", "codex", "gemini", "qwen"] {
+            assert_eq!(
+                nested(agent),
+                json!({ "hookSpecificOutput": {
+                    "hookEventName": "SessionStart", "additionalContext": "a\nb \"q\"" } }),
+                "{agent}"
+            );
+        }
+        assert_eq!(
+            nested("copilot"),
+            json!({ "additionalContext": "a\nb \"q\"" })
+        );
+        assert!(!start_output("claude", "x").unwrap().contains('\n'));
+        for (agent, text) in [
+            ("opencode", "x"),
+            ("pi", "x"),
+            ("claude", ""),
+            ("copilot", ""),
+        ] {
+            assert_eq!(start_output(agent, text), None, "{agent} {text:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_session_start_is_one() {
+        for agent in ["claude", "codex", "gemini", "qwen"] {
+            for source in ["startup", "resume", "clear", "compact"] {
+                let input = json!({ "hook_event_name": "SessionStart", "source": source });
+                assert!(session_start(agent, None, &input), "{agent} {source}");
+            }
+            for name in [
+                "UserPromptSubmit",
+                "Stop",
+                "PermissionRequest",
+                "SessionEnd",
+            ] {
+                let input = json!({ "hook_event_name": name });
+                assert!(!session_start(agent, None, &input), "{agent} {name}");
+            }
+        }
+        let sub = json!({ "hook_event_name": "SessionStart", "agent_id": "a8", "agent_type": "x" });
+        assert!(!session_start("claude", None, &sub));
+        assert!(session_start("copilot", Some("sessionStart"), &json!({})));
+        for event in ["agentStop", "userPromptSubmitted", "sessionEnd"] {
+            assert!(
+                !session_start("copilot", Some(event), &json!({})),
+                "{event}"
+            );
+        }
+        assert!(!session_start("copilot", None, &json!({})));
+        let start = json!({ "hook_event_name": "SessionStart", "type": "session_start" });
+        assert!(!session_start("opencode", Some("sessionStart"), &start));
+        assert!(!session_start("pi", None, &start));
     }
 }

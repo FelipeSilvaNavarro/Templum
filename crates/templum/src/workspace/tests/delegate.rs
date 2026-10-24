@@ -129,7 +129,7 @@ pub(super) fn snapshot(
     let done = vec![(space, vec![(id, found)], saved, None)];
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.snapshot_done(done, None, None, None, window, cx)
+            ws.snapshot_done(done, None, None, None, None, window, cx)
         })
     })
     .unwrap();

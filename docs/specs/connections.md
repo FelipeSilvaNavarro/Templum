@@ -462,9 +462,11 @@ Batch 6.
   `client` is `mcp` (the bridge), `cli` (a verb) or `hook`. A first line that isn't a hello, a wrong token, a
   first line over 4096 bytes, or one not whole 5 seconds after connecting (however its bytes trickle in) closes the
   connection; nothing is written to a connection before its hello is accepted, and once it is, the connection has
-  no time limit. Hooks send `templum/event` notifications; the command line's verbs send `tools/call`. When a
-  connection ends the bus tells Templum (`templum/closed`, with the connection's number), and what that client waited
-  for is dropped.
+  no time limit. Hooks send `templum/event` notifications, and a hook at a session's start also one request,
+  `templum/instructions` with `{"agent": <the hook's agent>}`, answered with `{"text": <string>}`: the person's
+  instructions for that agent and terminal, framed, empty when none apply
+  ([instructions.md](instructions.md)); the command line's verbs send `tools/call`. When a connection ends the bus
+  tells Templum (`templum/closed`, with the connection's number), and what that client waited for is dropped.
 - Requests are answered on Templum's main thread, in the order they arrive per connection; a request that waits (a
   question, a delegation) never holds back the others.
 
@@ -659,6 +661,23 @@ runs "any X" when its agent is X or runs X's program (the first word of their co
 Templum hears an agent's turns through its hooks. Each hook runs `templum hook <agent>`, which reads what the agent
 hands it, turns it into an event, sends it to the bus with a one-second limit, and exits 0 at once, even when
 Templum is gone.
+
+**A session's start asks and prints.** For Claude Code, Codex, Gemini CLI, Copilot CLI and Qwen Code, the hook of a
+session's start (`SessionStart`, `sessionStart`; any `source`: a new session, a resume, a `/clear`, a compaction, for
+which no event is sent, as above) also sends `templum/instructions` on the same connection, after the event, and waits
+for the answer 2 seconds at most. Templum answers the instructions the person wrote that apply to that terminal's
+workspace and agent ([instructions.md](instructions.md)); the hook prints them in the agent's shape (Claude Code, Codex,
+Gemini CLI and Qwen Code: `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":…}}`; Copilot CLI:
+`{"additionalContext":…}`), and the agent takes them as context. No answer, an error, an empty text or no Templum: it
+prints nothing, and exits 0. Every other hook prints nothing, so a permission dialog still decides.
+
+**Which instructions apply** (the `templum` crate's, `Workspace::standing_for`; [instructions.md](instructions.md)): the
+terminal's block names the workspace; the agent is the one Templum sees in it when it runs the hook's agent, else the
+block's account of the hook's agent, else the hook's agent itself, so a stale look at the screen never wins over the
+hook. The answer is the frame (whose they are, that they hold for the session with the person's later words winning,
+that they replace an earlier set) and, under `##` and each one's name, the text of every instruction that applies:
+those for every workspace first, then the workspace's own, each in the list's order. Empty for a terminal that isn't a
+block of this Templum and while connections are off.
 
 | Agent | How Templum hears it | Events |
 |---|---|---|
@@ -1235,7 +1254,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum send <block> <text> [--enter]` | `send_to_terminal` | 1 |
 | `templum notify <text>` | `notify` | 1 |
 | `templum mcp` | the MCP bridge | 1 |
-| `templum hook claude` / `templum hook codex <json>` | an agent's hook (`templum hook codex` reads its JSON on stdin from batch 7; an argument, an older Templum's `notify`, is ignored, and stdin, then Codex's terminal, isn't read) | 1, 7 |
+| `templum hook claude` / `templum hook codex <json>` | an agent's hook (`templum hook codex` reads its JSON on stdin from batch 7; an argument, an older Templum's `notify`, is ignored, and stdin, then Codex's terminal, isn't read); at a session's start it prints the person's instructions ([Hooks and agent state](#hooks-and-agent-state)) | 1, 7, card 148 |
 | `templum hook gemini` | Gemini CLI's hooks (JSON on stdin) | 5 |
 | `templum hook copilot <event>` | Copilot CLI's hooks (JSON on stdin, the event named by the hook's command, as Copilot names its hook: `agentStop`); `agentStop`'s answer read from the end of its transcript | card 44 |
 | `templum hook opencode` / `templum hook qwen` / `templum hook pi` | the OpenCode and Kilo Code plugin's events, Qwen Code's hooks, Pi's extension's events (JSON on stdin) | card 44 |

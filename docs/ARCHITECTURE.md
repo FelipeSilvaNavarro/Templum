@@ -229,8 +229,13 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   into `<data>/attachments/<card id>/` on the background executor and swept at start when no card holds them);
   `kanban.rs` draws a block's board at the zoom, with GPUI's
   drag and drop, a card's priority, checklist and who it is for; a column or the board scrolls while a card is dragged
-  near its edge ([specs/kanban.md](specs/kanban.md)). Note blocks draw their tabs with `tab_strip.rs`. Note and checklist blocks
-  share their dialog's body (`list_dialog.rs`: the rows a search finds, open, delete on a second click, new).
+  near its edge ([specs/kanban.md](specs/kanban.md)). The person's instructions for their agents are app-wide too
+  (`Workspace::standing`, `instructions.rs`, saved in `instructions.json` with the snapshot): the bus answers a hook's
+  `templum/instructions` at a session's start (`standing_for` in `workspace/bus.rs`: which apply to the terminal's
+  workspace and agent, framed), and Settings ▸ Instructions edits them
+  ([specs/instructions.md](specs/instructions.md)). Note blocks draw their tabs with `tab_strip.rs`.
+  Note and checklist blocks share their dialog's body (`list_dialog.rs`: the rows a search finds, open, delete on a
+  second click, new).
 - The canvas is saved by `crates/templum/src/session.rs`: one JSON file per workspace in the data folder. Every
   5 s the workspace takes a `Layout` (rects and process ids, cheap) and a background task reads the processes
   (`templum_terminal::inspect`: folders, and whether Claude Code or Codex runs, by `agent_of`), builds the `Saved`

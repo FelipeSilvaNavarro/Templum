@@ -747,6 +747,7 @@ mod git_trash;
 mod grid;
 mod history;
 mod inbox;
+mod instructions;
 mod kanban;
 mod lod;
 mod menus;

@@ -1785,6 +1785,23 @@ those of `development` at f8c3ec9.
   lines the input row sits above them, so a draft emptied with Backspace or Esc (or one an Up, Down, Tab or Ctrl+Y left
   over an empty input) is never seen empty, and the notices wait for the person's next message (with hooks, its
   `Submitted`). Fix to consider: look for the input between the last two rule or box rows instead of a fixed count.
+- [ ] **Pi, OpenCode and Kilo Code get no instructions.** Only the hooks of Claude Code, Codex, Gemini CLI, Copilot CLI
+  and Qwen Code take context from `templum hook` at a session's start (`session_start` and `start_output`,
+  `crates/templum-mcp/src/hooks.rs`); Pi's extension returns nothing from `session_start`, and OpenCode's and Kilo
+  Code's plugin has no session-start hook. A person sees those agents ignore Settings ▸ Instructions. Fix: Pi's
+  extension prepends them on `before_agent_start`; OpenCode's and Kilo Code's plugin through its system-prompt hook,
+  both asking `templum/instructions` as the hook does.
+- [ ] **Qwen Code's and Copilot CLI's instructions are unchecked.** Their `hookSpecificOutput` and `additionalContext`
+  shapes (`start_output`, `crates/templum-mcp/src/hooks.rs`) come from their docs only: Qwen Code isn't installed here
+  and Copilot CLI wasn't run by hand (no sign-in). A person would see an agent that ignores its instructions. Fix: run
+  each with an instruction written and ask it what it was told, then change the shape if it differs.
+- [ ] **Claude Code's subagents get no instructions.** `session_start` is the session's: a subagent's hooks name an
+  `agent_id`, and `SubagentStart` takes `additionalContext` too. A person sees a subagent unaware of the instructions
+  the main session follows. Fix: answer `templum/instructions` at `SubagentStart` and print its `additionalContext`.
+- [ ] **A resume with no instruction applying leaves an earlier set in the conversation.** The hook prints nothing when
+  none apply (`hook`, `crates/templum-mcp/src/cli.rs`), so a conversation resumed after the person turned every
+  instruction off keeps the ones its first start gave. A person sees an agent still following an instruction they
+  deleted. Fix: the hook knows the `source`; on a resume answer a short text saying none apply any more.
 
 ## Placing new blocks
 
