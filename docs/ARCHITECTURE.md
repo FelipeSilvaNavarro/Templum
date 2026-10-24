@@ -16,9 +16,10 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | `templum-update` | lib | Finds the newest release on GitHub (`lib.rs`), how Templum was installed and the release file that fits it (`install.rs`). Downloads it and checks GitHub's SHA-256 (`fetch.rs`), then puts it in place: a rename over the AppImage or executable, a bundle swap on macOS, an installer's command line, a command for a terminal ([specs/updates.md](specs/updates.md)) | No |
 | `templum-mcp` | lib | The bus Templum's blocks talk over: JSON-RPC lines on a local socket (`bus.rs`), the MCP tools (`tools.rs`), the Templum Agent's control tools and their danger (`control.rs`), the agents' hook events (`hooks.rs`) and the `templum` command line (`cli.rs`: the MCP bridges `mcp` and `control`, `hook`, the verbs) ([specs/connections.md](specs/connections.md)) | No |
 | `templum-agent` | lib | The Templum Agent's engine: Claude Code's words and its stream-json lines read into chat events (`claude.rs`), the conversation's rows, its own things and its file (`conversation.rs`), the child process and its reader threads (`engine.rs`), and the fake engine the tests run (`fake.rs`) ([specs/templum-agent.md](specs/templum-agent.md)); a Claude Code subagent's transcript read, as it grows, into the text its block shows (`follow.rs`, [specs/claude-subagents.md](specs/claude-subagents.md)) | No |
+| `templum-api` | lib | *Planned (kanban card 171, batch 1: [specs/api.md](specs/api.md), [its plan](plans/2026-10-24-api.md)).* Templum's HTTP API: the tokens and their file (`store.rs`), TLS with Templum's certificate or the person's (`tls.rs`), the state's types and their comparison (`model.rs`), the registry: the control server's tools and the API's own, their scopes, the routes and the OpenAPI document (`registry.rs`, `openapi.rs`), the server (`server.rs`: hyper on a single-threaded tokio runtime on its own thread, auth, limits, CORS), the event stream (`events.rs`) and the audit log (`audit.rs`) | No |
 
-All eight crates exist. New library crates are created together with the first real code that needs
-them, never as empty scaffolding. The behavior of the current version is specified in
+Eight crates exist; `templum-api` comes with card 171. New library crates are created together with the first
+real code that needs them, never as empty scaffolding. The behavior of the current version is specified in
 [specs/walking-skeleton.md](specs/walking-skeleton.md), [specs/design-system.md](specs/design-system.md) and
 [specs/config.md](specs/config.md).
 
@@ -68,6 +69,12 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - **The Templum Agent** (`templum-agent`, `workspace/agent.rs`): a headless Claude Code started with the first
   message (`std::process::Command`, no PTY), its stdout and stderr read on threads of their own into a channel the UI
   thread drains; Stop sends its interrupt request; the conversation is saved in `<data>/agent/`.
+- **The API** (planned, card 171: [specs/api.md](specs/api.md)): off until Settings ▸ API turns it on, then an
+  HTTP server on its own thread (`templum-api`), on loopback unless the person chooses another address, which needs
+  TLS. It hands each call to the UI thread as a bus `Message` (`client: "api"`) through the bus's own channel,
+  served by `workspace/api.rs` with the control server's dispatch; the bus refuses an `api` hello from its socket.
+  While an event stream is open, the UI thread builds the API's state (`workspace/api_state.rs`) at most every
+  250 ms and the server sends each stream what changed.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera
