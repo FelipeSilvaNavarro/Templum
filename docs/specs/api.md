@@ -2,7 +2,7 @@
 
 - **Date:** 2026-10-24
 - **Status:** Batch 1 implemented (kanban card 171, "the Templum ecosystem API"; plan:
-  [2026-10-24-api.md](../plans/2026-10-24-api.md)); batches 2 and 3, and Templum to Templum, are designed here for
+  [2026-10-24-api.md](../plans/2026-10-24-api.md)); batch 2 and Templum to Templum are designed here for
   later plans. For people: [docs/api.md](../api.md).
 - **Builds on:** [connections.md](connections.md) (the bus, block ids, the tools, the `templum` command line),
   [templum-agent.md](templum-agent.md) (the control server: a tool for every hand action, and their danger),
@@ -67,7 +67,8 @@ Templum never runs a server of its own: the person points a tunnel, a proxy or a
 - User accounts, passwords, OAuth: tokens only.
 - GraphQL; raw TCP; WebSocket (SSE does everything below: [Why SSE](#why-sse)).
 - Part 2's connection UI (a remote workspace in the sidebar): a later card ([Templum to Templum](#templum-to-templum)).
-- A native mobile app (batch 3 is a small web page served by Templum).
+- A mobile app, or a web page served by Templum (the person: "eu disse que queria só a api e o sistema de conexão",
+  only the API and the connection system): a phone reaches Templum through the API with a client of its own.
 
 *The designer's call:*
 
@@ -421,7 +422,7 @@ don't know. A change that would break a client is `/v2`, served beside `/v1` for
 
 `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`,
 `X-Frame-Options: DENY`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`,
-`Cross-Origin-Resource-Policy: same-origin`. Batch 3's page gets its own policy.
+`Cross-Origin-Resource-Policy: same-origin`.
 
 ### Browsers
 
@@ -548,10 +549,6 @@ phone case work).
     names; no resize (a viewer scales the frame, as zoom does).
   - The canvas while it moves: the state's tick goes to 100 ms while a block is dragged or resized, so a mirror follows
     a drag; the shown workspace's camera as an optional `view` event.
-- **Batch 3: a page for the phone.** `GET /` serves one small page embedded in Templum (no third-party script, a strict
-  CSP of its own): the token pasted once and kept in the page's storage; **Requests** (answer questions, plans,
-  requests and approvals, with the inbox's words), **Agents** (states, open one, hand one a task, interrupt), **Board**
-  (cards, move, comment). It uses only the public API.
 
 ## Templum to Templum
 
