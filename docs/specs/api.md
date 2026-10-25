@@ -549,6 +549,51 @@ phone case work).
     names; no resize (a viewer scales the frame, as zoom does).
   - The canvas while it moves: the state's tick goes to 100 ms while a block is dragged or resized, so a mirror follows
     a drag; the shown workspace's camera as an optional `view` event.
+  - **Designed** (plan: [2026-10-24-api-batch-2.md](../plans/2026-10-24-api-batch-2.md); each *the designer's call*):
+    - **A frame** is `event: frame` with `data` `{"size":{"cols":120,"rows":40},"cursor":{"row":3,"col":10,
+      "shape":"block","blinking":false},"title":"vim main.rs","whole":true,"rows":[{"y":0,"runs":[…]}]}`. `cursor` is
+      null while the program hides it; `shape` is `block`, `underline` or `beam`; `title` is the program's own (OSC
+      0/2), null without one (the block's title is in the state). `whole` frames hold every row; the others only the
+      rows that changed, each with its `y`; size, cursor and title are in every frame. A frame is sent when any of it
+      changed. Frames carry ids like events, but a terminal stream doesn't resume: it always opens with a whole frame.
+    - **A run** carries its own text: `{"text":"main","fg":4,"bg":"#1e1e2e","bold":true}`, so no client counts bytes
+      or UTF-16 units. `fg` and `bg` are absent for the theme's default, a number 0–255 for a palette index (the
+      viewer's palette draws it, as zoom draws with the viewer's fonts), or `"#rrggbb"`; a palette slot the program
+      set (OSC 4, 10, 11) comes as its RGB. `bold`, `dim` (added: agents draw hints dim), `italic`, `underline` (any
+      kind) and `inverse` are present only when true. Hidden text (SGR 8) comes as blanks; a wide character's spacer
+      cell is left out (the character takes its two columns again where it is drawn); combining marks follow their
+      character; trailing blanks with the default background are trimmed.
+    - **The frame is the live screen**, never the view the person scrolled back to, and never the selection.
+    - **What a mirror needs:** a test redraws a screen, as a frame carries it, into a `Terminal::viewer` (cursor moves,
+      SGR, erase-line, DECSCUSR, OSC 2) and reads back the same screen.
+    - **Reading:** a terminal counts its changes (`SharedTerm::changes`, bumped wherever its grid is marked dirty), so
+      the server's reader, every 50 ms, reads only the terminals that changed, with `try_lock_unfair` (a held lock skips
+      that terminal until the next look), and never holds its own table's lock while it reads. With no terminal stream
+      open the reader sleeps and the server keeps no terminal.
+    - **The terminals reach the server** as a table the glue lends (block, workspace, the terminal's `SharedTerm`):
+      when a stream opens (the server asks the UI thread `templum/terminal`, which checks the token's workspaces and the
+      block, then lends every terminal), and at each tick while a terminal stream is open. A stream whose block left the
+      table (closed) or whose workspace its token no longer sees ends; the client gets `404` when it opens it again.
+    - **Backpressure:** a terminal stream queues 20 frames (a second); past that it drops them and its next frame is
+      whole, of the newest screen.
+    - **Limits:** a terminal stream is a connection, so it counts in the 64 and in its token's 16, and opening one is a
+      call (the token's 20 a second). No cap of its own: a mirror streams the terminals it shows.
+    - **Errors:** a block that doesn't exist or isn't the token's to see is `404` with the block words; a block that
+      isn't a terminal is `422` "k9x1d isn't a terminal.".
+    - **Input is the API's own tool `terminal_input`** (`block`, then `text` or `keys`; full scope), so it is in the
+      registry, `GET /v1/tools` and the OpenAPI document, and `POST /v1/terminals/{block}/input` is its alias. It is the
+      person's keyboard, not an agent's `send_keys`: no task check, no screen read back, its answer as soon as the keys
+      are pressed (`Pasted into b7k2m.`, `Pressed 2 keys in b7k2m.`). Keys keep `send_keys`' 50 ms between them (an
+      Esc and the key after it in one burst read as Alt+key), at most 16 per call; text is a paste of at most 256 KiB.
+      The block shows "answered by API · <token name>" as it does for `send_keys`. A client sends its next input after
+      the answer to the last, so keys keep their order. Refused: a block that isn't a terminal, a subagent's transcript
+      (read-only), a shell that has ended ("b7k2m's shell has ended: nothing typed reaches it.").
+    - **`view`:** the state gains `view`, `{"workspace":"w3","x":…,"y":…,"w":…,"h":…,"zoom":1.0}`: the world rectangle
+      the shown workspace's canvas shows (its camera and the canvas's size at the last paint) and the zoom; null for a
+      token that doesn't see the shown workspace. `GET /v1/events?view=true` adds `event: view` (its `data` the view,
+      or null) each time it changes; other streams don't get it.
+    - **The fast tick** (100 ms) also runs while the canvas is panned by the pointer, so a stream that follows the
+      view keeps up.
 
 ## Templum to Templum
 
