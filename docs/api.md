@@ -249,6 +249,18 @@ characters; blank takes it off): on two blocks already wired it renames their wi
 name; either is one Ctrl+Z step. `list_agents` ends the line of an agent the person hid in Templum's menus with `  hidden`
 (it still opens); a mirror's menus leave those out.
 
+**Boards.** `create_card` takes `labels` (red, yellow, green, cyan, blue, magenta). `edit_card` also takes `title`,
+`description` (blank clears it), `labels` (`{"red": true, "blue": false}`: turned on, turned off; the rest keep) and
+`remove_items` (item ids). `move_card` takes `before`: a card of that column, which the card goes just before; left
+out, the column's end. `delete_card` (`card`; control) deletes a card and its comments. `edit_board` (`board`, then
+`name` or `delete: true`; control) renames a board or deletes it with its cards. `edit_column` (`board`; control) adds
+a column (`column` left out: at the end, or `before` another; `title` names it), renames one (`column`, `title`),
+moves one (`column`, `before`: a column of the board, or `"end"`) or deletes one with its cards (`column`, `delete:
+true`, alone). `show_board` (`block`, then `board` or `new`; control) shows a board in a kanban block, or makes one
+(`new`: its name, blank for "Board n"; `columns`: To do, Doing and Done when left out) and shows it. Each is one
+step of the kanban's Ctrl+Z; a limited token reaches only the boards its workspaces' kanbans show. `edit_comment`
+and `delete_comment` (`card`, `comment`, and `text`) act as you: edit a comment by `you`, delete any.
+
 **Who acts.** A call acts as you: no approval, comments by `you`. Tasks it hands (`delegate`, `open_agent`'s prompt) are
 typed as `[from API · <token name>, task t7]`, and their end, a `wait_for` with `wait: false` and every other notice
 Templum would type into an asker's terminal come as `notice` events. **Tools that wait** (`delegate` with `wait`,
@@ -572,14 +584,17 @@ What the banner says, what it means, and whether it tries again by itself:
 
 ### 7. What a mirror can't do yet
 
-Not mirrored: a note's, checklist's, editor's and board's content (a card names each), ink and shapes. Scrolling back in
+Not mirrored: a note's, checklist's and editor's content (a card names each), ink and shapes. Scrolling back in
 a mirrored shell (the wheel, Shift+PageUp, Find) reads home's last 2000 lines, without colors, and again after it
 changed; the mouse reaches a program that asked for it, with a Full share. Not on a mirrored workspace: editors, adding
 notes (notes are read-only on a mirror for now), drawing, grid mode, Move to workspace, Copy and Paste of blocks, Stop,
 the Git popup. The banner's ⓘ lists them. Adding, closing and wiring blocks, naming wires, opening home's agents and handing them tasks work from the
 mirror, each done at home through its API; a block you close or a wire you make shows at once and home's state wins
 after two seconds. Ctrl+Z there undoes moves only: it stops once at each of those acts and says to undo the rest on
-home. A selection of several blocks moved on the mirror is one Ctrl+Z step per block on home.
+home. A selection of several blocks moved on the mirror is one Ctrl+Z step per block on home. A kanban is live:
+dragging cards and columns, adding, renaming and deleting columns and boards, the card dialog and Send to work from
+the mirror, each done at home; a card you move, edit or delete shows at once and home's state wins after two
+seconds; a card's attachments show by name (open them on home), and a card has no drafts on a mirror.
 
 ### 8. Safety
 

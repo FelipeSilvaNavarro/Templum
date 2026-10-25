@@ -115,8 +115,12 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   `terminal_input`'s `mouse` through the same typing queue (`remote_mouse`, only what the viewer's modes, painted from
   home's frames, say the program asked for); scrolling back reads home's last 2000 lines with `read_terminal` on the
   client's thread and fills them above the viewer's live screen (`Feeder::fill_history`), so the UI thread never holds
-  the text (`Command::History`, `Update::History`). `--bench-mirror` measures all of it: the mixed cockpit mirrored by
-  the same Templum over loopback.
+  the text (`Command::History`, `Update::History`). A mirrored workspace's kanban is live: `workspace/remote_boards.rs`
+  keeps a remote's copy of home's boards (`RemoteSpace::boards`, made from home's state with every word cleaned and
+  capped, never saved) and the acts on it; every write of a kanban, local or remote, is `BoardAct` through
+  `Workspace::act_on_boards`, the one door (on this computer an edit of `Workspace::boards`, on a mirror a call of
+  home's, asked of `why_not` and held over the copy by `cards_moved`, `cards_deleted` and `cards_edited`).
+  `--bench-mirror` measures all of it: the mixed cockpit mirrored by the same Templum over loopback.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera

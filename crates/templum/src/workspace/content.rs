@@ -281,6 +281,7 @@ impl Workspace {
         from: &str,
         card: u64,
         column: &str,
+        before: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Reply {
         let (space, me) = self.caller_space(from);
@@ -312,7 +313,7 @@ impl Workspace {
             .and_then(|c| c.assignee.as_ref())
             .filter(|a| !self.is_callers(a, &caller))
             .map(|a| self.for_whom(a, cx));
-        let moved = self.card_move(card, column, cx);
+        let moved = self.card_move(card, column, before, cx);
         if moved.is_error {
             return moved;
         }
@@ -347,27 +348,9 @@ impl Workspace {
     /// comment is its writer's to change, so the person's and other agents' are refused.
     fn own_comment(&self, from: &str, card: u64, comment: u64, cx: &App) -> Result<u64, Reply> {
         let (space, me) = self.caller_space(from);
-        let board = self.card_board(space, me, card)?;
-        let Some(c) = self
-            .boards
-            .card(board, card)
-            .and_then(|c| c.comments.iter().find(|c| c.id == comment))
-        else {
-            return Err(Reply::err(format!(
-                "Card {card} has no comment {comment}: list_cards with card shows its comments."
-            )));
-        };
-        if space.uids.get(&me) != Some(&c.by) {
-            let writer = if c.by == "you" {
-                "the person".into()
-            } else {
-                self.who(&c.by, cx)
-            };
-            return Err(Reply::err(format!(
-                "Comment {comment} is by {writer}, not you: you can only change your own."
-            )));
-        }
-        Ok(board)
+        self.card_board(space, me, card)?;
+        let uid = space.uids.get(&me).map(String::as_str).unwrap_or_default();
+        self.comment_of(card, comment, Some(uid), cx)
     }
 
     /// `edit_comment`: the caller's own comment gets `text`, one step of the kanban's Ctrl+Z.
@@ -379,25 +362,10 @@ impl Workspace {
         text: &str,
         cx: &mut Context<Self>,
     ) -> Reply {
-        let board = match self.own_comment(from, card, comment, cx) {
-            Ok(b) => b,
-            Err(refused) => return refused,
-        };
-        if text.trim().is_empty() {
-            return Reply::err("A comment needs text. delete_comment removes one.");
+        match self.own_comment(from, card, comment, cx) {
+            Ok(board) => self.comment_edit(board, card, comment, text, cx),
+            Err(refused) => refused,
         }
-        let text = text.trim_end();
-        let same = self
-            .boards
-            .card(board, card)
-            .and_then(|c| c.comments.iter().find(|c| c.id == comment))
-            .is_some_and(|c| c.text == text);
-        if same {
-            return Reply::ok(format!("Comment {comment} already says that."));
-        }
-        self.edit_boards(|b| b.edit_comment(board, card, comment, text));
-        cx.notify();
-        Reply::ok(format!("Edited comment {comment} on card {card}."))
     }
 
     /// `delete_comment`: the caller's own comment goes, one step of the kanban's Ctrl+Z.
@@ -408,13 +376,10 @@ impl Workspace {
         comment: u64,
         cx: &mut Context<Self>,
     ) -> Reply {
-        let board = match self.own_comment(from, card, comment, cx) {
-            Ok(b) => b,
-            Err(refused) => return refused,
-        };
-        self.edit_boards(|b| b.remove_comment(board, card, comment));
-        cx.notify();
-        Reply::ok(format!("Deleted comment {comment} on card {card}."))
+        match self.own_comment(from, card, comment, cx) {
+            Ok(board) => self.comment_delete(board, card, comment, cx),
+            Err(refused) => refused,
+        }
     }
 
     pub(super) fn claim_card(&mut self, from: &str, card: u64, cx: &mut Context<Self>) -> Reply {

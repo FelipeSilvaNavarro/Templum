@@ -485,7 +485,10 @@ pub(crate) fn render(
             IconName::LayoutDashboard,
             "All boards",
             z,
-            move |_, window, cx| kanban::open_boards(id, window, cx),
+            move |ws, window, cx| {
+                let space = ws.space.id.clone();
+                kanban::open_boards(space, id, window, cx)
+            },
             cx,
         )),
         _ => None,

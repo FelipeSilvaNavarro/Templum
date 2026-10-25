@@ -100,21 +100,22 @@ fn a_workspace_mirrors_itself_over_loopback(cx: &mut TestAppContext) {
     let answers = call_later(handle, &ws, cx, &term_id, 31, "ask_user", asked);
     let (first, _store) = mirrored(handle, &ws, cx, dir.path());
 
-    // 1. r1 shows the first workspace's blocks at its rectangles: one viewer, two cards.
+    // 1. r1 shows the first workspace's blocks at its rectangles: one viewer, one card, one live kanban.
     pump_home(&ws, cx, "r1's blocks", |cx| {
         ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len() == 3)
     });
     ws.read_with(cx, |ws, _| {
         let remote = ws.space.remote.as_ref().unwrap();
-        let (mut viewers, mut cards) = (0, 0);
+        let (mut viewers, mut cards, mut kanbans) = (0, 0, 0);
         for body in ws.space.blocks.values() {
             match body {
                 Body::Terminal(pane) if pane.remote.is_some() => viewers += 1,
                 Body::Mirrored(_) => cards += 1,
+                Body::Kanban(k) if k.remote => kanbans += 1,
                 _ => panic!("a block that isn't home's"),
             }
         }
-        assert_eq!((viewers, cards), (1, 2));
+        assert_eq!((viewers, cards, kanbans), (1, 1, 1));
         for (home, uid) in [terminal, note, kanban].iter().zip(&uids) {
             let id = remote.homes[uid];
             let want = rect_at(ws, &first, *home);
@@ -699,5 +700,205 @@ fn a_task_handed_on_the_mirror_is_typed_at_home_and_its_end_shows_on_the_mirror(
             "a task taken says nothing: {:?}",
             ws.said
         )
+    });
+}
+
+// Batch 2d: boards, live and acted on.
+
+/// A board at home (the first workspace's kanban shows it) with To do `[A, B]` and Doing `[C, D]`,
+/// then mirrored as `r1`: (the board, its columns To do, Doing, Done, the cards A, B, C, D).
+type Boarded = (u64, [u64; 3], [u64; 4]);
+
+fn boarded(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    dir: &std::path::Path,
+) -> Boarded {
+    let (_, board, a) = board_with_a_card(handle, ws, cx);
+    let columns: Vec<u64> = ws.read_with(cx, |ws, _| {
+        ws.boards
+            .board(board)
+            .unwrap()
+            .columns
+            .iter()
+            .map(|c| c.id)
+            .collect()
+    });
+    let cards = ws.update(cx, |ws, _| {
+        let mut add = |title: &str, column: u64| {
+            let id = ws.edit_boards(|b| b.add_card(board, column)).unwrap();
+            ws.edit_boards(|b| b.edit_card(board, id, |c| c.title = title.into()));
+            id
+        };
+        [
+            a,
+            add("B", columns[0]),
+            add("C", columns[1]),
+            add("D", columns[1]),
+        ]
+    });
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| b.edit_card(board, a, |c| c.title = "A".into()))
+    });
+    mirrored(handle, ws, cx, dir);
+    pump_home(ws, cx, "r1 to copy the board", |cx| {
+        ws.read_with(cx, |ws, _| remote_of(ws).boards.board(board).is_some())
+    });
+    (board, [columns[0], columns[1], columns[2]], cards)
+}
+
+/// A card's ids in each column of home's board.
+fn home_columns(ws: &Entity<Workspace>, cx: &mut TestAppContext, board: u64) -> Vec<Vec<u64>> {
+    ws.read_with(cx, |ws, _| {
+        ws.boards
+            .board(board)
+            .unwrap()
+            .columns
+            .iter()
+            .map(|c| c.cards.iter().map(|c| c.id).collect())
+            .collect()
+    })
+}
+
+fn act_on_r1(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    act: crate::workspace::BoardAct,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.act_on_boards("r1", act, window, cx))
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_card_dragged_on_the_mirror_lands_at_home_before_that_card(cx: &mut TestAppContext) {
+    let (handle, ws, dir) = with_data(cx);
+    let (board, [_, doing, _], [a, b, c, d]) = boarded(handle, &ws, cx, dir.path());
+    act_on_r1(
+        handle,
+        &ws,
+        cx,
+        crate::workspace::BoardAct::MoveCard {
+            board,
+            card: a,
+            column: doing,
+            to: Some(d),
+        },
+    );
+    pump_home(&ws, cx, "A before D at home", |cx| {
+        home_columns(&ws, cx, board)[1] == [c, a, d]
+    });
+    assert_eq!(home_columns(&ws, cx, board)[0], [b]);
+    pump_home(&ws, cx, "r1's copy to agree", |cx| {
+        ws.read_with(cx, |ws, _| remote_of(ws).cards_moved.get(&a).is_none())
+    });
+    ws.read_with(cx, |ws, _| {
+        let copy: Vec<u64> = remote_of(ws).boards.board(board).unwrap().columns[1]
+            .cards
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(copy, [c, a, d]);
+    });
+}
+
+#[gpui_kit::test]
+fn a_card_made_on_the_mirror_has_its_labels_and_its_comment_at_home(cx: &mut TestAppContext) {
+    use crate::board::{Card, Comment, Draft, Label};
+    let (handle, ws, dir) = with_data(cx);
+    let (board, [todo, _, _], _) = boarded(handle, &ws, cx, dir.path());
+    let mut work = Card::new(0);
+    work.title = "Login".into();
+    work.labels = vec![Label::Red, Label::Blue];
+    work.comments = vec![Comment {
+        id: u64::MAX,
+        by: "you".into(),
+        text: "First".into(),
+        at: 0,
+        edited: false,
+    }];
+    let draft = Draft {
+        at: todo,
+        new: true,
+        base: Card::new(0),
+        work,
+    };
+    act_on_r1(
+        handle,
+        &ws,
+        cx,
+        crate::workspace::BoardAct::Finish { board, draft },
+    );
+    pump_home(&ws, cx, "the card at home", |cx| {
+        ws.read_with(cx, |ws, _| {
+            let last = ws.boards.board(board).unwrap().columns[0]
+                .cards
+                .last()
+                .cloned();
+            last.is_some_and(|c| c.title == "Login" && !c.comments.is_empty())
+        })
+    });
+    ws.read_with(cx, |ws, _| {
+        let card = ws.boards.board(board).unwrap().columns[0]
+            .cards
+            .last()
+            .unwrap();
+        assert_eq!(card.labels, [Label::Red, Label::Blue]);
+        let comments: Vec<(&str, &str)> = card
+            .comments
+            .iter()
+            .map(|c| (c.by.as_str(), c.text.as_str()))
+            .collect();
+        assert_eq!(comments, [("you", "First")]);
+    });
+}
+
+#[gpui_kit::test]
+fn a_column_added_and_renamed_on_the_mirror_is_at_home(cx: &mut TestAppContext) {
+    use crate::workspace::BoardAct;
+    let (handle, ws, dir) = with_data(cx);
+    let (board, _, _) = boarded(handle, &ws, cx, dir.path());
+    let last_title = |ws: &Entity<Workspace>, cx: &mut TestAppContext| -> (u64, String) {
+        ws.read_with(cx, |ws, _| {
+            let c = ws
+                .boards
+                .board(board)
+                .unwrap()
+                .columns
+                .last()
+                .unwrap()
+                .clone();
+            (c.id, c.title)
+        })
+    };
+    act_on_r1(handle, &ws, cx, BoardAct::AddColumn { board });
+    pump_home(&ws, cx, "the new column at home and on the mirror", |cx| {
+        last_title(&ws, cx).1 == "New column"
+            && ws.read_with(cx, |ws, _| {
+                remote_of(ws)
+                    .boards
+                    .board(board)
+                    .unwrap()
+                    .columns
+                    .last()
+                    .is_some_and(|c| c.title == "New column")
+            })
+    });
+    let (column, _) = last_title(&ws, cx);
+    act_on_r1(
+        handle,
+        &ws,
+        cx,
+        BoardAct::RenameColumn {
+            board,
+            column,
+            title: "Review".into(),
+        },
+    );
+    pump_home(&ws, cx, "the rename at home", |cx| {
+        last_title(&ws, cx).1 == "Review"
     });
 }

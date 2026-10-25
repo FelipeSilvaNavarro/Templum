@@ -209,6 +209,21 @@ fn mirror_set_up(
     ws.close_welcome(window, cx);
     ws.welcome = None;
     mixed_cockpit(ws, window, cx);
+    // Its kanbans show a board each (12 cards): the mirror draws them live from home's boards.
+    let kanbans: Vec<_> = ws
+        .space
+        .canvas
+        .blocks()
+        .iter()
+        .map(|b| b.id)
+        .filter(|id| ws.space.kanban(*id).is_some())
+        .collect();
+    for id in kanbans {
+        let board = sample_board(&mut ws.boards);
+        if let Some(k) = ws.space.kanban_mut(id) {
+            k.board = Some(board);
+        }
+    }
     let first = ws.space.id.clone();
     ws.api_edit(
         |settings| {

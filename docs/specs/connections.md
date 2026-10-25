@@ -545,9 +545,9 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `ask_user` | `questions` (each `question`, `header`, `options` with `label`, `description`, `preview`, `multiSelect`), or `question` and `options` (strings); `timeout` (none) | Questions in the inbox ([Requests](#requests-from-agents), [ask-user.md](ask-user.md)); the answers as JSON, or with `question` the answer as text | — | 3 |
 | `propose_plan` | `plan` (Markdown, at most 256 KB), `title`, `timeout` (none) | A plan in the inbox, Approve or Reject with a comment ([agent-tools.md](agent-tools.md#propose_plan)); `Approved.`, or the error `Rejected.`, with the comment | — | card 35 |
 | `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, priority, assignee (`(you)` on the caller's), checklist progress, comment and attachment counts; with `card`, that card whole: its description, checklist items, attachments (each one's name, size and absolute path, [card 152](kanban.md#attachments-kanban-card-152)) and comments, each with its number (and "edited" once its author changed it) ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40, card 77 |
-| `create_card` | `board`, `column`, `title`, `description`, `priority`, `for`, `checklist` | A new card at the column's end (the board's first column when left out); its id. Its description tells an agent a review's findings are a card each (card 35) | wired kanban | 4, card 40 |
-| `edit_card` | `card`, `priority`, `for`, `add_items`, `check`, `uncheck` | Sets the card's priority and who it is for, adds checklist items, checks and unchecks them: one Ctrl+Z step ([Cards for an agent](#cards-for-an-agent)) | wired kanban | card 40 |
-| `move_card` | `card`, `column` | Moves a card to the end of a column; into the board's last column or one titled Review (either case), unless the card's newest comment is the caller's, its answer asks for one: "Say on it what you did and what the next one needs to know: comment_card." | wired kanban | 4 |
+| `create_card` | `board`, `column`, `title`, `description`, `priority`, `for`, `checklist`, `labels` | A new card at the column's end (the board's first column when left out); its id. Its description tells an agent a review's findings are a card each (card 35) | wired kanban | 4, card 40 |
+| `edit_card` | `card`, `title`, `description`, `labels`, `priority`, `for`, `add_items`, `remove_items`, `check`, `uncheck` | Sets the card's title, description, labels, priority and who it is for, adds, removes, checks and unchecks checklist items: one Ctrl+Z step ([Cards for an agent](#cards-for-an-agent)) | wired kanban | card 40 |
+| `move_card` | `card`, `column`, `before` | Moves a card to a column, before another card of it (`before`) or at its end; into the board's last column or one titled Review (either case), unless the card's newest comment is the caller's, its answer asks for one: "Say on it what you did and what the next one needs to know: comment_card." | wired kanban | 4 |
 | `comment_card` | `card`, `text` | Adds a comment signed with the caller's id: what it did on the card, and what the next one needs to know, when it finishes it; its answer says the comment's number: `Commented on card 40 (comment 51).` | wired kanban | 4, card 77 |
 | `edit_comment` | `card`, `comment`, `text` | The text of a comment the caller wrote becomes `text`; the comment keeps its author, its place and its time, and reads "edited". Refused for the person's comment and another agent's ([Cards for an agent](#cards-for-an-agent)); one Ctrl+Z step | wired kanban | card 77 |
 | `delete_comment` | `card`, `comment` | Deletes a comment the caller wrote; refused as `edit_comment` is; one Ctrl+Z step | wired kanban | card 77 |
@@ -614,12 +614,14 @@ runs "any X" when its agent is X or runs X's program (the first word of their co
   description:
   `checklist:` then one line per item, `  41 [ ] Build` (its id, `[x]` or `[ ]`, its text), as `read_checklist` does;
   then, with a data folder, `attachments:` and a line each, `  shot.png  47 KB  <data folder>/attachments/41/shot.png`.
-- **`create_card`** also takes `priority`, `for` and `checklist` (text, an item per line, read as `add_items` reads
-  it). Its answer is unchanged: `Created card 40.`
-- **`edit_card`** takes `card` and at least one of `priority`, `for`, `add_items` (text, as `add_items`), `check` and
-  `uncheck` (a list of item ids; the schema declares only the list, with no `anyOf`, but one id, a number or its text,
-  is taken too). The server refuses a call with none: `edit_card needs something to
-  change: priority, for, add_items, check or uncheck`. An item id the card doesn't have refuses the whole call before
+- **`create_card`** also takes `priority`, `for`, `checklist` (text, an item per line, read as `add_items` reads
+  it) and `labels` (a list of red, yellow, green, cyan, blue, magenta). Its answer is unchanged: `Created card 40.`
+- **`edit_card`** takes `card` and at least one of `title`, `description` (blank clears it), `labels` (`{"red": true,
+  "blue": false}`: on, off; the rest keep), `priority`, `for`, `add_items` (text, as `add_items`), `remove_items`,
+  `check` and `uncheck` (a list of item ids; the schema declares only the list, with no `anyOf`, but one id, a number
+  or its text, is taken too). The server refuses a call with none: `edit_card needs something to change: title,
+  description, priority, for, labels, add_items, remove_items, check or uncheck`. An item id the card doesn't have
+  refuses the whole call before
   anything changes: `Card 40 has no item 99: list_cards with card shows its items.` What it does is one Ctrl+Z step,
   and its answer says it: `Card 40: priority high; for any codex; added items 43, 44; checked 41; unchecked 42.`
   Its `for` follows `claim_card`, and a refusal changes nothing: on a card another block holds it is refused with
@@ -637,8 +639,10 @@ runs "any X" when its agent is X or runs X's program (the first word of their co
   | any `codex` | runs another agent | refused: `Card 40 is for any Codex, and you are Claude Code: take a card for you or for anyone.` |
   | any `codex` | runs none Templum can name yet | refused: `Card 40 is for any Codex, and Templum can't tell yet which agent you are: try again in a few seconds.` |
 
-- **`move_card` and `comment_card`** stay open to every wired agent. `move_card`'s answer ends with
-  ` It is for any codex, not you.` (or `b7k2m "Codex · api"`) when the card's assignee isn't the caller's.
+- **`move_card` and `comment_card`** stay open to every wired agent. `move_card`'s `before` is a card of the target
+  column (`Card 41 isn't in Doing.`, `A card can't go before itself.`): the card goes just before it. `move_card`'s
+  answer ends with ` It is for any codex, not you.` (or `b7k2m "Codex · api"`) when the card's assignee isn't the
+  caller's.
 - **`edit_comment` and `delete_comment`** (card 77) change only the caller's own comments, those whose author
   (`by`) is the caller's block id; the rest, the person's and other agents', are refused with
   `Comment 52 is by the person, not you: you can only change your own.` (`b7k2m "Codex · api"` for another agent).

@@ -415,7 +415,12 @@ conversation". `reason` is an optional string on every Ask tool, shown in the ap
 | `create_workspace` | `name`, `folder`, `color` | A new workspace, not shown; its id | – | 1 |
 | `show` | `workspace`, `block` | Shows the workspace, and flies the camera to the block (`reveal`) | – | 1 |
 | `add_block` | `workspace`, `kind` (`terminal`, `note`, `checklist`, `kanban`, `editor`), `folder`, `board` and `columns` (kanban: a board by name or id, made with those columns when there is none), `text` (a note's text; a checklist's name on its first line and an item per line after), `near` (a block), `x` and `y` (its top-left; both or neither, not with `near`) | Opens the block where it covers nothing: beside `near`, else at the workspace's free spot; at `x`, `y` when given, over what is there; its id. A terminal runs no command | – | 1 |
-| `create_card`, `edit_card`, `move_card`, `comment_card` | as the block server's | As the block server's on any board; comments are signed "Templum Agent"; `move_card` asks for no comment | – | 1 |
+| `create_card`, `edit_card`, `move_card`, `comment_card` | as the block server's: `create_card` also `labels`; `edit_card` also `title`, `description`, `labels`, `remove_items`; `move_card` also `before` | As the block server's on any board; comments are signed "Templum Agent"; `move_card` asks for no comment | – | 1 (the grown arguments: 171 2d) |
+| `edit_comment`, `delete_comment` | `card`, `comment`, and `text` | Edits or deletes a comment the Templum Agent signed, never the person's or another agent's (through the API they act as the person: edit one by `you`, delete any) | – | 171 2d |
+| `delete_card` | `card`, `reason` | Deletes a card and its comments, a step of that kanban's Ctrl+Z | Ask own | 171 2d |
+| `edit_board` | `board`, then `name` or `delete: true`, `reason` | Renames a board, or deletes it with its cards (the kanbans that showed it show none; a step of Ctrl+Z) | Ask own when a delete takes cards: it runs without asking only on a board it made whose cards (or the column's) it made too; – otherwise | 171 2d |
+| `edit_column` | `board`, `column`, `title`, `before` (a column id, or `end`), `delete: true`, `reason` | Adds a column (`column` left out; `title`, `before` too), renames or moves one, or deletes one with its cards (alone), a step of Ctrl+Z | Ask own when a delete takes cards: it runs without asking only on a board it made whose cards (or the column's) it made too; – otherwise | 171 2d |
+| `show_board` | `block`, then `board`, or `new` (a name, blank for "Board n") with `columns` | Shows a board in a kanban, or makes a new one there (To do, Doing and Done without `columns`) | – | 171 2d |
 | `append_note` | `block`, `text` | As the block server's | – | 1 |
 | `add_items`, `check_item` | as the block server's | As the block server's | – | 1 |
 | `open_agent` | `agent` (an id of `list_agents`), `workspace`, `folder`, `worktree`, `model`, `effort`, `prompt`, `connect` (blocks to wire it to), `near`, `x` and `y` (its top-left; both or neither, not with `near`) | Opens the agent as `spawn_agent` does ([connections.md](connections.md#spawning)), in that workspace, beside `near` or at its free spot, wired to `connect`, its `opened_by` `templum-agent`; its prompt typed once it is ready; its id | Asks when `connect` names a terminal not its own | 1 |
@@ -433,8 +438,6 @@ conversation". `reason` is an optional string on every Ask tool, shown in the ap
 | `move_block` | `block`, `x`, `y`, `w`, `h` (built by card 171, the API); `workspace` (batch 3) | Moves or resizes it, a step of that workspace's Ctrl+Z (no block smaller than its kind's least), or moves it to another workspace | – | 1 (`workspace`: 3) |
 | `arrange` | `workspace`, `layout` (`grid`, `row`, `column`), `blocks` | Lays the blocks out without overlap, keeping their sizes | – | 3 |
 | `grid`, `fit` | `on` | Grid mode on or off; the camera to every block | – | 3 |
-| `rename_board`, `add_column`, `rename_column` | … | The board's name and columns | – | 3 |
-| `delete_card`, `delete_column`, `delete_board` | … | Deletes them | Ask own; `delete_board` Ask each | 3 |
 | `replace_note`, `edit_item`, `delete_item`, `delete_note`, `delete_checklist` | … | Card 35's note and checklist edits, on any block | Ask own | 3 |
 | `run` | `workspace`, `folder`, `command`, `background`, `near`, `reason` | A terminal that runs a command (card 35's background terminal) | Ask | 3 |
 | `remove_worktree`, `merge_worktree` | … | Card 35's worktree tools | Ask each | 3 |

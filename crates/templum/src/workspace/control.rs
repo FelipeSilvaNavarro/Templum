@@ -245,6 +245,63 @@ impl Workspace {
                     ws.block_close(at, &block, asker, window, cx)
                 });
             }
+            ControlCall::DeleteCard { card } => {
+                // The kanban that shows it, read before the card is gone.
+                let target = self.card_shown(card);
+                return (Outcome::Now(self.card_delete(card, cx)), target);
+            }
+            ControlCall::EditBoard {
+                board,
+                name,
+                delete,
+            } => {
+                let board = match self.board_named(&board) {
+                    Ok(board) => board,
+                    Err(refused) => return (Outcome::Now(refused), None),
+                };
+                let target = self.board_shown(board);
+                let name = name.as_deref().filter(|_| !delete);
+                return (Outcome::Now(self.board_change(board, name, cx)), target);
+            }
+            ControlCall::EditColumn {
+                board,
+                column,
+                title,
+                before,
+                delete,
+            } => {
+                let board = match self.board_named(&board) {
+                    Ok(board) => board,
+                    Err(refused) => return (Outcome::Now(refused), None),
+                };
+                let target = self.board_shown(board);
+                let done = self.column_change(board, column, title.as_deref(), before, delete, cx);
+                return (Outcome::Now(done), target);
+            }
+            ControlCall::ShowBoard {
+                block,
+                board,
+                new,
+                columns,
+            } => {
+                let board = match board.as_deref().map(|b| self.board_named(b)).transpose() {
+                    Ok(board) => board,
+                    Err(refused) => return (Outcome::Now(refused), None),
+                };
+                let (done, made) =
+                    self.board_show(&block, board, new.as_deref().map(|n| (n, &columns[..])), cx);
+                if let Some(board) = made {
+                    self.made(actor, |own| own.boards.push(board));
+                }
+                let target = (!done.is_error)
+                    .then(|| self.find_block(&block))
+                    .flatten()
+                    .map(|(space, _)| Target {
+                        workspace: Some(space),
+                        block: Some(block),
+                    });
+                return (Outcome::Now(done), target);
+            }
             ControlCall::MoveBlock { block, x, y, w, h } => {
                 return self.on_block(&block, |ws, at| {
                     ws.move_block_in(at, &block, (x, y, w, h), cx)
@@ -369,13 +426,43 @@ impl Workspace {
                 let target = self.card_shown(edit.card);
                 return (Outcome::Now(self.card_edit(edit, None, cx)), target);
             }
-            ControlCall::Block(Call::MoveCard { card, column }) => {
+            ControlCall::Block(Call::MoveCard {
+                card,
+                column,
+                before,
+            }) => {
                 let target = self.card_shown(card);
-                return (Outcome::Now(self.card_move(card, &column, cx)), target);
+                return (
+                    Outcome::Now(self.card_move(card, &column, before, cx)),
+                    target,
+                );
             }
             ControlCall::Block(Call::CommentCard { card, text }) => {
                 let target = self.card_shown(card);
                 let done = self.card_comment(card, &text, actor.signs(), cx);
+                return (Outcome::Now(done), target);
+            }
+            // The Templum Agent changes only what it signed; the API is the person's hand: it edits
+            // what it signs ("you") and deletes any comment.
+            ControlCall::Block(Call::EditComment {
+                card,
+                comment,
+                text,
+            }) => {
+                let target = self.card_shown(card);
+                let done = match self.comment_of(card, comment, Some(actor.signs()), cx) {
+                    Ok(board) => self.comment_edit(board, card, comment, &text, cx),
+                    Err(refused) => refused,
+                };
+                return (Outcome::Now(done), target);
+            }
+            ControlCall::Block(Call::DeleteComment { card, comment }) => {
+                let target = self.card_shown(card);
+                let by = actor.agent().then(|| actor.signs());
+                let done = match self.comment_of(card, comment, by, cx) {
+                    Ok(board) => self.comment_delete(board, card, comment, cx),
+                    Err(refused) => refused,
+                };
                 return (Outcome::Now(done), target);
             }
             ControlCall::Block(Call::AppendNote { block, text }) => {

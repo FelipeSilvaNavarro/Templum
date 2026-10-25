@@ -4,6 +4,8 @@
 
 mod build;
 
+pub(crate) use build::cards;
+
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -267,9 +269,18 @@ impl Workspace {
 
     /// A menu's Send to: `text`, and the terminals it can go to.
     fn send_to_menu(&self, text: String) -> SendTo {
+        if self.on_remote() {
+            // A mirror's terminals are home's: Send to types into them as typing does.
+            return SendTo {
+                text,
+                to: self.remote_terminals(),
+                why: self.why_not(Deed::Type).map(Into::into),
+            };
+        }
         SendTo {
             text,
             to: self.terminal_list(None),
+            why: None,
         }
     }
 
@@ -313,6 +324,7 @@ impl Workspace {
                         board: k
                             .shown(self)
                             .map(|b| (b.id, b.name.clone(), b.card_count())),
+                        gates: Gates::of(self, &[Deed::ShowBoard, Deed::EditBoard]),
                     },
                     Body::Note(n) => Items::Note {
                         block,
@@ -369,8 +381,8 @@ impl Workspace {
                 }
             }
             Target::Column { board, column } => {
-                let found = self
-                    .boards
+                let boards = self.boards_in(&self.space.id)?;
+                let found = boards
                     .board(board)
                     .and_then(|b| b.columns.iter().find(|c| c.id == column));
                 Items::Column {
@@ -378,18 +390,25 @@ impl Workspace {
                     column,
                     title: found.map_or_else(String::new, |c| c.title.clone()),
                     cards: found.map_or(0, |c| c.cards.len()),
-                    draft: self.boards.draft(column).is_some(),
+                    draft: boards.draft(column).is_some(),
+                    gates: Gates::of(self, &[Deed::EditColumn, Deed::CreateCard]),
                 }
             }
-            Target::Card { board, card } => Items::Card {
-                board,
-                card,
-                send: self.send_to_menu(
-                    self.boards
-                        .card(board, card)
-                        .map_or_else(String::new, |c| c.text(self.data_dir.as_deref())),
-                ),
-            },
+            Target::Card { board, card } => {
+                let boards = self.boards_in(&self.space.id)?;
+                // A mirrored card's attachments are home's: no path of this computer's.
+                let data = self.data_dir.as_deref().filter(|_| !self.space.is_remote());
+                Items::Card {
+                    board,
+                    card,
+                    send: self.send_to_menu(
+                        boards
+                            .card(board, card)
+                            .map_or_else(String::new, |c| c.text(data)),
+                    ),
+                    gates: Gates::of(self, &[Deed::DeleteCard]),
+                }
+            }
             Target::Ink(index) => Items::Ink { index },
             Target::Wire(wire) => Items::Wire {
                 wire,
@@ -597,6 +616,8 @@ impl Workspace {
 struct SendTo {
     text: String,
     to: Vec<(BlockId, String)>,
+    /// A mirror that can't type: Send to ▸ stands dimmed, saying why.
+    why: Option<SharedString>,
 }
 
 /// How a block's menu ends, before Close.
@@ -623,11 +644,11 @@ enum Tail {
 /// Why a mirrored workspace's menu items can't be used, by the deed each does: the rule's words,
 /// read when the menu is built (a local workspace has none).
 #[derive(Clone, Default)]
-struct Gates(Vec<(Deed, SharedString)>);
+pub(crate) struct Gates(Vec<(Deed, SharedString)>);
 
 impl Gates {
     /// The words of each of `deeds` the workspace shown can't do now.
-    fn of(ws: &Workspace, deeds: &[Deed]) -> Gates {
+    pub(crate) fn of(ws: &Workspace, deeds: &[Deed]) -> Gates {
         Gates(
             deeds
                 .iter()
@@ -637,7 +658,7 @@ impl Gates {
     }
 
     /// Why `deed` can't be done, or None.
-    fn why(&self, deed: Deed) -> Option<SharedString> {
+    pub(crate) fn why(&self, deed: Deed) -> Option<SharedString> {
         self.0
             .iter()
             .find(|(gated, _)| *gated == deed)
@@ -710,6 +731,8 @@ enum Items {
         block: BlockId,
         /// The board it shows: its id, its name and how many cards it has.
         board: Option<(u64, String, usize)>,
+        /// All boards… and the board's own items on a mirror.
+        gates: Gates,
     },
     Note {
         block: BlockId,
@@ -804,11 +827,15 @@ enum Items {
         cards: usize,
         /// A new card's draft is kept here: "Add a card" reads "Continue draft".
         draft: bool,
+        /// Rename…, Delete and Add a card on a mirror.
+        gates: Gates,
     },
     Card {
         board: u64,
         card: u64,
         send: SendTo,
+        /// Delete card on a mirror.
+        gates: Gates,
     },
     Space {
         id: String,

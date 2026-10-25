@@ -27,6 +27,8 @@ use super::{
     Body, DEFAULT_COLS, DEFAULT_ROWS, Mirrored, Pane, RemotePane, Space, Workspace,
     show_notification,
 };
+use crate::board::{Boards, Draft};
+use crate::kanban::Kanban;
 use crate::session::{Keeping, RemoteEntry};
 
 /// The most blocks a mirror takes from home, the front ones: a canvas of home's is not trusted to
@@ -72,7 +74,7 @@ enum Notice {
 
 /// Home's multi-line `text` as it is drawn: no control characters but newlines and tabs, at most
 /// `most` characters.
-fn clean_text(text: &str, most: usize) -> String {
+pub(super) fn clean_text(text: &str, most: usize) -> String {
     text.chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
         .take(most)
@@ -172,6 +174,9 @@ pub(crate) struct RemoteSpace {
     pub live_at: Option<SystemTime>,
     /// When `status` last changed.
     pub since: Instant,
+    /// The copy of home's boards, kept from its state and never saved: a kanban of this workspace
+    /// draws it (`remote_boards.rs`).
+    pub boards: Boards,
     /// Home's block ids, which never become the ids agents name blocks by (`Space::uids`).
     pub homes: HashMap<String, BlockId>,
     /// `homes` the other way round.
@@ -204,11 +209,28 @@ pub(crate) struct RemoteSpace {
     /// The wires made or taken away here and not yet shown by home: by their two ends, the
     /// smaller first (true: wired here, false: unwired here).
     pub wires_held: Holds<(BlockId, BlockId), bool>,
+    /// The cards moved here and not yet shown by home: their column and the card after them
+    /// (None: at the end). They stand over home's boards until home's state shows it, a refusal
+    /// ends them, or [`holds::HOLD`] passes.
+    pub cards_moved: Holds<u64, (u64, Option<u64>)>,
+    /// The cards deleted here and not yet gone from home's state (true: deleted here). They are
+    /// not drawn until home's state loses them, or [`holds::HOLD`] passes and they come back.
+    pub cards_deleted: Holds<u64, bool>,
+    /// The cards edited here (Done) and not yet shown by home: the work that was sent, laid over
+    /// the copy as the person left it, with the items it adds left out (their ids are this
+    /// mirror's own; home's come with its state).
+    pub cards_edited: Holds<u64, Draft>,
+    /// The cards the last copy of the boards laid an edit over: they are cleaned again from home's
+    /// state at the next copy, not moved over.
+    pub(super) laid: HashSet<u64>,
     /// The block home was asked to add or open and has not shown yet: it gets the keyboard when
     /// it comes, if the person has not moved on.
     pub awaited: Option<Awaited>,
     /// The sentences a shortcut already told this run (`tell_shortcut`).
     pub shortcuts_told: HashSet<String>,
+    /// The last id handed to something made here before home hears of it, counting down from
+    /// the top: home's ids count up from 1, so none ever meets one of these.
+    next_id: u64,
     /// The agents home can open: None until read. Read at each connect and again when a menu
     /// opens [`AGENTS_AGAIN`] after the last read.
     pub agents: Option<Vec<HomeAgent>>,
@@ -363,12 +385,18 @@ impl RemoteSpace {
             requests_budget: Budget::default(),
             notice_budget: Budget::default(),
             notices_folded: 0,
+            boards: Boards::default(),
             rects: HashMap::new(),
             held: Holds::default(),
             closed: Holds::default(),
             wires_held: Holds::default(),
+            cards_moved: Holds::default(),
+            cards_deleted: Holds::default(),
+            cards_edited: Holds::default(),
+            laid: HashSet::new(),
             awaited: None,
             shortcuts_told: HashSet::new(),
+            next_id: u64::MAX,
             agents: None,
             agents_at: None,
             agents_asking: false,
@@ -436,6 +464,13 @@ impl RemoteSpace {
             .as_ref()
             .is_none_or(|me| takes > me.scope)
             .then_some(Nay::NeedsFull)
+    }
+
+    /// An id for what the person makes here before home hears of it (`Workspace::fresh_id`).
+    pub(crate) fn fresh_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id -= 1;
+        id
     }
 
     /// Whether home's tool `tool` takes `argument`, or its tools are unknown: the rule's second
@@ -692,6 +727,22 @@ pub(crate) enum Deed {
     MoveToWorkspace,
     CopyBlocks,
     Git,
+    /// A card dragged to a column or another place in it.
+    MoveCard,
+    /// A new card made (Done on a card that doesn't exist yet).
+    CreateCard,
+    /// Done on a card that exists.
+    EditCard,
+    CommentCard,
+    EditComment,
+    DeleteComment,
+    DeleteCard,
+    /// A column added, renamed, moved or deleted.
+    EditColumn,
+    /// A board renamed or deleted.
+    EditBoard,
+    /// A kanban shown another board, or a new one.
+    ShowBoard,
 }
 
 impl Deed {
@@ -724,6 +775,19 @@ impl Deed {
                 "add_block",
                 json!({ "workspace": "w", "kind": "checklist" }),
             ),
+            Deed::MoveCard => ("move_card", json!({ "card": 1, "column": "1" })),
+            Deed::CreateCard => ("create_card", json!({ "title": "t" })),
+            Deed::EditCard => ("edit_card", json!({ "card": 1, "title": "t" })),
+            Deed::CommentCard => ("comment_card", json!({ "card": 1, "text": "t" })),
+            Deed::EditComment => (
+                "edit_comment",
+                json!({ "card": 1, "comment": 1, "text": "t" }),
+            ),
+            Deed::DeleteComment => ("delete_comment", json!({ "card": 1, "comment": 1 })),
+            Deed::DeleteCard => ("delete_card", json!({ "card": 1 })),
+            Deed::EditColumn => ("edit_column", json!({ "board": "1" })),
+            Deed::EditBoard => ("edit_board", json!({ "board": "1", "name": "n" })),
+            Deed::ShowBoard => ("show_board", json!({ "block": "k", "board": "1" })),
             _ => return None,
         })
     }
@@ -1069,10 +1133,10 @@ fn session_of(agent: &AgentView) -> Option<templum_usage::Session> {
 }
 
 /// The banner's ⓘ: what a mirror doesn't have yet.
-pub(crate) const NOT_MIRRORED: &str = "Not mirrored yet: notes', checklists', editors' and \
-     boards' content (a card shows each), ink and shapes. Not on a mirrored workspace yet: \
-     editors, adding notes, drawing, grid mode, Move to workspace, Copy and Paste of blocks, \
-     Stop, the Git popup.";
+pub(crate) const NOT_MIRRORED: &str = "Not mirrored yet: notes', checklists' and editors' \
+     content (a card shows each), ink and shapes. Not on a mirrored workspace yet: editors, \
+     adding notes, drawing, grid mode, Move to workspace, Copy and Paste of blocks, Stop, the \
+     Git popup, a card's attachments.";
 
 /// The tooltip of a control a mirrored workspace doesn't have yet.
 pub(crate) const NOT_YET: &str = "Not on a mirrored workspace yet";
@@ -1256,6 +1320,7 @@ impl Space {
                     pane.usage = b.agent.as_ref().and_then(session_of);
                 }
                 Some(Body::Mirrored(card)) => card.title.clone_from(&b.title),
+                Some(Body::Kanban(kanban)) if kanban.remote => kanban.board = b.board,
                 _ => {}
             }
         }
@@ -1375,6 +1440,12 @@ pub(super) fn tidy_me(me: &mut MeView) {
 /// The body of home's block `b`, new here at `rect`: a viewer for a terminal, else the card of
 /// what isn't mirrored yet.
 fn remote_body(b: &BlockView, rect: Rect, make: &Viewers) -> Body {
+    if b.kind == "kanban" {
+        return Body::Kanban(Kanban {
+            board: b.board,
+            remote: true,
+        });
+    }
     if b.kind != "terminal" {
         return Body::Mirrored(Mirrored {
             kind: b.kind.clone(),
@@ -1468,7 +1539,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn remote_mut(&mut self, id: &str) -> Option<&mut RemoteSpace> {
+    pub(super) fn remote_mut(&mut self, id: &str) -> Option<&mut RemoteSpace> {
         self.space_by_id_mut(id)?.remote.as_deref_mut()
     }
 
@@ -1708,13 +1779,32 @@ impl Workspace {
         }
         let (back, closed_due) = remote.closed.expire(now, |_| false);
         let (undone, wires_due) = remote.wires_held.expire(now, |_| false);
+        let (moved, moved_due) = remote.cards_moved.expire(now, |_| false);
+        let (deleted, deleted_due) = remote.cards_deleted.expire(now, |_| false);
+        let (edited, edited_due) = remote.cards_edited.expire(now, |_| false);
         // What was done here that home's state never showed ends: home's last state is drawn
-        // again (a block closed here that home still lists comes back).
-        if !back.is_empty() || !undone.is_empty() {
+        // again (a block closed here that home still lists comes back, a card moved here goes
+        // where home has it).
+        if !back.is_empty()
+            || !undone.is_empty()
+            || !moved.is_empty()
+            || !deleted.is_empty()
+            || !edited.is_empty()
+        {
             let id = self.space.id.clone();
             self.remirror(&id, now);
         }
-        [due, closed_due, wires_due].into_iter().flatten().min()
+        [
+            due,
+            closed_due,
+            wires_due,
+            moved_due,
+            deleted_due,
+            edited_due,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// What `apply_remote` builds a mirrored canvas with.
@@ -1745,6 +1835,7 @@ impl Workspace {
         let state = remote.state.clone();
         let home = remote.home.as_ref().map(|h| h.id.clone());
         space.mirror_state(&mut remote, &state, home.as_deref(), &make, (now, &dragged));
+        remote.mirror_boards(&state, now);
         space.remote = Some(remote);
     }
 
@@ -1824,6 +1915,11 @@ impl Workspace {
             space.canvas.camera = camera;
             space.view = camera;
             space.flight = None;
+        }
+        // The boards' copy depends on the cards alone (and on the state it replaces, for the
+        // cards home didn't change).
+        if !same(&state.boards, &remote.state.boards) || !same(&state.cards, &remote.state.cards) {
+            remote.mirror_boards(&state, now);
         }
         let home_id = home.as_ref().map(|h| h.id.clone());
         remote.home = home;
@@ -3715,6 +3811,16 @@ mod tests {
             Deed::Unwire,
             Deed::Label,
             Deed::Delegate,
+            Deed::MoveCard,
+            Deed::CreateCard,
+            Deed::EditCard,
+            Deed::CommentCard,
+            Deed::EditComment,
+            Deed::DeleteComment,
+            Deed::DeleteCard,
+            Deed::EditColumn,
+            Deed::EditBoard,
+            Deed::ShowBoard,
         ] {
             assert_eq!(scope(control), Scope::Control, "{control:?}");
         }
@@ -3739,6 +3845,13 @@ mod tests {
         assert_eq!(remote.why_not(Deed::Type), None, "typing still works");
         remote.tools = Some(input(serde_json::json!({ "block": {}, "mouse": {} })));
         assert_eq!(remote.why_not(Deed::Mouse), None);
+    }
+
+    #[test]
+    fn ids_handed_on_a_mirror_never_meet_home_s() {
+        let mut remote = RemoteSpace::new(RemoteEntry::default());
+        assert_eq!(remote.fresh_id(), u64::MAX);
+        assert_eq!(remote.fresh_id(), u64::MAX - 1);
     }
 
     #[test]

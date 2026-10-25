@@ -1134,7 +1134,7 @@ fn a_card_shows_its_id_always_and_its_priority_and_checklist_when_it_has_them(
     assert!(shown(cx, "priority") && shown(cx, "checklist"));
     ws.read_with(cx, |ws, cx| {
         let uid = ws.space.uids[&terminal].clone();
-        let label = |a: Assignee| crate::kanban::assignee_label(ws, &a, cx);
+        let label = |a: Assignee| crate::kanban::assignee_label(ws, &ws.space.id, &a, cx);
         assert_eq!(label(Assignee::Agent("codex".into())), "Any Codex");
         assert_eq!(
             label(Assignee::Block("zzzzz".into())),
@@ -2100,4 +2100,277 @@ fn backing_out_of_the_question_keeps_a_comment_edit_open_and_unsaved(cx: &mut Te
     })
     .unwrap();
     assert_eq!(thread(&ws, cx, board, card)[0].2, "changed");
+}
+
+// Templum to Templum, part 2d: one door for every write of a kanban.
+
+use crate::board::{Card, Comment, Draft};
+use crate::workspace::BoardAct;
+
+#[gpui_kit::test]
+fn every_act_on_a_board_is_one_ctrl_z_step_through_one_door(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (block, board, card) = board_with_a_card(handle, &ws, cx);
+    let space = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let columns: Vec<u64> = ws.read_with(cx, |ws, _| {
+        ws.boards
+            .board(board)
+            .unwrap()
+            .columns
+            .iter()
+            .map(|c| c.id)
+            .collect()
+    });
+    let steps = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.boards_undo.len())
+    };
+    let act = |ws: &Entity<Workspace>, cx: &mut TestAppContext, act: BoardAct| {
+        let before = steps(ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.act_on_boards(&space, act, window, cx))
+        })
+        .unwrap();
+        assert_eq!(steps(ws, cx), before + 1, "one Ctrl+Z step");
+    };
+    let titles = |ws: &Entity<Workspace>, cx: &mut TestAppContext| -> Vec<String> {
+        ws.read_with(cx, |ws, _| {
+            ws.boards
+                .board(board)
+                .unwrap()
+                .columns
+                .iter()
+                .map(|c| c.title.clone())
+                .collect()
+        })
+    };
+    act(
+        &ws,
+        cx,
+        BoardAct::MoveCard {
+            board,
+            card,
+            column: columns[1],
+            to: None,
+        },
+    );
+    ws.read_with(cx, |ws, _| {
+        let b = ws.boards.board(board).unwrap();
+        assert!(b.columns[0].cards.is_empty() && b.columns[1].cards[0].id == card);
+    });
+    act(
+        &ws,
+        cx,
+        BoardAct::MoveColumn {
+            board,
+            column: columns[2],
+            to: columns[0],
+        },
+    );
+    assert_eq!(titles(&ws, cx), ["Done", "To do", "Doing"]);
+    act(&ws, cx, BoardAct::AddColumn { board });
+    let added = ws.read_with(cx, |ws, _| {
+        ws.boards.board(board).unwrap().columns.last().unwrap().id
+    });
+    act(
+        &ws,
+        cx,
+        BoardAct::RenameColumn {
+            board,
+            column: added,
+            title: "QA".into(),
+        },
+    );
+    assert_eq!(titles(&ws, cx), ["Done", "To do", "Doing", "QA"]);
+    act(
+        &ws,
+        cx,
+        BoardAct::DeleteColumn {
+            board,
+            column: added,
+        },
+    );
+    assert_eq!(titles(&ws, cx), ["Done", "To do", "Doing"]);
+    act(
+        &ws,
+        cx,
+        BoardAct::RenameBoard {
+            board,
+            name: "Sprint".into(),
+        },
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.boards.board(board).unwrap().name, "Sprint")
+    });
+    act(
+        &ws,
+        cx,
+        BoardAct::Comment {
+            board,
+            card,
+            text: "first".into(),
+        },
+    );
+    let comment = ws.read_with(cx, |ws, _| {
+        ws.boards.card(board, card).unwrap().comments[0].id
+    });
+    act(
+        &ws,
+        cx,
+        BoardAct::EditComment {
+            board,
+            card,
+            comment,
+            text: "second".into(),
+        },
+    );
+    ws.read_with(cx, |ws, _| {
+        let c = &ws.boards.card(board, card).unwrap().comments[0];
+        assert_eq!(
+            (c.by.as_str(), c.text.as_str(), c.edited),
+            ("you", "second", true)
+        );
+    });
+    let saved: Comment = ws.read_with(cx, |ws, _| {
+        ws.boards.card(board, card).unwrap().comments[0].clone()
+    });
+    act(
+        &ws,
+        cx,
+        BoardAct::DeleteComment {
+            board,
+            card,
+            comment,
+        },
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.boards.card(board, card).unwrap().comments.is_empty())
+    });
+    act(
+        &ws,
+        cx,
+        BoardAct::RestoreComment {
+            board,
+            card,
+            index: 0,
+            comment: saved,
+        },
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.boards.card(board, card).unwrap().comments.len(), 1)
+    });
+    act(&ws, cx, BoardAct::DeleteCard { board, card });
+    ws.read_with(cx, |ws, _| assert!(ws.boards.card(board, card).is_none()));
+    act(&ws, cx, BoardAct::Show { block, board: None });
+    ws.read_with(cx, |ws, _| {
+        let shown = ws.space.kanban(block).unwrap().board.unwrap();
+        assert_ne!(shown, board, "a new board is shown");
+    });
+    act(&ws, cx, BoardAct::DeleteBoard { board });
+    ws.read_with(cx, |ws, _| assert!(ws.boards.board(board).is_none()));
+}
+
+#[gpui_kit::test]
+fn a_remote_workspace_s_board_acts_write_nothing_here(cx: &mut TestAppContext) {
+    use super::remote::offline;
+    let (handle, ws, dir) = offline(cx);
+    let boards_json = crate::board::path(dir.path());
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    let (boards, file) = (
+        ws.read_with(cx, |ws, _| ws.boards.clone()),
+        std::fs::read(&boards_json).ok(),
+    );
+    let draft = Draft {
+        at: 7,
+        new: true,
+        base: Card::new(0),
+        work: Card::new(0),
+    };
+    let acts = vec![
+        BoardAct::MoveCard {
+            board: 12,
+            card: 40,
+            column: 31,
+            to: Some(41),
+        },
+        BoardAct::MoveColumn {
+            board: 12,
+            column: 31,
+            to: 30,
+        },
+        BoardAct::AddColumn { board: 12 },
+        BoardAct::RenameColumn {
+            board: 12,
+            column: 31,
+            title: "x".into(),
+        },
+        BoardAct::DeleteColumn {
+            board: 12,
+            column: 31,
+        },
+        BoardAct::RenameBoard {
+            board: 12,
+            name: "x".into(),
+        },
+        BoardAct::DeleteBoard { board: 12 },
+        BoardAct::Show {
+            block: BlockId(0),
+            board: None,
+        },
+        BoardAct::DeleteCard {
+            board: 12,
+            card: 40,
+        },
+        BoardAct::Finish {
+            board: 12,
+            draft: draft.clone(),
+        },
+        BoardAct::Comment {
+            board: 12,
+            card: 40,
+            text: "x".into(),
+        },
+        BoardAct::EditComment {
+            board: 12,
+            card: 40,
+            comment: 9,
+            text: "x".into(),
+        },
+        BoardAct::DeleteComment {
+            board: 12,
+            card: 40,
+            comment: 9,
+        },
+        BoardAct::RestoreComment {
+            board: 12,
+            card: 40,
+            index: 0,
+            comment: Comment {
+                id: 9,
+                by: "you".into(),
+                text: "x".into(),
+                at: 0,
+                edited: false,
+            },
+        },
+        BoardAct::KeepDraft(draft),
+        BoardAct::DropDraft(7),
+    ];
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            for act in acts {
+                ws.act_on_boards("r1", act, window, cx);
+            }
+            assert!(ws.fresh_id("r1") > u64::MAX - 10, "a mirror's own ids");
+        })
+    })
+    .unwrap();
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.boards == boards, "the boards as they were")
+    });
+    assert_eq!(
+        std::fs::read(&boards_json).ok(),
+        file,
+        "boards.json byte for byte"
+    );
 }

@@ -635,7 +635,7 @@ impl Workspace {
             .find(|pane| pane.term.id() == terminal)
     }
 
-    pub(super) fn space_named(&self, id: &str) -> Option<&Space> {
+    pub(crate) fn space_named(&self, id: &str) -> Option<&Space> {
         self.spaces().find(|s| s.id == id)
     }
 
@@ -729,7 +729,11 @@ impl Workspace {
             Call::CreateCard(new) => self.create_card(terminal, new, cx),
             Call::CreateBlock(args) => self.create_block(terminal, args, window, cx),
             Call::EditCard(edit) => self.edit_card(terminal, edit, cx),
-            Call::MoveCard { card, column } => self.move_card(terminal, card, &column, cx),
+            Call::MoveCard {
+                card,
+                column,
+                before,
+            } => self.move_card(terminal, card, &column, before, cx),
             Call::CommentCard { card, text } => self.comment_card(terminal, card, &text, cx),
             Call::EditComment {
                 card,

@@ -11,12 +11,23 @@ use templum_mcp::{Call, Replier, Reply, tools};
 use super::bus::clean_title;
 use super::{AgentState, Workspace, show_notification};
 use crate::chat::{Answer, Approval};
+use crate::menu::cards;
 
 /// A denied call's answer.
 const DENIED: &str = "The person denied this. Don't try it another way: ask them what they want.";
 
 /// A call's answer when Stop, New chat, the engine's end or quitting came before the person's.
 pub(super) const STOPPED: &str = "The person stopped you before answering.";
+
+/// What a call on a card, a board or a column asks: no block is its target, so the gate asks
+/// the boards. `own`: the Templum Agent made the card, or the board and every card it takes; `losing`: the cards that go
+/// with a board or a column.
+struct BoardAsk {
+    own: bool,
+    losing: Option<String>,
+    said: String,
+    details: String,
+}
 
 impl Workspace {
     /// The gate before a control call: Some (the call back) when it runs now; None when it waits
@@ -29,11 +40,27 @@ impl Workspace {
         request: Value,
         reply: Replier,
         tool: &str,
-        mut parsed: Parsed,
+        parsed: Parsed,
         args: Value,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<(Value, Replier, Parsed, Value)> {
+        if let Some(ask) = self.board_ask(&parsed.call) {
+            let level = control::rule(&parsed.call).level(ask.own, ask.losing.is_some());
+            let granted = level == Some(Level::Ask) && self.templum_agent.grants.contains(tool);
+            let Some(level) = level.filter(|_| !granted) else {
+                return Some((request, reply, parsed, args));
+            };
+            let facts = format!("{}\n{}", ask.said, ask.details);
+            self.queue_approval(
+                (conn, request, reply),
+                (tool, parsed, args),
+                (level, ask.said, ask.details, facts),
+                window,
+                cx,
+            );
+            return None;
+        }
         let uid = self.asked_about(&parsed.call).into_iter().next();
         let target = uid.as_deref().and_then(|uid| self.find_block(uid));
         let own = uid.as_deref().is_some_and(|uid| self.own_block(uid));
@@ -48,6 +75,25 @@ impl Workspace {
         };
         let (said, details) = self.approval_words(&parsed.call, (&space, id), losing, cx);
         let facts = self.facts(&parsed.call, cx);
+        self.queue_approval(
+            (conn, request, reply),
+            (tool, parsed, args),
+            (level, said, details, facts),
+            window,
+            cx,
+        );
+        None
+    }
+
+    /// An approval that waits for the person's click.
+    fn queue_approval(
+        &mut self,
+        (conn, request, reply): (u64, Value, Replier),
+        (tool, mut parsed, args): (&str, Parsed, Value),
+        (level, said, details, facts): (Level, String, String, String),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // It shows on one line, its invisible characters shown.
         parsed.reason = parsed.reason.map(|reason| visible(&reason));
         let agent = &mut self.templum_agent;
@@ -75,7 +121,74 @@ impl Workspace {
         self.approval_ui(window, cx);
         self.tell_approval(window, cx);
         cx.notify();
-        None
+    }
+
+    /// What a delete of a card, a board or a column asks, from the boards as they are now. None
+    /// for every other call, and for a card, board or column that isn't there: it runs, and says
+    /// so.
+    fn board_ask(&self, call: &ControlCall) -> Option<BoardAsk> {
+        let own = &self.templum_agent.conversation.own;
+        match call {
+            ControlCall::DeleteCard { card } => {
+                let (board, column) = self.boards.find_card(*card)?;
+                let found = self.boards.board(board)?;
+                let title = self.boards.card(board, *card)?.title.clone();
+                let column = found.columns.iter().find(|c| c.id == column)?;
+                Some(BoardAsk {
+                    own: own.cards.contains(card),
+                    losing: None,
+                    said: format!("Delete card {card} {:?}", clean_title(&title)),
+                    details: format!(
+                        "On board {:?}, in {}.",
+                        clean_title(&found.name),
+                        clean_title(&column.title)
+                    ),
+                })
+            }
+            ControlCall::EditBoard {
+                board,
+                delete: true,
+                ..
+            } => {
+                let id = self.board_named(board).ok()?;
+                let found = self.boards.board(id)?;
+                let losing = (found.card_count() > 0).then(|| cards(found.card_count()));
+                Some(BoardAsk {
+                    own: own.boards.contains(&id)
+                        && found
+                            .columns
+                            .iter()
+                            .flat_map(|c| &c.cards)
+                            .all(|c| own.cards.contains(&c.id)),
+                    said: format!("Delete board {:?}", clean_title(&found.name)),
+                    details: losing.clone().unwrap_or_default(),
+                    losing,
+                })
+            }
+            ControlCall::EditColumn {
+                board,
+                column: Some(column),
+                delete: true,
+                ..
+            } => {
+                let id = self.board_named(board).ok()?;
+                let found = self.boards.board(id)?;
+                let column = found.columns.iter().find(|c| c.id == *column)?;
+                let losing = (!column.cards.is_empty()).then(|| cards(column.cards.len()));
+                Some(BoardAsk {
+                    own: own.boards.contains(&id)
+                        && column.cards.iter().all(|c| own.cards.contains(&c.id)),
+                    said: format!(
+                        "Delete column {:?} of {:?}",
+                        clean_title(&column.title),
+                        clean_title(&found.name)
+                    ),
+                    details: losing.clone().unwrap_or_default(),
+                    losing,
+                })
+            }
+            _ => None,
+        }
     }
 
     /// The person may not see the approval (the window in the background; the pill hidden by the
@@ -131,6 +244,9 @@ impl Workspace {
     /// answered shows with no hook, a selection moved); a block's title and an editor's unsaved
     /// files. Not a terminal's title: an agent animates its own while it works.
     fn facts(&self, call: &ControlCall, cx: &App) -> String {
+        if let Some(ask) = self.board_ask(call) {
+            return format!("{}\n{}", ask.said, ask.details);
+        }
         let typing = matches!(
             call,
             ControlCall::Block(
@@ -173,6 +289,16 @@ impl Workspace {
     /// didn't see. True when it changed.
     fn asked_again(&mut self, at: usize, cx: &mut Context<Self>) -> bool {
         let call = &self.templum_agent.approvals[at].parsed.call;
+        if let Some(ask) = self.board_ask(call) {
+            let facts = format!("{}\n{}", ask.said, ask.details);
+            if facts == self.templum_agent.approvals[at].facts {
+                return false;
+            }
+            let approval = &mut self.templum_agent.approvals[at];
+            approval.said = ask.said;
+            approval.details = ask.details;
+            return self.approval_changed(at, facts, cx);
+        }
         let first = self.asked_about(call).into_iter().next();
         let Some((space, id)) = first.and_then(|uid| self.find_block(&uid)) else {
             return false;
@@ -186,6 +312,13 @@ impl Workspace {
         let approval = &mut self.templum_agent.approvals[at];
         approval.said = said;
         approval.details = details;
+        self.approval_changed(at, facts, cx)
+    }
+
+    /// The approval at `at` shows its new words as a new one would: once seen, it waits for a
+    /// new click. True.
+    fn approval_changed(&mut self, at: usize, facts: String, cx: &mut Context<Self>) -> bool {
+        let approval = &mut self.templum_agent.approvals[at];
         approval.facts = facts;
         approval.changed = true;
         approval.shown.set(None);

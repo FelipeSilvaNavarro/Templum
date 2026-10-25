@@ -50,11 +50,14 @@ pub const NOT_TARGETS: &[&str] = &[
     "agent",
     "allow",
     "answers",
+    "before",
     "check",
     "checklist",
     "color",
     "column",
     "columns",
+    "comment",
+    "delete",
     "description",
     "dismiss",
     "done",
@@ -69,17 +72,20 @@ pub const NOT_TARGETS: &[&str] = &[
     "keys",
     "kind",
     "label",
+    "labels",
     "last_command",
     "lines",
     "model",
     "mouse",
     "name",
+    "new",
     "note",
     "on",
     "pattern",
     "priority",
     "prompt",
     "reason",
+    "remove_items",
     "scope",
     "share",
     "task",
@@ -1085,6 +1091,23 @@ mod tests {
             no("share", "s999"),
             "There's no share s999: GET /v1/shares lists them."
         );
+    }
+
+    #[test]
+    fn the_board_tools_take_a_control_token() {
+        for (name, args) in [
+            ("delete_card", json!({"card": 4})),
+            ("edit_board", json!({"board": 1, "name": "x"})),
+            ("edit_board", json!({"board": 1, "delete": true})),
+            ("edit_column", json!({"board": 1})),
+            (
+                "edit_column",
+                json!({"board": 1, "column": 3, "delete": true}),
+            ),
+            ("show_board", json!({"block": "k", "board": 1})),
+        ] {
+            assert_eq!(scope(name, &args), Ok(Scope::Control), "{name} {args}");
+        }
     }
 
     #[test]

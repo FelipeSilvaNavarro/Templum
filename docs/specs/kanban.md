@@ -928,6 +928,18 @@ weak handle); where the refusals' notification is raised; the path of gpui-kit's
 file drop reaches the dialog in the headless harness (a card's drop doesn't: [minors.md](../minors.md), Kanban). If it
 doesn't, the test calls the drop's function, the drop is checked by hand, and a minor says so.
 
+### On a mirrored workspace (Templum to Templum, part 2d)
+
+A kanban block of a mirrored workspace is the same view, drawn from home's boards and cards (a copy kept by the mirror,
+cleaned and capped, never saved: `workspace/remote_boards.rs`). Everything a person does to it is home's tool, done at
+home: dragging cards and columns, adding, renaming and deleting columns, the card dialog (Done, comments, Delete
+card), All boards…, Rename board…, Delete board… and a card's Send to ▸ (home's terminals, with a Full share). Each
+asks the mirror's rule first (a dimmed control says why; a refused drop says it once). A card moved, edited or deleted
+shows at once and stands over home's state until it shows it or 2 s pass; the rest shows when home's state comes. A
+mirror keeps no draft (Save draft is gone, nothing is saved), a deleted comment has no Undo (home's Ctrl+Z on its
+kanban brings it back), and a card's attachments show by name and size: they are home's. The assignee menu lists
+home's terminals and agents. Ctrl+Z on a mirror stops at each of these acts and says to undo it at home.
+
 ### As built (card 152)
 
 The plan's four tasks, as one change, left in the working tree for review. The person was asleep, so where the plan

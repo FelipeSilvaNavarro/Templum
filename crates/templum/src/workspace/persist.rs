@@ -298,8 +298,15 @@ impl Workspace {
                 self.restore_terminal(id, t, in_its_folder, cx);
                 Some(id)
             }
-            session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN)
-                .map(|rect| self.add_block(rect, Body::Kanban(Kanban { board: k.board }))),
+            session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN).map(|rect| {
+                self.add_block(
+                    rect,
+                    Body::Kanban(Kanban {
+                        board: k.board,
+                        remote: false,
+                    }),
+                )
+            }),
             session::Item::Note(n) => {
                 let rect = clamped_rect(n.rect.into(), note::MIN)?;
                 let mut ids = n.notes.clone();
@@ -601,7 +608,12 @@ impl Workspace {
     /// written at once.
     pub(super) fn save_canvas_now(&mut self, cx: &App) {
         // A card dialog still open: what was typed in it is kept as a draft.
-        if let Some(work) = &self.card_work {
+        // A mirrored workspace's card keeps no draft here: the mirror writes nothing of home's.
+        if let Some(work) = &self.card_work
+            && self
+                .space_named(work.borrow().space())
+                .is_some_and(|s| !s.is_remote())
+        {
             work.borrow().keep(&mut self.boards);
         }
         // A first run's welcome still open: the next start is a first run too.

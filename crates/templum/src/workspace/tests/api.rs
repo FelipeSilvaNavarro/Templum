@@ -98,7 +98,7 @@ pub(super) fn tool(
 }
 
 /// The text of a tool's answer, and whether it refused.
-fn said(line: &Value) -> (bool, String) {
+pub(super) fn said(line: &Value) -> (bool, String) {
     let result = &line["result"];
     (
         result["isError"] == true,
@@ -1735,7 +1735,7 @@ fn settings_show_the_api_its_fields_and_its_tokens(cx: &mut TestAppContext) {
 
 // The review's findings: what a limited token or a big number could reach.
 
-fn refused(line: &Value) -> (Option<i64>, String) {
+pub(super) fn refused(line: &Value) -> (Option<i64>, String) {
     (
         line["error"]["code"].as_i64(),
         line["error"]["message"]

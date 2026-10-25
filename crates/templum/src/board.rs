@@ -552,6 +552,21 @@ impl Boards {
         board.columns.insert(at, moved);
     }
 
+    /// Puts `column` right before column `before`, or at the end without one.
+    pub fn move_column_before(&mut self, board: u64, column: u64, before: Option<u64>) {
+        let Some(board) = self.board_mut(board) else {
+            return;
+        };
+        let Some(from) = board.columns.iter().position(|c| c.id == column) else {
+            return;
+        };
+        let moved = board.columns.remove(from);
+        let at = before
+            .and_then(|b| board.columns.iter().position(|c| c.id == b))
+            .unwrap_or(board.columns.len());
+        board.columns.insert(at, moved);
+    }
+
     /// "New card" at the end of `column`; returns its id.
     pub fn add_card(&mut self, board: u64, column: u64) -> Option<u64> {
         let id = self.next();
@@ -743,6 +758,33 @@ impl Boards {
         let at = at.unwrap_or(cards.len()).min(cards.len());
         cards.insert(at, moved);
     }
+
+    /// Moves `card` into `column`, right before card `before`, or at the end without one: the
+    /// card leaves its place first, so one moved down its own column still lands before it.
+    pub fn move_card_before(&mut self, board: u64, card: u64, column: u64, before: Option<u64>) {
+        let Some(board) = self.board_mut(board) else {
+            return;
+        };
+        if !board.columns.iter().any(|c| c.id == column) {
+            return;
+        }
+        let Some(moved) = board.columns.iter_mut().find_map(|c| {
+            let i = c.cards.iter().position(|x| x.id == card)?;
+            Some(c.cards.remove(i))
+        }) else {
+            return;
+        };
+        let cards = &mut board
+            .columns
+            .iter_mut()
+            .find(|c| c.id == column)
+            .expect("checked above")
+            .cards;
+        let at = before
+            .and_then(|b| cards.iter().position(|c| c.id == b))
+            .unwrap_or(cards.len());
+        cards.insert(at, moved);
+    }
 }
 
 pub(crate) fn path(dir: &Path) -> PathBuf {
@@ -811,6 +853,50 @@ mod tests {
             id
         });
         (boards, board, columns.try_into().unwrap(), cards)
+    }
+
+    #[test]
+    fn the_block_server_s_labels_are_the_board_s() {
+        assert_eq!(Label::ALL.map(Label::name), templum_mcp::tools::LABELS);
+    }
+
+    #[test]
+    fn move_column_before_puts_it_right_before_the_column() {
+        let (mut boards, board, [todo, doing, done], _) = abc();
+        let order = |boards: &Boards| -> Vec<u64> {
+            boards
+                .board(board)
+                .unwrap()
+                .columns
+                .iter()
+                .map(|c| c.id)
+                .collect()
+        };
+        boards.move_column_before(board, done, Some(todo));
+        assert_eq!(order(&boards), [done, todo, doing]);
+        // Right before, even moved down: the place of the column is not the same thing.
+        boards.move_column_before(board, done, Some(doing));
+        assert_eq!(order(&boards), [todo, done, doing]);
+        boards.move_column_before(board, todo, None);
+        assert_eq!(order(&boards), [done, doing, todo]);
+    }
+
+    #[test]
+    fn move_card_before_puts_it_right_before_the_card() {
+        let (mut boards, board, columns, [a, b, c]) = abc();
+        let d = boards.add_card(board, columns[1]).unwrap();
+        boards.edit_card(board, d, |card| card.title = "D".into());
+        // Doing [D]; To do [A, B, C]. Make Doing [C, D], To do [A, B].
+        boards.move_card_before(board, c, columns[1], Some(d));
+        assert_eq!(titles(&boards, board, 1), ["C", "D"]);
+        boards.move_card_before(board, a, columns[1], Some(d));
+        assert_eq!(titles(&boards, board, 1), ["C", "A", "D"]);
+        // Down its own column: it lands before `before`, not after it.
+        boards.move_card_before(board, c, columns[1], Some(d));
+        assert_eq!(titles(&boards, board, 1), ["A", "C", "D"]);
+        boards.move_card_before(board, b, columns[1], None);
+        assert_eq!(titles(&boards, board, 1), ["A", "C", "D", "B"]);
+        assert_eq!(titles(&boards, board, 0), Vec::<String>::new());
     }
 
     #[test]

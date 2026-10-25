@@ -299,6 +299,18 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
 - **`move_block`** joins the control server now, as templum-agent.md's batch 3 lists it, with `block`, `x`, `y`, `w`,
   `h` (any of them; the rest keep): a step of that workspace's Ctrl+Z, `–` for the Templum Agent's gate. Its
   `workspace` argument (a move to another workspace) stays for the control server's batch 3 (*the designer's call*).
+- **The card tools' grown arguments** (Templum to Templum, part 2d; the block server's too): `create_card` takes
+  `labels`; `edit_card` takes `title`, `description` (blank clears it), `labels` (`{"red": true, "blue": false}`) and
+  `remove_items`; `move_card` takes `before` (a card of the column; the card goes just before it).
+- **The board tools** (Templum to Templum, part 2d) join the control server, `Control` scope: `delete_card` (`card`),
+  `edit_board` (`board`, `name` or `delete`), `edit_column` (`board`, `column`, `title`, `before` (a column id or
+  `"end"`), `delete`) and `show_board` (`block`, `board` or `new` with `columns`). Each is one step of the kanban's
+  Ctrl+Z at home; the board and card arguments are targets, so a limited token reaches only the boards its kanbans
+  show (`NOT_FOUND` for the rest). `delete_card`, and a delete of a board or column with cards, ask the Templum
+  Agent's person first unless it made them (`AskOwn`, `AskOwnWhenLosing`); through the API they run as you.
+- **`edit_comment` and `delete_comment`** join the control server (templum-agent.md's table). Through the API they act
+  as you: `edit_comment` changes a comment by `you`, `delete_comment` deletes any; the Templum Agent changes only its
+  own. `GET /v1/tools` describes them as the control server does.
 - **REST aliases** name the common calls (*the designer's call*: each one is a row of the registry's route table that
   names its tool; path parameters and the body become the tool's arguments, query values typed by its schema):
 

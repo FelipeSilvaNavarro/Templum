@@ -90,6 +90,8 @@ pub enum Call {
     MoveCard {
         card: u64,
         column: String,
+        /// A card of that column: the card goes right before it (the end without one).
+        before: Option<u64>,
     },
     CommentCard {
         card: u64,
@@ -273,9 +275,19 @@ pub struct NewBlockArgs {
 /// The longest command `create_block` types into a terminal, in bytes.
 pub const MAX_COMMAND: usize = 4096;
 
+/// The six label names, as a card's `labels` say them.
+pub const LABELS: [&str; 6] = ["red", "yellow", "green", "cyan", "blue", "magenta"];
+
+/// The label names as a sentence: "red, yellow, green, cyan, blue or magenta".
+fn labels_said() -> String {
+    let (last, first) = LABELS.split_last().expect("six labels");
+    format!("{} or {last}", first.join(", "))
+}
+
 /// What `create_card` adds. `priority` is lowercased, one of low, medium, high or none; `who`
-/// (the key `for`) is checked by the app; `checklist` is items' text, a line each.
-#[derive(Clone, Debug, PartialEq)]
+/// (the key `for`) is checked by the app; `checklist` is items' text, a line each; `labels` are
+/// names from `LABELS`.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct NewCard {
     pub board: Option<String>,
     pub column: Option<String>,
@@ -284,12 +296,18 @@ pub struct NewCard {
     pub priority: Option<String>,
     pub who: Option<String>,
     pub checklist: Option<String>,
+    pub labels: Vec<String>,
 }
 
-/// What `edit_card` changes on `card`: at least one of the others.
-#[derive(Clone, Debug, PartialEq)]
+/// What `edit_card` changes on `card`: at least one of the others. `description` Some("") clears
+/// it; `labels` are (name, on) pairs, the other labels keep.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CardEdit {
     pub card: u64,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub labels: Vec<(String, bool)>,
+    pub remove_items: Vec<u64>,
     pub priority: Option<String>,
     pub who: Option<String>,
     pub add_items: Option<String>,
@@ -390,6 +408,21 @@ pub fn list() -> Value {
         "type": "array",
         "items": { "type": "integer" },
         "description": "Items' ids, as list_cards with card shows them.",
+    });
+    let labels_list = json!({
+        "type": "array",
+        "items": { "type": "string", "enum": LABELS },
+        "description": "The card's labels.",
+    });
+    let labels_edit = json!({
+        "type": "object",
+        "additionalProperties": { "type": "boolean" },
+        "description": "Labels to turn on (true) or off (false), of red, yellow, green, cyan, blue or \
+                        magenta: {\"red\": true, \"blue\": false}. The other labels keep.",
+    });
+    let before = json!({
+        "type": "integer",
+        "description": "A card of that column: the card goes just before it. Left out: the end.",
     });
     // Claude Code shows these whole from the start, beside its own Agent tool, where the others
     // wait behind its tool search by name only.
@@ -849,21 +882,27 @@ pub fn list() -> Value {
                     "priority": priority,
                     "for": who,
                     "checklist": items,
+                    "labels": labels_list,
                 },
                 "required": ["title"],
             },
         },
         {
             "name": "edit_card",
-            "description": "Sets a card's priority and who it is for, adds checklist items, checks and unchecks \
-                            them: one step of the person's Ctrl+Z. Check an item as you finish it.",
+            "description": "Sets a card's title, description, labels, priority and who it is for, adds, \
+                            removes, checks and unchecks checklist items: one step of the person's Ctrl+Z. \
+                            Check an item as you finish it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "card": card,
+                    "title": { "type": "string" },
+                    "description": { "type": "string", "description": "Blank clears it." },
+                    "labels": labels_edit,
                     "priority": priority,
                     "for": who,
                     "add_items": items,
+                    "remove_items": item_ids,
                     "check": item_ids,
                     "uncheck": item_ids,
                 },
@@ -872,11 +911,12 @@ pub fn list() -> Value {
         },
         {
             "name": "move_card",
-            "description": "Moves a card to the end of a column of its board. Done with your card: comment \
-                            on it first what you did (comment_card), then move it to Review or Done.",
+            "description": "Moves a card to a column of its board, before another card of it or at its end. \
+                            Done with your card: comment on it first what you did (comment_card), then move \
+                            it to Review or Done.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "card": card, "column": column },
+                "properties": { "card": card, "column": column, "before": before },
                 "required": ["card", "column"],
             },
         },
@@ -1085,6 +1125,14 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         }
         None => Ok(None),
     };
+    // A string kept as it is, blank included: `"description": ""` clears the description.
+    let string = |key: &str| match &args[key] {
+        Value::Null => Ok(None),
+        value => value
+            .as_str()
+            .map(|s| Some(s.to_string()))
+            .ok_or_else(|| format!("\"{key}\" is a string")),
+    };
     // One item's id (a number or its text), or a list of them.
     let item_ids = |key: &str| {
         let one = |v: &Value| match v {
@@ -1100,6 +1148,13 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         .ok_or_else(|| {
             format!("\"{key}\" is an item's id, or a list of them, as list_cards shows them")
         })
+    };
+    let label_error = || format!("\"labels\" is a list of {}", labels_said());
+    let label_edit_error = || {
+        format!(
+            "\"labels\" turns labels on or off: {{\"red\": true, \"blue\": false}}, of {}",
+            labels_said()
+        )
     };
     Ok(match name {
         "whoami" => Call::Whoami,
@@ -1272,26 +1327,54 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             priority: priority()?,
             who: optional("for")?,
             checklist: optional("checklist")?,
+            labels: match &args["labels"] {
+                Value::Null => Vec::new(),
+                Value::Array(names) => names
+                    .iter()
+                    .map(|n| n.as_str().map(str::trim).filter(|n| LABELS.contains(n)))
+                    .map(|n| n.map(str::to_string))
+                    .collect::<Option<_>>()
+                    .ok_or_else(label_error)?,
+                _ => return Err(label_error()),
+            },
         }),
         "edit_card" => {
             let edit = CardEdit {
                 card: card()?,
+                // A blank title is the glue's to refuse ("A card needs a title."), not none.
+                title: string("title")?,
+                description: string("description")?,
+                labels: match &args["labels"] {
+                    Value::Null => Vec::new(),
+                    Value::Object(set) => set
+                        .iter()
+                        .map(|(name, on)| Some((name.trim(), on.as_bool()?)))
+                        .map(|l| l.filter(|(name, _)| LABELS.contains(name)))
+                        .map(|l| l.map(|(name, on)| (name.to_string(), on)))
+                        .collect::<Option<_>>()
+                        .ok_or_else(label_edit_error)?,
+                    _ => return Err(label_edit_error()),
+                },
+                remove_items: item_ids("remove_items")?,
                 priority: priority()?,
                 who: optional("for")?,
                 add_items: optional("add_items")?,
                 check: item_ids("check")?,
                 uncheck: item_ids("uncheck")?,
             };
-            if edit.priority.is_none()
+            if edit.title.is_none()
+                && edit.description.is_none()
+                && edit.labels.is_empty()
+                && edit.remove_items.is_empty()
+                && edit.priority.is_none()
                 && edit.who.is_none()
                 && edit.add_items.is_none()
                 && edit.check.is_empty()
                 && edit.uncheck.is_empty()
             {
-                return Err(
-                    "edit_card needs something to change: priority, for, add_items, check or uncheck"
-                        .into(),
-                );
+                return Err("edit_card needs something to change: title, description, priority, \
+                            for, labels, add_items, remove_items, check or uncheck"
+                    .into());
             }
             Call::EditCard(edit)
         }
@@ -1299,6 +1382,7 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             card: card()?,
             column: named("column")?
                 .ok_or_else(|| format!("{name} needs \"column\", a title or an id"))?,
+            before: id("before", "list_cards")?,
         },
         "comment_card" => Call::CommentCard {
             card: card()?,
@@ -2377,17 +2461,16 @@ mod tests {
                 priority: Some("high".into()),
                 who: Some("codex".into()),
                 checklist: Some("- a".into()),
+                ..Default::default()
             }))
         );
         let edit = |args: Value| parse("edit_card", &args);
         let only = |check: Vec<u64>, uncheck: Vec<u64>| {
             Ok(Call::EditCard(CardEdit {
                 card: 12,
-                priority: None,
-                who: None,
-                add_items: None,
                 check,
                 uncheck,
+                ..Default::default()
             }))
         };
         assert_eq!(
@@ -2409,8 +2492,7 @@ mod tests {
                 priority: Some("none".into()),
                 who: Some("anyone".into()),
                 add_items: Some("x".into()),
-                check: vec![],
-                uncheck: vec![],
+                ..Default::default()
             }))
         );
         for (tool, args, says) in [
@@ -2432,7 +2514,8 @@ mod tests {
             (
                 "edit_card",
                 json!({ "card": 1 }),
-                "edit_card needs something to change: priority, for, add_items, check or uncheck",
+                "edit_card needs something to change: title, description, priority, for, labels, \
+                 add_items, remove_items, check or uncheck",
             ),
         ] {
             assert_eq!(parse(tool, &args), Err(says.to_string()), "{args}");
@@ -2445,6 +2528,62 @@ mod tests {
             .find(|t| t["name"] == "edit_card")
             .unwrap();
         assert_eq!(edit_card["inputSchema"]["required"], json!(["card"]));
+    }
+
+    #[test]
+    fn the_card_tools_take_labels_a_title_a_description_items_to_remove_and_before() {
+        let labelled = json!({"title": "x", "labels": ["red", "blue"]});
+        let Ok(Call::CreateCard(new)) = parse("create_card", &labelled) else {
+            panic!()
+        };
+        assert_eq!(new.labels, ["red", "blue"]);
+        assert!(
+            parse("create_card", &json!({"title": "x", "labels": ["purple"]}))
+                .unwrap_err()
+                .contains("\"labels\" is a list of red, yellow, green, cyan, blue or magenta")
+        );
+        let Ok(Call::EditCard(edit)) = parse(
+            "edit_card",
+            &json!({"card": 4, "title": "T", "description": "",
+                "labels": {"red": false, "green": true}, "remove_items": [7, 8]}),
+        ) else {
+            panic!()
+        };
+        assert_eq!(
+            (edit.title.as_deref(), edit.description.as_deref()),
+            (Some("T"), Some(""))
+        );
+        let mut labels = edit.labels;
+        labels.sort();
+        assert_eq!(
+            labels,
+            [("green".to_string(), true), ("red".to_string(), false)]
+        );
+        assert_eq!(edit.remove_items, [7, 8]);
+        assert!(
+            parse("edit_card", &json!({"card": 4, "labels": {"pink": true}}))
+                .unwrap_err()
+                .contains("\"labels\" turns labels on or off")
+        );
+        assert!(
+            parse("edit_card", &json!({"card": 4}))
+                .unwrap_err()
+                .contains(
+                    "edit_card needs something to change: title, description, priority, for, \
+                     labels, add_items, remove_items, check or uncheck"
+                )
+        );
+        assert_eq!(
+            parse(
+                "move_card",
+                &json!({"card": 4, "column": "Done", "before": 9})
+            ),
+            Ok(Call::MoveCard {
+                card: 4,
+                column: "Done".into(),
+                before: Some(9)
+            })
+        );
     }
 
     #[test]
@@ -2473,13 +2612,15 @@ mod tests {
                 priority: None,
                 who: None,
                 checklist: None,
+                ..Default::default()
             }))
         );
         assert_eq!(
             parse("move_card", &json!({ "card": 3, "column": 4 })),
             Ok(Call::MoveCard {
                 card: 3,
-                column: "4".into()
+                column: "4".into(),
+                before: None
             })
         );
         assert_eq!(

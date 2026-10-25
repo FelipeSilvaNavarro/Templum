@@ -18,8 +18,8 @@ use crate::git_block;
 use crate::kanban;
 use crate::launcher;
 use crate::prompt;
-use crate::workspace::Workspace;
 use crate::workspace::remote::{Deed, HomeAgent};
+use crate::workspace::{BoardAct, Workspace};
 
 /// An item whose click updates the workspace.
 fn item(
@@ -270,6 +270,15 @@ fn send_to(
     if send.to.is_empty() || send.text.trim().is_empty() {
         return menu;
     }
+    if send.why.is_some() {
+        return menu.item(gated_item(
+            ws,
+            "Send to",
+            Some(IconName::SquareTerminal),
+            send.why,
+            |_, _, _| {},
+        ));
+    }
     let ws = ws.clone();
     let text: Rc<str> = send.text.into();
     menu.submenu_with_icon(
@@ -368,7 +377,7 @@ fn cancelling(
 }
 
 /// What deleting `n` cards along with their board or column says.
-fn cards(n: usize) -> String {
+pub(crate) fn cards(n: usize) -> String {
     if n == 1 {
         "Its card is deleted too.".to_string()
     } else {
@@ -573,39 +582,65 @@ impl Items {
                         move |ws, window, cx| ws.ask_task(block, window, cx),
                     ))
                 }),
-            Items::Kanban { block, board } => {
-                let menu = menu.item(item(
+            Items::Kanban {
+                block,
+                board,
+                gates,
+            } => {
+                let menu = menu.item(gated_item(
                     ws,
                     "All boards…",
                     Some(IconName::LayoutDashboard),
-                    move |_, window, cx| crate::kanban::open_boards(block, window, cx),
+                    gates.why(Deed::ShowBoard),
+                    move |ws, window, cx| {
+                        let space = ws.space.id.clone();
+                        crate::kanban::open_boards(space, block, window, cx)
+                    },
                 ));
                 let Some((board, name, n)) = board else {
                     return menu;
                 };
                 let rename_name = name.clone();
-                menu.item(item(ws, "Rename board…", None, move |_, window, cx| {
-                    let ws = cx.entity();
-                    prompt::ask_text(
-                        "Rename board",
-                        "Rename",
-                        rename_name.clone(),
-                        move |text, _, cx| rename_board(&ws, board, &text, cx),
-                        window,
-                        cx,
-                    )
-                }))
-                .item(item(
+                menu.item(gated_item(
+                    ws,
+                    "Rename board…",
+                    None,
+                    gates.why(Deed::EditBoard),
+                    move |ws, window, cx| {
+                        let (entity, space) = (cx.entity(), ws.space.id.clone());
+                        prompt::ask_text(
+                            "Rename board",
+                            "Rename",
+                            rename_name.clone(),
+                            move |text, window, cx| {
+                                rename_board(&entity, &space, board, &text, window, cx)
+                            },
+                            window,
+                            cx,
+                        )
+                    },
+                ))
+                .item(gated_item(
                     ws,
                     "Delete board…",
                     Some(IconName::Delete),
-                    move |_, window, cx| {
-                        let ws = cx.entity();
+                    gates.why(Deed::EditBoard),
+                    move |ws, window, cx| {
+                        let (entity, space) = (cx.entity(), ws.space.id.clone());
                         prompt::confirm(
                             format!("Delete {name}?"),
                             cards(n),
                             "Delete",
-                            move |_, cx| ws.update(cx, |ws, cx| ws.delete_board(board, cx)),
+                            move |window, cx| {
+                                entity.update(cx, |ws, cx| {
+                                    ws.act_on_boards(
+                                        &space,
+                                        BoardAct::DeleteBoard { board },
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            },
                             window,
                             cx,
                         )
@@ -1378,29 +1413,40 @@ impl Items {
                 title,
                 cards: n,
                 draft,
+                gates,
             } => menu
-                .item(item(ws, "Rename…", None, move |_, window, cx| {
-                    let ws = cx.entity();
-                    prompt::ask_text(
-                        "Rename column",
-                        "Rename",
-                        title.clone(),
-                        move |text, _, cx| {
-                            let title = text.trim().to_string();
-                            if title.is_empty() {
-                                return false;
-                            }
-                            ws.update(cx, |ws, cx| {
-                                ws.edit_boards(|b| b.rename_column(board, column, &title));
-                                cx.notify();
-                            });
-                            true
-                        },
-                        window,
-                        cx,
-                    )
-                }))
-                .item(item(
+                .item(gated_item(
+                    ws,
+                    "Rename…",
+                    None,
+                    gates.why(Deed::EditColumn),
+                    move |ws, window, cx| {
+                        let (entity, space) = (cx.entity(), ws.space.id.clone());
+                        prompt::ask_text(
+                            "Rename column",
+                            "Rename",
+                            title.clone(),
+                            move |text, window, cx| {
+                                let title = text.trim().to_string();
+                                if title.is_empty() {
+                                    return false;
+                                }
+                                entity.update(cx, |ws, cx| {
+                                    let act = BoardAct::RenameColumn {
+                                        board,
+                                        column,
+                                        title,
+                                    };
+                                    ws.act_on_boards(&space, act, window, cx);
+                                });
+                                true
+                            },
+                            window,
+                            cx,
+                        )
+                    },
+                ))
+                .item(gated_item(
                     ws,
                     if draft {
                         "Continue draft"
@@ -1408,17 +1454,20 @@ impl Items {
                         "Add a card"
                     },
                     Some(IconName::Plus),
+                    gates.why(Deed::CreateCard),
                     move |ws, window, cx| kanban::add_card(ws, board, column, window, cx),
                 ))
                 .separator()
-                .item(item(
+                .item(gated_item(
                     ws,
                     "Delete",
                     Some(IconName::Delete),
+                    gates.why(Deed::EditColumn),
                     move |ws, window, cx| {
+                        let space = ws.space.id.clone();
+                        let act = BoardAct::DeleteColumn { board, column };
                         if n == 0 {
-                            ws.edit_boards(|b| b.remove_column(board, column));
-                            cx.notify();
+                            ws.act_on_boards(&space, act, window, cx);
                             return;
                         }
                         let entity = cx.entity();
@@ -1426,10 +1475,10 @@ impl Items {
                             "Delete this column?",
                             cards(n),
                             "Delete",
-                            move |_, cx| {
+                            move |window, cx| {
                                 entity.update(cx, |ws, cx| {
-                                    ws.edit_boards(|b| b.remove_column(board, column));
-                                    cx.notify();
+                                    let act = BoardAct::DeleteColumn { board, column };
+                                    ws.act_on_boards(&space, act, window, cx);
                                 })
                             },
                             window,
@@ -1437,30 +1486,37 @@ impl Items {
                         );
                     },
                 )),
-            Items::Card { board, card, send } => menu
+            Items::Card {
+                board,
+                card,
+                send,
+                gates,
+            } => menu
                 .item(item(ws, "Open", None, move |ws, window, cx| {
                     kanban::open_card(ws, board, card, window, cx);
                 }))
                 .map(|menu| send_to(ws, menu, send, window, cx))
                 .separator()
-                .item(item(
+                .item(gated_item(
                     ws,
                     "Delete card",
                     Some(IconName::Delete),
+                    gates.why(Deed::DeleteCard),
                     move |ws, window, cx| {
+                        let space = ws.space.id.clone();
                         let title = ws
-                            .boards
-                            .card(board, card)
+                            .boards_in(&space)
+                            .and_then(|b| b.card(board, card))
                             .map_or_else(String::new, |c| c.title.clone());
-                        let ws = cx.entity();
+                        let entity = cx.entity();
                         prompt::confirm(
                             "Delete this card?",
                             title,
                             "Delete",
-                            move |_, cx| {
-                                ws.update(cx, |ws, cx| {
-                                    ws.edit_boards(|b| b.remove_card(board, card));
-                                    cx.notify();
+                            move |window, cx| {
+                                entity.update(cx, |ws, cx| {
+                                    let act = BoardAct::DeleteCard { board, card };
+                                    ws.act_on_boards(&space, act, window, cx);
                                 })
                             },
                             window,
@@ -1590,14 +1646,24 @@ impl Items {
     }
 }
 
-fn rename_board(ws: &Entity<Workspace>, board: u64, text: &str, cx: &mut App) -> bool {
+fn rename_board(
+    ws: &Entity<Workspace>,
+    space: &str,
+    board: u64,
+    text: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
     let name = text.trim();
     if name.is_empty() {
         return false;
     }
     ws.update(cx, |ws, cx| {
-        ws.edit_boards(|b| b.rename_board(board, name));
-        cx.notify();
+        let act = BoardAct::RenameBoard {
+            board,
+            name: name.to_string(),
+        };
+        ws.act_on_boards(space, act, window, cx);
     });
     true
 }

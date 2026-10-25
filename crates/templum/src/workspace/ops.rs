@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use gpui_kit::component::input::EditorState;
 use gpui_kit::{App, Context, Entity, Task, Window};
 use templum_canvas::{BlockId, Rect, Size, chrome};
+use templum_mcp::control::Before;
 use templum_mcp::{Reply, tools};
 use templum_terminal::Pattern;
 
@@ -14,7 +15,7 @@ use super::bus::{Outcome, clean_title, flat};
 use super::content::Caller;
 use super::history::Then;
 use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Kanban, Space, Workspace, remember};
-use crate::board::{Assignee, Card, Priority};
+use crate::board::{Assignee, Card, Label, Priority};
 use crate::checklist::{self, Checklist};
 use crate::note::{self, Note};
 use crate::{attachments, checklists, notes};
@@ -183,7 +184,10 @@ impl Workspace {
                     id
                 }
                 NewBlock::Kanban { board } => {
-                    let kanban = Kanban { board: Some(board) };
+                    let kanban = Kanban {
+                        board: Some(board),
+                        remote: false,
+                    };
                     Some(ws.add_block(rect, Body::Kanban(kanban)))
                 }
                 NewBlock::Editor { folder } => {
@@ -783,6 +787,10 @@ impl Workspace {
             },
         };
         let title = new.title.trim().to_string();
+        let labels: Vec<Label> = Label::ALL
+            .into_iter()
+            .filter(|l| new.labels.iter().any(|n| n == l.name()))
+            .collect();
         let id = self.edit_boards(|b| {
             let id = b.add_card(board, column)?;
             b.edit_card(board, id, |c| {
@@ -790,6 +798,7 @@ impl Workspace {
                 c.description = new.description.unwrap_or_default();
                 c.priority = priority;
                 c.assignee = assignee;
+                c.labels = labels;
             });
             b.add_items(board, id, &items);
             Some(id)
@@ -843,11 +852,29 @@ impl Workspace {
                 .card(board, card)
                 .is_some_and(|c| c.checklist.iter().any(|i| i.id == *item))
         };
-        if let Some(item) = edit.check.iter().chain(&edit.uncheck).find(|i| !has(i)) {
+        if let Some(item) = edit
+            .check
+            .iter()
+            .chain(&edit.uncheck)
+            .chain(&edit.remove_items)
+            .find(|i| !has(i))
+        {
             return Reply::err(format!(
                 "Card {card} has no item {item}: list_cards with card shows its items."
             ));
         }
+        let title = edit.title.as_deref().map(str::trim);
+        if title == Some("") {
+            return Reply::err("A card needs a title.");
+        }
+        // Said and applied in the labels' own order, however the caller listed them.
+        let labels: Vec<(Label, bool)> = Label::ALL
+            .into_iter()
+            .filter_map(|l| {
+                let (_, on) = edit.labels.iter().find(|(n, _)| n == l.name())?;
+                Some((l, *on))
+            })
+            .collect();
         let priority = edit.priority.as_deref().map(Priority::named);
         let items = edit
             .add_items
@@ -856,12 +883,24 @@ impl Workspace {
             .unwrap_or_default();
         let added = self.edit_boards(|b| {
             b.edit_card(board, card, |c| {
+                if let Some(title) = title {
+                    c.title = title.to_string();
+                }
+                if let Some(description) = &edit.description {
+                    c.description = description.clone();
+                }
+                for (label, on) in &labels {
+                    if c.labels.contains(label) != *on {
+                        c.toggle_label(*label);
+                    }
+                }
                 if let Some(p) = priority {
                     c.priority = p;
                 }
                 if let Some(who) = assignee.clone() {
                     c.assignee = who;
                 }
+                c.checklist.retain(|i| !edit.remove_items.contains(&i.id));
             });
             for (ids, done) in [(&edit.check, true), (&edit.uncheck, false)] {
                 for item in ids {
@@ -878,6 +917,21 @@ impl Workspace {
                 .join(", ")
         };
         let mut said = Vec::new();
+        if let Some(title) = title {
+            said.push(format!("titled \"{}\"", flat(title)));
+        }
+        match edit.description.as_deref() {
+            Some("") => said.push("description cleared".into()),
+            Some(_) => said.push("description set".into()),
+            None => {}
+        }
+        for (label, on) in &labels {
+            said.push(format!(
+                "label {} {}",
+                label.name(),
+                if *on { "on" } else { "off" }
+            ));
+        }
         if let Some(p) = priority {
             said.push(format!("priority {}", p.map_or("none", |p| p.name())));
         }
@@ -892,6 +946,11 @@ impl Workspace {
             [one] => said.push(format!("added item {one}")),
             more => said.push(format!("added items {}", list(more))),
         }
+        match edit.remove_items.as_slice() {
+            [] => {}
+            [one] => said.push(format!("removed item {one}")),
+            more => said.push(format!("removed items {}", list(more))),
+        }
         if !edit.check.is_empty() {
             said.push(format!("checked {}", list(&edit.check)));
         }
@@ -901,8 +960,14 @@ impl Workspace {
         Reply::ok(format!("Card {card}: {}.", said.join("; ")))
     }
 
-    /// Moves a card to the end of a column of its board.
-    pub(super) fn card_move(&mut self, card: u64, column: &str, cx: &mut Context<Self>) -> Reply {
+    /// Moves a card to a column of its board: right before card `before` of it, or at its end.
+    pub(super) fn card_move(
+        &mut self,
+        card: u64,
+        column: &str,
+        before: Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> Reply {
         let board = match self.board_of(card) {
             Ok(b) => b,
             Err(refused) => return refused,
@@ -910,9 +975,299 @@ impl Workspace {
         let Some(to) = self.boards.column_named(board, column) else {
             return self.no_column(board, column);
         };
-        self.edit_boards(|b| b.move_card(board, card, to, None));
+        if let Some(before) = before {
+            if before == card {
+                return Reply::err("A card can't go before itself.");
+            }
+            let there = self
+                .boards
+                .board(board)
+                .and_then(|b| b.columns.iter().find(|c| c.id == to))
+                .is_some_and(|c| c.cards.iter().any(|c| c.id == before));
+            if !there {
+                let title = self
+                    .boards
+                    .board(board)
+                    .and_then(|b| b.columns.iter().find(|c| c.id == to))
+                    .map_or_else(String::new, |c| flat(&c.title));
+                return Reply::err(format!("Card {before} isn't in {title}."));
+            }
+        }
+        self.edit_boards(|b| b.move_card_before(board, card, to, before));
         cx.notify();
-        Reply::ok(format!("Moved card {card} to {column}."))
+        Reply::ok(match before {
+            Some(before) => format!("Moved card {card} to {column}, before card {before}."),
+            None => format!("Moved card {card} to {column}."),
+        })
+    }
+
+    /// "and its 3 cards", "and its card", or nothing for none: what a delete takes with it.
+    fn and_its_cards(cards: usize) -> String {
+        match cards {
+            0 => String::new(),
+            1 => " and its card".into(),
+            n => format!(" and its {n} cards"),
+        }
+    }
+
+    /// Deletes a card and its comments: one Ctrl+Z step.
+    pub(super) fn card_delete(&mut self, card: u64, cx: &mut Context<Self>) -> Reply {
+        let board = match self.board_of(card) {
+            Ok(b) => b,
+            Err(refused) => return refused,
+        };
+        let title = self
+            .boards
+            .card(board, card)
+            .map(|c| flat(&c.title))
+            .unwrap_or_default();
+        self.edit_boards(|b| b.remove_card(board, card));
+        cx.notify();
+        Reply::ok(format!("Deleted card {card} \"{title}\"."))
+    }
+
+    /// Renames a board (`name`), or deletes it with its cards (None): one Ctrl+Z step. The kanbans
+    /// that showed it show none.
+    pub(super) fn board_change(
+        &mut self,
+        board: u64,
+        name: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let Some(found) = self.boards.board(board) else {
+            return Reply::err(format!("There's no board {board}."));
+        };
+        let (old, cards) = (flat(&found.name), found.card_count());
+        let reply = match name.map(str::trim) {
+            Some("") => return Reply::err("A board needs a name."),
+            Some(name) => {
+                self.edit_boards(|b| b.rename_board(board, name));
+                format!("Renamed board {board} to \"{}\".", flat(name))
+            }
+            None => {
+                self.edit_boards(|b| b.remove_board(board));
+                format!(
+                    "Deleted board \"{old}\" ({board}){}.",
+                    Self::and_its_cards(cards)
+                )
+            }
+        };
+        cx.notify();
+        Reply::ok(reply)
+    }
+
+    /// Adds a column to a board (`column` None), renames one, moves one (`before`) or deletes
+    /// one with its cards: one Ctrl+Z step.
+    pub(super) fn column_change(
+        &mut self,
+        board: u64,
+        column: Option<u64>,
+        title: Option<&str>,
+        before: Option<Before>,
+        delete: bool,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let Some(found) = self.boards.board(board) else {
+            return Reply::err(format!("There's no board {board}."));
+        };
+        let board_name = flat(&found.name);
+        let has = |c: u64| found.columns.iter().any(|x| x.id == c);
+        if let Some(column) = column
+            && !has(column)
+        {
+            return self.no_column(board, &column.to_string());
+        }
+        if let Some(Before::Column(other)) = before {
+            if Some(other) == column {
+                return Reply::err("A column can't go before itself.");
+            }
+            if !has(other) {
+                return self.no_column(board, &other.to_string());
+            }
+        }
+        let before_id = match before {
+            Some(Before::Column(other)) => Some(other),
+            _ => None,
+        };
+        let reply = match column {
+            None => {
+                let title = title.unwrap_or("New column").to_string();
+                let id = self.edit_boards(|b| {
+                    let id = b.add_column(board)?;
+                    b.rename_column(board, id, &title);
+                    if before.is_some() {
+                        b.move_column_before(board, id, before_id);
+                    }
+                    Some(id)
+                });
+                let Some(id) = id else {
+                    return Reply::err(format!("There's no board {board}."));
+                };
+                let mut said = format!(
+                    "Added column {id} \"{}\" to board \"{board_name}\"",
+                    flat(&title)
+                );
+                if let Some(other) = before_id {
+                    said.push_str(&format!(", before column {other}"));
+                }
+                said + "."
+            }
+            Some(column) if delete => {
+                let found = found
+                    .columns
+                    .iter()
+                    .find(|c| c.id == column)
+                    .expect("checked");
+                let (old, cards) = (flat(&found.title), found.cards.len());
+                self.edit_boards(|b| b.remove_column(board, column));
+                format!(
+                    "Deleted column \"{old}\" ({column}){}.",
+                    Self::and_its_cards(cards)
+                )
+            }
+            Some(column) => {
+                let mut said = Vec::new();
+                self.edit_boards(|b| {
+                    if let Some(title) = title {
+                        b.rename_column(board, column, title);
+                        said.push(format!("Renamed column {column} to \"{}\".", flat(title)));
+                    }
+                    if before.is_some() {
+                        b.move_column_before(board, column, before_id);
+                        said.push(match before_id {
+                            Some(other) => format!("Moved column {column} before column {other}."),
+                            None => format!("Moved column {column} to the end."),
+                        });
+                    }
+                });
+                said.join(" ")
+            }
+        };
+        cx.notify();
+        Reply::ok(reply)
+    }
+
+    /// The kanban `block` shows `board`, or a new board (`new`: its name, blank for "Board n",
+    /// and its columns, empty for To do, Doing and Done): the answer, and the board made.
+    pub(super) fn board_show(
+        &mut self,
+        block: &str,
+        board: Option<u64>,
+        new: Option<(&str, &[String])>,
+        cx: &mut Context<Self>,
+    ) -> (Reply, Option<u64>) {
+        let Some((space, id)) = self.find_block(block) else {
+            return (
+                Reply::err(format!("There's no block {block}: overview lists them.")),
+                None,
+            );
+        };
+        if self
+            .space_named(&space)
+            .and_then(|s| s.kanban(id))
+            .is_none()
+        {
+            return (Reply::err(format!("{block} isn't a kanban.")), None);
+        }
+        let (shown, made) = match (board, new) {
+            (Some(board), _) => (board, false),
+            (None, Some((name, columns))) => {
+                let name = Some(name.trim()).filter(|n| !n.is_empty());
+                let columns = if columns.is_empty() {
+                    ["To do", "Doing", "Done"].map(String::from).to_vec()
+                } else {
+                    columns.to_vec()
+                };
+                (self.edit_boards(|b| b.add_board_with(name, &columns)), true)
+            }
+            (None, None) => return (Reply::err("show_board takes board or new."), None),
+        };
+        if let Some(kanban) = self.space_by_id_mut(&space).and_then(|s| s.kanban_mut(id)) {
+            kanban.board = Some(shown);
+        }
+        cx.notify();
+        let name = self
+            .boards
+            .board(shown)
+            .map(|b| flat(&b.name))
+            .unwrap_or_default();
+        let said = if made {
+            format!("Made board \"{name}\" ({shown}) and showed it in {block}.")
+        } else {
+            format!("Showing board \"{name}\" ({shown}) in {block}.")
+        };
+        (Reply::ok(said), made.then_some(shown))
+    }
+
+    /// The board holding `card`, when comment `comment` is on it and, with `by`, was written by
+    /// it: a comment is its writer's to change.
+    pub(super) fn comment_of(
+        &self,
+        card: u64,
+        comment: u64,
+        by: Option<&str>,
+        cx: &App,
+    ) -> Result<u64, Reply> {
+        let board = self.board_of(card)?;
+        let Some(c) = self
+            .boards
+            .card(board, card)
+            .and_then(|c| c.comments.iter().find(|c| c.id == comment))
+        else {
+            return Err(Reply::err(format!(
+                "Card {card} has no comment {comment}: list_cards with card shows its comments."
+            )));
+        };
+        if by.is_some_and(|by| by != c.by) {
+            let writer = if c.by == "you" {
+                "the person".into()
+            } else {
+                self.who(&c.by, cx)
+            };
+            return Err(Reply::err(format!(
+                "Comment {comment} is by {writer}, not you: you can only change your own."
+            )));
+        }
+        Ok(board)
+    }
+
+    /// Gives a comment `text`, one step of the kanban's Ctrl+Z.
+    pub(super) fn comment_edit(
+        &mut self,
+        board: u64,
+        card: u64,
+        comment: u64,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        if text.trim().is_empty() {
+            return Reply::err("A comment needs text. delete_comment removes one.");
+        }
+        let text = text.trim_end();
+        let same = self
+            .boards
+            .card(board, card)
+            .and_then(|c| c.comments.iter().find(|c| c.id == comment))
+            .is_some_and(|c| c.text == text);
+        if same {
+            return Reply::ok(format!("Comment {comment} already says that."));
+        }
+        self.edit_boards(|b| b.edit_comment(board, card, comment, text));
+        cx.notify();
+        Reply::ok(format!("Edited comment {comment} on card {card}."))
+    }
+
+    /// Removes a comment, one step of the kanban's Ctrl+Z.
+    pub(super) fn comment_delete(
+        &mut self,
+        board: u64,
+        card: u64,
+        comment: u64,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        self.edit_boards(|b| b.remove_comment(board, card, comment));
+        cx.notify();
+        Reply::ok(format!("Deleted comment {comment} on card {card}."))
     }
 
     /// Adds a comment to a card, by `by`: a block's id, or the Templum Agent's word.

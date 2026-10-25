@@ -10,7 +10,7 @@ use crate::tools::{self, Call, Spawn};
 pub const SERVER: &str = "templum-control";
 
 /// The block server's tools the control server serves as they are, on any block or board.
-pub const SHARED: [&str; 18] = [
+pub const SHARED: [&str; 20] = [
     "read_terminal",
     "list_cards",
     "read_note",
@@ -19,6 +19,8 @@ pub const SHARED: [&str; 18] = [
     "edit_card",
     "move_card",
     "comment_card",
+    "edit_comment",
+    "delete_comment",
     "append_note",
     "add_items",
     "check_item",
@@ -67,6 +69,13 @@ pub struct Opening {
     pub at: Option<(f32, f32)>,
 }
 
+/// Where `edit_column` puts a column: before another one of its board, or at the end.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Before {
+    Column(u64),
+    End,
+}
+
 /// A control tool's call, its arguments checked.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ControlCall {
@@ -97,6 +106,33 @@ pub enum ControlCall {
     },
     CloseBlock {
         block: String,
+    },
+    /// Deletes a card and its comments.
+    DeleteCard {
+        card: u64,
+    },
+    /// Renames a board (`name`), or deletes it with its cards (`delete`): exactly one.
+    EditBoard {
+        board: String,
+        name: Option<String>,
+        delete: bool,
+    },
+    /// No `column`: a new column (at the end, or `before`; with `title` when given). A `column`:
+    /// renamed (`title`), moved (`before`) or both; `delete` goes alone.
+    EditColumn {
+        board: String,
+        column: Option<u64>,
+        title: Option<String>,
+        before: Option<Before>,
+        delete: bool,
+    },
+    /// The kanban `block` shows `board`, or a new board named `new` (blank: "Board n") with
+    /// `columns` (To do, Doing and Done without): exactly one of `board` and `new`.
+    ShowBoard {
+        block: String,
+        board: Option<String>,
+        new: Option<String>,
+        columns: Vec<String>,
     },
     /// Moves or resizes a block; what is left out keeps. Sizes are over 0.
     MoveBlock {
@@ -265,6 +301,9 @@ pub fn list() -> Value {
     let block = json!({ "type": "string", "description": "A block's id, as overview shows it." });
     let workspace = json!({ "type": "string", "description": "A workspace's name or id (w3), as overview shows it." });
     let none = json!({ "type": "object", "properties": {} });
+    let board =
+        json!({ "type": "string", "description": "A board's name or id, as overview shows it." });
+    let card = json!({ "type": "integer", "description": "A card's id, as list_cards shows it." });
     let at = |key: &str| {
         json!({
             "type": "number",
@@ -429,6 +468,71 @@ pub fn list() -> Value {
             },
         },
         {
+            "name": "delete_card",
+            "description": "Deletes a card and its comments (Ctrl+Z on a kanban brings it back). Asks the \
+                            person first when it isn't a card you made.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "card": card, "reason": reason() },
+                "required": ["card"],
+            },
+        },
+        {
+            "name": "edit_board",
+            "description": "Renames a board (name), or deletes it with its cards (delete: true; the kanbans \
+                            that showed it show none; Ctrl+Z on a kanban brings it back). Deleting a board \
+                            asks the person first when it holds a card you didn't make, or a board you \
+                            didn't make.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "board": board,
+                    "name": { "type": "string" },
+                    "delete": { "type": "boolean" },
+                    "reason": reason(),
+                },
+                "required": ["board"],
+            },
+        },
+        {
+            "name": "edit_column",
+            "description": "Adds a column to a board (column left out: at the end, or before another), renames \
+                            one (title), moves one (before: a column of the board, or \"end\") or deletes one \
+                            with its cards (delete: true). Deleting a column \
+                            asks the person first when it holds a card you didn't make, or its board \
+                            isn't one you made.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "board": board,
+                    "column": { "type": "integer", "description": "A column's id, as list_cards shows it." },
+                    "title": { "type": "string" },
+                    "before": {
+                        "type": "string",
+                        "description": "A column of the board (its id) to go before, or \"end\".",
+                    },
+                    "delete": { "type": "boolean" },
+                    "reason": reason(),
+                },
+                "required": ["board"],
+            },
+        },
+        {
+            "name": "show_board",
+            "description": "Shows a board in a kanban block (board), or a new one (new: its name, blank for \
+                            \"Board n\"; columns: its columns, To do, Doing and Done when left out).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "block": block,
+                    "board": board,
+                    "new": { "type": "string" },
+                    "columns": { "type": "array", "items": { "type": "string" } },
+                },
+                "required": ["block"],
+            },
+        },
+        {
             "name": "close_block",
             "description": "Closes a block (the person brings it back with Ctrl+Z). Asks the person first when a \
                             program runs in a block you didn't open.",
@@ -480,6 +584,35 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
             .as_str()
             .map(|s| Some(s.to_string()).filter(|s| !s.trim().is_empty()))
             .ok_or_else(|| format!("\"{key}\" is a string")),
+    };
+    // A string kept as it is, blank included: a caller's blank name is for the glue to refuse.
+    let string = |key: &str| match &args[key] {
+        Value::Null => Ok(None),
+        value => value
+            .as_str()
+            .map(|s| Some(s.to_string()))
+            .ok_or_else(|| format!("\"{key}\" is a string")),
+    };
+    let flag = |key: &str| match &args[key] {
+        Value::Null => Ok(false),
+        value => value
+            .as_bool()
+            .ok_or_else(|| format!("\"{key}\" is true or false")),
+    };
+    // A board comes as its id or its name.
+    let named = |key: &str| match &args[key] {
+        Value::Number(n) => Ok(n.to_string()),
+        Value::String(s) if !s.trim().is_empty() => Ok(s.trim().to_string()),
+        _ => Err(format!("{name} needs \"{key}\", a board's name or id")),
+    };
+    let id = |key: &str, what: &str| -> Result<Option<u64>, String> {
+        let bad = || format!("\"{key}\" is {what}, as list_cards shows it");
+        match &args[key] {
+            Value::Null => Ok(None),
+            Value::Number(n) => n.as_u64().map(Some).ok_or_else(bad),
+            Value::String(s) => s.trim().parse().map(Some).map_err(|_| bad()),
+            _ => Err(bad()),
+        }
     };
     let strings = |key: &str| match &args[key] {
         Value::Null => Ok(Vec::new()),
@@ -572,6 +705,83 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
         "close_block" => ControlCall::CloseBlock {
             block: text("block")?,
         },
+        "delete_card" => ControlCall::DeleteCard {
+            card: id("card", "a card's id")?
+                .ok_or_else(|| format!("{name} needs \"card\", a card's id"))?,
+        },
+        "edit_board" => {
+            let (new_name, delete) = (string("name")?, flag("delete")?);
+            if new_name.is_some() == delete {
+                return Err("edit_board takes name or delete: true".into());
+            }
+            if new_name.as_deref().is_some_and(|n| n.trim().is_empty()) {
+                return Err("A board needs a name.".into());
+            }
+            ControlCall::EditBoard {
+                board: named("board")?,
+                name: new_name.map(|n| n.trim().to_string()),
+                delete,
+            }
+        }
+        "edit_column" => {
+            let (column, title, delete) = (
+                id("column", "a column's id")?,
+                string("title")?,
+                flag("delete")?,
+            );
+            let before = match &args["before"] {
+                Value::Null => None,
+                Value::String(s) if s.trim().eq_ignore_ascii_case("end") => Some(Before::End),
+                Value::String(s) => s.trim().parse().ok().map(Before::Column),
+                Value::Number(n) => n.as_u64().map(Before::Column),
+                _ => None,
+            };
+            if !args["before"].is_null() && before.is_none() {
+                return Err("\"before\" is a column of the board, or \"end\"".into());
+            }
+            if delete {
+                if title.is_some() || before.is_some() {
+                    return Err("delete goes alone: it takes the column and its cards away".into());
+                }
+                if column.is_none() {
+                    return Err("delete needs \"column\"".into());
+                }
+            } else if column.is_some() && title.is_none() && before.is_none() {
+                return Err("edit_column needs title, before or delete for a column".into());
+            }
+            if title.as_deref().is_some_and(|t| t.trim().is_empty()) {
+                return Err("A column needs a title.".into());
+            }
+            ControlCall::EditColumn {
+                board: named("board")?,
+                column,
+                title: title.map(|t| t.trim().to_string()),
+                before,
+                delete,
+            }
+        }
+        "show_board" => {
+            let (board, new) = (
+                match &args["board"] {
+                    Value::Number(n) => Some(n.to_string()),
+                    _ => optional("board")?,
+                },
+                string("new")?,
+            );
+            if board.is_some() == new.is_some() {
+                return Err("show_board takes board or new".into());
+            }
+            let columns = strings("columns")?;
+            if new.is_none() && !columns.is_empty() {
+                return Err("\"columns\" go with new".into());
+            }
+            ControlCall::ShowBoard {
+                block: text("block")?,
+                board,
+                new: new.map(|n| n.trim().to_string()),
+                columns,
+            }
+        }
         "move_block" => {
             let (x, y, w, h) = (
                 number(args, "x")?,
@@ -637,6 +847,8 @@ pub fn title(name: &str) -> &'static str {
         "edit_card" => "Editing a card",
         "move_card" => "Moving a card",
         "comment_card" => "Commenting on a card",
+        "edit_comment" => "Editing a comment",
+        "delete_comment" => "Deleting a comment",
         "append_note" => "Writing in a note",
         "add_items" => "Adding items",
         "check_item" => "Checking an item",
@@ -644,6 +856,10 @@ pub fn title(name: &str) -> &'static str {
         "connect" => "Connecting blocks",
         "disconnect" => "Disconnecting blocks",
         "close_block" => "Closing a block",
+        "delete_card" => "Deleting a card",
+        "edit_board" => "Editing a board",
+        "edit_column" => "Editing a column",
+        "show_board" => "Showing a board",
         "move_block" => "Moving a block",
         "send_to_terminal" => "Typing into a terminal",
         "send_keys" => "Pressing keys",
@@ -660,7 +876,9 @@ pub fn title(name: &str) -> &'static str {
 pub fn rule(call: &ControlCall) -> Rule {
     match call {
         ControlCall::Block(Call::SendToTerminal { .. } | Call::SendKeys { .. }) => Rule::Ask,
-        ControlCall::CloseBlock { .. } => Rule::AskOwnWhenLosing,
+        ControlCall::CloseBlock { .. }
+        | ControlCall::EditBoard { delete: true, .. }
+        | ControlCall::EditColumn { delete: true, .. } => Rule::AskOwnWhenLosing,
         // A wire lets each terminal on it type into the other and answer its dialogs: Templum
         // asks when it would reach a terminal that isn't the Templum Agent's own. A task runs as
         // the person's agent's mode lets it: in bypass or auto, whatever the task says.
@@ -668,6 +886,7 @@ pub fn rule(call: &ControlCall) -> Rule {
             Call::Interrupt { .. } | Call::StopAgent { .. } | Call::Delegate { .. },
         )
         | ControlCall::Connect { .. }
+        | ControlCall::DeleteCard { .. }
         | ControlCall::OpenAgent(_) => Rule::AskOwn,
         _ => Rule::Free,
     }
@@ -806,6 +1025,128 @@ mod tests {
     }
 
     #[test]
+    fn the_board_tools_parse_and_say_what_is_missing() {
+        let err = |name: &str, args: Value| parse(name, &args).unwrap_err();
+        assert_eq!(
+            err("edit_board", json!({"board": 1})),
+            "edit_board takes name or delete: true"
+        );
+        assert_eq!(
+            err(
+                "edit_board",
+                json!({"board": 1, "name": "x", "delete": true})
+            ),
+            "edit_board takes name or delete: true"
+        );
+        assert_eq!(
+            err("edit_board", json!({"board": 1, "name": " "})),
+            "A board needs a name."
+        );
+        assert_eq!(
+            err("edit_column", json!({"board": 1, "column": 3})),
+            "edit_column needs title, before or delete for a column"
+        );
+        assert_eq!(
+            err(
+                "edit_column",
+                json!({"board": 1, "column": 3, "title": "x", "delete": true})
+            ),
+            "delete goes alone: it takes the column and its cards away"
+        );
+        assert_eq!(
+            err("edit_column", json!({"board": 1, "delete": true})),
+            "delete needs \"column\""
+        );
+        assert_eq!(
+            err("edit_column", json!({"board": 1, "before": "first"})),
+            "\"before\" is a column of the board, or \"end\""
+        );
+        assert_eq!(
+            err("edit_column", json!({"board": 1, "title": ""})),
+            "A column needs a title."
+        );
+        assert_eq!(
+            err("show_board", json!({"block": "k"})),
+            "show_board takes board or new"
+        );
+        assert_eq!(
+            err(
+                "show_board",
+                json!({"block": "k", "board": "1", "new": "x"})
+            ),
+            "show_board takes board or new"
+        );
+        assert_eq!(
+            err(
+                "show_board",
+                json!({"block": "k", "board": "1", "columns": ["a"]})
+            ),
+            "\"columns\" go with new"
+        );
+        assert_eq!(
+            err("delete_card", json!({})),
+            "delete_card needs \"card\", a card's id"
+        );
+        let call = |name: &str, args: Value| parse(name, &args).unwrap().call;
+        assert_eq!(
+            call("edit_column", json!({"board": 1, "before": "end"})),
+            ControlCall::EditColumn {
+                board: "1".into(),
+                column: None,
+                title: None,
+                before: Some(Before::End),
+                delete: false
+            }
+        );
+        assert_eq!(
+            call(
+                "edit_column",
+                json!({"board": "Sprint", "column": "3", "before": 5, "title": " QA "})
+            ),
+            ControlCall::EditColumn {
+                board: "Sprint".into(),
+                column: Some(3),
+                title: Some("QA".into()),
+                before: Some(Before::Column(5)),
+                delete: false
+            }
+        );
+        assert_eq!(
+            call("show_board", json!({"block": "k", "new": ""})),
+            ControlCall::ShowBoard {
+                block: "k".into(),
+                board: None,
+                new: Some(String::new()),
+                columns: vec![]
+            },
+            "a blank name is \"Board n\""
+        );
+    }
+
+    #[test]
+    fn the_two_servers_share_the_comment_tools() {
+        assert_eq!(SHARED.len(), 20);
+        for (name, args, said) in [
+            (
+                "edit_comment",
+                json!({"card": 4, "comment": 9, "text": "x"}),
+                "Editing a comment",
+            ),
+            (
+                "delete_comment",
+                json!({"card": 4, "comment": 9}),
+                "Deleting a comment",
+            ),
+        ] {
+            assert!(known(name) && crate::tools::known(name), "{name}");
+            let parsed = parse(name, &args).unwrap();
+            assert!(matches!(parsed.call, ControlCall::Block(_)), "{name}");
+            assert_eq!(rule(&parsed.call), Rule::Free);
+            assert_eq!(title(name), said);
+        }
+    }
+
+    #[test]
     fn connect_takes_a_label_of_one_line() {
         let label = |l: Value| match parse("connect", &json!({"a": "a1", "b": "b1", "label": l})) {
             Ok(Parsed {
@@ -856,6 +1197,16 @@ mod tests {
             ("disconnect", json!({"a": "b7k2m", "b": "k9x1d"})),
             ("close_block", json!({"block": "b7k2m", "reason": "done"})),
             ("move_block", json!({"block": "b7k2m", "x": 10, "w": 300})),
+            ("delete_card", json!({"card": 4, "reason": "done"})),
+            ("edit_board", json!({"board": "Sprint", "name": "Sprint 2"})),
+            (
+                "edit_column",
+                json!({"board": "Sprint", "column": 3, "title": "Review", "before": "end"}),
+            ),
+            (
+                "show_board",
+                json!({"block": "k9x1d", "new": "Ops", "columns": ["A", "B"]}),
+            ),
             (
                 "send_to_terminal",
                 json!({"block": "b7k2m", "text": "ls", "enter": true, "reason": "look"}),
@@ -869,6 +1220,11 @@ mod tests {
             ("edit_card", json!({"card": 4, "priority": "high"})),
             ("move_card", json!({"card": 4, "column": "Done"})),
             ("comment_card", json!({"card": 4, "text": "ok"})),
+            (
+                "edit_comment",
+                json!({"card": 4, "comment": 9, "text": "x"}),
+            ),
+            ("delete_comment", json!({"card": 4, "comment": 9})),
             ("append_note", json!({"block": "n1", "text": "ok"})),
             ("add_items", json!({"block": "c1", "text": "a\nb"})),
             ("check_item", json!({"block": "c1", "item": 2})),
@@ -1057,6 +1413,27 @@ mod tests {
         );
         assert_eq!(
             rule_of("disconnect", json!({"a": "x", "b": "y"})),
+            Rule::Free
+        );
+        assert_eq!(rule_of("delete_card", json!({"card": 4})), Rule::AskOwn);
+        assert_eq!(
+            rule_of("edit_board", json!({"board": 1, "name": "x"})),
+            Rule::Free
+        );
+        assert_eq!(
+            rule_of("edit_board", json!({"board": 1, "delete": true})),
+            Rule::AskOwnWhenLosing
+        );
+        assert_eq!(rule_of("edit_column", json!({"board": 1})), Rule::Free);
+        assert_eq!(
+            rule_of(
+                "edit_column",
+                json!({"board": 1, "column": 3, "delete": true})
+            ),
+            Rule::AskOwnWhenLosing
+        );
+        assert_eq!(
+            rule_of("show_board", json!({"block": "k", "board": 1})),
             Rule::Free
         );
         assert_eq!(

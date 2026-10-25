@@ -36,28 +36,31 @@ use crate::git_block::Check;
 use crate::git_block::widgets::{check_box, field, icon_button};
 use crate::grid::hsla;
 use crate::list_dialog;
-use crate::menu::Target;
+use crate::menu::{Gates, Target};
 use crate::note;
 use crate::notes;
 use crate::prompt::{self, Choice};
 use crate::theme::Ui;
-use crate::workspace::{Workspace, show_notification};
+use crate::workspace::remote::Deed;
+use crate::workspace::{BoardAct, Workspace, show_notification};
 
 /// A new kanban block's size, and the smallest one (world units).
 pub(crate) const SIZE: Size = Size { w: 900.0, h: 540.0 };
 pub(crate) const MIN: Size = Size { w: 420.0, h: 280.0 };
 const COLUMN_W: f32 = 260.0;
 
-/// A kanban block: the board it shows, if any.
+/// A kanban block: the board it shows, if any. `remote`: a block of a mirrored workspace, whose
+/// board is home's, in `RemoteSpace::boards`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Kanban {
     pub board: Option<u64>,
+    pub remote: bool,
 }
 
 impl Kanban {
     /// The board on screen: none when it was deleted.
     pub fn shown<'a>(&self, ws: &'a Workspace) -> Option<&'a Board> {
-        self.board.and_then(|id| ws.boards.board(id))
+        ws.boards_of(self)?.board(self.board?)
     }
 
     /// The block's title.
@@ -242,9 +245,23 @@ pub(crate) fn body(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    let view = match kanban.shown(ws) {
-        Some(board) => board_view(ws, block, board, z, window, cx),
-        None => empty(ws, block, z, cx),
+    // A mirror may refuse what a control does: read once a frame, as the toolbar's.
+    let gates = if kanban.remote {
+        Gates::of(
+            ws,
+            &[
+                Deed::EditColumn,
+                Deed::CreateCard,
+                Deed::MoveCard,
+                Deed::ShowBoard,
+            ],
+        )
+    } else {
+        Gates::default()
+    };
+    let view = match (ws.boards_of(&kanban), kanban.shown(ws)) {
+        (Some(boards), Some(board)) => board_view(ws, boards, &gates, block, board, z, window, cx),
+        _ => empty(ws, &gates, block, z, cx),
     };
     // The wheel scrolls what is in the block, and stops there; with Ctrl it zooms the canvas.
     div()
@@ -258,8 +275,25 @@ pub(crate) fn body(
         .into_any_element()
 }
 
+/// A control a mirror may refuse: dimmed, its words its tooltip.
+fn gated<T: Styled + StatefulInteractiveElement>(control: T, why: &Option<SharedString>) -> T {
+    let Some(why) = why.clone() else {
+        return control;
+    };
+    control
+        .opacity(0.5)
+        .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+}
+
 /// A block with no board: a new one, or one from the dialog.
-fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
+fn empty(
+    ws: &Workspace,
+    gates: &Gates,
+    block: BlockId,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let why = gates.why(Deed::ShowBoard);
     let n = block.0 as usize;
     div()
         .id(("kanban-empty", n))
@@ -276,21 +310,40 @@ fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) ->
                 .child("No board open here"),
         )
         .child(
-            note::button(("board-new-here", n), IconName::Plus, "New board", ws, z)
-                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.new_board(block, cx)))
-                .test_support(),
+            gated(
+                note::button(("board-new-here", n), IconName::Plus, "New board", ws, z),
+                &why,
+            )
+            .on_click(cx.listener({
+                let why = why.clone();
+                move |ws, _: &ClickEvent, window, cx| {
+                    if why.is_some() {
+                        return;
+                    }
+                    let space = ws.space.id.clone();
+                    ws.act_on_boards(&space, BoardAct::Show { block, board: None }, window, cx)
+                }
+            }))
+            .test_support(),
         )
         .child(
-            note::button(
-                ("board-open-here", n),
-                IconName::LayoutDashboard,
-                "Open a board…",
-                ws,
-                z,
+            gated(
+                note::button(
+                    ("board-open-here", n),
+                    IconName::LayoutDashboard,
+                    "Open a board…",
+                    ws,
+                    z,
+                ),
+                &why,
             )
-            .on_click(
-                cx.listener(move |_, _: &ClickEvent, window, cx| open_boards(block, window, cx)),
-            )
+            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                if why.is_some() {
+                    return;
+                }
+                let space = ws.space.id.clone();
+                open_boards(space, block, window, cx)
+            }))
             .test_support(),
         )
         .test_support()
@@ -300,7 +353,12 @@ fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) ->
 /// The Boards dialog: every board, and a field that finds them by their name and their cards'
 /// titles. A click, or New board, shows the board in the block `into`; its trash deletes it on a
 /// second click, and the blocks that showed it show none.
-pub(crate) fn open_boards(into: BlockId, window: &mut Window, cx: &mut Context<Workspace>) {
+pub(crate) fn open_boards(
+    space: String,
+    into: BlockId,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     let kind = list_dialog::Kind {
         title: "Boards",
         prefix: "board",
@@ -309,21 +367,40 @@ pub(crate) fn open_boards(into: BlockId, window: &mut Window, cx: &mut Context<W
         no_match: "No board holds that.",
         new: "New board",
     };
+    let (listed, shows, deletes, makes) = (space.clone(), space.clone(), space.clone(), space);
     list_dialog::open(
         kind,
-        rows,
-        move |ws, id, _, cx| ws.show_board(into, id, cx),
-        |ws, id, _, cx| ws.delete_board(id, cx),
-        move |ws, _, cx| ws.new_board(into, cx),
+        move |ws, query| rows(ws, &listed, query),
+        move |ws, id, window, cx| {
+            let show = BoardAct::Show {
+                block: into,
+                board: Some(id),
+            };
+            ws.act_on_boards(&shows, show, window, cx)
+        },
+        move |ws, id, window, cx| {
+            ws.act_on_boards(&deletes, BoardAct::DeleteBoard { board: id }, window, cx)
+        },
+        move |ws, window, cx| {
+            let show = BoardAct::Show {
+                block: into,
+                board: None,
+            };
+            ws.act_on_boards(&makes, show, window, cx)
+        },
         window,
         cx,
     );
 }
 
-/// The Boards dialog's rows for `query`: each board's name, then its cards and where it is open
-/// ("12 cards · Open").
-fn rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
-    ws.boards
+/// The Boards dialog's rows for `query`, of the boards of workspace `space` (the one the dialog
+/// was opened on): each board's name, then its cards and where it is open ("12 cards · Open").
+fn rows(ws: &Workspace, space: &str, query: &str) -> Vec<list_dialog::Row> {
+    let Some(boards) = ws.boards_in(space) else {
+        return Vec::new();
+    };
+    let remote = ws.space_named(space).is_some_and(|s| s.is_remote());
+    boards
         .find(query)
         .into_iter()
         .map(|board| {
@@ -331,7 +408,10 @@ fn rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
                 1 => "1 card".to_string(),
                 n => format!("{n} cards"),
             };
-            let at = ws.board_open_at(board.id);
+            // Where a board is open is this computer's shown workspace's: home's ids are not.
+            let at = ws
+                .board_open_at(board.id)
+                .filter(|_| !remote && ws.space.id == space);
             let detail: Vec<String> = [Some(cards), list_dialog::open_at(ws, at)]
                 .into_iter()
                 .flatten()
@@ -346,8 +426,11 @@ fn rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn board_view(
     ws: &Workspace,
+    boards: &Boards,
+    gates: &Gates,
     block: BlockId,
     board: &Board,
     z: f32,
@@ -360,33 +443,40 @@ fn board_view(
     let columns: Vec<AnyElement> = board
         .columns
         .iter()
-        .map(|column| column_view(ws, n, board_id, column, z, window, cx))
+        .map(|column| column_view(ws, boards, gates, n, board_id, column, z, window, cx))
         .collect();
     let edge = edge_scroll_state(("columns-scroll", n), false, z, window, cx);
-    let add = div()
-        .id(("add-column", n))
-        .flex_shrink_0()
-        .w(px(COLUMN_W * z))
-        .flex()
-        .items_center()
-        .gap(px(6.0 * z))
-        .px(px(12.0 * z))
-        .py(px(10.0 * z))
-        .rounded(px(10.0 * z))
-        .border_1()
-        .border_color(ui.hairline)
-        .text_size(px(13.0 * z))
-        .text_color(ui.title)
-        .cursor_pointer()
-        .hover(move |s| s.bg(ui.hover))
-        .active(move |s| s.bg(ui.pressed))
-        .child(Icon::new(IconName::Plus).size(px(14.0 * z)))
-        .child("Add a column")
-        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
-            ws.edit_boards(|b| b.add_column(board_id));
-            cx.notify();
-        }))
-        .test_support();
+    let why = gates.why(Deed::EditColumn);
+    let add = gated(
+        div()
+            .id(("add-column", n))
+            .flex_shrink_0()
+            .w(px(COLUMN_W * z))
+            .flex()
+            .items_center()
+            .gap(px(6.0 * z))
+            .px(px(12.0 * z))
+            .py(px(10.0 * z))
+            .rounded(px(10.0 * z))
+            .border_1()
+            .border_color(ui.hairline)
+            .text_size(px(13.0 * z))
+            .text_color(ui.title)
+            .cursor_pointer()
+            .hover(move |s| s.bg(ui.hover))
+            .active(move |s| s.bg(ui.pressed))
+            .child(Icon::new(IconName::Plus).size(px(14.0 * z)))
+            .child("Add a column"),
+        &why,
+    )
+    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+        if why.is_some() {
+            return;
+        }
+        let space = ws.space.id.clone();
+        ws.act_on_boards(&space, BoardAct::AddColumn { board: board_id }, window, cx);
+    }))
+    .test_support();
     // The columns are the scroll container's own children: GPUI measures what there is to
     // scroll from them.
     div()
@@ -436,8 +526,11 @@ pub(crate) fn scrollbar_over(handle: &ScrollHandle, id: ElementId, z: f32) -> An
         .into_any_element()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn column_view(
     ws: &Workspace,
+    boards: &Boards,
+    gates: &Gates,
     n: usize,
     board: u64,
     column: &Column,
@@ -498,34 +591,40 @@ fn column_view(
     let cards: Vec<AnyElement> = column
         .cards
         .iter()
-        .map(|card| card_view(ws, n, board, col, card, z, cx))
+        .map(|card| card_view(ws, boards, n, board, col, card, z, cx))
         .collect();
     let edge = edge_scroll_state(name("cards-scroll", n, col), true, z, window, cx);
-    let add = div()
-        .id(name("add-card", n, col))
-        .flex()
-        .items_center()
-        .gap(px(6.0 * z))
-        .mx(px(6.0 * z))
-        .mb(px(6.0 * z))
-        .px(px(8.0 * z))
-        .py(px(6.0 * z))
-        .rounded(px(6.0 * z))
-        .text_size(px(12.0 * z))
-        .text_color(ui.title_dim)
-        .cursor_pointer()
-        .hover(move |s| s.bg(ui.hover).text_color(ui.title))
-        .active(move |s| s.bg(ui.pressed))
-        .child(Icon::new(IconName::Plus).size(px(13.0 * z)))
-        .child(if ws.boards.draft(col).is_some() {
-            "Continue draft"
-        } else {
-            "Add a card"
-        })
-        .on_click(
-            cx.listener(move |ws, _: &ClickEvent, window, cx| add_card(ws, board, col, window, cx)),
-        )
-        .test_support();
+    let why = gates.why(Deed::CreateCard);
+    let add = gated(
+        div()
+            .id(name("add-card", n, col))
+            .flex()
+            .items_center()
+            .gap(px(6.0 * z))
+            .mx(px(6.0 * z))
+            .mb(px(6.0 * z))
+            .px(px(8.0 * z))
+            .py(px(6.0 * z))
+            .rounded(px(6.0 * z))
+            .text_size(px(12.0 * z))
+            .text_color(ui.title_dim)
+            .cursor_pointer()
+            .hover(move |s| s.bg(ui.hover).text_color(ui.title))
+            .active(move |s| s.bg(ui.pressed))
+            .child(Icon::new(IconName::Plus).size(px(13.0 * z)))
+            .child(if boards.draft(col).is_some() {
+                "Continue draft"
+            } else {
+                "Add a card"
+            }),
+        &why,
+    )
+    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+        if why.is_none() {
+            add_card(ws, board, col, window, cx)
+        }
+    }))
+    .test_support();
     div()
         .id(name("column", n, col))
         .flex_shrink_0()
@@ -540,13 +639,24 @@ fn column_view(
         .drag_over::<CardDrag>(move |s, _, _, _| s.border_color(ui.accent))
         .drag_over::<ColumnDrag>(move |s, _, _, _| s.border_color(ui.accent))
         // A card dropped on the column's empty space goes to its end.
-        .on_drop(cx.listener(move |ws, drag: &CardDrag, _, cx| {
-            ws.edit_boards(|b| b.move_card(drag.board, drag.card, col, None));
-            cx.notify();
+        .on_drop(cx.listener(move |ws, drag: &CardDrag, window, cx| {
+            let space = ws.space.id.clone();
+            let act = BoardAct::MoveCard {
+                board: drag.board,
+                card: drag.card,
+                column: col,
+                to: None,
+            };
+            ws.act_on_boards(&space, act, window, cx);
         }))
-        .on_drop(cx.listener(move |ws, drag: &ColumnDrag, _, cx| {
-            ws.edit_boards(|b| b.move_column(drag.board, drag.column, col));
-            cx.notify();
+        .on_drop(cx.listener(move |ws, drag: &ColumnDrag, window, cx| {
+            let space = ws.space.id.clone();
+            let act = BoardAct::MoveColumn {
+                board: drag.board,
+                column: drag.column,
+                to: col,
+            };
+            ws.act_on_boards(&space, act, window, cx);
         }))
         // A vertical wheel scrolls the cards, never the columns sideways.
         .on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
@@ -609,12 +719,27 @@ fn column_view(
         .into_any_element()
 }
 
-/// Who `assignee` is, as a card and its dialog show it: a block's title (its id when no
-/// workspace has it), or "Any Codex".
-pub(crate) fn assignee_label(ws: &Workspace, assignee: &Assignee, cx: &App) -> String {
+/// Who `assignee` is on a card of workspace `space`, as the card and its dialog show it: a
+/// block's title (its id when no workspace has it), or "Any Codex". On a mirrored workspace the
+/// block and the agent are home's.
+pub(crate) fn assignee_label(ws: &Workspace, space: &str, assignee: &Assignee, cx: &App) -> String {
+    let home = ws.space_named(space).and_then(|s| s.remote.as_deref());
     match assignee {
-        Assignee::Block(uid) => ws.uid_title(uid, cx).unwrap_or_else(|| uid.clone()),
-        Assignee::Agent(id) => format!("Any {}", ws.agent_title(id)),
+        Assignee::Block(uid) => ws
+            .uid_title_in(space, uid, cx)
+            .unwrap_or_else(|| uid.clone()),
+        Assignee::Agent(id) => match home {
+            Some(remote) => format!(
+                "Any {}",
+                remote
+                    .agents
+                    .iter()
+                    .flatten()
+                    .find(|a| a.id == *id)
+                    .map_or(id.as_str(), |a| a.title.as_str())
+            ),
+            None => format!("Any {}", ws.agent_title(id)),
+        },
     }
 }
 
@@ -631,7 +756,14 @@ fn priority_icon(ws: &Workspace, priority: Priority, size: f32) -> Icon {
 
 /// A card's meta row, on every card: its id, priority, checklist, description, comments and,
 /// at the right, who it is for.
-fn meta_row(ws: &Workspace, n: usize, card: &Card, z: f32, cx: &App) -> impl IntoElement {
+fn meta_row(
+    ws: &Workspace,
+    boards: &Boards,
+    n: usize,
+    card: &Card,
+    z: f32,
+    cx: &App,
+) -> impl IntoElement {
     let ui = ws.ui;
     let id = card.id;
     let (done, all) = card.progress();
@@ -691,7 +823,7 @@ fn meta_row(ws: &Workspace, n: usize, card: &Card, z: f32, cx: &App) -> impl Int
                     .test_support(),
             )
         })
-        .when(ws.boards.draft(id).is_some(), |el| {
+        .when(boards.draft(id).is_some(), |el| {
             el.child(
                 div()
                     .id(name("draft", n, id))
@@ -720,14 +852,16 @@ fn meta_row(ws: &Workspace, n: usize, card: &Card, z: f32, cx: &App) -> impl Int
                     .ml_auto()
                     .min_w_0()
                     .truncate()
-                    .child(assignee_label(ws, a, cx))
+                    .child(assignee_label(ws, &ws.space.id, a, cx))
                     .test_support(),
             )
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn card_view(
     ws: &Workspace,
+    boards: &Boards,
     n: usize,
     board: u64,
     column: u64,
@@ -775,7 +909,7 @@ fn card_view(
             )
         })
         .child(div().text_size(px(13.0 * z)).child(title))
-        .child(meta_row(ws, n, card, z, cx))
+        .child(meta_row(ws, boards, n, card, z, cx))
         .drag_over::<CardDrag>(move |s, _, _, _| s.border_color(ui.accent))
         .on_drag(CardDrag { board, card: id }, move |_, _, _, cx| {
             let text = preview_title.clone();
@@ -787,10 +921,16 @@ fn card_view(
             })
         })
         // Dropped on a card, a card takes its place; the column doesn't get the drop too.
-        .on_drop(cx.listener(move |ws, drag: &CardDrag, _, cx| {
-            ws.edit_boards(|b| b.move_card(drag.board, drag.card, column, Some(id)));
+        .on_drop(cx.listener(move |ws, drag: &CardDrag, window, cx| {
+            let space = ws.space.id.clone();
+            let act = BoardAct::MoveCard {
+                board: drag.board,
+                card: drag.card,
+                column,
+                to: Some(id),
+            };
+            ws.act_on_boards(&space, act, window, cx);
             cx.stop_propagation();
-            cx.notify();
         }))
         .on_click(
             cx.listener(move |ws, _: &ClickEvent, window, cx| open_card(ws, board, id, window, cx)),
@@ -816,13 +956,18 @@ pub(crate) fn add_card(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let draft = ws.boards.draft(column).cloned().unwrap_or_else(|| Draft {
+    let kept = ws
+        .boards_in(&ws.space.id)
+        .and_then(|b| b.draft(column))
+        .cloned();
+    let draft = kept.unwrap_or_else(|| Draft {
         at: column,
         new: true,
         base: Card::new(0),
         work: Card::new(0),
     });
-    open_draft(ws, board, draft, window, cx);
+    let space = ws.space.id.clone();
+    open_draft(ws, space, board, draft, window, cx);
 }
 
 /// The open card: what the person changes is kept in the dialog, apart from the board, until Done.
@@ -834,13 +979,16 @@ pub(crate) fn open_card(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let Some(mut base) = ws.boards.card(board, card).cloned() else {
+    let Some(boards) = ws.boards_in(&ws.space.id) else {
+        return;
+    };
+    let Some(mut base) = boards.card(board, card).cloned() else {
         return;
     };
     // Its comments are sent at once, on the board: they stay out of the work.
     base.comments.clear();
     let mut work = base.clone();
-    if let Some(kept) = ws.boards.draft(card) {
+    if let Some(kept) = boards.draft(card) {
         kept.merge_into(&mut work);
     }
     let draft = Draft {
@@ -849,12 +997,28 @@ pub(crate) fn open_card(
         base,
         work,
     };
-    open_draft(ws, board, draft, window, cx);
+    let space = ws.space.id.clone();
+    open_draft(ws, space, board, draft, window, cx);
+}
+
+/// The dialog of a card of the mirrored workspace `space` again, with the work a refused Done
+/// would have lost: a mirror keeps no draft.
+pub(crate) fn reopen_card(
+    ws: &mut Workspace,
+    space: &str,
+    board: u64,
+    draft: Draft,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    open_draft(ws, space.to_string(), board, draft, window, cx);
 }
 
 /// An open card dialog's work, and the same as it was when opened: Esc and a press outside ask
 /// only when the person changed something since.
 pub(crate) struct Work {
+    /// The workspace the dialog was opened on: where its acts go, whatever is shown later.
+    space: String,
     now: Draft,
     opened: Draft,
     /// The names of the files being copied in: they show as "Copying…" and count as a change.
@@ -876,10 +1040,52 @@ enum Outcome {
     Dropped,
 }
 
+/// Whether the card the dialog `open` is on can't take `deed` now, on a mirrored workspace: its
+/// words are said once. A card not made yet has no call of home's to refuse, nor has a local one.
+fn refused(
+    ws: &Entity<Workspace>,
+    open: &Open,
+    deed: Deed,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    let (space, new) = {
+        let open = open.borrow();
+        (open.space.clone(), open.now.new)
+    };
+    if new {
+        return false;
+    }
+    ws.update(cx, |ws, cx| match ws.why_not_in(&space, deed) {
+        Some(words) => {
+            ws.warn(words, window, cx);
+            true
+        }
+        None => false,
+    })
+}
+
 /// A dialog's work, shared by its fields and buttons, and kept by the workspace while it is open.
 pub(crate) type Open = Rc<RefCell<Work>>;
 
 impl Work {
+    /// The workspace the dialog was opened on.
+    pub(crate) fn space(&self) -> &str {
+        &self.space
+    }
+
+    /// The work as it is now.
+    #[cfg(test)]
+    pub(crate) fn draft(&self) -> &Draft {
+        &self.now
+    }
+
+    /// The work, for a test to change as the dialog's fields would.
+    #[cfg(test)]
+    pub(crate) fn draft_mut(&mut self) -> &mut Draft {
+        &mut self.now
+    }
+
     fn changed(&self) -> bool {
         self.now.work != self.opened.work || !self.copying.is_empty()
     }
@@ -901,7 +1107,10 @@ fn rebase(ws: &Workspace, open: &Open, board: u64) {
     if open.now.new {
         return;
     }
-    if let Some(live) = ws.boards.card(board, open.now.at) {
+    let live = ws
+        .boards_in(&open.space)
+        .and_then(|b| b.card(board, open.now.at));
+    if let Some(live) = live {
         open.now.rebase(live);
         open.opened.rebase(live);
     }
@@ -916,34 +1125,89 @@ fn close_card(ws: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
 /// The open card's comments: on the board for a card that exists, in the work of one not created
 /// yet. None: the card is gone.
 fn thread(ws: &Workspace, open: &Open, board: u64) -> Option<Vec<Comment>> {
+    let open_space = open.borrow().space.clone();
     let open = &open.borrow().now;
     if open.new {
         return Some(open.work.comments.clone());
     }
-    ws.boards.card(board, open.at).map(|c| c.comments.clone())
+    let card = ws
+        .boards_in(&open_space)
+        .and_then(|b| b.card(board, open.at))?;
+    Some(card.comments.clone())
 }
 
-/// Changes the open card's comments: at once on the board (a step of Ctrl+Z) for a card that
-/// exists, in the work of one not created yet.
-fn edit_thread(ws: &mut Workspace, open: &Open, board: u64, f: impl FnOnce(&mut Card)) {
-    let (new, at) = {
-        let open = &open.borrow().now;
-        (open.new, open.at)
+/// A change of the open card's comments.
+enum Thread {
+    Add(String),
+    Edit(u64, String),
+    Delete(u64),
+    Restore(usize, Comment),
+}
+
+/// Changes the open card's comments: at once on the board (a step of Ctrl+Z, or home's call) for
+/// a card that exists, in the work of one not created yet.
+fn edit_thread(
+    ws: &mut Workspace,
+    open: &Open,
+    board: u64,
+    change: Thread,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let (new, card, space) = {
+        let open = open.borrow();
+        (open.now.new, open.now.at, open.space.clone())
     };
     if new {
-        f(&mut open.borrow_mut().now.work);
-    } else {
-        ws.edit_boards(|b| b.edit_card(board, at, f));
+        let id = matches!(change, Thread::Add(_)).then(|| ws.fresh_id(&space));
+        let work = &mut open.borrow_mut().now.work;
+        match change {
+            Thread::Add(text) => work.comments.push(Comment {
+                id: id.expect("made for an added comment"),
+                by: "you".into(),
+                text,
+                at: notes::now(),
+                edited: false,
+            }),
+            Thread::Edit(id, text) => work.edit_comment(id, &text),
+            Thread::Delete(id) => work.comments.retain(|c| c.id != id),
+            Thread::Restore(index, comment) => {
+                work.restore_comment(index, comment);
+            }
+        }
+        return;
     }
+    let act = match change {
+        Thread::Add(text) => BoardAct::Comment { board, card, text },
+        Thread::Edit(comment, text) => BoardAct::EditComment {
+            board,
+            card,
+            comment,
+            text,
+        },
+        Thread::Delete(comment) => BoardAct::DeleteComment {
+            board,
+            card,
+            comment,
+        },
+        Thread::Restore(index, comment) => BoardAct::RestoreComment {
+            board,
+            card,
+            index,
+            comment,
+        },
+    };
+    ws.act_on_boards(&space, act, window, cx);
 }
 
 /// Adds `items` to the open card's checklist, in its work.
 fn add_items(ws: &mut Workspace, open: &Open, board: u64, items: &[(String, bool)]) {
     rebase(ws, open, board);
+    let space = open.borrow().space.clone();
     let items: Vec<Item> = items
         .iter()
         .map(|(text, done)| Item {
-            id: ws.boards.next(),
+            id: ws.fresh_id(&space),
             text: text.clone(),
             done: *done,
         })
@@ -952,9 +1216,18 @@ fn add_items(ws: &mut Workspace, open: &Open, board: u64, items: &[(String, bool
 }
 
 /// Done: the work goes to the board, as one step of Ctrl+Z, and its draft goes.
-fn finish_card(ws: &mut Workspace, open: &Open, board: u64) {
-    let draft = open.borrow().now.clone();
-    ws.edit_boards(|b| b.finish_draft(board, &draft));
+fn finish_card(
+    ws: &mut Workspace,
+    open: &Open,
+    board: u64,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let (space, draft) = {
+        let open = open.borrow();
+        (open.space.clone(), open.now.clone())
+    };
+    ws.act_on_boards(&space, BoardAct::Finish { board, draft }, window, cx);
 }
 
 /// The id of the card the open dialog is for. A card not created yet has none until its first
@@ -964,7 +1237,7 @@ fn finish_card(ws: &mut Workspace, open: &Open, board: u64) {
 fn card_id(ws: &mut Workspace, open: &Open) -> u64 {
     let open = &mut *open.borrow_mut();
     if open.now.work.id == 0 {
-        let id = ws.boards.next();
+        let id = ws.fresh_id(&open.space);
         for card in [
             &mut open.now.base,
             &mut open.now.work,
@@ -1009,6 +1282,13 @@ pub(crate) fn attach(
     let Some(data) = ws.data_dir.clone() else {
         return;
     };
+    // Attachments are home's: files dropped, pasted or picked on a mirror's card attach nothing.
+    if ws
+        .space_named(open.borrow().space())
+        .is_none_or(|s| s.is_remote())
+    {
+        return;
+    }
     if from.is_empty() || !ws.card_work.as_ref().is_some_and(|w| Rc::ptr_eq(w, open)) {
         return;
     }
@@ -1171,19 +1451,33 @@ fn assignee_menu(
         .dropdown_menu(move |menu, window, cx| {
             let set = |to| give(ws.clone(), open.clone(), board, to);
             let ws_now = ws.read(cx);
-            let mut sessions = ws_now.agent_sessions(board, cx);
+            let space = open.borrow().space.clone();
+            // On a mirror the choices are home's: its terminals and its agents.
+            let mirrored = ws_now.space_named(&space).and_then(|s| s.remote.as_deref());
+            let mut sessions = match mirrored {
+                Some(remote) => ws_now.home_sessions(remote),
+                None => ws_now.agent_sessions(board, cx),
+            };
             // The current block first when it runs no agent now (closed, or its agent quit).
             if let Some(Assignee::Block(uid)) = &current
                 && !sessions.iter().any(|(s, _)| s == uid)
             {
-                let label = assignee_label(ws_now, &Assignee::Block(uid.clone()), cx);
+                let label = assignee_label(ws_now, &space, &Assignee::Block(uid.clone()), cx);
                 sessions.insert(0, (uid.clone(), label));
             }
-            let agents: Vec<(String, String)> = ws_now
-                .agents
-                .iter()
-                .map(|a| (a.id.clone(), a.title.clone()))
-                .collect();
+            let agents: Vec<(String, String)> = match mirrored {
+                Some(remote) => remote
+                    .agents
+                    .iter()
+                    .flatten()
+                    .map(|a| (a.id.clone(), a.title.clone()))
+                    .collect(),
+                None => ws_now
+                    .agents
+                    .iter()
+                    .map(|a| (a.id.clone(), a.title.clone()))
+                    .collect(),
+            };
             let mut menu = menu.item(
                 PopupMenuItem::new("Anyone")
                     .checked(current.is_none())
@@ -1273,6 +1567,85 @@ const SIDE: f32 = 20.0;
 
 /// A section's header in the card's dialog: its icon and name at the left and, at the right, what
 /// it holds.
+/// A mirrored card's attachments, by name and size: they are home's, so nothing here draws a
+/// thumbnail, opens a file or attaches one (the button stands dimmed, saying where they are).
+fn remote_attachments(ui: Ui, card: &Card, computer: &str) -> Div {
+    let words = SharedString::from(format!("Attachments are on {computer}: open them there."));
+    let n = card.attachments.len();
+    let rows = card.attachments.iter().map(|a| {
+        div()
+            .id(ElementId::Name(format!("attachment-{}", a.name).into()))
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .px(px(6.0))
+            .py(px(5.0))
+            .child(
+                Icon::new(IconName::File)
+                    .size(px(14.0))
+                    .text_color(ui.title_dim),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_size(px(13.0))
+                    .child(a.name.clone()),
+            )
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ui.title_dim)
+                    .child(attachments::size_text(a.size)),
+            )
+            .test_support()
+    });
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .child(
+                    section(
+                        ui,
+                        IconName::Paperclip,
+                        "Attachments",
+                        (n > 0).then(|| n.to_string()),
+                    )
+                    .flex_1()
+                    .pr(px(8.0)),
+                )
+                .child(
+                    div()
+                        .id("attach-files")
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .text_size(px(12.0))
+                        .text_color(ui.title_dim)
+                        .opacity(0.5)
+                        .child(Icon::new(IconName::Plus).size(px(14.0)))
+                        .child("Attach")
+                        .tooltip(move |window, cx| Tooltip::new(words.clone()).build(window, cx))
+                        .test_support(),
+                ),
+        )
+        .child(
+            div()
+                .id("card-attachments")
+                .flex()
+                .flex_col()
+                .children(rows)
+                .test_support(),
+        )
+}
+
 fn section(ui: Ui, icon: IconName, label: &'static str, count: Option<String>) -> Div {
     div()
         .flex()
@@ -1405,6 +1778,8 @@ pub(crate) fn danger(id: impl Into<ElementId>, label: &'static str, red: Hsla) -
 type Editing = Rc<RefCell<Option<(u64, Entity<TextareaState>)>>>;
 /// Ends that edit: saved (true) or not.
 type Finish = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+/// Done: false when a mirror's home can't take the work, and the dialog stays open.
+type Submit = Rc<dyn Fn(&mut Window, &mut App) -> bool>;
 /// The comments the person deleted from an open card, each with its place in the thread, in the
 /// order they were deleted: a row stands where each was, with Undo, until the dialog closes.
 type Deleted = Rc<RefCell<Vec<(usize, Comment)>>>;
@@ -1412,14 +1787,21 @@ type Deleted = Rc<RefCell<Vec<(usize, Comment)>>>;
 /// Saves what the person typed in the comment being edited, if it holds text, and ends the edit:
 /// a dialog that closes, or another comment's pencil, mustn't drop it silently. The same words
 /// change nothing.
-fn save_draft(ws: &Entity<Workspace>, editing: &Editing, open: &Open, board: u64, cx: &mut App) {
+fn save_draft(
+    ws: &Entity<Workspace>,
+    editing: &Editing,
+    open: &Open,
+    board: u64,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some((id, input)) = editing.borrow_mut().take() else {
         return;
     };
     let text = input.read(cx).value().trim().to_string();
     if !text.is_empty() {
         ws.update(cx, |ws, cx| {
-            edit_thread(ws, open, board, |c| c.edit_comment(id, &text));
+            edit_thread(ws, open, board, Thread::Edit(id, text), window, cx);
             cx.notify();
         });
     }
@@ -1575,22 +1957,28 @@ fn ask_to_leave(
     open: &Open,
     editing: &Editing,
     board: u64,
-    submit: Rc<dyn Fn(&mut App)>,
+    submit: Submit,
     window: &mut Window,
     cx: &mut App,
 ) {
     let at = open.borrow().now.at;
+    // A mirror keeps no draft: Save and Discard only.
+    let remote = ws
+        .read(cx)
+        .space_named(open.borrow().space())
+        .is_some_and(|s| s.is_remote());
     let (save, keep, discard) = (ws.clone(), ws.clone(), ws.clone());
     let (open, editing) = (open.clone(), editing.clone());
     let (open_keep, editing_keep, open_discard) = (open.clone(), editing.clone(), open.clone());
-    let choices = vec![
+    let mut choices = vec![
         Choice {
             id: "leave-save",
             label: "Save".into(),
             primary: true,
             act: Rc::new(move |window, cx| {
-                submit(cx);
-                close_card(&save, window, cx);
+                if submit(window, cx) {
+                    close_card(&save, window, cx);
+                }
             }),
         },
         Choice {
@@ -1598,11 +1986,14 @@ fn ask_to_leave(
             label: "Save draft".into(),
             primary: false,
             act: Rc::new(move |window, cx| {
-                save_draft(&keep, &editing_keep, &open_keep, board, cx);
+                save_draft(&keep, &editing_keep, &open_keep, board, window, cx);
                 open_keep.borrow_mut().outcome = Outcome::Kept;
                 keep.update(cx, |ws, cx| {
-                    ws.boards.keep_draft(open_keep.borrow().now.clone());
-                    cx.notify();
+                    let (space, draft) = {
+                        let open = open_keep.borrow();
+                        (open.space.clone(), open.now.clone())
+                    };
+                    ws.act_on_boards(&space, BoardAct::KeepDraft(draft), window, cx);
                 });
                 close_card(&keep, window, cx);
             }),
@@ -1615,13 +2006,16 @@ fn ask_to_leave(
                 editing.borrow_mut().take();
                 open_discard.borrow_mut().outcome = Outcome::Dropped;
                 discard.update(cx, |ws, cx| {
-                    ws.boards.drop_draft(at);
-                    cx.notify();
+                    let space = open_discard.borrow().space.clone();
+                    ws.act_on_boards(&space, BoardAct::DropDraft(at), window, cx);
                 });
                 close_card(&discard, window, cx);
             }),
         },
     ];
+    if remote {
+        choices.retain(|c| c.id != "leave-save-draft");
+    }
     prompt::choose(
         "Save your changes?",
         "A draft is kept aside: the board doesn't change until Done.",
@@ -1634,6 +2028,7 @@ fn ask_to_leave(
 /// The dialog of a card: `draft`'s work is what its fields show and change.
 fn open_draft(
     ws: &mut Workspace,
+    space: String,
     board: u64,
     draft: Draft,
     window: &mut Window,
@@ -1643,6 +2038,7 @@ fn open_draft(
     let opened = draft.work.clone();
     let select = new && draft.work == draft.base;
     let open: Open = Rc::new(RefCell::new(Work {
+        space,
         opened: draft.clone(),
         now: draft,
         copying: Vec::new(),
@@ -1731,8 +2127,8 @@ fn open_draft(
                     return;
                 }
                 // The same words are no edit, and no step of Ctrl+Z.
-                ws.update(cx, |ws, _| {
-                    edit_thread(ws, &open, board, |c| c.edit_comment(id, &text))
+                ws.update(cx, |ws, cx| {
+                    edit_thread(ws, &open, board, Thread::Edit(id, text), window, cx)
                 });
             }
             *editing.borrow_mut() = None;
@@ -1743,15 +2139,29 @@ fn open_draft(
     // A card gone meanwhile (an agent, another block, Ctrl+Z) draws its last values.
     let last = RefCell::new((opened.clone(), String::new()));
     // Done: a comment edit in the middle is kept, then the work goes to the board.
-    let submit: Rc<dyn Fn(&mut App)> = {
+    // False: a mirror's home can't take it, and says why; the dialog stays open.
+    let submit: Submit = {
         let (ws, editing, open) = (ws.clone(), editing.clone(), open.clone());
-        Rc::new(move |cx| {
-            save_draft(&ws, &editing, &open, board, cx);
+        Rc::new(move |window, cx| {
+            save_draft(&ws, &editing, &open, board, window, cx);
+            let refused = ws.update(cx, |ws, cx| {
+                let (space, draft) = {
+                    let open = open.borrow();
+                    (open.space.clone(), open.now.clone())
+                };
+                let words = ws.finish_refusal(&space, board, &draft)?;
+                ws.warn(words, window, cx);
+                Some(())
+            });
+            if refused.is_some() {
+                return false;
+            }
             open.borrow_mut().outcome = Outcome::Done;
             ws.update(cx, |ws, cx| {
-                finish_card(ws, &open, board);
+                finish_card(ws, &open, board, window, cx);
                 cx.notify();
             });
+            true
         })
     };
     // A dialog, not an alert: a press outside it asks, or closes it.
@@ -1759,12 +2169,14 @@ fn open_draft(
         let ws_now = ws.read(cx);
         let ui = ws_now.ui;
         let palette = ws_now.theme.palette;
+        let space = open.borrow().space.clone();
+        let boards_now = ws_now.boards_in(&space);
         // The card as it is now with the person's changes over it: an agent's changes to what
         // they left alone show at once. A card not created yet is its work.
         let now = if new {
             Some(open.borrow().now.work.clone())
         } else {
-            ws_now.boards.card(board, card).map(|c| {
+            boards_now.and_then(|b| b.card(board, card)).map(|c| {
                 let mut c = c.clone();
                 open.borrow().now.merge_into(&mut c);
                 c
@@ -1778,7 +2190,9 @@ fn open_draft(
                     col.cards.iter().any(|x| x.id == card)
                 }
             };
-            *last.borrow_mut() = (c, place(&ws_now.boards, board, held));
+            if let Some(boards) = boards_now {
+                *last.borrow_mut() = (c, place(boards, board, held));
+            }
         }
         let (shown, place) = last.borrow().clone();
         // A comment that is in the thread again (Ctrl+Z, an agent) needs no Undo.
@@ -1889,8 +2303,11 @@ fn open_draft(
                             let open = open.clone();
                             let text = c.text.clone();
                             move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                if refused(&ws, &open, Deed::EditComment, window, cx) {
+                                    return;
+                                }
                                 // Another comment's draft is kept, not dropped.
-                                save_draft(&ws, &editing, &open, board, cx);
+                                save_draft(&ws, &editing, &open, board, window, cx);
                                 let input = cx.new(|cx| {
                                     TextareaState::new(window, cx)
                                         .auto_grow(2, 8)
@@ -1955,7 +2372,10 @@ fn open_draft(
                         )
                         .on_click({
                             let (ws, deleted, open) = (ws.clone(), deleted.clone(), open.clone());
-                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                if refused(&ws, &open, Deed::DeleteComment, window, cx) {
+                                    return;
+                                }
                                 ws.update(cx, |ws, cx| {
                                     let thread = thread(ws, &open, board);
                                     let Some((index, comment)) = thread.and_then(|t| {
@@ -1964,10 +2384,15 @@ fn open_draft(
                                     }) else {
                                         return;
                                     };
-                                    edit_thread(ws, &open, board, |c| {
-                                        c.comments.retain(|x| x.id != id)
-                                    });
-                                    deleted.borrow_mut().push((index, comment));
+                                    edit_thread(ws, &open, board, Thread::Delete(id), window, cx);
+                                    // A mirror's deleted comment has no Undo: putting it back
+                                    // would change its author and time. Home's Ctrl+Z does.
+                                    let mirrored = ws
+                                        .space_named(open.borrow().space())
+                                        .is_some_and(|s| s.is_remote());
+                                    if !mirrored {
+                                        deleted.borrow_mut().push((index, comment));
+                                    }
                                     cx.notify();
                                 })
                             }
@@ -2071,7 +2496,7 @@ fn open_draft(
             for (_, c) in gone.iter().filter(|(index, _)| (*index).min(len) == at) {
                 let id = c.id;
                 let (ws, deleted, open) = (ws.clone(), deleted.clone(), open.clone());
-                let row = removed_comment(id, ui, move |_, _, cx| {
+                let row = removed_comment(id, ui, move |_, window, cx| {
                     let taken = {
                         let mut gone = deleted.borrow_mut();
                         gone.iter()
@@ -2080,9 +2505,14 @@ fn open_draft(
                     };
                     if let Some((index, comment)) = taken {
                         ws.update(cx, |ws, cx| {
-                            edit_thread(ws, &open, board, |c| {
-                                c.restore_comment(index, comment);
-                            });
+                            edit_thread(
+                                ws,
+                                &open,
+                                board,
+                                Thread::Restore(index, comment),
+                                window,
+                                cx,
+                            );
                             cx.notify();
                         });
                     }
@@ -2092,6 +2522,20 @@ fn open_draft(
             comments.extend(live.next());
         }
         let can_send = !comment.read(cx).value().trim().is_empty();
+        // A mirror's home may refuse what Done, a comment or Delete card does: dimmed, its words
+        // the tooltip. A card not made yet has no call of home's to refuse a comment.
+        let why_done = ws_now.why_not_in(
+            &space,
+            if new {
+                Deed::CreateCard
+            } else {
+                Deed::EditCard
+            },
+        );
+        let why_comment = (!new)
+            .then(|| ws_now.why_not_in(&space, Deed::CommentCard))
+            .flatten();
+        let why_delete = ws_now.why_not_in(&space, Deed::DeleteCard);
         let add = {
             let (ws, comment, open) = (ws.clone(), comment.clone(), open.clone());
             let (bg, color) = if can_send {
@@ -2099,27 +2543,24 @@ fn open_draft(
             } else {
                 (ui.hover, ui.title_dim)
             };
+            let tip = SharedString::from(
+                why_comment
+                    .clone()
+                    .unwrap_or_else(|| "Add the comment".to_string()),
+            );
             pill("add-comment", "Comment", Some(IconName::ArrowUp), bg, color)
                 .h(px(26.0))
                 .px(px(10.0))
-                .when(!can_send, |el| el.cursor_default())
-                .tooltip(|window, cx| Tooltip::new("Add the comment").build(window, cx))
+                .when(!can_send || why_comment.is_some(), |el| el.cursor_default())
+                .when(why_comment.is_some(), |el| el.opacity(0.5))
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                 .on_click(move |_: &ClickEvent, window, cx| {
                     let text = comment.read(cx).value().trim().to_string();
-                    if text.is_empty() {
+                    if text.is_empty() || refused(&ws, &open, Deed::CommentCard, window, cx) {
                         return;
                     }
                     ws.update(cx, |ws, cx| {
-                        let id = ws.boards.next();
-                        edit_thread(ws, &open, board, |c| {
-                            c.comments.push(Comment {
-                                id,
-                                by: "you".into(),
-                                text,
-                                at: notes::now(),
-                                edited: false,
-                            })
-                        });
+                        edit_thread(ws, &open, board, Thread::Add(text), window, cx);
                         cx.notify();
                     });
                     comment.update(cx, |c, cx| c.set_value("", window, cx));
@@ -2136,30 +2577,39 @@ fn open_draft(
                     .on_click(move |_: &ClickEvent, window, cx| {
                         open.borrow_mut().outcome = Outcome::Dropped;
                         ws.update(cx, |ws, cx| {
-                            ws.boards.drop_draft(card);
-                            cx.notify();
+                            let space = open.borrow().space.clone();
+                            ws.act_on_boards(&space, BoardAct::DropDraft(card), window, cx);
                         });
                         close_card(&ws, window, cx);
                     })
                     .test_support()
             } else {
                 let open = open.clone();
+                let tip = why_delete.clone();
                 danger("delete-card", "Delete card", red)
+                    .when_some(tip, |el, why| {
+                        el.opacity(0.5)
+                            .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+                    })
                     .on_click(move |_: &ClickEvent, window, cx| {
+                        if refused(&ws, &open, Deed::DeleteCard, window, cx) {
+                            return;
+                        }
                         open.borrow_mut().outcome = Outcome::Dropped;
                         ws.update(cx, |ws, cx| {
-                            ws.edit_boards(|b| b.remove_card(board, card));
-                            cx.notify();
+                            let space = open.borrow().space.clone();
+                            let act = BoardAct::DeleteCard { board, card };
+                            ws.act_on_boards(&space, act, window, cx);
                         });
                         close_card(&ws, window, cx);
                     })
                     .test_support()
             }
         };
-        let who = shown
-            .assignee
-            .as_ref()
-            .map_or_else(|| "Anyone".to_string(), |a| assignee_label(ws_now, a, cx));
+        let who = shown.assignee.as_ref().map_or_else(
+            || "Anyone".to_string(),
+            |a| assignee_label(ws_now, &space, a, cx),
+        );
         let unassign = shown.assignee.is_some().then(|| {
             icon_button("unassign", IconName::Close, ui, 1.0)
                 .tooltip(|window, cx| Tooltip::new("Give it to anyone").build(window, cx))
@@ -2248,96 +2698,143 @@ fn open_draft(
         });
         // Attachments: thumbnails of the images, then a row each for the other files; a file
         // being copied is a row with no ✕. A click opens a file with the system's app.
-        let files = ws_now.data_dir.as_ref().map(|data| {
-            let folder = attachments::dir(data, shown.id);
-            let remove = |name: &str| {
-                let name = name.to_string();
-                let rm = edit(Rc::new(move |c| c.attachments.retain(|a| a.name != name)));
-                move |e: &ClickEvent, window: &mut Window, cx: &mut App| {
-                    rm(e, window, cx);
-                    cx.stop_propagation();
-                }
-            };
-            let cross = |group: &SharedString, name: &str, corner: bool| {
-                let group = group.clone();
-                let button = div()
-                    .id(ElementId::Name(format!("attachment-remove-{name}").into()))
-                    .flex_shrink_0()
-                    .size(px(18.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(if corner { 9.0 } else { 4.0 }))
-                    .opacity(0.0)
-                    .group_hover(group, |s| s.opacity(1.0))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(ui.hover))
-                    .child(
-                        Icon::new(IconName::Close)
-                            .size(px(11.0))
-                            .text_color(ui.title_dim),
-                    )
-                    .tooltip(|window, cx| Tooltip::new("Remove the attachment").build(window, cx))
-                    .on_click(remove(name))
-                    .test_support();
-                if corner {
-                    button.absolute().top(px(4.0)).right(px(4.0)).bg(ui.surface)
-                } else {
-                    button
-                }
-            };
-            let opener = |name: &str| {
-                let path = folder.join(name);
-                move |_: &ClickEvent, _: &mut Window, cx: &mut App| cx.open_with_system(&path)
-            };
-            let item = |a: &Attachment| {
-                let name = a.name.clone();
-                let group = SharedString::from(format!("attachment-group-{name}"));
-                let tip = format!("{name} · {}", attachments::size_text(a.size));
-                let el = div()
-                    .id(ElementId::Name(format!("attachment-{name}").into()))
-                    .group(group.clone())
-                    .cursor_pointer()
-                    .on_click(opener(&name));
-                if attachments::thumbnail(a) {
-                    let missing = move || {
-                        div()
-                            .size_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(ui.card)
+        let mirrored = ws_now.space_named(&space).and_then(|s| s.remote.as_deref());
+        let files = if let Some(remote) = mirrored {
+            Some(remote_attachments(
+                ui,
+                &shown,
+                &crate::mirror::computer_of(remote),
+            ))
+        } else {
+            ws_now.data_dir.as_ref().map(|data| {
+                let folder = attachments::dir(data, shown.id);
+                let remove = |name: &str| {
+                    let name = name.to_string();
+                    let rm = edit(Rc::new(move |c| c.attachments.retain(|a| a.name != name)));
+                    move |e: &ClickEvent, window: &mut Window, cx: &mut App| {
+                        rm(e, window, cx);
+                        cx.stop_propagation();
+                    }
+                };
+                let cross = |group: &SharedString, name: &str, corner: bool| {
+                    let group = group.clone();
+                    let button = div()
+                        .id(ElementId::Name(format!("attachment-remove-{name}").into()))
+                        .flex_shrink_0()
+                        .size(px(18.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(if corner { 9.0 } else { 4.0 }))
+                        .opacity(0.0)
+                        .group_hover(group, |s| s.opacity(1.0))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(ui.hover))
+                        .child(
+                            Icon::new(IconName::Close)
+                                .size(px(11.0))
+                                .text_color(ui.title_dim),
+                        )
+                        .tooltip(|window, cx| {
+                            Tooltip::new("Remove the attachment").build(window, cx)
+                        })
+                        .on_click(remove(name))
+                        .test_support();
+                    if corner {
+                        button.absolute().top(px(4.0)).right(px(4.0)).bg(ui.surface)
+                    } else {
+                        button
+                    }
+                };
+                let opener = |name: &str| {
+                    let path = folder.join(name);
+                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| cx.open_with_system(&path)
+                };
+                let item = |a: &Attachment| {
+                    let name = a.name.clone();
+                    let group = SharedString::from(format!("attachment-group-{name}"));
+                    let tip = format!("{name} · {}", attachments::size_text(a.size));
+                    let el = div()
+                        .id(ElementId::Name(format!("attachment-{name}").into()))
+                        .group(group.clone())
+                        .cursor_pointer()
+                        .on_click(opener(&name));
+                    if attachments::thumbnail(a) {
+                        let missing = move || {
+                            div()
+                                .size_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(ui.card)
+                                .child(
+                                    Icon::new(IconName::Image)
+                                        .size(px(20.0))
+                                        .text_color(ui.title_dim),
+                                )
+                                .into_any_element()
+                        };
+                        el.relative()
+                            .size(px(72.0))
+                            .rounded(px(6.0))
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(ui.hairline)
+                            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                             .child(
-                                Icon::new(IconName::Image)
-                                    .size(px(20.0))
+                                img(folder.join(&name))
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover)
+                                    .with_fallback(missing),
+                            )
+                            .child(cross(&group, &name, true))
+                            .test_support()
+                            .into_any_element()
+                    } else {
+                        el.flex()
+                            .items_center()
+                            .gap(px(10.0))
+                            .px(px(6.0))
+                            .py(px(5.0))
+                            .rounded(px(6.0))
+                            .hover(move |s| s.bg(ui.hover))
+                            .child(
+                                Icon::new(IconName::File)
+                                    .size(px(14.0))
                                     .text_color(ui.title_dim),
                             )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .text_size(px(13.0))
+                                    .child(name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(ui.title_dim)
+                                    .child(attachments::size_text(a.size)),
+                            )
+                            .child(cross(&group, &name, false))
+                            .test_support()
                             .into_any_element()
-                    };
-                    el.relative()
-                        .size(px(72.0))
-                        .rounded(px(6.0))
-                        .overflow_hidden()
-                        .border_1()
-                        .border_color(ui.hairline)
-                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                        .child(
-                            img(folder.join(&name))
-                                .size_full()
-                                .object_fit(ObjectFit::Cover)
-                                .with_fallback(missing),
-                        )
-                        .child(cross(&group, &name, true))
-                        .test_support()
-                        .into_any_element()
-                } else {
-                    el.flex()
+                    }
+                };
+                let (thumbs, rows): (Vec<_>, Vec<_>) = shown
+                    .attachments
+                    .iter()
+                    .partition(|a| attachments::thumbnail(a));
+                let copying = open.borrow().copying.clone();
+                let copying = copying.iter().map(|name| {
+                    div()
+                        .id(ElementId::Name(format!("attachment-copying-{name}").into()))
+                        .flex()
                         .items_center()
                         .gap(px(10.0))
                         .px(px(6.0))
                         .py(px(5.0))
-                        .rounded(px(6.0))
-                        .hover(move |s| s.bg(ui.hover))
                         .child(
                             Icon::new(IconName::File)
                                 .size(px(14.0))
@@ -2355,121 +2852,85 @@ fn open_draft(
                             div()
                                 .text_size(px(11.0))
                                 .text_color(ui.title_dim)
-                                .child(attachments::size_text(a.size)),
+                                .child("Copying…"),
                         )
-                        .child(cross(&group, &name, false))
                         .test_support()
-                        .into_any_element()
-                }
-            };
-            let (thumbs, rows): (Vec<_>, Vec<_>) = shown
-                .attachments
-                .iter()
-                .partition(|a| attachments::thumbnail(a));
-            let copying = open.borrow().copying.clone();
-            let copying = copying.iter().map(|name| {
+                });
+                let empty = shown.attachments.is_empty() && open.borrow().copying.is_empty();
+                let list = if empty {
+                    div()
+                        .id("card-attachments")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(6.0))
+                        .py(px(14.0))
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_dashed()
+                        .border_color(ui.hairline)
+                        .text_size(px(12.0))
+                        .text_color(ui.title)
+                        .child(
+                            Icon::new(IconName::Paperclip)
+                                .size(px(13.0))
+                                .text_color(ui.title_dim),
+                        )
+                        .child("Drop files here or paste a screenshot")
+                } else {
+                    div()
+                        .id("card-attachments")
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.0))
+                        .when(!thumbs.is_empty(), |el| {
+                            el.child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap(px(8.0))
+                                    .children(thumbs.into_iter().map(&item)),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .children(rows.into_iter().map(&item))
+                                .children(copying),
+                        )
+                };
+                let n = shown.attachments.len();
                 div()
-                    .id(ElementId::Name(format!("attachment-copying-{name}").into()))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .px(px(6.0))
-                    .py(px(5.0))
-                    .child(
-                        Icon::new(IconName::File)
-                            .size(px(14.0))
-                            .text_color(ui.title_dim),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(13.0))
-                            .child(name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(ui.title_dim)
-                            .child("Copying…"),
-                    )
-                    .test_support()
-            });
-            let empty = shown.attachments.is_empty() && open.borrow().copying.is_empty();
-            let list = if empty {
-                div()
-                    .id("card-attachments")
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(6.0))
-                    .py(px(14.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_dashed()
-                    .border_color(ui.hairline)
-                    .text_size(px(12.0))
-                    .text_color(ui.title)
-                    .child(
-                        Icon::new(IconName::Paperclip)
-                            .size(px(13.0))
-                            .text_color(ui.title_dim),
-                    )
-                    .child("Drop files here or paste a screenshot")
-            } else {
-                div()
-                    .id("card-attachments")
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
-                    .when(!thumbs.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(8.0))
-                                .children(thumbs.into_iter().map(&item)),
-                        )
-                    })
                     .child(
                         div()
                             .flex()
-                            .flex_col()
-                            .children(rows.into_iter().map(&item))
-                            .children(copying),
-                    )
-            };
-            let n = shown.attachments.len();
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .child(
-                            section(
-                                ui,
-                                IconName::Paperclip,
-                                "Attachments",
-                                (n > 0).then(|| n.to_string()),
+                            .items_center()
+                            .child(
+                                section(
+                                    ui,
+                                    IconName::Paperclip,
+                                    "Attachments",
+                                    (n > 0).then(|| n.to_string()),
+                                )
+                                .flex_1()
+                                .pr(px(8.0)),
                             )
-                            .flex_1()
-                            .pr(px(8.0)),
-                        )
-                        .child(
-                            Button::new("attach-files")
-                                .small()
-                                .ghost()
-                                .icon(IconName::Plus)
-                                .label("Attach")
-                                .on_click(pick_files(ws.clone(), open.clone(), board)),
-                        ),
-                )
-                .child(list.test_support())
-        });
+                            .child(
+                                Button::new("attach-files")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::Plus)
+                                    .label("Attach")
+                                    .on_click(pick_files(ws.clone(), open.clone(), board)),
+                            ),
+                    )
+                    .child(list.test_support())
+            })
+        };
         let thread = if comments.is_empty() {
             div()
                 .flex()
@@ -2544,11 +3005,16 @@ fn open_draft(
             .child(delete)
             .child(
                 pill("card-done", "Done", None, ui.accent, ui.surface)
+                    .when_some(why_done, |el, why| {
+                        el.opacity(0.5)
+                            .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+                    })
                     .on_click({
                         let (ws, submit) = (ws.clone(), submit.clone());
                         move |_, window, cx| {
-                            submit(cx);
-                            close_card(&ws, window, cx)
+                            if submit(window, cx) {
+                                close_card(&ws, window, cx)
+                            }
                         }
                     })
                     .test_support(),
@@ -2561,8 +3027,10 @@ fn open_draft(
             // keeps what was typed.
             .on_ok({
                 let (ws, submit) = (ws.clone(), submit.clone());
-                move |_, _, cx| {
-                    submit(cx);
+                move |_, window, cx| {
+                    if !submit(window, cx) {
+                        return false;
+                    }
                     ws.update(cx, |ws, _| ws.card_work = None);
                     true
                 }
@@ -2581,7 +3049,7 @@ fn open_draft(
                         ask_to_leave(&ws, &open, &editing, board, submit.clone(), window, cx);
                         return false;
                     }
-                    save_draft(&ws, &editing, &open, board, cx);
+                    save_draft(&ws, &editing, &open, board, window, cx);
                     ws.update(cx, |ws, _| ws.card_work = None);
                     true
                 }

@@ -2397,9 +2397,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **The Open dialog's answer closes whatever dialog is on top.** (`launcher.rs`, `ask_home_folder`.) A person who
   closed it with Esc while home was answering has home's Ok close the next dialog they opened. Fix: keep the dialog's
   handle and close that one, or ignore an Ok after Cancel.
-- [ ] **A kanban added from a mirror shows a new board.** (`workspace/control.rs`, `add_block_for_agent`.) Home's
-  `add_block` always shows one (a new board with To do, Doing, Review, Done); locally a new kanban shows none. Fix:
-  2d's All boards… on a remote, or `add_block` without a board for a kanban.
 - [ ] **A shared workspace with no folder refuses the mirror's terminals and agents.** (`workspace/api.rs`,
   `confined_default`.) Home's confinement of a limited token says so in its words ("this workspace has none"), which
   the mirror shows after the click. Fix: the Share… dialog says it when the workspace has none.
@@ -2422,3 +2419,25 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **The mouse and the wheel over a remote terminal, Shift+PageUp and Find through home's history were checked
   headlessly only.** (`workspace/input.rs`, `workspace/remote.rs`.) The pointer over a remote terminal at other zooms,
   and a wheel step over a program that took the mouse, were not looked at on a display. Fix: look.
+- [ ] **A column dragged on a mirror moves when home's state comes.** (`workspace/remote_boards.rs`,
+  `remote_board_act`.) A card move shows at once and stands over home's state; a column move isn't held, so it shows a
+  round trip later. Fix: a `columns_moved` hold, laid over the copy as `cards_moved` is.
+- [ ] **The board's dimmed controls and its menus on a remote were checked headlessly only.** (`kanban.rs`, `gated`;
+  `menu/build.rs`.) Their dimming, tooltips and the confirm dialogs of Delete card, Delete and Delete board… were not
+  looked at on a display. Fix: look at them with two `--dev` instances, one a Control share, one an older home.
+- [ ] **A kanban's header button All boards isn't dimmed on a mirror that can't show boards.**
+  (`block.rs`, `header_button`.) Its menu item is, with the rule's words; the button opens the dialog, whose acts say
+  the words once. Fix: `header_button` takes the deed's words as its tooltip and dims.
+- [ ] **A comment deleted on a mirror has no Undo.** (`kanban.rs`, the thread.) Home's Ctrl+Z on its kanban brings it
+  back; putting it back from here would change its author and time. Fix: `comment_card` of the text, or a restore at
+  home.
+- [ ] **`GET /v1/tools` describes `edit_comment` and `delete_comment` as the Templum Agent's.**
+  (`templum-mcp/src/control.rs`, `SHARED`.) Through the API they edit the person's comments (those by `you`) and
+  delete any, as docs/api.md says. Fix: the registry's own descriptions for the shared tools.
+- [ ] **The card dialog on a remote was checked headlessly only.** (`kanban.rs`, `open_draft`.) The dimmed Done,
+  Comment and Delete card, the attachments by name, Attach dimmed, the assignee menu of home's terminals and agents,
+  and the dialog's height with them (the comment field leaves the test window) were not looked at on a display.
+  Fix: look at it with two `--dev` instances.
+- [ ] **A mirror's comment pencil and trash aren't dimmed, only refused.** (`kanban.rs`, `refused`.) A card whose home
+  refuses `edit_comment` or `delete_comment` says the rule's words when they are clicked, once; the buttons look
+  alive. Fix: read the two deeds once a frame, as Done's, and dim them.

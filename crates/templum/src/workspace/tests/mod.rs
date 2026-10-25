@@ -692,6 +692,22 @@ pub(super) fn board_with_a_card(
     .unwrap()
 }
 
+/// Presses on the element `from`, drags it onto the element `to` and lets go: no sleeps, the
+/// frames the drag needs are drawn by the test window.
+pub(super) fn drop_on(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    from: impl Into<gpui_kit::ElementId>,
+    to: impl Into<gpui_kit::ElementId>,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.drag_to(from, to, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
 /// Moves the pointer to `to` (a window position), no button held, and draws.
 pub(super) fn point_at(handle: AnyWindowHandle, cx: &mut TestAppContext, to: (f32, f32)) {
     cx.update_window(handle, |_, window, cx| {
@@ -723,6 +739,7 @@ mod attachments;
 mod automations;
 mod block_ids;
 mod blocks;
+mod board_tools;
 mod bus;
 mod card_draft;
 mod checklists;
@@ -762,6 +779,7 @@ mod notes;
 mod notices;
 mod persistence;
 mod remote;
+mod remote_boards;
 mod requests;
 mod screen;
 mod selection;

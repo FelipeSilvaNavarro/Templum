@@ -39,6 +39,7 @@ mod persist;
 mod preferences;
 mod questions;
 pub(crate) mod remote;
+mod remote_boards;
 mod render;
 mod schedules;
 mod selection;
@@ -54,6 +55,7 @@ mod waits;
 mod wires;
 mod worktrees;
 
+pub(crate) use blocks::BoardAct;
 pub(crate) use bus::templum_in;
 pub(crate) use find::FindBar;
 pub(crate) use git_message::TryIt;
@@ -565,16 +567,18 @@ impl Body {
         }
     }
 
+    /// A kanban of this computer's boards: a mirrored workspace's has home's ids, which no local
+    /// lookup by board id may meet.
     pub fn kanban(&self) -> Option<&Kanban> {
         match self {
-            Body::Kanban(kanban) => Some(kanban),
+            Body::Kanban(kanban) if !kanban.remote => Some(kanban),
             _ => None,
         }
     }
 
     pub fn kanban_mut(&mut self) -> Option<&mut Kanban> {
         match self {
-            Body::Kanban(kanban) => Some(kanban),
+            Body::Kanban(kanban) if !kanban.remote => Some(kanban),
             _ => None,
         }
     }

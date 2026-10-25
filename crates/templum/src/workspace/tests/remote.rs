@@ -510,7 +510,11 @@ fn home_s_blocks_appear_move_and_go(cx: &mut TestAppContext) {
                 ("terminal", Body::Terminal(pane)) => {
                     assert_eq!(pane.remote.as_ref().unwrap().block, uids[&home_id]);
                 }
-                (kind, Body::Mirrored(card)) => assert_eq!(card.kind, kind),
+                // A kanban is live: its own body, home's board, marked remote.
+                ("kanban", Body::Kanban(k)) => assert!(k.remote),
+                (kind @ ("note" | "checklist"), Body::Mirrored(card)) => {
+                    assert_eq!(card.kind, kind)
+                }
                 _ => panic!("{kind} is drawn as the wrong body"),
             }
         }
@@ -1098,7 +1102,7 @@ fn shown_mirror(
 
 /// `shown_mirror` with a share of `scope`.
 #[allow(clippy::type_complexity)]
-fn shown_mirror_as(
+pub(super) fn shown_mirror_as(
     cx: &mut TestAppContext,
     scope: Scope,
 ) -> (
@@ -1978,7 +1982,7 @@ fn the_banner_tooltips_say_the_real_round_trip_and_what_isnt_mirrored() {
         "notes",
         "checklists",
         "editors",
-        "boards",
+        "attachments",
         "ink",
         "shapes",
         "Git popup",
@@ -2336,7 +2340,7 @@ fn focus_viewer(
 }
 
 /// What the mirror warned the person of so far.
-fn said(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<String> {
+pub(super) fn said(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<String> {
     ws.read_with(cx, |ws, _| ws.said.clone())
 }
 

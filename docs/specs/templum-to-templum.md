@@ -3,8 +3,9 @@
 - **Date:** 2026-10-25
 - **Status:** Batch 1 implemented (kanban card 171, part 2; plans 2026-10-25-t2t-batch-1a…1d: home's side; the
   mirror's client; the remote workspace on the canvas; acting from the mirror, Edit…, the end-to-end test and
-  `--bench-mirror`). Batch 2: parts 2a, 2b and 2c built (plans 2026-10-25-t2t-batch-2a-footing,
-  2026-10-25-t2t-batch-2b-canvas and 2026-10-25-t2t-batch-2c-terminals); parts 2d–2h designed, not built
+  `--bench-mirror`). Batch 2: parts 2a, 2b, 2c and 2d built (plans 2026-10-25-t2t-batch-2a-footing,
+  2026-10-25-t2t-batch-2b-canvas, 2026-10-25-t2t-batch-2c-terminals and 2026-10-25-t2t-batch-2d-boards); parts
+  2e–2h designed, not built
   ([Batch 2](#batch-2-the-whole-workspace-live)). Later batches (see [Later batches](#later-batches)) are sketched.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
@@ -1835,3 +1836,53 @@ an answer already in flight for a block is not asked
 again (found in the attempt's waiting jobs and its quick wire, no flag to stick); `remote_history` and `remote_page`
 take `&self`/`&mut self` as the borrows needed (`remote_history` is `&self`); `fill_history` puts back the autowrap mode
 the viewer had instead of always `?7l`; the typing tests count home's `inputs()`.
+
+### Batch 2d (boards, live and acted on)
+
+Plan: [2026-10-25-t2t-batch-2d-boards.md](../plans/2026-10-25-t2t-batch-2d-boards.md). The plan's "Open for the
+orchestrator" items were settled as it recommended: a remote kanban is `Body::Kanban(Kanban { board, remote: true })`
+and `Body::kanban()`/`kanban_mut()` answer None for it, so no local lookup by board id meets home's ids; every write
+of a kanban goes through one door, `Workspace::act_on_boards(space, BoardAct, …)` (on this computer today's `Boards`
+edit, one Ctrl+Z step each; on a mirrored workspace a call of home's, asked of `why_not` first); `before` means "goes
+right before" at home and the mirror says it as the card that follows where the local drop puts the card; cards moved,
+edited and deleted are held over home's state (2 s), column drags, renames, new cards, comments and a board shown show
+a round trip later; card, column and board acts leave an undo mark, showing a board leaves none; a new card's number is
+read from home's "Created card 77."; a refused Done reopens the dialog with the person's work; a comment deleted on a
+mirror has no Undo; `show_board`'s `new` takes a blank name for "Board n"; the caps the spec doesn't give are 1,000
+boards, 100 columns, 500 cards a column and 100 attachments. What the builder chose or changed:
+
+- **Home:** `templum_mcp::tools::LABELS`; `create_card` takes `labels`; `edit_card` takes `title`, `description` (read
+  raw: blank clears it), `labels` (`{"red": true, "blue": false}`, applied in the labels' own order) and
+  `remove_items`; `move_card` takes `before` (`Boards::move_card_before`). The control server gains `delete_card`,
+  `edit_board`, `edit_column` and `show_board` (`control::Before`; `Boards::move_column_before`) and shares
+  `edit_comment` and `delete_comment` (`SHARED` is 20). The gate asks a board path (`approvals.rs`, `BoardAsk`,
+  `board_ask`) for a delete of a card, a board or a column, since no block is its target; its facts are the words, so a
+  card added or gone since the question shows as changed. Through the API the person edits comments by `you` and
+  deletes any; the Templum Agent only its own. A delete of a board or a column is the agent's own (it runs
+  unasked) only when the agent made the board and every card the delete takes.
+- **The mirror's copy:** `RemoteSpace::boards`, made by `mirror_boards` (`workspace/remote_boards.rs`) from home's
+  state where it enters: cleaned and capped (`card_of`), a card once and only in a column of its own board, a card
+  whose `Arc` didn't change moved over as it was. It is never saved; nothing local is written for a remote workspace.
+- **The holds:** `cards_moved`, `cards_deleted`, `cards_edited` (`Holds`), laid over the copy by `lay_holds`; an edit
+  leaves out the items it adds (their ids are the mirror's own, from `RemoteSpace::fresh_id`, counting down from
+  `u64::MAX`), and a card an edit was laid over is cleaned again at the next copy (`laid`).
+- **The Boards dialog** lists the boards of the workspace it was opened on (`kanban::rows` takes that space; the
+  dialog's `list_dialog::open` takes `rows` as a closure), and `act_on_boards` says "Another workspace is shown
+  now: nothing was done." to Show, New board and Delete board when that workspace isn't the shown one, local or
+  mirrored, before anything else: a dialog left open on this computer's workspace can't delete a board of its own
+  that has home's id.
+- **The dialog:** `Work::space` is where the dialog was opened; its acts go to that workspace by id. A mirror keeps no
+  draft (`Work::keep` is skipped, Save draft is gone); attachments show by name and size, Attach is dimmed with
+  "Attachments are on {computer}: open them there.", and files dropped, pasted or picked attach nothing; the assignee
+  menu lists home's terminals and agents; `finish_refusal` says why Done can't go (the rule, or an `edit_card` home
+  lacks an argument of) before anything is sent, and the dialog stays open.
+- **Send to ▸** on a remote card lists `remote_terminals()` and pastes with `remote_send_to` (a Full share, 256 KiB).
+- **Benchmarks:** `--bench-mirror`'s two kanbans each show a 12-card board, so the mirror draws them live.
+
+Departures from the plan: Delete card in the dialog doesn't ask first on a mirror, as it doesn't locally (the card's
+menu does); the dialog's comment pencil and trash are refused with the rule's words when clicked rather than dimmed
+(Done, Comment and Delete card are dimmed); the kanban header's All boards button isn't dimmed (its menu item is);
+the headless tests drive column moves, renames, deletes and the Boards dialog's rows through `act_on_boards` (the
+buttons and prompts call those acts), and the comment field of a mirror's tall dialog through the work, since it
+leaves the test window; `Card::text(None)` is `menu/mod.rs`'s choice for a remote card; `Gates` and `gated_item` serve
+the kanban's body as the plan says, and `kanban::open_boards` takes the workspace's id as its first argument.
