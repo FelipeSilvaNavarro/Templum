@@ -3,7 +3,8 @@
 - **Date:** 2026-10-24
 - **Status:** Batches 1 and 2 implemented (kanban card 171, "the Templum ecosystem API"; plans:
   [2026-10-24-api.md](../plans/2026-10-24-api.md), [2026-10-24-api-batch-2.md](../plans/2026-10-24-api-batch-2.md));
-  Templum to Templum is designed here for a later plan. For people: [docs/api.md](../api.md).
+  Templum to Templum is designed in [templum-to-templum.md](templum-to-templum.md). For people:
+  [docs/api.md](../api.md).
 - **Builds on:** [connections.md](connections.md) (the bus, block ids, the tools, the `templum` command line),
   [templum-agent.md](templum-agent.md) (the control server: a tool for every hand action, and their danger),
   [agents-view.md](agents-view.md) (an agent's state), [ask-inbox.md](ask-inbox.md) (the requests),
@@ -66,7 +67,8 @@ Templum never runs a server of its own: the person points a tunnel, a proxy or a
 - A server or relay Templum runs; any hosted service.
 - User accounts, passwords, OAuth: tokens only.
 - GraphQL; raw TCP; WebSocket (SSE does everything below: [Why SSE](#why-sse)).
-- Part 2's connection UI (a remote workspace in the sidebar): a later card ([Templum to Templum](#templum-to-templum)).
+- Part 2's connection UI (a remote workspace in the sidebar): its own design,
+  [templum-to-templum.md](templum-to-templum.md).
 - A mobile app, or a web page served by Templum (the person: "eu disse que queria só a api e o sistema de conexão",
   only the API and the connection system): a phone reaches Templum through the API with a client of its own.
 
@@ -597,23 +599,12 @@ phone case work).
 
 ## Templum to Templum
 
-*Part 2, a later card* (*the orchestrator's call*). Designed here only as far as part 1 must prepare for it.
-
-- **The idea:** on the work computer, a **remote workspace** in the sidebar shows a workspace of the home computer as
-  if it were local: its blocks where they are, its terminals live, its agents' dots, its board; moving a block, typing,
-  answering, handing a task all reach home. A workspace's Edit… dialog gets **Share** on the home side: it makes a
-  token limited to that workspace (control or full) and shows the address, the token and the fingerprint to paste on
-  the other side.
-- **What batch 1 gives it:** workspace-limited tokens; a state with every field a block needs to be drawn (kind, rect,
-  z, title, agent, wires, board) and stable ids; puts and deletes to follow it; `move_block`, `add_block`,
-  `close_block`, the card and note tools to act; Templum's certificate and its fingerprint to pin.
-- **What batch 2 gives it:** terminal frames with styles, drawn by a viewer terminal (`Terminal::viewer`, which shows
-  what Templum feeds it), and input by POST.
-- **Left to its card:** the connection dialog and where the remote address, token and pin are kept (the system's
-  keyring or the data folder, hashed tokens are no use there); the pinned TLS client; who wins when both sides move a
-  block (home is the truth: a mirror sends `move_block` and draws what the next event says); a remote that goes
-  offline (its tile dims, its blocks freeze, it reconnects with `Last-Event-ID`); notes and editors' content; latency
-  shown.
+Part 2 of card 171 has its own design: [templum-to-templum.md](templum-to-templum.md). A workspace's Edit… dialog
+shares it as a token limited to it and one connection code; the other Templum pastes the code and mirrors the workspace
+in a remote workspace of its sidebar, live, through this API (home is the truth). It builds on what batches 1 and 2
+give: workspace-limited tokens, the state and its deltas, `move_block`, Templum's certificate and its fingerprint,
+terminal frames and `terminal_input`; it adds `GET /v1/me`, shares, a block's `read_only`, a workspace's `icon`, a
+frame's `modes` and more key names.
 
 ## Left to the builder
 
