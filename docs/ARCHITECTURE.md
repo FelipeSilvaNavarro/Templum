@@ -91,7 +91,11 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   its updates and takes each remote's newest state; it never waits on the network or the keyring (the keyring is
   called on the runtime's blocking pool). Per remote one coordinator task reacts to messages and its sub-tasks (the
   calls connection, the event stream, the typing connection, one stream per terminal) do the waiting; a frame is fed
-  into its viewer on this thread (`templum_terminal::Feeder`), as a PTY reader would.
+  into its viewer on this thread (`templum_terminal::Feeder`), as a PTY reader would. The glue is
+  `workspace/remote.rs`: a remote workspace is a `Space` with `remote` (never saved as a canvas, only its index
+  entry), its blocks are home's and live only in `RemoteSpace::homes` (no uid, so no local tool names one); the
+  workspace drains the client on a wake, applies the newest state, and chooses the terminals to stream while the
+  canvas is painted.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera
@@ -214,6 +218,11 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   terminal count (`status().finished`) within a second. A rule's run state is split into slots, one per block that
   fired it, so each agent's run is held or typed apart; "the agent that fired it" is the saved block `fired-it`,
   swapped for that block before a run.
+- `workspace/remote.rs`, `mirror.rs`, `connect_dialog.rs`: the remote workspaces
+  ([specs/templum-to-templum.md](specs/templum-to-templum.md)). `remote.rs` has `RemoteSpace`, the client's drain,
+  `apply_remote` (home's blocks, wires and camera), the stream set and `fit_zoom`, `banner_words`, the guards'
+  `on_remote`; `mirror.rs` draws the banner, the veil, the stopped card, the tile's mark and the Forget… dialog;
+  `connect_dialog.rs` is Connect to a Templum….
 - `workspace/api.rs`, `workspace/api_state.rs`, `settings/api.rs`: the Templum API's glue
   ([specs/api.md](specs/api.md)).
   `api.rs` serves the bus messages of client `api` on the UI thread (the token's scope and workspaces checked,

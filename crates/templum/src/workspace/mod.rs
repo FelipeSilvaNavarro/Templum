@@ -37,6 +37,7 @@ mod ops;
 mod persist;
 mod preferences;
 mod questions;
+pub(crate) mod remote;
 mod render;
 mod schedules;
 mod selection;
@@ -344,6 +345,21 @@ pub(crate) struct Pane {
     pub follows: Option<subagents::Follows>,
     /// What the Agents view keeps of its agent between frames (docs/specs/agents-view.md).
     pub watch: agents_view::Watch,
+    /// Home's block it mirrors, when it is a remote workspace's viewer (`remote.rs`): its agent
+    /// is what home says, never what this computer's hooks and processes find.
+    pub remote: Option<RemotePane>,
+}
+
+/// What a remote workspace's terminal keeps of home's block.
+pub(crate) struct RemotePane {
+    /// Home's block id.
+    pub block: String,
+    /// Its title at home, which the viewer's own follows only while it is streamed.
+    pub title: String,
+    /// The agent in it, as home's state tells it.
+    pub agent: Option<templum_api::model::AgentView>,
+    /// It takes no input (a subagent's transcript).
+    pub read_only: bool,
 }
 
 impl Pane {
@@ -351,6 +367,20 @@ impl Pane {
     /// itself (None).
     pub fn asks(&self, by: Option<&str>) -> bool {
         matches!(self.state, Some(AgentState::NeedsYou(_))) && self.asked_by.as_deref() == by
+    }
+
+    /// What a remote agent's dot says while it works, with its subagents as home counts them.
+    pub fn remote_working(&self) -> String {
+        match self
+            .remote
+            .as_ref()
+            .and_then(|r| r.agent.as_ref())
+            .map_or(0, |a| a.subagents)
+        {
+            0 => "Working".to_string(),
+            1 => "Working: 1 subagent".to_string(),
+            n => format!("Working: {n} subagents"),
+        }
     }
 
     /// How many of its agent's subagents work.
@@ -415,6 +445,9 @@ impl Pane {
     /// The agent it runs, by id: the one Templum sees running in it, else the one Templum
     /// started there (before the first snapshot read it).
     pub fn agent(&self) -> Option<&str> {
+        if let Some(remote) = &self.remote {
+            return remote.agent.as_ref().map(|a| a.agent.as_str());
+        }
         self.seen.agent.as_deref().or(self.flags_for.as_deref())
     }
 
@@ -437,9 +470,23 @@ impl Pane {
         }
     }
 
+    /// The columns and rows of its grid now. A remote viewer's grid is home's, which the client
+    /// resizes from another thread: the grid's own size, not the one the viewer was made with.
+    pub fn grid_size(&self) -> (u16, u16) {
+        if self.remote.is_some() {
+            self.term.shared().grid_size()
+        } else {
+            self.term.grid_size()
+        }
+    }
+
     /// Its terminal resized to `cols` × `rows`: its program redraws at the new size, which the
     /// next look at its screen mustn't take for its agent at work.
     pub fn fit(&mut self, cols: u16, rows: u16, cell_px: (u16, u16)) {
+        // A remote viewer keeps home's grid: the block's size is not its program's.
+        if self.remote.is_some() {
+            return;
+        }
         if self.term.grid_size() != (cols, rows) {
             self.scrolled.set(true);
         }
@@ -490,6 +537,16 @@ pub(crate) enum Body {
     Checklist(Checklist),
     /// Boxed: on Windows, where a path takes more bytes, it is over 200 bytes larger than a note.
     Editor(Box<Editor>),
+    /// A block of a remote workspace that this computer doesn't draw yet: a card in its place.
+    Mirrored(Mirrored),
+}
+
+/// What a card of a block "not mirrored yet" says.
+pub(crate) struct Mirrored {
+    /// Home's kind of block (`note`, `kanban`, `checklist`, `editor`, or one this Templum
+    /// doesn't know).
+    pub kind: String,
+    pub title: String,
 }
 
 impl Body {
@@ -543,6 +600,7 @@ impl Body {
             Body::Note(_) => note::MIN,
             Body::Checklist(_) => checklist::MIN,
             Body::Editor(_) => editor::MIN,
+            Body::Mirrored(_) => note::MIN,
         }
     }
 
@@ -590,7 +648,7 @@ impl Body {
         match self {
             Body::Terminal(pane) => pane.term.cwd(),
             Body::Editor(e) => Some(e.folder.clone()),
-            Body::Kanban(_) | Body::Note(_) | Body::Checklist(_) => None,
+            Body::Kanban(_) | Body::Note(_) | Body::Checklist(_) | Body::Mirrored(_) => None,
         }
     }
 
@@ -620,6 +678,15 @@ impl Body {
                 active: 0,
             }),
             Body::Editor(e) => session::Item::Editor(e.item(rect)),
+            // Never saved: home has it (`Space::layout` skips a remote workspace).
+            Body::Mirrored(_) => session::Item::Note(session::NoteItem {
+                uid: String::new(),
+                rect: rect.into(),
+                notes: Vec::new(),
+                active: 0,
+                text: String::new(),
+                color: None,
+            }),
         }
     }
 
@@ -642,7 +709,7 @@ impl Body {
             Body::Editor(e) => e.has_focus(window, cx),
             Body::Terminal(pane) => pane.find.as_ref().is_some_and(|b| b.has_focus(window, cx)),
             Body::Checklist(c) => c.has_focus(window, cx),
-            Body::Kanban(_) => false,
+            Body::Kanban(_) | Body::Mirrored(_) => false,
         }
     }
 }
@@ -837,6 +904,8 @@ pub(crate) struct Space {
     pub ink_redo: Vec<Vec<Drawing>>,
     /// Grid mode, while it is on.
     pub grid: Option<Grid>,
+    /// It mirrors a workspace of another computer; its canvas is never saved (`remote.rs`).
+    pub remote: Option<Box<remote::RemoteSpace>>,
 }
 
 impl Space {
@@ -1001,9 +1070,9 @@ impl Space {
             })
     }
 
-    /// Blocks moved here are kept: it isn't stopped, and its file is written.
+    /// Blocks moved here are kept: it isn't stopped, and its file is written. A mirror is home's.
     pub fn takes_blocks(&self) -> bool {
-        !self.stopped && !self.frozen
+        !self.stopped && !self.frozen && !self.is_remote()
     }
 
     /// Drops every block (their shells hang up) and what only made sense with them. The canvas
@@ -1136,10 +1205,13 @@ impl Space {
     }
 
     /// Every terminal block, in no order.
+    /// A remote workspace's viewers are not among them: nothing local (the agents, the control
+    /// server, the API's terminals, wires, the Agents view) reaches a block of home's.
     pub fn terminals(&self) -> impl Iterator<Item = (BlockId, &Pane)> {
         self.blocks
             .iter()
             .filter_map(|(id, body)| Some((*id, body.terminal()?)))
+            .filter(|(_, pane)| pane.remote.is_none())
     }
 
     pub fn terminal(&self, id: BlockId) -> Option<&Pane> {
@@ -1573,6 +1645,21 @@ pub struct Workspace {
     /// Draws the next frame while a dot travels along a wire in view (`wires::DOT_FRAME`).
     _dot_frame: Task<()>,
     _wake: Task<()>,
+    /// The client that follows the remote workspaces, started at the first one (`remote.rs`).
+    pub(crate) mirror: Option<templum_api::client::Mirror>,
+    /// Where the remotes' keys are kept.
+    pub(crate) keys: templum_api::client::Keys,
+    /// Takes what the client says whenever it wakes this workspace.
+    _mirror: Task<()>,
+    /// A timer waits to repaint when the next stream choice is due (`remote.rs`).
+    stream_waiting: bool,
+    /// The remote the Connect dialog is waiting on, by id, and how that went (`remote.rs`).
+    pub(crate) pending_connect: Option<String>,
+    connect_done: Option<Result<(), String>>,
+    /// The code as the clipboard may still hold it: cleared after a success, dropped otherwise.
+    connect_clip: Option<String>,
+    /// Whether the system's keyring answers, as `Mirror::probe` last said; None: not yet.
+    pub(crate) keyring: Option<bool>,
 }
 
 impl Workspace {
@@ -1775,6 +1862,7 @@ impl Workspace {
             task: bus_task,
             tx: bus_tx,
         } = bus::start(data_dir.as_deref(), window, cx);
+        let data_dir_for_keys = data_dir.clone();
         let mut ws = Self {
             space: Space::default(),
             others: Vec::new(),
@@ -1951,6 +2039,20 @@ impl Workspace {
             watching: false,
             _dot_frame: Task::ready(()),
             _wake: wake,
+            mirror: None,
+            // Tests never open the person's keyring (they set a mock one).
+            keys: match &data_dir_for_keys {
+                Some(dir) if !cfg!(test) => {
+                    templum_api::client::Keys::system(templum_api::client::SERVICE, Some(dir))
+                }
+                dir => templum_api::client::Keys::without_keyring(dir.as_deref()),
+            },
+            _mirror: Task::ready(()),
+            stream_waiting: false,
+            pending_connect: None,
+            connect_done: None,
+            connect_clip: None,
+            keyring: None,
         };
         // Relay files of Claude Code sessions long gone, at startup.
         if let Some(relay) = ws.data_dir.as_deref().map(templum_usage::relay_dir) {
@@ -1971,6 +2073,14 @@ impl Workspace {
         }
         ws.refresh_autostart(cx);
         ws.load_spaces(window, cx);
+        // Once this is built, so that the keys can still be changed first (the tests').
+        if ws.spaces().any(Space::is_remote) {
+            cx.spawn_in(window, async move |ws, cx| {
+                ws.update_in(cx, |ws, window, cx| ws.connect_remotes(window, cx))
+                    .ok();
+            })
+            .detach();
+        }
         ws.load_api(window, cx);
         ws.restore_conversation();
         ws

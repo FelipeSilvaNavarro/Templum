@@ -22,7 +22,14 @@ pub(crate) fn label_key(a: &str, b: &str) -> (String, String) {
 impl Space {
     /// The key of `wire`'s label; None while one of its blocks has no id.
     pub(crate) fn label_key(&self, wire: Wire) -> Option<(String, String)> {
-        Some(label_key(self.uids.get(&wire.a)?, self.uids.get(&wire.b)?))
+        // A remote workspace's blocks are named by home's ids.
+        let id = |b: BlockId| {
+            self.uids
+                .get(&b)
+                .cloned()
+                .or_else(|| self.remote.as_ref()?.home_of(b))
+        };
+        Some(label_key(&id(wire.a)?, &id(wire.b)?))
     }
 
     /// `wire`'s label, if it has one.
@@ -113,6 +120,9 @@ impl Workspace {
         then: Then,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.on_remote() {
+            return false;
+        }
         let Some(key) = self.space.label_key(wire) else {
             return false;
         };
@@ -183,7 +193,7 @@ impl Workspace {
     /// The wires' labels to draw: each at its curve's middle (world units), in its wire's color.
     /// Grid mode hides them.
     pub(super) fn wire_labels(&self) -> Vec<(Point, String, Hsla)> {
-        if self.space.grid.is_some() {
+        if self.space.grid.is_some() || self.space.labels.is_empty() {
             return Vec::new();
         }
         self.space
@@ -305,6 +315,9 @@ impl Workspace {
         then: Then,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.on_remote() {
+            return false;
+        }
         let done = if on {
             self.space.add_wire(wire.a, wire.b).is_some()
         } else {

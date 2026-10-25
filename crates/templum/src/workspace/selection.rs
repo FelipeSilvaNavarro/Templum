@@ -111,6 +111,9 @@ impl Workspace {
 
     /// Copies the selected blocks to the clipboard. False when none is selected.
     pub(super) fn copy_blocks(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.on_remote() {
+            return false;
+        }
         let items: Vec<_> = self
             .space
             .canvas
@@ -134,6 +137,9 @@ impl Workspace {
     /// Pastes the blocks on the clipboard, centered in the view (or beside the blocks already
     /// there), and selects them. False when the clipboard holds no blocks.
     pub(super) fn paste_blocks(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.on_remote() {
+            return false;
+        }
         let Some(clip) = cx
             .read_from_clipboard()
             .and_then(|item| item.text())

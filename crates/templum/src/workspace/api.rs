@@ -17,7 +17,7 @@ use templum_mcp::{Hello, Incoming, Replier, Reply, rpc, tools};
 use super::bus::Outcome;
 use super::control::Actor;
 use super::waits::{Asked, Waiting};
-use super::{Drag, Workspace, show_notification};
+use super::{Drag, Space, Workspace, show_notification};
 use crate::automations::{Automation, Do};
 use crate::chat::Answer as Approve;
 
@@ -297,7 +297,12 @@ impl Workspace {
                     ));
                 }
                 let Ok(space) = self.space_of(&workspace, true) else {
-                    return Err(not_found("workspace", &workspace));
+                    return Err(
+                        match self.space_called(&workspace).and_then(Space::mirror_words) {
+                            Some(words) => params(words),
+                            None => not_found("workspace", &workspace),
+                        },
+                    );
                 };
                 let draft = ShareDraft {
                     workspace: space.clone(),
@@ -937,9 +942,12 @@ impl Workspace {
             way,
             address,
         } = draft;
-        let space = self
-            .space_of(&workspace, true)
-            .map_err(|_| registry::no("workspace", &workspace))?;
+        let space = self.space_of(&workspace, true).map_err(|reply| {
+            match self.space_called(&workspace).and_then(Space::mirror_words) {
+                Some(_) => reply.text,
+                None => registry::no("workspace", &workspace),
+            }
+        })?;
         let (Some(store), Some(data)) = (self.api.store.as_ref(), self.data_dir.clone()) else {
             return Err("There is no data folder.".into());
         };

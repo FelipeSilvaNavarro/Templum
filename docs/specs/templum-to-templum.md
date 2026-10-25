@@ -1,8 +1,8 @@
 # Templum to Templum: a workspace of another computer, as if it were here
 
 - **Date:** 2026-10-25
-- **Status:** Designed (kanban card 171, part 2). Batches 1a and 1b implemented (home's side; the mirror's client);
-  the glue and the dialogs (batch 1c and 1d) are next.
+- **Status:** Designed (kanban card 171, part 2). Batches 1a–1c implemented (home's side; the mirror's client; the
+  remote workspace on the canvas, view-only); acting from the mirror and the Edit… dialog (batch 1d) is next.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
   [cockpit.md](cockpit.md#6-the-workspaces-screen) (the sidebar, the Edit… dialog), [ask-inbox.md](ask-inbox.md)
@@ -869,3 +869,95 @@ What the fourth review of 1b changed (decisions the builder took while the perso
   `Fake::hold_revoke`): `forget_with_revoke_drops_the_streams_before_the_revoke_is_answered`.
 - Not done: wrapping the client tests that `results.recv().await` without a timeout in `tokio::time::timeout` (optional
   in the review; they hang only on a regression).
+
+### Batch 1c (the remote workspace on the canvas)
+
+Plan: [2026-10-25-t2t-batch-1c-canvas.md](../plans/2026-10-25-t2t-batch-1c-canvas.md). View-only: connecting, the
+blocks, the live terminals, the banner and every state of the connection. What the builder chose or changed:
+
+- **A remote workspace** is a `Space` with `remote: Some(Box<RemoteSpace>)` (`workspace/remote.rs`: the entry, the
+  status, `me`, home's workspace, the round trip, `homes`, the camera's state). It is in `workspace/index.json`
+  (`session::RemoteEntry`: `url`, `way`, `pin`, `home`, `entry`, `key` as `keyring`/`file`/`none`,
+  `trust_added_authority`, `access_id`, `proxy`, `camera`) and never has an `<id>.json`: `snapshot` and
+  `save_canvas_now` skip it, `delete_space` sets nothing aside. `save_canvas_now` also writes the index when a remote
+  exists (a pan changes only the camera). A value of `remote` that doesn't read is None.
+- **Forgetting the last workspace:** when the remote is the only workspace left, Forget makes a new local one first
+  (`delete_space_as`), so it always works; a local workspace that is the last one still stays.
+- **Ids:** `r<n>`, the smallest unused (`Workspace::remote_id`). Home's block ids live only in `RemoteSpace::homes`;
+  `Space::uids` stays empty, and `Space::terminals()` skips remote viewers, so the Agents view, the control server, the
+  API's terminals, wires and the spaces screen's counts never see one (`Space::terminal(id)` still finds a pane).
+- **The client in the workspace:** `Workspace::mirror` starts `Mirror` at the first need, its wake sends on a futures
+  channel, and a task drains it once per wake (`drain_mirror`: statuses, `me`, latency, where the key was kept, then
+  each remote's newest state into `apply_remote`). `connect_remotes` runs from a task spawned at the end of
+  `Workspace::with`, only when a remote exists, so a test sets `ws.keys` to a mock store first. `keys` is
+  `Keys::system(SERVICE or SERVICE_DEV)` outside tests; under `cfg(test)` and without a data folder it is
+  `without_keyring`, so no test reaches a real keyring.
+- **Connect:** `Connecting { code, access, proxy, file }` (the proxy is a `Key`, so a login in it never prints)
+  through `Workspace::connect_code` makes a hidden remote and `KeySource::Save`; the index leaves it out until it is
+  live. The dialog (`connect_dialog.rs`) shows a failure in its own words (`failure_words`: the table's for a cut,
+  "Couldn't reach winx-desktop." for a remote that can't be reached), so a Connect that can't reach home leaves
+  nothing (the remote is forgotten, key included) instead of a remote that keeps reconnecting. After Connect the
+  code and the Client Secret leave their fields and the proxy keeps only its address. Only the first status that
+  settles it answers (`connect_moved` returns once the remote is no longer pending). `connect_result` returns what
+  `drain_mirror` stored (forgetting needs `&mut`). On Live: the
+  workspace is shown, the index written, and the clipboard emptied if it still holds the code. The keyring sentence
+  names the platform's store. An `AddedAuthority` cut offers **Don't connect** (forget) and **Connect anyway**.
+- **Connect anyway needed the client:** `Remote::binds` compares `trust_added` with the key's, so reconnecting with
+  `KeySource::Kept` would be cut as a keyring failure. `Command::TrustAdded` makes the client re-save the secrets it
+  holds with `trust_added: true` (same place; memory if the keyring refuses) and start again. A new code starts with
+  `trust_added_authority` false.
+- **Blocks:** `Body::Mirrored(Mirrored { kind, title })` is the one arm for a kind the mirror doesn't draw (a card
+  with the kind's icon, `Box` and "kind · title" for a kind it doesn't know); a terminal is a viewer with no
+  scrollback and `Pane::remote: Some(RemotePane { block, title, agent, read_only })` (the block's title is home's, as
+  the viewer's own follows home's only while it is streamed). A new viewer starts at the rectangle's grid, capped at
+  80 × 24 (`DEFAULT_COLS` × `DEFAULT_ROWS`): home's rectangle is not trusted, and its first frame sets the real grid. Blocks are added straight to the
+  canvas, with no undo step, focus or pop-in. The first state sets the camera (the state's `view` when it is the
+  entry's workspace, else `Camera::fit`); the index keeps the camera only once a state placed it or the person moved
+  it. Home's icon and color show on the tile but aren't saved as the person's look. A remote pane's dot and chips
+  come from `RemotePane::agent` (`Workspace::doing`); `pane.usage` holds home's usage. Home's rectangle "unless a
+  move is held" is plan 1d's.
+- **What a mirror takes from home** (`mirror_blocks`, `tidy`): at most `MOST_BLOCKS` (500) blocks, the front ones by z
+  (what home no longer sends goes, as any block home dropped), and at most `MOST_WIRES` (200) wires, each once however
+  many times home lists it (each is drawn every frame against every block; labels are kept only for those); a rectangle goes through `restorable_rect` (finite,
+  size clamped like a restored canvas') and one beyond ±1e7 is left out, so the canvas's union can't overflow and the
+  camera stays finite. Home's view is taken as the first camera only within the same ±1e7 (else the canvas fits its
+  blocks), and the index neither keeps nor restores a remote's camera beyond it, so the dot grid has an end. Home's
+  strings (workspace and block names, kinds, wire labels, the agent's words, `me.computer`, the error sentence of a
+  refused call, the type a wrong server answers with) are cleaned once where they enter: one line (`bus::clean_to`), 60 characters, 200 for an agent's
+  question and a refusal's toast. Home's workspace color is kept only when it is one of `space_dialog::COLORS`, and
+  the id of home's first workspace (written to index.json) only when it is at most 64 bytes with no control
+  characters (`tidy_me`). The agent's usage chip keeps home's context percent only within 0 to 100 and its cost only
+  within 0 to 1,000,000 dollars (`session_of`). A remote's saved camera beyond ±1e7 doesn't count as placed, so the
+  first fit frames the blocks. `RemoteSpace::names` is `homes` the other way round for `home_of`.
+- **Terminals:** `streamed` picks at most 12 (`MOST_STREAMS`), the focused first, then the nearest to the canvas's
+  center; `Workspace::stream_terminals` runs while the canvas is painted, at most every `STREAM_EVERY` (100 ms), and
+  sends `Command::Terminals` only when the set changed; a choice that waits for its time returns when it is due and
+  one timer (`stream_at`) repaints then, instead of a frame per frame. A hidden or not-live remote gets an empty set at once; below
+  Full detail only the focused terminal streams. `fit_zoom(zoom, content, grid, cell)` is the largest of
+  `ZOOM_STEPS` not above `zoom × min(content.w / (cols × cell.w), content.h / (rows × cell.h))`, else the smallest;
+  the pointer maps through the same step. `Pane::fit` does nothing for a remote pane and `Pane::grid_size()` reads the
+  grid's own size (`Terminal::grid_size` goes stale after a `Feeder::resize`). The wheel says "Only the live screen is
+  mirrored for now." once per terminal; "Read-only: a subagent's transcript" is a small overlay at the body's bottom.
+- **The banner** (`mirror.rs`, `banner_words`): the spec's sentences and buttons, as plain text (the buttons carry the
+  bold actions); "Try now" while reconnecting, "Try again" otherwise. Not live: a veil, grey dots, a dimmed tile. The
+  tile has a `Globe` mark; its menu is Open, Disconnect or Connect, Forget…. **Connect** on a remote that never started
+  this run (no key) opens the Connect dialog; **Paste a new code…** does too until plan 1d. The "ends in N days" and
+  the yellow round trip past 250 ms (its tooltip says the real round trip) are in. The banner's ⓘ
+  (`not_mirrored_tip`) lists notes, checklists, editors and boards, ink and shapes, and a terminal's scrollback, and says only the front
+  500 blocks (and 200 wires) are shown. `Certificate(Other)` says "it couldn't be checked".
+- **Not yet:** `Workspace::on_remote` guards adding blocks, closing, wires, the drawing tools, grid mode, Move to
+  workspace (and a mirror is never a place to move a local block to: `Space::takes_blocks`), editors (at
+  `add_editor_at`, which Settings' Open file and the Git changes list reach too), notes and checklists opened by id,
+  wire labels, the shapes pill, Copy and Paste, the Git
+  popup, Ctrl+click on a file path in a mirrored terminal (only its URLs open) (Stop was refused already); the toolbar's buttons are dimmed with
+  `NOT_YET`. The menus (canvas, block, wire, ink) don't open on a remote (a notification says `NOT_YET`: menu items have no tooltip) and the
+  keyboard shortcuts do nothing silently. A drawing tool picked on the workspace left goes back to Select when a
+  remote is shown (`switch_to`), and `begin_ink` does nothing on one.
+- **Never a relay:** a tool whose `workspace` argument names a remote (id or name) is refused "API is a mirror of
+  winx-desktop: act on it there." in `space_of` (a name that a local workspace also has means the local one) (`show`, `add_block_in` and `share_workspace` too); `overview` and the
+  control instructions list it as "API (mirror of winx-desktop)" with no blocks. Home's computer name is cleaned
+  (`clean_title`) as it comes in: it is text from another computer, in an agent's instructions.
+- **The mirror's API state:** `RemoteView { computer, host, way, status, latency_ms }` as `WorkspaceView::remote`
+  (left out for a local workspace; OpenAPI schema `Remote`); its blocks are never in the state. docs/api.md has the
+  field's line; plan 1d writes the section for people.
+- **Not done:** `--bench-mirror` (a later plan).

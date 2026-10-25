@@ -304,6 +304,9 @@ impl Workspace {
 
     /// A kanban block showing no board, its top-left corner at `at` (world units).
     pub(crate) fn add_kanban_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
+        if self.on_remote() {
+            return;
+        }
         self.space.pristine = false;
         let rect = Rect::new(at.x, at.y, kanban::SIZE.w, kanban::SIZE.h);
         self.add_block(rect, Body::Kanban(Kanban::default()));
@@ -321,6 +324,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.on_remote() {
+            return;
+        }
         let rect = match at {
             Some(at) => {
                 self.space.pristine = false;
@@ -674,6 +680,9 @@ impl Workspace {
 
     /// Starts a terminal in a new focused block, in the configured start folder.
     pub(crate) fn open(&mut self, rect: Rect, window: &mut Window, cx: &mut Context<Self>) {
+        if self.on_remote() {
+            return;
+        }
         let folder = self.start_dir(window, cx);
         self.spawn_block(rect, folder, window, cx);
     }
@@ -702,6 +711,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
+        if self.on_remote() {
+            return None;
+        }
         let (cols, rows) = chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
         let command = shell
             .as_ref()
@@ -764,54 +776,9 @@ impl Workspace {
         shell: Option<ShellOption>,
     ) -> BlockId {
         let id = self.space.canvas.add(rect);
-        self.space.blocks.insert(
-            id,
-            Body::Terminal(Box::new(Pane {
-                term,
-                snapshot: Rc::default(),
-                heard: (0, 0),
-                alert: None,
-                seen: templum_terminal::Inspection {
-                    folder: start,
-                    ..Default::default()
-                },
-                usage: None,
-                find: None,
-                state: None,
-                handed: None,
-                answer: None,
-                prompt: None,
-                looks: Default::default(),
-                typed: Default::default(),
-                keyed: Default::default(),
-                draft: Default::default(),
-                scrolled: Default::default(),
-                submitted: 0,
-                dialogs: 0,
-                speaks: false,
-                keys_from: None,
-                opened_by: None,
-                model: None,
-                effort: None,
-                flags_for: None,
-                sent: None,
-                transcript: None,
-                starting: None,
-                typed_agent: None,
-                restored: false,
-                resuming: None,
-                account: None,
-                role: None,
-                quit: None,
-                shell,
-                subagents: Vec::new(),
-                awaits_subagents: false,
-                asked_by: None,
-                settles: None,
-                follows: None,
-                watch: Default::default(),
-            })),
-        );
+        self.space
+            .blocks
+            .insert(id, Body::Terminal(Box::new(Pane::new(term, start, shell))));
         self.added(id);
         id
     }
@@ -831,6 +798,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.on_remote() {
+            return;
+        }
         let one = ids.len() == 1;
         let busy: Vec<String> = ids
             .iter()
@@ -1201,4 +1171,56 @@ fn base36(mut n: u128, width: usize) -> String {
         n /= 36;
     }
     String::from_utf8(text).expect("ASCII")
+}
+
+impl Pane {
+    /// A terminal block's pane around `term`, its folder `start`, keeping `shell`.
+    pub(super) fn new(term: Terminal, start: Option<PathBuf>, shell: Option<ShellOption>) -> Pane {
+        Pane {
+            term,
+            snapshot: Rc::default(),
+            heard: (0, 0),
+            alert: None,
+            seen: templum_terminal::Inspection {
+                folder: start,
+                ..Default::default()
+            },
+            usage: None,
+            find: None,
+            state: None,
+            handed: None,
+            answer: None,
+            prompt: None,
+            looks: Default::default(),
+            typed: Default::default(),
+            keyed: Default::default(),
+            draft: Default::default(),
+            scrolled: Default::default(),
+            submitted: 0,
+            dialogs: 0,
+            speaks: false,
+            keys_from: None,
+            opened_by: None,
+            model: None,
+            effort: None,
+            flags_for: None,
+            sent: None,
+            transcript: None,
+            starting: None,
+            typed_agent: None,
+            restored: false,
+            resuming: None,
+            account: None,
+            role: None,
+            quit: None,
+            shell,
+            subagents: Vec::new(),
+            awaits_subagents: false,
+            asked_by: None,
+            settles: None,
+            follows: None,
+            watch: Default::default(),
+            remote: None,
+        }
+    }
 }

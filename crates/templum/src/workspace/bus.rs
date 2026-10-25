@@ -847,6 +847,7 @@ impl Workspace {
             Body::Note(_) => ("note", title(), None),
             Body::Checklist(_) => ("checklist", title(), None),
             Body::Editor(e) => ("editor", title(), Some(e.folder.clone())),
+            Body::Mirrored(_) => ("mirrored", title(), None),
         };
         (kind, clean_title(&title), folder)
     }
@@ -1141,11 +1142,16 @@ pub(super) fn flat(text: &str) -> String {
 /// A title as agents are told it. A terminal's is whatever its programs set (OSC 0), and goes
 /// into an agent's instructions: `flat`, and at most 60 characters.
 pub(super) fn clean_title(title: &str) -> String {
-    let flat = flat(title);
-    if flat.chars().count() <= TITLE_CHARS {
+    clean_to(title, TITLE_CHARS)
+}
+
+/// `flat`, and at most `most` characters.
+pub(super) fn clean_to(text: &str, most: usize) -> String {
+    let flat = flat(text);
+    if flat.chars().count() <= most {
         return flat;
     }
-    let cut: String = flat.chars().take(TITLE_CHARS - 1).collect();
+    let cut: String = flat.chars().take(most - 1).collect();
     format!("{cut}…")
 }
 

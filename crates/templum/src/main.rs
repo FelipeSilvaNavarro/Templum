@@ -18,6 +18,7 @@ mod checklist;
 mod checklists;
 mod chime;
 mod config;
+mod connect_dialog;
 mod editor;
 mod gallery;
 mod git_block;
@@ -31,6 +32,7 @@ mod launcher;
 mod list_dialog;
 mod markdown;
 mod menu;
+mod mirror;
 mod motion;
 mod note;
 mod notes;
@@ -114,6 +116,10 @@ fn main() {
         _ => false,
     };
     let data_dir = data_dir.filter(|_| !second);
+    // A build being worked on keeps its remotes' keys apart from the installed Templum's.
+    let dev_keys = dev.then(|| {
+        templum_api::client::Keys::system(templum_api::client::SERVICE_DEV, data_dir.as_deref())
+    });
     // The bench leaves the person's login items alone.
     let autostart = if bench { None } else { Autostart::locate(dev) };
     gpui_kit::application()
@@ -152,7 +158,13 @@ fn main() {
                                    empty and keeps nothing, so the other's canvas stays as it is";
                     workspace::show_notification(window, cx, Notification::warning(message));
                 }
-                cx.new(|cx| Workspace::new(autostart, config_dir, data_dir, window, cx))
+                cx.new(|cx| {
+                    let mut ws = Workspace::new(autostart, config_dir, data_dir, window, cx);
+                    if let Some(keys) = dev_keys {
+                        ws.keys = keys;
+                    }
+                    ws
+                })
             })
             .expect("failed to open window");
             if let Some(kind) = zoom {

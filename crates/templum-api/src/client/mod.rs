@@ -209,6 +209,11 @@ pub enum Command {
     },
     /// Start the workspace at home and show it there.
     Show,
+    /// The person accepted a certificate signed by an authority this computer added
+    /// (`Why::AddedAuthority`): the key is kept that way from now on, and the remote starts again.
+    /// A click, never the index, can say so: the index could be rewritten by anything that writes
+    /// the data folder.
+    TrustAdded,
 }
 
 /// The limits that time a remote; `Default` is the spec's. The tests shorten them.

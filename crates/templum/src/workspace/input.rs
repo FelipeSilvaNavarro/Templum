@@ -407,7 +407,24 @@ impl Workspace {
     ) -> Option<(usize, usize, Side)> {
         let block = self.space.canvas.get(id)?;
         let world = self.space.canvas.camera.to_world(self.local(pos));
-        let (row, col, right) = chrome::cell_at(block.rect, world, self.cell.size);
+        // A remote viewer is drawn at the zoom step that fits home's grid in the block.
+        let cell = match self.space.terminal(id).filter(|p| p.remote.is_some()) {
+            Some(pane) => {
+                let zoom = self.space.canvas.camera.zoom();
+                let drawn = super::remote::fit_zoom(
+                    zoom,
+                    chrome::content_rect(block.rect).size(),
+                    pane.grid_size(),
+                    self.cell.size,
+                );
+                Size::new(
+                    self.cell.size.w * drawn / zoom,
+                    self.cell.size.h * drawn / zoom,
+                )
+            }
+            None => self.cell.size,
+        };
+        let (row, col, right) = chrome::cell_at(block.rect, world, cell);
         let side = if right { Side::Right } else { Side::Left };
         Some((row, col, side))
     }
@@ -518,7 +535,8 @@ impl Workspace {
 
     /// Opens the link under a press in a terminal: a URL in the browser, a file in an editor
     /// beside the terminal (at its line), its repository's root as the editor's folder. False
-    /// when there is none (or the file isn't there).
+    /// when there is none (or the file isn't there). A mirrored terminal's files are home's:
+    /// only its URLs open.
     pub(crate) fn open_link(
         &mut self,
         id: BlockId,
@@ -537,6 +555,7 @@ impl Workspace {
                 cx.open_url(&url);
                 true
             }
+            Some(Target::File { .. }) if pane.remote.is_some() => false,
             Some(Target::File { path, line }) => {
                 let home = std::env::home_dir();
                 let Some(file) =
@@ -732,6 +751,7 @@ impl Workspace {
             Command::NextWorkspace => self.cycle_space(1, window, cx),
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
             Command::NewWorkspace => self.add_space(window, cx),
+            Command::ConnectTemplum => self.connect_templum(window, cx),
             Command::ToggleSidebar => self.toggle_sidebar(window, cx),
             Command::Workspaces => self.toggle_screen(window, cx),
             Command::GoToWaiting => self.go_to_waiting(window, cx),

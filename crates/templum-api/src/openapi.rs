@@ -515,6 +515,21 @@ fn schemas_with_views() -> Value {
         "type": "boolean",
         "description": "A terminal that takes no input (a subagent's transcript); left out otherwise.",
     });
+    all["Remote"] = view(&[
+        ("computer", maybe("string")),
+        ("host", s()),
+        (
+            "way",
+            json!({ "type": "string", "enum": ["pinned", "public", "loopback"] }),
+        ),
+        (
+            "status",
+            json!({ "type": "string", "enum": ["connecting", "live", "reconnecting", "cut", "refused", "disconnected"] }),
+        ),
+        ("latency_ms", maybe("integer")),
+    ]);
+    // Set only on a workspace this Templum mirrors from another computer, so optional.
+    all["WorkspaceView"]["properties"]["remote"] = r("Remote");
     all["Share"] = view(&[
         ("id", s()),
         ("workspace", s()),
@@ -766,6 +781,13 @@ mod tests {
                 shown: true,
                 stopped: false,
                 icon: Some("rocket".into()),
+                remote: Some(RemoteView {
+                    computer: Some("winx-desktop".into()),
+                    host: "templum.example.com".into(),
+                    way: "public".into(),
+                    status: "live".into(),
+                    latency_ms: Some(84),
+                }),
             }],
             blocks: vec![BlockView {
                 id: "b7k2m".into(),
@@ -989,6 +1011,13 @@ mod tests {
         check(&r("State"), &state, &doc, "state").unwrap();
         assert_eq!(state["blocks"][0]["read_only"], true);
         assert_eq!(state["workspaces"][0]["icon"], "rocket");
+        assert_eq!(state["workspaces"][0]["remote"]["status"], "live");
+        let mut local = state.clone();
+        local["workspaces"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("remote");
+        check(&r("State"), &local, &doc, "state").unwrap();
         let mut quiet = state.clone();
         quiet["blocks"][0]
             .as_object_mut()

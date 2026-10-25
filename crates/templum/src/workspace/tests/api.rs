@@ -109,7 +109,7 @@ fn said(line: &Value) -> (bool, String) {
 }
 
 /// The state, as the token sees it.
-fn state(
+pub(super) fn state(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
@@ -1152,14 +1152,16 @@ use std::time::Duration;
 use templum_api::store::{Listen, hash};
 
 /// A workspace with a data folder (the API keeps its file there).
-fn with_data(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, tempfile::TempDir) {
+pub(super) fn with_data(
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<Workspace>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
     (handle, ws, dir)
 }
 
 /// The API on, on an ephemeral port of this computer.
-fn turn_on(ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+pub(super) fn turn_on(ws: &Entity<Workspace>, cx: &mut TestAppContext) {
     ws.update(cx, |ws, cx| {
         ws.api_edit(
             |s| {
@@ -1171,7 +1173,7 @@ fn turn_on(ws: &Entity<Workspace>, cx: &mut TestAppContext) {
     });
 }
 
-fn port(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> u16 {
+pub(super) fn port(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> u16 {
     ws.read_with(cx, |ws, _| {
         ws.api.server.as_ref().expect("listening").addr().port()
     })

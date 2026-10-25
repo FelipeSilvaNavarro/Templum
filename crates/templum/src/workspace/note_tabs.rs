@@ -16,6 +16,9 @@ use super::{Body, Space, Workspace};
 impl Workspace {
     /// A note block at the viewport's center with a new note, its editor with the keyboard.
     pub(crate) fn new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.on_remote() {
+            return;
+        }
         let at = self.room_in_view(note::SIZE, window, cx).origin();
         self.add_note_at(at, window, cx);
     }
@@ -23,6 +26,9 @@ impl Workspace {
     /// A note block with a new note, its top-left corner at `at` (world units), its editor with
     /// the keyboard.
     pub(crate) fn add_note_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
+        if self.on_remote() {
+            return;
+        }
         let id = self.notes.add(String::new(), None, notes::now());
         let tab = self.note_tab(id, window, cx);
         self.add_note_block(at, tab.into_iter().collect(), window, cx);
@@ -93,6 +99,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.on_remote() {
+            return;
+        }
         if let Some((space, block)) = self.note_open_at(id) {
             let space = space.id.clone();
             if let Some(note) = self

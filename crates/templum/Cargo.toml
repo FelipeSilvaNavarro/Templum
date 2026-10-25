@@ -57,6 +57,8 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile = "3"
+# Already in the tree (templum-api's): the mock keyring the mirror's tests keep keys in.
+keyring-core = "1.0.1"
 
 # Already in the tree (GPUI's): the Windows executable's icon (build.rs).
 [target.'cfg(windows)'.build-dependencies]

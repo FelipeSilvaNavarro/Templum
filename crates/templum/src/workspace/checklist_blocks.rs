@@ -22,6 +22,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.on_remote() {
+            return;
+        }
         let id = self.checklists.add(notes::now());
         let block = self.place_checklist(id, into, window, cx);
         self.edit_field(block, Field::Name, window, cx);
@@ -113,6 +116,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.on_remote() {
+            return;
+        }
         if let Some((space, block)) = self.checklist_open_at(id) {
             let space = space.id.clone();
             self.reveal(&space, block, window, cx);

@@ -38,6 +38,7 @@ pub(crate) enum Command {
     NextWorkspace,
     PreviousWorkspace,
     NewWorkspace,
+    ConnectTemplum,
     ToggleSidebar,
     Workspaces,
     GoToWaiting,
@@ -50,7 +51,7 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 41] = [
+    pub const ALL: [Command; 42] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
@@ -84,6 +85,7 @@ impl Command {
         Command::NextWorkspace,
         Command::PreviousWorkspace,
         Command::NewWorkspace,
+        Command::ConnectTemplum,
         Command::ToggleSidebar,
         Command::Workspaces,
         Command::GoToWaiting,
@@ -130,6 +132,7 @@ impl Command {
             Command::NextWorkspace => "next_workspace",
             Command::PreviousWorkspace => "previous_workspace",
             Command::NewWorkspace => "new_workspace",
+            Command::ConnectTemplum => "connect_templum",
             Command::ToggleSidebar => "toggle_sidebar",
             Command::Workspaces => "workspaces",
             Command::GoToWaiting => "go_to_waiting",
@@ -177,6 +180,7 @@ impl Command {
             Command::NextWorkspace => "Next workspace",
             Command::PreviousWorkspace => "Previous workspace",
             Command::NewWorkspace => "New workspace",
+            Command::ConnectTemplum => "Connect to a Templum…",
             Command::ToggleSidebar => "Show or hide the sidebar",
             Command::Workspaces => "The workspaces screen",
             Command::GoToWaiting => "Go to the terminal waiting for you",
@@ -286,6 +290,7 @@ impl Command {
             (Command::PreviousWorkspace, _) => &["ctrl-shift-tab"],
             (Command::NewWorkspace, false) => &["ctrl-shift-n"],
             (Command::NewWorkspace, true) => &["cmd-shift-n"],
+            (Command::ConnectTemplum, _) => &[],
             (Command::ToggleSidebar, _) => &[],
             (Command::Workspaces, false) => &["ctrl-shift-o"],
             (Command::Workspaces, true) => &["cmd-shift-o"],
@@ -350,6 +355,7 @@ pub(crate) struct KeysConfig {
     pub next_workspace: Option<Keys>,
     pub previous_workspace: Option<Keys>,
     pub new_workspace: Option<Keys>,
+    pub connect_templum: Option<Keys>,
     pub toggle_sidebar: Option<Keys>,
     pub workspaces: Option<Keys>,
     pub go_to_waiting: Option<Keys>,
@@ -396,6 +402,7 @@ impl KeysConfig {
             Command::NextWorkspace => self.next_workspace.as_ref(),
             Command::PreviousWorkspace => self.previous_workspace.as_ref(),
             Command::NewWorkspace => self.new_workspace.as_ref(),
+            Command::ConnectTemplum => self.connect_templum.as_ref(),
             Command::ToggleSidebar => self.toggle_sidebar.as_ref(),
             Command::Workspaces => self.workspaces.as_ref(),
             Command::GoToWaiting => self.go_to_waiting.as_ref(),
@@ -442,6 +449,7 @@ impl KeysConfig {
             Command::NextWorkspace => &mut self.next_workspace,
             Command::PreviousWorkspace => &mut self.previous_workspace,
             Command::NewWorkspace => &mut self.new_workspace,
+            Command::ConnectTemplum => &mut self.connect_templum,
             Command::ToggleSidebar => &mut self.toggle_sidebar,
             Command::Workspaces => &mut self.workspaces,
             Command::GoToWaiting => &mut self.go_to_waiting,
@@ -660,6 +668,15 @@ mod tests {
             Some(Command::Agent)
         );
         assert_eq!(mac.command(&typed("cmd-shift-space")), Some(Command::Agent));
+    }
+
+    #[test]
+    fn connect_templum_is_a_command_without_a_default_key() {
+        let command = Command::ConnectTemplum;
+        assert_eq!(command.name(), "connect_templum");
+        assert_eq!(command.title(), "Connect to a Templum…");
+        assert!(command.defaults(false).is_empty() && command.defaults(true).is_empty());
+        assert_eq!(defaults(false).first(command), None);
     }
 
     #[test]

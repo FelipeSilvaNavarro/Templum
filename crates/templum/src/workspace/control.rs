@@ -902,6 +902,13 @@ impl Workspace {
             .order()
             .into_iter()
             .map(|space| {
+                if let Some(title) = space.mirror_title() {
+                    return format!(
+                        "{title} ({}){}: act on it on the other computer",
+                        space.id,
+                        self.space_state(space)
+                    );
+                }
                 let blocks = space.canvas.blocks().len();
                 let working = space
                     .terminals()
@@ -940,6 +947,15 @@ impl Workspace {
         let own = &self.templum_agent.conversation.own;
         let mut text = Vec::new();
         for space in self.order() {
+            // A mirror of another computer's workspace: its blocks are home's, none is listed.
+            if let Some(title) = space.mirror_title() {
+                text.push(format!(
+                    "Workspace {title:?} ({}){}: act on it on the other computer.",
+                    space.id,
+                    self.space_state(space),
+                ));
+                continue;
+            }
             let folder = space
                 .folder
                 .as_ref()

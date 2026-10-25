@@ -199,8 +199,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **A test that writes a script and runs it can fail once with "Text file busy".** Another test's thread may
   fork while the script is still open for writing, and Linux then refuses to run it (ETXTBSY):
   `a_cancelled_command_is_killed_and_says_so` and `a_clone_stopped_midway_leaves_no_folder_and_an_empty_one_empty`
-  (`crates/templum-git/tests/repo.rs`) each did once in a full run, and the
-  fake agent of `crates/templum/src/workspace/tests/git_message.rs` is written the same way. Fix: have `sh` read
+  (`crates/templum-git/tests/repo.rs`) each did once in a full run, so did
+  `poll_asks_claude_code_in_an_empty_folder` (`crates/templum-usage/src/claude.rs:1139`, `poll` gave None, seen in
+  the reduced-env run of T2T batch 1c; it passed alone three times), and the fake agent of
+  `crates/templum/src/workspace/tests/git_message.rs` is written the same way. Fix: have `sh` read
   the script (`sh <path> …`) instead of running the file itself.
 - [ ] **`an_agent_past_its_timeout_is_stopped` counts the notifications, not what they say.**
   (`crates/templum/src/workspace/tests/git_message.rs`.) Fix: check it is "didn't answer within".
@@ -2259,6 +2261,17 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 
 ## Templum to Templum
 
+- [ ] **The banner, the remote tile and the Forget… dialog were checked headlessly only.** (`mirror.rs`,
+  `connect_dialog.rs`.) Their spacing, the veil's strength and the Connect dialog's added-authority choice were not
+  looked at on a display. Fix: look at them with two `--dev` instances (stop, revoke and delete at home).
+- [ ] **A remote workspace's card on the workspaces screen is not dimmed when it isn't live.**
+  (`spaces_screen.rs`, `card`.) The sidebar tile is; the card only says "Mirror of winx-desktop · …". Fix: the
+  card's opacity follows `RemoteSpace::dim`.
+- [ ] **The banner's words carry no bold.** (`workspace/remote.rs`, `banner_words`.) The spec bolds "Try again",
+  "Paste a new code…" and the names; the text is plain and the buttons carry the actions. Fix: spans in `Banner`.
+- [ ] **Connect anyway keeps the choice in the key only after the client saved it.** (`client/remote.rs`,
+  `Life::trust_added`.) A keyring that refuses the second save leaves the key in memory for this run while the
+  index says "Keyring"; the next start asks again. Fix: a `Update::Kept` after the save.
 - [ ] **`revoke_share` lists as "full, or the share itself" while its registry scope is read.**
   (`crates/templum-api/src/registry.rs`, `scope`, `nominal`; `workspace/api.rs`, `Own::RevokeShare`.) A Read or
   Control share token passes the server's scope check and the glue refuses it when it names another share. Likewise
@@ -2285,10 +2298,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   (`crates/templum-api/src/client/remote.rs`, `prepare`.) `About` has no variant for the key; a key that doesn't match
   its address (the index was rewritten) and an address that doesn't fit its way in are told the same way. Fix:
   `About::Key`.
-- [ ] **A viewer resized by a `Feeder` keeps its first size in `Terminal::grid_size`.** (`crates/templum-terminal/src/
-  terminal.rs`.) `Feeder::resize` changes the grid (`SharedTerm::grid_size` reads it), but `Terminal`'s own `cols`
-  and `rows` stay the viewer's first, so `Terminal::resize` with the first size returns early. Fix: plan 1c reads the
-  grid's size, or `Terminal::grid_size` does.
 - [ ] **The calls channel of a remote is unbounded.** (`crates/templum-api/src/client/remote.rs`, `Attempt::calls`,
   `Life::call`.) Only the person's commands feed it, but a home that answers slowly while a block is dragged queues a
   `move_block` per mouse move, each sent in turn (up to 10 × 30 s each). Fix: keep one pending `Move` per block, the
@@ -2301,3 +2310,73 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   Service's by building) on this Linux machine; the tests use the mock store. Fix: CI's macOS and Windows builds,
   then one save and load by hand on each.
 
+- [ ] **A remote workspace's pan is kept only when the index is next written.**
+  (`workspace/persist.rs`, `save_canvas_now`; `workspace/spaces.rs`, `index`.) The camera lives in the index entry,
+  which is written on a switch, an edit and when Templum quits, not by the 5 s save: a crash loses a pan made since.
+  Fix: the snapshot writes the index when a remote's camera moved.
+- [ ] **A remote whose key can't be read is disconnected only once its start task runs.**
+  (`workspace/mod.rs`, `Workspace::with`.) `connect_remotes` runs in a task spawned at the end of `with` (so the tests
+  can swap `keys` first); until it runs, a remote with no key shows "Connecting…" for a frame. Fix: set
+  `Disconnected` in `load_spaces` for an entry with no key.
+- [ ] **The Connect dialog was checked headlessly only.** (`connect_dialog.rs`.) Its layout (More… unfolded, the
+  keyring switch, a long Cloudflare Access secret, a long error) was not looked at on a display. Fix: look at it with
+  `--dev` once.
+- [ ] **A remote being connected shows in the sidebar as "Connecting…" while the Connect dialog waits.**
+  (`workspace/remote.rs`, `connect_code`.) It is a hidden workspace from the first moment, so its tile is there (and a
+  failed connect removes it again). Fix: leave it out of the sidebar until `connect_result` is Ok.
+- [ ] **The Connect dialog says the keyring sentence until the probe answers.** (`connect_dialog.rs`, `open`;
+  `Workspace::probe_keyring`.) On a computer with no keyring the "no keyring" line and the file switch replace it a
+  moment after the dialog opens. Fix: say nothing until `keyring` is Some.
+- [ ] **A copied card of a remote workspace would paste as a blank note.** (`workspace/mod.rs`, `Body::item` for
+  `Body::Mirrored`.) A card has no saved shape, so it answers an empty note item. Nothing reaches it: Copy and Paste
+  of blocks do nothing on a remote workspace. Fix: `Body::item` answers an `Option`.
+- [ ] **A remote terminal's effort has no place on its block.** (`workspace/remote.rs`, `mirror_blocks`.) Home's
+  `agent.effort` is kept in the pane's `RemotePane::agent` but only the usage chip (context, cost, model) shows.
+  Fix: put it in the chip's tooltip.
+- [ ] **Home's look on a remote tile is applied only while the person gave none.** (`workspace/remote.rs`,
+  `apply_remote`.) Once the person picks an icon or color in Edit… it stays theirs; clearing it brings home's back
+  at the next state. Fix: a "use home's look" switch in the remote's Edit… (plan 1d).
+- [ ] **A remote terminal has no right-click menu.** (`menu/mod.rs`, `open_menu`.) The menus of the canvas, a block, a
+  wire and a drawing say "Not on a mirrored workspace yet" in a notification instead of opening, so Copy of a mirrored
+  terminal's selection is only by the keyboard. Fix: a menu with Copy alone, and the rest disabled with the tooltip.
+- [ ] **A remote workspace's key shortcuts for what it can't do answer nothing.** (`workspace/remote.rs`,
+  `Workspace::on_remote`.) Ctrl+Shift+T, a new note, the Wire tool and the like do nothing there, and only the
+  toolbar and the menus say why. Fix: one notification with `NOT_YET` from the keymap's dispatch.
+- [ ] **`Terminal::grid_size` of a viewer is still its first size.** (`crates/templum-terminal/src/terminal.rs`.) The
+  mirror reads `Pane::grid_size` (the grid's own, after a `Feeder::resize`); any other caller of `Terminal::grid_size`
+  on a viewer would still read the stale one. Fix: `Terminal::grid_size` reads the grid for a viewer.
+- [ ] **A remote terminal at several zooms, its selection and its Read-only footer were checked headlessly only.**
+  (`block.rs`, the terminal body; `workspace/input.rs`, `cell_under`.) The cells fit home's grid at a zoom step and
+  the pointer maps through the same step, which a test of `fit_zoom` and the stream proves, not how it looks. Fix:
+  look at a remote terminal at 50%, 100% and 200% with `--dev` once.
+- [ ] **The stream set is chosen while the canvas is painted.** (`workspace/remote.rs`, `stream_terminals`.) A pan
+  that stops inside the 100 ms between two choices waits for a timer to repaint (`stream_at`); a canvas that is never
+  painted again (a hidden window) keeps the last set. Fix: a timer task that chooses, if a hidden window must keep
+  streaming.
+- [ ] **The Reconnecting banner's "next in N s" and "Live 2 min ago" only change on a repaint.**
+  (`mirror.rs`, `banner`; `workspace/remote.rs`, `banner_words`.) While a remote reconnects and nothing else repaints
+  the canvas, the banner can say "next in 30 s" through the whole wait. Fix: a 1 s timer, like `stream_at`, while the
+  shown remote is `Reconnecting`.
+- [ ] **Install update and an account's Log in do nothing while a mirror is on screen.**
+  (`workspace/update.rs`, `install_update`; `workspace/blocks.rs`, the account's login terminal.) Both open their
+  terminal in the shown workspace through `spawn_block_with`, which `on_remote` refuses, and neither says why. Fix:
+  open the terminal in the first local workspace (the way `Settings` does), or say `NOT_YET` in a notification.
+- [ ] **Quitting while the Connect dialog waits leaves the new key in the keyring.**
+  (`workspace/remote.rs`, `connect_code`; `workspace/spaces.rs`, `index`.) The pending remote is kept out of the index
+  until it is live, but `KeySource::Save` already put its key in the keyring; closing the dialog deletes it
+  (`give_up_connecting`), quitting does not. Fix: give up the pending remote when the window closes, and wait for the
+  client's thread to finish deleting.
+- [ ] **The Connect dialog's proxy field keeping only the address was not checked in the dialog.**
+  (`connect_dialog.rs`, `connect`.) After Connect the field holds `proxy_of`'s address, without the login; a test
+  proves the `Connecting` draft never prints it, not the field. Fix: a dialog test that types a proxy with a login
+  once its inputs can be read from a test.
+- [ ] **Automations default to, and offer, a remote workspace.** (`workspace/automations.rs`, `new_automation`:
+  `workspace: Some(self.space.id.clone())`; `automations_view/editor.rs`, the "Where" list, line ~923, is `ws.order()`.) With a
+  mirror shown, Automations > New makes a rule for it, and at its time the rule fails with a misleading error (the
+  guards hold: nothing runs on the mirror). Fix: default to the first local workspace and leave remote workspaces out
+  of "Where".
+- [ ] **The whole `State` is cloned on each wake of a mirror.** (`workspace/remote.rs`, the wake that reads
+  `Mirror::state`; `crates/templum-api/src/client/mod.rs`, `Mirror::state` clones under the lock.) Home may keep up to
+  64 MB, mostly in collections (notes, checklists, boards) the mirror never reads; a tiny change every few ms makes the
+  UI thread clone all of it on each wake, so a big home's mirror stutters. Fix: have a mirror drop (or not weigh) the
+  collections it doesn't read, or hand the state out through an `Arc`.

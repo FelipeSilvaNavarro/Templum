@@ -53,6 +53,10 @@ impl Workspace {
                         .look
                         .icon
                         .map(|icon| crate::space_dialog::icon_name(icon).to_string()),
+                    remote: space
+                        .remote
+                        .as_deref()
+                        .map(super::remote::RemoteSpace::view),
                 })
                 .collect(),
             blocks: spaces

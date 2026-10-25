@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, ImageSource, Window};
-use templum_canvas::{BlockId, Rect, Size, chrome};
+use templum_canvas::{BlockId, Camera, Point, Rect, Size, chrome};
 
 use crate::alert;
 use crate::attachments;
@@ -18,7 +18,8 @@ use crate::prompt;
 use crate::session;
 use crate::space_dialog::{self, Look};
 
-use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Space, Workspace, show_notification};
+use super::remote::RemoteSpace;
+use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Space, Tool, Workspace, show_notification};
 
 /// How long a workspace's processes have, once hung up, before what is left is killed.
 const KILL_AFTER: Duration = Duration::from_secs(2);
@@ -201,6 +202,7 @@ impl Workspace {
         let mut first_saved = false;
         for (i, entry) in index.workspaces.iter().enumerate() {
             self.space = Space {
+                remote: entry.remote.clone().map(|r| Box::new(RemoteSpace::new(r))),
                 id: entry.id.clone(),
                 name: entry.name.clone(),
                 look: Look {
@@ -215,9 +217,11 @@ impl Workspace {
                 folder: entry.folder.clone(),
                 ..Space::default()
             };
+            // A remote workspace has no canvas of its own: home's blocks come each time.
             match self
                 .data_dir
                 .as_deref()
+                .filter(|_| entry.remote.is_none())
                 .map(|d| session::load(d, &entry.id))
             {
                 // A stopped one keeps its canvas to start when it is opened.
@@ -246,7 +250,13 @@ impl Workspace {
                 }
                 Some(Loaded::Nothing) | None => {}
             }
-            self.space.stopped = entry.stopped;
+            self.space.stopped = entry.stopped && entry.remote.is_none();
+            if let Some(c) = entry.remote.as_ref().and_then(|r| r.camera)
+                && c.x.abs() <= super::remote::MOST_FAR
+                && c.y.abs() <= super::remote::MOST_FAR
+            {
+                self.space.canvas.camera = Camera::at(Point::new(c.x, c.y), c.zoom);
+            }
             // Its file may hold notes' text only it keeps until notes.json can be written.
             self.space.frozen |= self.notes_frozen;
             spaces.push(std::mem::take(&mut self.space));
@@ -313,6 +323,12 @@ impl Workspace {
         self.others.insert(self.active, current);
         self.space = self.others.remove(to);
         self.active = to;
+        // A mirrored workspace has no drawing tool yet: the one picked on the workspace left is
+        // let go.
+        if self.on_remote() && !matches!(self.tool, Tool::Select | Tool::Hand) {
+            self.tool = Tool::Select;
+            self.shapes_open = false;
+        }
         // Its requests are another workspace's: the first is selected.
         self.inbox_at = None;
         if self.space.stopped {
@@ -368,6 +384,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.on_remote() {
+            return;
+        }
         let to = match to {
             Some(to) if self.others.iter().any(|s| s.id == to && s.takes_blocks()) => {
                 to.to_string()
@@ -520,13 +539,28 @@ impl Workspace {
     }
 
     /// Deletes the workspace with `id`: its processes end (see `end_later`), its file is kept
-    /// as `.bak` and its image removed. The last one stays.
+    /// as `.bak` and its image removed. The last one stays, unless it is a remote: a new workspace
+    /// takes its place.
     pub(crate) fn delete_space(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.delete_space_as(id, false, window, cx);
+    }
+
+    /// `delete_space`; a remote one also revokes its share at home first when `revoke`.
+    pub(super) fn delete_space_as(
+        &mut self,
+        id: &str,
+        revoke: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(at) = self.order().iter().position(|s| s.id == id) else {
             return;
         };
         if self.others.is_empty() {
-            return;
+            if !self.space.is_remote() {
+                return;
+            }
+            self.make_space();
         }
         if at == self.active {
             self.switch_to(if at > 0 { at - 1 } else { 1 }, window, cx);
@@ -537,8 +571,16 @@ impl Workspace {
         if at < self.active {
             self.active -= 1;
         }
+        // Its key goes with it; it never had a file.
+        if space.is_remote()
+            && let Some(mirror) = &self.mirror
+        {
+            mirror.forget(&space.id, revoke);
+        }
         if let Some(dir) = &self.data_dir {
-            if let Err(err) = session::set_aside(dir, &space.id) {
+            if !space.is_remote()
+                && let Err(err) = session::set_aside(dir, &space.id)
+            {
                 eprintln!("templum: couldn't set {}.json aside: {err}", space.id);
             }
             if let Some(image) = space.look.image.as_ref().and_then(|p| p.file_name())
@@ -611,7 +653,7 @@ impl Workspace {
 
     /// A workspace can be stopped unless it is the last one, or stopped already.
     pub(crate) fn can_stop(&self, space: &Space) -> bool {
-        !self.others.is_empty() && !space.stopped
+        !self.others.is_empty() && !space.stopped && !space.is_remote()
     }
 
     /// Ends every program of the workspace with `id`, as quitting would: its canvas is written
@@ -632,7 +674,11 @@ impl Workspace {
         self.generation += 1;
         let generation = self.generation;
         let dir = self.data_dir.clone();
-        let Some(space) = self.others.iter_mut().find(|s| s.id == id && !s.stopped) else {
+        let Some(space) = self
+            .others
+            .iter_mut()
+            .find(|s| s.id == id && !s.stopped && !s.is_remote())
+        else {
             return;
         };
         let (saved, _) = space.layout(known, accounts, cx).snapshot(dir.as_deref());
@@ -726,16 +772,30 @@ impl Workspace {
 
     /// The workspaces as the index lists them.
     pub(super) fn index(&self) -> session::Index {
+        // The remote the Connect dialog waits on is kept once it is live, not before.
+        let order: Vec<&Space> = self
+            .order()
+            .into_iter()
+            .filter(|s| self.pending_connect.as_deref() != Some(s.id.as_str()))
+            .collect();
         session::Index {
             version: session::VERSION,
-            workspaces: self
-                .order()
+            workspaces: order
                 .iter()
                 .map(|s| session::IndexEntry {
                     id: s.id.clone(),
                     name: s.name.clone(),
-                    icon: s.look.icon.map(|i| space_dialog::icon_name(i).to_string()),
-                    color: s.look.color.clone(),
+                    // Home's look on a remote tile is home's to keep, not the person's.
+                    icon: s
+                        .look
+                        .icon
+                        .filter(|_| !s.remote.as_ref().is_some_and(|r| r.home_look))
+                        .map(|i| space_dialog::icon_name(i).to_string()),
+                    color: s
+                        .look
+                        .color
+                        .clone()
+                        .filter(|_| !s.remote.as_ref().is_some_and(|r| r.home_look)),
                     image: s
                         .look
                         .image
@@ -744,9 +804,29 @@ impl Workspace {
                         .map(|n| n.to_string_lossy().into_owned()),
                     folder: s.folder.clone(),
                     stopped: s.stopped,
+                    remote: s.remote.as_ref().map(|r| session::RemoteEntry {
+                        // Before home's first state the camera is nobody's: it isn't kept. Nor
+                        // is one that isn't finite or lies beyond MOST_FAR: the entry couldn't be
+                        // read back, or would start a dot grid with no end.
+                        camera: (r.placed || s.canvas.camera != Camera::default())
+                            .then_some(s.canvas.camera)
+                            .filter(|c| {
+                                c.origin.x.abs() <= super::remote::MOST_FAR
+                                    && c.origin.y.abs() <= super::remote::MOST_FAR
+                            })
+                            .map(|c| session::SavedCamera {
+                                x: c.origin.x,
+                                y: c.origin.y,
+                                zoom: c.zoom(),
+                            }),
+                        ..r.entry.clone()
+                    }),
                 })
                 .collect(),
-            active: self.active,
+            active: order
+                .iter()
+                .position(|s| s.id == self.space.id)
+                .unwrap_or(0),
             sidebar: self.sidebar,
             git_size: self.git_size.map(|s| session::SavedSize { w: s.w, h: s.h }),
         }

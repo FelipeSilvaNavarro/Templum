@@ -116,6 +116,28 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // What a menu there offers (add, move, close, wire, erase) a mirrored workspace doesn't
+        // do yet: the menu says so instead of opening.
+        if self.on_remote()
+            && matches!(
+                target,
+                Target::Canvas(_)
+                    | Target::Block { .. }
+                    | Target::Agents(_)
+                    | Target::Shells
+                    | Target::Ink(_)
+                    | Target::Wire(_)
+            )
+        {
+            crate::workspace::show_notification(
+                window,
+                cx,
+                gpui_kit::component::notification::Notification::info(
+                    crate::workspace::remote::NOT_YET.to_string(),
+                ),
+            );
+            return;
+        }
         self.reload_early_shells();
         let ws = cx.entity();
         // Esc or a choice gives the keyboard back to what had it.
@@ -273,6 +295,8 @@ impl Workspace {
                         send: self.send_to_menu(n.to_send(cx)),
                     },
                     Body::Checklist(_) => Items::Checklist { block },
+                    // Nothing to do with a card of home's yet.
+                    Body::Mirrored(_) => return None,
                     Body::Editor(e) => Items::Editor {
                         block,
                         tree: e.show_tree,
@@ -490,6 +514,22 @@ impl Workspace {
                         .map_or(0, |p| std::fs::read_dir(p).map_or(0, Iterator::count)),
                 }
             }
+            Target::Space(ref id) if self.spaces().any(|s| s.id == *id && s.is_remote()) => {
+                Items::Remote {
+                    id: id.clone(),
+                    active: self.space.id == *id,
+                    live: self.spaces().any(|s| {
+                        s.id == *id
+                            && s.remote.as_deref().is_some_and(|r| {
+                                matches!(
+                                    r.status,
+                                    templum_api::client::Status::Live
+                                        | templum_api::client::Status::Reconnecting { .. }
+                                )
+                            })
+                    }),
+                }
+            }
             Target::Space(ref id) => Items::Space {
                 id: id.clone(),
                 name: self
@@ -697,6 +737,12 @@ enum Items {
         unsaved: Vec<String>,
         /// Its terminals at work, and why.
         busy: Vec<String>,
+    },
+    /// A remote workspace's tile: Open, Disconnect (or Connect), Forget….
+    Remote {
+        id: String,
+        active: bool,
+        live: bool,
     },
     Ink {
         index: usize,

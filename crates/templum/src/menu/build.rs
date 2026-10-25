@@ -1314,6 +1314,32 @@ impl Items {
                         );
                     },
                 )),
+            Items::Remote { id, active, live } => {
+                let (open_id, toggle_id, forget_id) = (id.clone(), id.clone(), id);
+                menu.item(
+                    item(ws, "Open", None, move |ws, window, cx| {
+                        if let Some(at) = ws.order().iter().position(|s| s.id == open_id) {
+                            ws.switch_to(at, window, cx);
+                        }
+                    })
+                    .disabled(active),
+                )
+                .item(item(
+                    ws,
+                    if live { "Disconnect" } else { "Connect" },
+                    Some(IconName::Plug),
+                    move |ws, window, cx| ws.toggle_remote(&toggle_id, window, cx),
+                ))
+                .separator()
+                .item(item(
+                    ws,
+                    "Forget…",
+                    Some(IconName::Delete),
+                    move |ws, window, cx| {
+                        crate::mirror::forget_dialog(ws, &forget_id, window, cx);
+                    },
+                ))
+            }
             Items::Space {
                 id,
                 name,

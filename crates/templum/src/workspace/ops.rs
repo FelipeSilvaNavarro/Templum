@@ -112,6 +112,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<BlockId, String> {
+        if let Some(words) = self.space_named(space).and_then(Space::mirror_words) {
+            return Err(words);
+        }
         let added = self.in_space(space, |ws| {
             let size = match &new {
                 NewBlock::Note { .. } => note::SIZE,
@@ -373,20 +376,26 @@ impl Workspace {
         })
     }
 
-    /// The workspace `name` names, by its id, then by its name in either case. A stopped one is
-    /// refused unless `stopped` takes it (`show` starts it).
-    pub(super) fn space_of(&self, name: &str, stopped: bool) -> Result<String, Reply> {
+    /// The workspace `name` names, by its id, then by its name in either case; a local one before
+    /// a mirror, whose name is home's and may be the same.
+    pub(super) fn space_called(&self, name: &str) -> Option<&Space> {
         let lower = name.trim().to_lowercase();
-        let space = self
-            .spaces()
+        let named = |s: &&Space| s.name.trim().to_lowercase() == lower;
+        self.spaces()
             .find(|s| s.id == name.trim())
-            .or_else(|| {
-                self.spaces()
-                    .find(|s| s.name.trim().to_lowercase() == lower)
-            })
-            .ok_or_else(|| {
-                Reply::err(format!("There's no workspace {name}: overview lists them."))
-            })?;
+            .or_else(|| self.spaces().filter(named).min_by_key(|s| s.is_remote()))
+    }
+
+    /// The workspace `name` names, by its id, then by its name in either case. A stopped one is
+    /// refused unless `stopped` takes it (`show` starts it); so is a mirror of another computer's:
+    /// its blocks are home's, no tool here reaches them.
+    pub(super) fn space_of(&self, name: &str, stopped: bool) -> Result<String, Reply> {
+        let space = self.space_called(name).ok_or_else(|| {
+            Reply::err(format!("There's no workspace {name}: overview lists them."))
+        })?;
+        if let Some(words) = space.mirror_words() {
+            return Err(Reply::err(words));
+        }
         if space.stopped && !stopped {
             return Err(Reply::err(format!(
                 "Workspace {} is stopped: show it first (show).",

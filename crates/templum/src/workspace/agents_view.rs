@@ -111,6 +111,20 @@ impl Workspace {
     /// What the agent in `pane` does, in the dot's precedence (`block::status_dot`). Never `Done`:
     /// that is the watch's.
     pub(crate) fn doing(&self, pane: &Pane) -> Doing {
+        // A remote workspace's agent is what home says, not what this computer's hooks hear.
+        if let Some(remote) = &pane.remote {
+            return remote
+                .agent
+                .as_ref()
+                .map_or(Doing::Idle, |agent| match agent.state.as_str() {
+                    "needs_you" => Doing::NeedsYou(agent.asks.clone().unwrap_or_default()),
+                    "starting" => Doing::Starting,
+                    "waiting_subagents" => Doing::AwaitsSubagents(agent.subagents),
+                    "working" => Doing::Working(agent.subagents),
+                    "done" => Doing::Done,
+                    _ => Doing::Idle,
+                });
+        }
         // A request waits: whatever news the block has, the person is asked.
         if let Some((wait, _)) = self.asking(pane.term.id()) {
             return Doing::NeedsYou(wait.summary());

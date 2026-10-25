@@ -25,7 +25,8 @@ use crate::grid::{self, hsla};
 use crate::kanban;
 use crate::motion::{self, Look};
 use crate::note;
-use crate::workspace::{AgentState, Body, Copied, FindBar, Pane, Workspace};
+use crate::workspace::agents_view::Doing;
+use crate::workspace::{AgentState, Body, Copied, FindBar, Mirrored, Pane, Workspace};
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
@@ -66,7 +67,7 @@ pub(crate) fn render(
     let font = match body {
         Body::Editor(_) => editor::FONT,
         Body::Note(_) => note::FONT,
-        Body::Terminal(_) | Body::Kanban(_) | Body::Checklist(_) => 0.0,
+        Body::Terminal(_) | Body::Kanban(_) | Body::Checklist(_) | Body::Mirrored(_) => 0.0,
     };
     let settled = if font == 0.0 || (ws.space.flight.is_none() && look.scale == 1.0) {
         z
@@ -106,7 +107,7 @@ pub(crate) fn render(
     // keyboard: GPUI drops the focus of what isn't drawn) is always Full, asked only below Full.
     let level = match body {
         // Drawn in full down to the Card level, which its 13 px never reach (3.25 px at 25%).
-        Body::Kanban(_) | Body::Checklist(_) => Level::Full,
+        Body::Kanban(_) | Body::Checklist(_) | Body::Mirrored(_) => Level::Full,
         Body::Terminal(_) => templum_canvas::level(ws.cell.font_size, ws.space.rest),
         _ => templum_canvas::level(font, ws.space.rest),
     };
@@ -647,16 +648,35 @@ pub(crate) fn render(
                 })
                 // Over bars the wheel moves the canvas: a far terminal's history stays still.
                 .when(live && level == Level::Full, |el| {
-                    el.on_scroll_wheel(cx.listener(move |ws, e: &ScrollWheelEvent, _, cx| {
-                        ws.scroll_terminal(id, e, cx)
+                    el.on_scroll_wheel(cx.listener(move |ws, e: &ScrollWheelEvent, window, cx| {
+                        // A remote terminal has no history to scroll yet.
+                        if ws.space.terminal(id).is_some_and(|p| p.remote.is_some()) {
+                            if !e.modifiers.control {
+                                cx.stop_propagation();
+                                ws.remote_wheel(id, window, cx);
+                            }
+                        } else {
+                            ws.scroll_terminal(id, e, cx)
+                        }
                     }))
                 })
                 .when(level != Level::Card, |el| {
+                    // Home's whole grid fits the block: at the zoom step that holds it.
+                    let grid_zoom = if pane.remote.is_some() {
+                        crate::workspace::remote::fit_zoom(
+                            z,
+                            chrome::content_rect(block.rect).size(),
+                            pane.grid_size(),
+                            ws.cell.size,
+                        )
+                    } else {
+                        z
+                    };
                     let grid = grid::body(
                         pane.term.shared().clone(),
                         pane.snapshot.clone(),
                         ws.cell.clone(),
-                        z,
+                        grid_zoom,
                         level == Level::Silhouette,
                         focused,
                         ws.marked.clone().filter(|_| focused),
@@ -680,6 +700,11 @@ pub(crate) fn render(
                 .when_some(
                     pane.find.as_ref().filter(|_| live && level == Level::Full),
                     |el, bar| el.child(find_bar(ws, n, bar, z)),
+                )
+                .when(
+                    live && level == Level::Full
+                        && pane.remote.as_ref().is_some_and(|r| r.read_only),
+                    |el| el.child(read_only_footer(ws, z)),
                 )
                 .when_some(
                     pane.starting
@@ -706,6 +731,8 @@ pub(crate) fn render(
                 note::body(ws, id, n, settled, level, cx),
             ))
         }),
+        // A block of home's the mirror doesn't draw yet: a card in its place.
+        Body::Mirrored(card) => frame.when(live, |el| el.child(mirrored_card(ws, card, z))),
         // A fading editor is drawn empty, like a note.
         Body::Editor(e) => frame.when(live, |el| {
             el.child(settled_box(
@@ -829,6 +856,79 @@ pub(crate) fn render(
             .flatten(),
         )
         .test_support()
+        .into_any_element()
+}
+
+/// The footer of a remote terminal that takes no input (a subagent's transcript).
+fn read_only_footer(ws: &Workspace, z: f32) -> AnyElement {
+    div()
+        .absolute()
+        .left(px(0.0))
+        .bottom(px(0.0))
+        .w_full()
+        .overflow_hidden()
+        .truncate()
+        .px(px(chrome::PAD * z))
+        .text_size(px(11.0 * z))
+        .text_color(ws.ui.title_dim)
+        .child("Read-only: a subagent's transcript")
+        .into_any_element()
+}
+
+/// What a block of home's that is not mirrored yet shows in its place: its kind's icon, its title
+/// and where to open it.
+fn mirrored_card(ws: &Workspace, card: &Mirrored, z: f32) -> AnyElement {
+    let ui = ws.ui;
+    let icon = match card.kind.as_str() {
+        "kanban" => IconName::LayoutDashboard,
+        "note" => IconName::NotebookText,
+        "checklist" => IconName::ListChecks,
+        "editor" => IconName::FileCode,
+        _ => IconName::Box,
+    };
+    let computer = ws
+        .space
+        .remote
+        .as_ref()
+        .and_then(|r| r.me.as_ref())
+        .map_or("the other computer", |me| me.computer.as_str());
+    let kind = if matches!(
+        card.kind.as_str(),
+        "kanban" | "note" | "checklist" | "editor"
+    ) {
+        String::new()
+    } else {
+        format!("{} · ", card.kind)
+    };
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0 * z))
+        .overflow_hidden()
+        .child(Icon::new(icon).size(px(24.0 * z)).text_color(ui.title_dim))
+        .child(
+            div()
+                .w_full()
+                .overflow_hidden()
+                .truncate()
+                .text_center()
+                .text_size(px(13.0 * z))
+                .text_color(ui.title)
+                .child(format!("{kind}{}", card.title)),
+        )
+        .child(
+            div()
+                .w_full()
+                .overflow_hidden()
+                .truncate()
+                .text_center()
+                .text_size(px(11.0 * z))
+                .text_color(ui.title_dim)
+                .child(format!("Not mirrored yet: open it on {computer}.")),
+        )
         .into_any_element()
 }
 
@@ -1022,11 +1122,15 @@ pub(crate) fn header_button(
 pub(crate) fn title(ws: &Workspace, body: &Body, _cx: &App) -> SharedString {
     match body {
         Body::Terminal(pane) if pane.died_starting() => "The shell ended".into(),
-        Body::Terminal(pane) => SharedString::from(pane.term.title()),
+        Body::Terminal(pane) => match &pane.remote {
+            Some(remote) => SharedString::from(remote.title.clone()),
+            None => SharedString::from(pane.term.title()),
+        },
         Body::Kanban(k) => k.title(ws),
         Body::Note(n) => n.title(&ws.notes),
         Body::Checklist(c) => c.title(ws),
         Body::Editor(e) => e.title(),
+        Body::Mirrored(m) => SharedString::from(m.title.clone()),
     }
 }
 
@@ -1177,6 +1281,22 @@ fn shadow(color: Hsla, focused: bool, lift: f32, z: f32) -> BoxShadow {
 /// text names the block that pressed keys in it, for ANSWERED_FOR.
 pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedString)> {
     let ansi = |i: usize| hsla(ws.theme.palette.ansi[i], 1.0);
+    // A remote agent's dot is home's word for it, whatever this computer's hooks hear.
+    if pane.remote.is_some() {
+        // Not live: home's word is stale, so its dot goes grey.
+        let grey = ws.space.remote.as_deref().is_some_and(|r| r.dim());
+        let dot = match ws.doing(pane) {
+            Doing::NeedsYou(asks) if asks.is_empty() => Some((ansi(3), "Waiting for you".into())),
+            Doing::NeedsYou(asks) => Some((ansi(3), format!("Waiting for you: {asks}").into())),
+            Doing::Working(_) | Doing::AwaitsSubagents(_) => {
+                Some((ws.ui.accent, pane.remote_working().into()))
+            }
+            Doing::Starting => Some((ws.ui.accent, "Starting".into())),
+            Doing::Done => Some((ws.ui.title_dim, "Done".into())),
+            Doing::Idle => None,
+        };
+        return dot.map(|(color, text)| (if grey { ws.ui.title_dim } else { color }, text));
+    }
     let (color, text) = match (&pane.alert, ws.asking(pane.term.id())) {
         // A request waits: its own alert ("Asks you: …") or a bell's says less than this.
         (None | Some(Alert::Attention(_)), Some((wait, _))) => {

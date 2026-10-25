@@ -334,6 +334,11 @@ slides it up over 200 ms like the settings panel; closing slides it down.
   "3 terminals · 1 note · 1 Claude Code running" (counts of blocks by kind, and the agents found by the last
   snapshot); the active card has the `accent` border and ring, the others a hairline that goes `hover_border`
   on hover.
+- **A remote workspace's card** (a mirror of another computer's workspace) says "Mirror of winx-desktop · 3 terminals ·
+  1 Claude Code working", and the header has **Connect to a Templum…** beside New workspace (the keymap's
+  `connect_templum`, no default key). On its canvas a banner tells the state of the connection (live, reconnecting, or
+  why it stopped) and a veil dims its frozen blocks while it isn't live
+  ([templum-to-templum.md](templum-to-templum.md)).
 - **A mirrored workspace's card** wears the sidebar tile's cast mark and tooltip, among its dots.
 - **Click a card:** switches to it and closes the screen. **Right-click:** Open, Edit…, Stop (see
   [Stopping a workspace](#stopping-a-workspace)), Delete… (disabled for the last one, with the same confirmation as

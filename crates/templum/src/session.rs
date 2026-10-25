@@ -182,6 +182,47 @@ pub(crate) struct IndexEntry {
         deserialize_with = "any_true"
     )]
     pub stopped: bool,
+    /// A workspace of another computer (docs/specs/templum-to-templum.md, Persistence on the
+    /// mirror): no `<id>.json` is ever written for it. A value that doesn't read is none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "any_remote"
+    )]
+    pub remote: Option<RemoteEntry>,
+}
+
+/// Where a remote's key is kept.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Keeping {
+    Keyring,
+    File,
+    #[default]
+    None,
+}
+
+/// What the index keeps of a remote workspace: where it connects and how, never a secret (the
+/// token is in the keyring, under `entry`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct RemoteEntry {
+    /// The code's address.
+    pub url: String,
+    /// `pinned`, `public` or `loopback`.
+    pub way: String,
+    pub pin: Option<String>,
+    /// Home's workspace id.
+    pub home: Option<String>,
+    /// The keyring entry's name.
+    pub entry: String,
+    pub key: Keeping,
+    pub trust_added_authority: bool,
+    /// The Cloudflare Access service token's Client ID.
+    pub access_id: Option<String>,
+    /// `http://host:port`, without credentials.
+    pub proxy: Option<String>,
+    pub camera: Option<SavedCamera>,
 }
 
 // The keys a workspace's look added: a value Templum can't use (a typo, a newer version's) is
@@ -209,6 +250,10 @@ fn safe_image<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Erro
 
 fn any_folder<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
     Ok(any_string(d)?.map(PathBuf::from))
+}
+
+fn any_remote<'de, D: Deserializer<'de>>(d: D) -> Result<Option<RemoteEntry>, D::Error> {
+    Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).ok())
 }
 
 fn any_true<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
@@ -1716,6 +1761,48 @@ mod tests {
             sidebar: false,
             git_size: None,
         }
+    }
+
+    #[test]
+    fn a_remote_entry_round_trips_and_an_odd_one_is_none() {
+        let d = tempfile::tempdir().unwrap();
+        let mut index = two();
+        index.workspaces[1].remote = Some(RemoteEntry {
+            url: "https://192.168.1.5:7411".into(),
+            way: "pinned".into(),
+            pin: Some("ab".repeat(32)),
+            home: Some("w3".into()),
+            entry: "remote-ab12cd34".into(),
+            key: Keeping::Keyring,
+            camera: Some(SavedCamera {
+                x: 10.0,
+                y: -5.0,
+                zoom: 0.5,
+            }),
+            ..RemoteEntry::default()
+        });
+        save_index(d.path(), &index).unwrap();
+        let text = std::fs::read_to_string(index_path(d.path())).unwrap();
+        assert!(
+            !text.contains("tpl_") && text.contains("\"key\": \"keyring\""),
+            "{text}"
+        );
+        assert_eq!(load_index(d.path()), Loaded::Saved(index));
+        // A plain entry writes no "remote"; an odd value reads as none; an older index has none.
+        let plain = serde_json::to_string(&two().workspaces[0]).unwrap();
+        assert!(!plain.contains("remote"), "{plain}");
+        for odd in ["7", "null", "\"x\"", "[1]"] {
+            let entry = format!(r#"{{"id":"r1","name":"x","remote":{odd}}}"#);
+            assert_eq!(
+                serde_json::from_str::<IndexEntry>(&entry).unwrap().remote,
+                None
+            );
+        }
+        let old = r#"{"id":"w2","name":"x"}"#;
+        assert_eq!(
+            serde_json::from_str::<IndexEntry>(old).unwrap().remote,
+            None
+        );
     }
 
     #[test]

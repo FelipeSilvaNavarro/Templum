@@ -59,6 +59,24 @@ pub struct WorkspaceView {
     /// Its Lucide icon name, or None for its initials.
     #[serde(default)]
     pub icon: Option<String>,
+    /// Where a mirrored workspace comes from; left out for a local one. A remote workspace's
+    /// blocks are never in the state (docs/specs/templum-to-templum.md, What the mirror's API shows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteView>,
+}
+
+/// A remote workspace: the other computer it mirrors and how the connection stands.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RemoteView {
+    /// The other computer's name, once it said.
+    pub computer: Option<String>,
+    /// The address's host (and port), as the code gave it.
+    pub host: String,
+    /// `pinned`, `public` or `loopback`.
+    pub way: String,
+    /// `connecting`, `live`, `reconnecting`, `cut`, `refused` or `disconnected`.
+    pub status: String,
+    pub latency_ms: Option<u64>,
 }
 
 /// A workspace shared with another Templum (docs/specs/templum-to-templum.md): an API token
@@ -1412,6 +1430,33 @@ mod tests {
         value.as_object_mut().unwrap().remove("shares");
         let old: State = serde_json::from_value(value).unwrap();
         assert!(old.shares.is_empty());
+    }
+
+    #[test]
+    fn a_remote_workspace_says_where_it_mirrors_from() {
+        let mut w = WorkspaceView::default();
+        assert!(serde_json::to_value(&w).unwrap().get("remote").is_none());
+        w.remote = Some(RemoteView {
+            computer: Some("winx-desktop".into()),
+            host: "templum.example.com".into(),
+            way: "public".into(),
+            status: "live".into(),
+            latency_ms: Some(84),
+        });
+        let value = serde_json::to_value(&w).unwrap();
+        assert_eq!(
+            value["remote"],
+            json!({"computer": "winx-desktop", "host": "templum.example.com", "way": "public",
+                "status": "live", "latency_ms": 84})
+        );
+        // A home older than mirrors sends none; one that sends it reads back the same.
+        let mut old = value.clone();
+        old.as_object_mut().unwrap().remove("remote");
+        assert_eq!(
+            serde_json::from_value::<WorkspaceView>(old).unwrap().remote,
+            None
+        );
+        assert_eq!(serde_json::from_value::<WorkspaceView>(value).unwrap(), w);
     }
 
     #[test]

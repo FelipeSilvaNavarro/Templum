@@ -405,6 +405,10 @@ impl Render for Workspace {
         if self.space.flight.is_none() {
             self.space.rest = self.space.view.zoom();
         }
+        // The remote workspaces' terminals to stream follow what is in view.
+        if let Some(due) = self.stream_terminals(Instant::now()) {
+            self.stream_at(due, window, cx);
+        }
         let visible: Vec<_> = self
             .space
             .canvas
@@ -696,18 +700,26 @@ impl Render for Workspace {
                         .test_support(),
                 )
             })
-            .when(self.space.canvas.blocks().is_empty(), |el| {
-                el.child(
-                    div()
-                        .absolute()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(self.hint()),
-                )
-            })
-            .when(!tiled, |el| el.child(toolbar::render(self, cx)));
+            // A remote workspace is empty until home's first state; a stopped one has its card.
+            .children(crate::mirror::stopped_card(self, cx))
+            .when(
+                self.space.canvas.blocks().is_empty() && !self.space.is_remote(),
+                |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(self.hint()),
+                    )
+                },
+            )
+            // Not live: the blocks keep their last frames under a veil.
+            .children(crate::mirror::veil(self))
+            .when(!tiled, |el| el.child(toolbar::render(self, cx)))
+            .children(crate::mirror::banner(self, cx));
         let picker = self
             .picker
             .as_ref()

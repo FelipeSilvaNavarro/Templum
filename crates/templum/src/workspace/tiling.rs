@@ -32,6 +32,9 @@ impl Workspace {
     /// Ctrl+Shift+Enter: grid mode for the selected blocks, else the focused one; in grid mode,
     /// back to the canvas.
     pub(crate) fn toggle_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.on_remote() {
+            return;
+        }
         if self.space.grid.is_some() {
             self.leave_grid(window, cx);
             return;

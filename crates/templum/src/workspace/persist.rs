@@ -21,7 +21,7 @@ use crate::note::{self, Note};
 use crate::notes;
 use crate::session;
 
-use super::{Body, MAX_COLS, MAX_ROWS, Pane, Workspace, show_notification};
+use super::{Body, MAX_COLS, MAX_ROWS, Pane, Space, Workspace, show_notification};
 
 impl Workspace {
     /// Puts a saved canvas back: the camera, then each block back to front, each in its folder.
@@ -430,7 +430,7 @@ impl Workspace {
         // A stopped workspace's file holds its canvas until it starts: it isn't written.
         let jobs: Vec<_> = self
             .spaces()
-            .filter(|s| !s.stopped)
+            .filter(|s| !s.stopped && !s.is_remote())
             .map(|s| {
                 let layout = s.layout(known.clone(), accounts.clone(), cx);
                 // A frozen workspace's file is never written, but its terminals are read.
@@ -647,7 +647,7 @@ impl Workspace {
         }
         let (known, accounts) = (self.known_agents(), self.known_accounts());
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
-            if space.frozen || space.stopped {
+            if space.frozen || space.stopped || space.is_remote() {
                 continue;
             }
             let (saved, _) = space
@@ -660,23 +660,35 @@ impl Workspace {
                 Err(err) => eprintln!("templum: couldn't save the canvas: {err}"),
             }
         }
+        // A remote workspace's camera is kept in the index, which nothing else writes on a pan.
+        if !self.index_frozen
+            && self.spaces().any(Space::is_remote)
+            && let Err(err) = session::save_index(&dir, &self.index())
+        {
+            eprintln!("templum: couldn't save the workspace list: {err}");
+        }
     }
 
     /// A saved rect made safe: None with a number that isn't finite; its size kept between the
     /// smallest block and MAX_COLS x MAX_ROWS cells.
     pub(super) fn restorable(&self, r: Rect) -> Option<Rect> {
-        if ![r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) {
-            return None;
-        }
-        let min = chrome::min_block_size(self.cell.size);
-        let max = chrome::block_size(MAX_COLS, MAX_ROWS, self.cell.size);
-        Some(Rect::new(
-            r.x,
-            r.y,
-            r.w.clamp(min.w, max.w),
-            r.h.clamp(min.h, max.h),
-        ))
+        restorable_rect(r, self.cell.size)
     }
+}
+
+/// `Workspace::restorable` for a cell of `cell`.
+pub(super) fn restorable_rect(r: Rect, cell: Size) -> Option<Rect> {
+    if ![r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let min = chrome::min_block_size(cell);
+    let max = chrome::block_size(MAX_COLS, MAX_ROWS, cell);
+    Some(Rect::new(
+        r.x,
+        r.y,
+        r.w.clamp(min.w, max.w),
+        r.h.clamp(min.h, max.h),
+    ))
 }
 
 /// How soon a restored shell that ends, having run nothing, couldn't start.

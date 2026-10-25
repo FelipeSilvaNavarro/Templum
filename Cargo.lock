@@ -7135,6 +7135,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "ignore",
+ "keyring-core",
  "lyon_tessellation",
  "serde",
  "serde_json",

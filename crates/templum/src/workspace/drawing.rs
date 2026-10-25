@@ -11,6 +11,10 @@ use super::{Drag, INK_UNDO, Tool, Workspace};
 impl Workspace {
     /// The toolbar's tool; the keyboard goes back to the canvas. A wire being drawn is given up.
     pub(crate) fn set_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        // A mirrored workspace is only looked at and moved around in, for now.
+        if self.on_remote() && !matches!(tool, Tool::Select | Tool::Hand) {
+            return;
+        }
         if matches!(self.drag, Some(Drag::Wire { .. })) {
             self.drag = None;
         }
@@ -35,6 +39,9 @@ impl Workspace {
 
     /// The shapes pill above the toolbar, or closes it.
     pub(crate) fn toggle_shapes(&mut self, cx: &mut Context<Self>) {
+        if self.on_remote() {
+            return;
+        }
         self.shapes_open = !self.shapes_open;
         cx.notify();
     }
@@ -117,6 +124,10 @@ impl Workspace {
 
     /// A press on the ink layer: starts the tool's drawing at the pointer.
     pub(crate) fn begin_ink(&mut self, e: &MouseDownEvent) {
+        // A mirrored workspace is only looked at and moved around in, for now.
+        if self.on_remote() {
+            return;
+        }
         self.space.pristine = false;
         self.press = None;
         let p = self.space.canvas.camera.to_world(self.local(e.position));

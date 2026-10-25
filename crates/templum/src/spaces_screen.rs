@@ -20,6 +20,7 @@ use crate::menu::Target;
 use crate::motion;
 use crate::sidebar;
 use crate::theme::Ui;
+use crate::workspace::agents_view::Doing;
 use crate::workspace::{Body, Space, Workspace, workspace_digit};
 
 /// The sheet's widest; narrower windows get a narrower one.
@@ -68,6 +69,8 @@ pub(crate) struct Counts {
     pub agents: Vec<(String, usize)>,
     /// Its programs were ended: the counts are its saved canvas's.
     pub stopped: bool,
+    /// The computer it mirrors, when it is a remote workspace: its agents are counted at work.
+    pub mirror: Option<String>,
 }
 
 impl Counts {
@@ -87,21 +90,24 @@ impl Counts {
         ]
         .into_iter()
         .flatten()
-        .chain(
-            self.agents
-                .iter()
-                .map(|(agent, n)| format!("{n} {agent} running")),
-        )
+        .chain(self.agents.iter().map(|(agent, n)| {
+            let verb = if self.mirror.is_some() {
+                "working"
+            } else {
+                "running"
+            };
+            format!("{n} {agent} {verb}")
+        }))
         .collect();
         let line = if parts.is_empty() {
             "Empty".to_string()
         } else {
             parts.join(" · ")
         };
-        if self.stopped {
-            format!("Stopped · {line}")
-        } else {
-            line
+        match (&self.mirror, self.stopped) {
+            (Some(computer), _) => format!("Mirror of {computer} · {line}"),
+            (None, true) => format!("Stopped · {line}"),
+            (None, false) => line,
         }
     }
 
@@ -305,6 +311,7 @@ impl Workspace {
                         c,
                         Command::Workspaces
                             | Command::NewWorkspace
+                            | Command::ConnectTemplum
                             | Command::NextWorkspace
                             | Command::PreviousWorkspace
                             | Command::ToggleSidebar
@@ -325,6 +332,12 @@ impl Workspace {
     pub(crate) fn counts(&self, space: &Space) -> Counts {
         let mut counts = Counts {
             stopped: space.stopped,
+            mirror: space.remote.as_deref().map(|r| {
+                r.me.as_ref().map_or_else(
+                    || crate::workspace::remote::host_of(&r.entry.url),
+                    |m| m.computer.clone(),
+                )
+            }),
             ..Counts::default()
         };
         if space.stopped {
@@ -346,7 +359,13 @@ impl Workspace {
             match body {
                 Body::Terminal(pane) => {
                     counts.terminals += 1;
-                    if let Some(agent) = self.agent_name(pane) {
+                    // A mirror counts the agents at work at home.
+                    let working = pane.remote.is_none()
+                        || matches!(
+                            self.doing(pane),
+                            Doing::Working(_) | Doing::AwaitsSubagents(_)
+                        );
+                    if working && let Some(agent) = self.agent_name(pane) {
                         counts.agent(agent);
                     }
                 }
@@ -354,6 +373,13 @@ impl Workspace {
                 Body::Kanban(_) => counts.boards += 1,
                 Body::Checklist(_) => counts.checklists += 1,
                 Body::Editor(_) => counts.editors += 1,
+                Body::Mirrored(card) => match card.kind.as_str() {
+                    "note" => counts.notes += 1,
+                    "kanban" => counts.boards += 1,
+                    "checklist" => counts.checklists += 1,
+                    "editor" => counts.editors += 1,
+                    _ => {}
+                },
             }
         }
         counts
@@ -398,6 +424,16 @@ pub(crate) fn render(
                 .child(Icon::new(IconName::Plus).size(px(14.0)))
                 .child("New workspace")
                 .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.add_space(window, cx)))
+                .test_support(),
+        )
+        .child(
+            header_button("screen-connect", ui)
+                .gap(px(6.0))
+                .child(Icon::new(IconName::Plug).size(px(14.0)))
+                .child("Connect to a Templum…")
+                .on_click(
+                    cx.listener(|ws, _: &ClickEvent, window, cx| ws.connect_templum(window, cx)),
+                )
                 .test_support(),
         )
         .child(

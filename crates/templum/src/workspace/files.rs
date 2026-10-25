@@ -21,12 +21,18 @@ use super::{Body, Workspace, remember, show_notification};
 impl Workspace {
     /// Asks for a folder, then opens an editor on it at the viewport's center.
     pub(crate) fn new_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.on_remote() {
+            return;
+        }
         let at = self.room_in_view(editor::SIZE, window, cx).origin();
         self.ask_editor_folder(at, window, cx);
     }
 
     /// The folder dialog; the editor's top-left corner goes to `at` (world units).
     pub(crate) fn ask_editor_folder(&self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
+        if self.on_remote() {
+            return;
+        }
         let entity = cx.entity();
         launcher::ask_folder_for(
             self,
@@ -47,6 +53,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
+        if self.on_remote() {
+            return None;
+        }
         if !folder.is_dir() {
             let message = format!("{} isn't a folder", folder.display());
             eprintln!("templum: {message}");

@@ -15,6 +15,7 @@ use crate::ink;
 use crate::keys::{self, Command};
 use crate::menu::Target;
 use crate::theme::Ui;
+use crate::workspace::remote::NOT_YET;
 use crate::workspace::{Tool, Workspace};
 
 const BUTTON: f32 = 32.0;
@@ -80,7 +81,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-wire",
             IconName::Cable,
-            "Wire: connect two blocks",
+            gated(ws, "Wire: connect two blocks"),
             tool == Tool::Wire,
             ui,
         )
@@ -92,7 +93,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-terminal",
             IconName::SquareTerminal,
-            tip("Terminal", Command::NewTerminal),
+            gated(ws, tip("Terminal", Command::NewTerminal)),
             false,
             ui,
         )
@@ -105,7 +106,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-note",
             IconName::StickyNote,
-            tip("Note", Command::NewNote),
+            gated(ws, tip("Note", Command::NewNote)),
             false,
             ui,
         )
@@ -115,7 +116,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-checklist",
             IconName::ListChecks,
-            "Checklist",
+            gated(ws, "Checklist"),
             false,
             ui,
         )
@@ -125,7 +126,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-kanban",
             IconName::LayoutDashboard,
-            tip("Kanban board", Command::NewKanban),
+            gated(ws, tip("Kanban board", Command::NewKanban)),
             false,
             ui,
         )
@@ -135,33 +136,43 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-editor",
             IconName::FileCode,
-            tip("Editor", Command::NewEditor),
+            gated(ws, tip("Editor", Command::NewEditor)),
             false,
             ui,
         )
         .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.new_editor(window, cx)))
         .test_support()
         .into_any_element(),
-        button("tool-agent", IconName::Bot, "AI agent", false, ui)
-            .on_click(cx.listener(|ws, e: &ClickEvent, window, cx| {
-                // The agent's block opens in the middle of the canvas.
-                let at = ws.space.canvas.camera.to_world(ws.center(window));
-                ws.open_menu(Target::Agents(at), e.position(), window, cx);
-            }))
-            .test_support()
-            .into_any_element(),
+        button(
+            "tool-agent",
+            IconName::Bot,
+            gated(ws, "AI agent"),
+            false,
+            ui,
+        )
+        .on_click(cx.listener(|ws, e: &ClickEvent, window, cx| {
+            // The agent's block opens in the middle of the canvas.
+            let at = ws.space.canvas.camera.to_world(ws.center(window));
+            ws.open_menu(Target::Agents(at), e.position(), window, cx);
+        }))
+        .test_support()
+        .into_any_element(),
     ]);
     let drawing = group(vec![
-        button("tool-pen", IconName::Pencil, "Pen", tool == Tool::Pen, ui)
-            .on_click(
-                cx.listener(|ws, _: &ClickEvent, window, cx| ws.set_tool(Tool::Pen, window, cx)),
-            )
-            .test_support()
-            .into_any_element(),
+        button(
+            "tool-pen",
+            IconName::Pencil,
+            gated(ws, "Pen"),
+            tool == Tool::Pen,
+            ui,
+        )
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.set_tool(Tool::Pen, window, cx)))
+        .test_support()
+        .into_any_element(),
         button(
             "tool-highlighter",
             IconName::Highlighter,
-            "Highlighter",
+            gated(ws, "Highlighter"),
             tool == Tool::Highlighter,
             ui,
         )
@@ -175,7 +186,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-shapes",
             ws.last_shape.map_or(IconName::Shapes, shape_icon),
-            "Shapes",
+            gated(ws, "Shapes"),
             matches!(tool, Tool::Shape(_)),
             ui,
         )
@@ -185,7 +196,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-eraser",
             IconName::Eraser,
-            "Eraser",
+            gated(ws, "Eraser"),
             tool == Tool::Eraser,
             ui,
         )
@@ -377,6 +388,15 @@ fn shape_name(kind: ShapeKind) -> &'static str {
     }
 }
 
+/// A control a mirrored workspace doesn't have yet is dimmed, and its tooltip says so.
+fn gated(ws: &Workspace, tip: impl Into<SharedString>) -> SharedString {
+    if ws.on_remote() {
+        NOT_YET.into()
+    } else {
+        tip.into()
+    }
+}
+
 fn button(
     id: &'static str,
     icon: IconName,
@@ -394,6 +414,7 @@ fn button(
         .rounded(px(8.0))
         .cursor_pointer()
         .when(active, |el| el.bg(ui.card))
+        .when(tip == NOT_YET, |el| el.opacity(0.4))
         .aria_selected(active)
         .hover(move |s| s.bg(ui.hover))
         .active(move |s| s.bg(ui.pressed))

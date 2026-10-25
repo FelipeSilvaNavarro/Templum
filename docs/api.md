@@ -396,9 +396,10 @@ share stays, saying "share of a deleted workspace" in Settings, until it is revo
 
 `mirrored` is true while an event stream of its token is open. A token for all workspaces sees every share; a limited
 token sees only the share it is. The state also gains a block's `read_only` (true for a terminal that takes no input,
-a subagent's transcript; left out otherwise) and a workspace's `icon` (its Lucide name, or null). `revoke_share` with
-no `share` revokes the calling token's own; a share may revoke itself, and revoking another takes a Full token for all
-workspaces.
+a subagent's transcript; left out otherwise) and a workspace's `icon` (its Lucide name, or null). A workspace this
+Templum mirrors from another computer has `remote` (`computer`, `host`, `way`, `status`, `latency_ms`), and its blocks
+are never in the state. `revoke_share` with no `share` revokes the calling token's own; a share may revoke itself, and
+revoking another takes a Full token for all workspaces.
 
 ### Errors and limits
 

@@ -10,8 +10,8 @@ use super::http::{Conn, Headers, Task, stream};
 use super::sse;
 use super::trust::{self, Pinned};
 use super::{
-    About, Bad, Command, Failure, KeySource, Keys, Limits, Order, Remote, Shared, Status, Update,
-    Why,
+    About, Bad, Command, Failure, Kept, KeySource, Keys, Limits, Order, Remote, Shared, Status,
+    Update, Why,
 };
 use crate::code::Trust;
 use crate::model::{ApplyError, FrameView, MeView};
@@ -245,6 +245,9 @@ struct Life {
     id: String,
     round: u64,
     remote: Remote,
+    /// Where the key was kept when this began: Forget deletes it there, whatever `remote.key`
+    /// became since (memory, when a re-save was refused).
+    kept_as: Option<(String, bool)>,
     keys: Keys,
     out: Arc<Shared>,
     limits: Limits,
@@ -285,10 +288,17 @@ impl Life {
         limits: Limits,
         tx: UnboundedSender<Msg>,
     ) -> Life {
+        let kept_as = match &remote.key {
+            KeySource::Kept { entry, file } | KeySource::Save { entry, file, .. } => {
+                Some((entry.clone(), *file))
+            }
+            KeySource::Memory(_) => None,
+        };
         Life {
             id: id.into(),
             round,
             remote,
+            kept_as,
             keys,
             out,
             limits,
@@ -699,6 +709,7 @@ impl Life {
                 }
                 Phase::Live => {}
             },
+            Command::TrustAdded => self.trust_added().await,
             Command::Terminals(set) => {
                 let set: Vec<_> = set.into_iter().take(STREAMS_MOST).collect();
                 // Home refused a stream: it is asked again when the terminals shown change, not
@@ -750,6 +761,41 @@ impl Life {
                 }
             }
         }
+    }
+
+    /// The person accepted the authority this computer added: the secrets the remote was cut with
+    /// are kept again with that choice (where they were, else in memory), and it starts again.
+    async fn trust_added(&mut self) {
+        let Some(mut secrets) = self.ready.as_ref().map(|r| r.secrets.clone()) else {
+            return;
+        };
+        secrets.trust_added = true;
+        self.remote.trust_added = true;
+        let place = match &self.remote.key {
+            KeySource::Kept { entry, file } | KeySource::Save { entry, file, .. } => {
+                Some((entry.clone(), *file))
+            }
+            KeySource::Memory(_) => None,
+        };
+        let kept = match place {
+            Some((entry, file)) => {
+                let (keys, again) = (self.keys.clone(), secrets.clone());
+                let saved = blocking(move || keys.save(&entry, &again, file)).await;
+                saved
+                    .and_then(Result::ok)
+                    .filter(|kept| *kept != Kept::Memory)
+            }
+            None => None,
+        };
+        if kept.is_none() {
+            self.remote.key = KeySource::Memory(secrets);
+        } else if let KeySource::Save { entry, file, .. } = self.remote.key.clone() {
+            self.remote.key = KeySource::Kept { entry, file };
+        }
+        self.ready = None;
+        self.failures = 0;
+        self.rechecking = false;
+        self.start().await;
     }
 
     /// Hands a call to the calls task, or says it can't be made now.
@@ -983,13 +1029,7 @@ impl Life {
                     .await;
             }
         }
-        let entry = match &self.remote.key {
-            KeySource::Kept { entry, file } | KeySource::Save { entry, file, .. } => {
-                Some((entry.clone(), *file))
-            }
-            KeySource::Memory(_) => None,
-        };
-        if let Some((entry, file)) = entry {
+        if let Some((entry, file)) = self.kept_as.clone() {
             let keys = self.keys.clone();
             let _ = blocking(move || keys.delete(&entry, file)).await;
         }
@@ -1522,6 +1562,76 @@ mod tests {
                 next < Duration::from_secs(4),
                 "a plain failure has no floor: {next:?}"
             );
+        });
+    }
+
+    #[test]
+    fn trusting_an_added_authority_keeps_the_key_that_way_and_starts_again() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = Keys::without_keyring(Some(dir.path()));
+            let secrets = super::super::Secrets {
+                token: Key::new("tpl_x".into()),
+                access_secret: None,
+                proxy_auth: None,
+                url: "http://127.0.0.1:9".into(),
+                trust: Trust::Loopback,
+                trust_added: false,
+                proxy: None,
+            };
+            assert_eq!(keys.save("remote-aa", &secrets, true), Ok(Kept::File));
+            let mut life = life_at("http://127.0.0.1:9");
+            life.keys = keys.clone();
+            life.remote.key = KeySource::Kept {
+                entry: "remote-aa".into(),
+                file: true,
+            };
+            life.prepare().await.unwrap();
+            life.begin();
+            life.cut(Why::AddedAuthority);
+            let epoch = life.epoch;
+            life.command(Command::TrustAdded).await;
+            assert!(life.remote.trust_added);
+            assert!(keys.load("remote-aa", true).unwrap().trust_added);
+            assert!(life.remote.binds(&keys.load("remote-aa", true).unwrap()));
+            assert!(life.epoch > epoch && life.phase == Phase::Opening);
+        });
+    }
+
+    #[test]
+    fn forget_deletes_the_key_where_it_was_kept_even_after_a_refused_re_save() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = Keys::without_keyring(Some(dir.path()));
+            let secrets = super::super::Secrets {
+                token: Key::new("tpl_x".into()),
+                access_secret: None,
+                proxy_auth: None,
+                url: "http://127.0.0.1:9".into(),
+                trust: Trust::Loopback,
+                trust_added: false,
+                proxy: None,
+            };
+            assert_eq!(keys.save("remote-aa", &secrets, true), Ok(Kept::File));
+            let mut remote = life_at("http://127.0.0.1:9").remote;
+            remote.key = KeySource::Kept {
+                entry: "remote-aa".into(),
+                file: true,
+            };
+            let (tx, _inbox) = unbounded_channel();
+            let mut life = Life::new(
+                "r1",
+                1,
+                remote,
+                keys.clone(),
+                Arc::new(Shared::for_tests()),
+                Limits::default(),
+                tx,
+            );
+            // What `trust_added` leaves when the keyring refuses the second save.
+            life.remote.key = KeySource::Memory(secrets);
+            life.forget(false).await;
+            assert!(keys.load("remote-aa", true).is_err(), "the key is gone");
         });
     }
 

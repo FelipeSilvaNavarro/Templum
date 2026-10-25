@@ -80,6 +80,24 @@ pub(crate) fn render(
         .tooltip(|window, cx| Tooltip::new("New workspace").build(window, cx))
         .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.add_space(window, cx)))
         .test_support();
+    let connect = div()
+        .id("connect-templum")
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(TILE))
+        .rounded(px(10.0))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .active(move |s| s.bg(ui.pressed))
+        .child(
+            Icon::new(IconName::Plug)
+                .size(px(16.0))
+                .text_color(ui.title),
+        )
+        .tooltip(|window, cx| Tooltip::new("Connect to a Templum…").build(window, cx))
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.connect_templum(window, cx)))
+        .test_support();
     let open = ws.git_open && ws.space.git.is_some();
     let git = div()
         .id("git-button")
@@ -125,7 +143,8 @@ pub(crate) fn render(
                 .overflow_y_scroll()
                 .child(screen)
                 .children(tiles)
-                .child(plus),
+                .child(plus)
+                .child(connect),
         )
         // Apart, in the corner: the agents, requests and Git aren't workspaces.
         .child(
@@ -149,7 +168,9 @@ pub(crate) fn render(
 fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
     let active = i == ws.active;
-    let name = SharedString::from(if space.stopped {
+    let name = SharedString::from(if let Some(remote) = space.remote.as_deref() {
+        crate::mirror::tile_tip(&space.name, remote)
+    } else if space.stopped {
         format!("{} (stopped)", space.name)
     } else {
         space.name.clone()
@@ -218,6 +239,15 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
             crate::share_dialog::mirror_mark(ws, &space.id, "workspace-mirrored", 12.0)
                 .map(|mark| mark.absolute().bottom(px(2.0)).right(px(2.0))),
         )
+        // A remote one: where it mirrors from.
+        .when(space.is_remote(), |el| {
+            el.child(
+                crate::mirror::tile_mark(ui, &space.id)
+                    .absolute()
+                    .bottom(px(2.0))
+                    .right(px(2.0)),
+            )
+        })
         // A terminal there has news (see alert.rs).
         .when(space.terminals().any(|(_, p)| p.alert.is_some()), |el| {
             el.child(
@@ -248,7 +278,10 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
     div()
         .rounded(px(10.0))
         .when_some(color, |el, c| el.bg(c.opacity(0.18)))
-        .when(space.stopped, |el| el.opacity(0.45))
+        .when(
+            space.stopped || space.remote.as_deref().is_some_and(|r| r.dim()),
+            |el| el.opacity(0.45),
+        )
         .child(inner)
         .into_any_element()
 }

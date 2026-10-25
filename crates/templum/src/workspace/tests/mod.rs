@@ -760,6 +760,7 @@ mod notes;
 #[cfg(unix)]
 mod notices;
 mod persistence;
+mod remote;
 mod requests;
 mod screen;
 mod selection;

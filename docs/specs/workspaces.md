@@ -40,7 +40,13 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
   - A tile of a workspace another Templum mirrors now (a share's event stream is open) wears a small Lucide `cast`
     mark at its bottom-right, in the accent; its tooltip says "Mirrored now on Another computer (203.0.113.7)", a
     line per mirror ([templum-to-templum.md](templum-to-templum.md)).
-- **+** at the bottom creates a workspace and switches to it.
+- **A remote workspace's tile** (a mirror of another computer's workspace,
+  [templum-to-templum.md](templum-to-templum.md)) wears home's color and icon, a small Lucide `globe` mark at its
+  bottom-right and, while it isn't live, is dimmed. Its tooltip is "API, on winx-desktop · 84 ms". It is dragged,
+  Ctrl+Tab'd and Ctrl+1–9'd like any tile; its right-click menu is Open, Disconnect (or Connect) and Forget…. It has
+  no canvas file: only its index entry.
+- **+** at the bottom creates a workspace and switches to it. Under it, a plug button, **Connect to a Templum…**,
+  opens the dialog that turns a connection code into a remote workspace.
 - **Right-click a tile:** a menu with **Rename…** and **Delete…**.
   - Rename opens a dialog with a text field. Enter or **Rename** applies it, Esc cancels.
   - Delete asks first: "Delete *name*? Its terminals will close." It is disabled while only one workspace exists.
