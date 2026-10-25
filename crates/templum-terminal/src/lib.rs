@@ -38,5 +38,5 @@ pub use tap::{Mark, Outcome, Pattern, Status};
 pub use terminal::quit_before_terminals;
 pub use terminal::{
     Feeder, Inspection, Modes, Notify, Processes, Running, SelectionKind, SharedTerm, SpawnOptions,
-    TermOptions, Terminal, inspect, kill_left, shells_of, strays, terminate, tree,
+    TermOptions, Terminal, VIEWER_HISTORY, inspect, kill_left, shells_of, strays, terminate, tree,
 };

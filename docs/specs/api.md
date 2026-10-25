@@ -547,8 +547,9 @@ phone case work).
     frames are read on the server's thread with the terminal's lock taken by `try_lock` (a held lock skips a frame,
     never waits), so neither the PTY's thread nor painting is slowed; a terminal's `Arc` reaches the server through
     the glue. A client behind gets the newest frame, whole, never a backlog. The scrollback is `read_terminal`'s.
-  - `POST /v1/terminals/{block}/input` (full scope): `{"text":…}` as a paste, or `{"keys":[…]}` as `send_keys`'
-    names; no resize (a viewer scales the frame, as zoom does).
+  - `POST /v1/terminals/{block}/input` (full scope): `{"text":…}` as a paste, `{"keys":[…]}` as `send_keys`' names,
+    or `{"mouse":[…]}` as the mouse does, encoded at home in the program's mode; no resize (a viewer scales the frame,
+    as zoom does).
   - The canvas while it moves: the state's tick goes to 100 ms while a block is dragged or resized, so a mirror follows
     a drag; the shown workspace's camera as an optional `view` event.
   - **Designed** (plan: [2026-10-24-api-batch-2.md](../plans/2026-10-24-api-batch-2.md); each *the designer's call*):

@@ -2951,6 +2951,88 @@ fn terminal_input_pastes_and_presses_as_the_keyboard(cx: &mut TestAppContext) {
     assert_eq!(inputs(cx), n + 4, "none of those reached the terminal");
 }
 
+#[gpui_kit::test]
+fn terminal_input_sends_the_mouse_the_program_asked_for(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, terminal) = three_blocks(handle, &ws, cx);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&terminal].clone());
+    let token = with_token(&ws, cx, Scope::Full, None);
+    let inputs = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminal(terminal).unwrap().term.inputs()
+        })
+    };
+    let mouse = |cx: &mut TestAppContext, token: &Token, events: Value| {
+        tool(
+            handle,
+            &ws,
+            cx,
+            token,
+            "terminal_input",
+            json!({ "block": uid, "mouse": events }),
+        )
+    };
+    let click = json!([
+        { "kind": "press", "button": "left", "row": 1, "col": 1 },
+        { "kind": "release", "button": "left", "row": 1, "col": 1 },
+    ]);
+    let n = inputs(cx);
+    // Before the program asked: nothing is taken, and that is not an error.
+    let line = mouse(cx, &token, click.clone());
+    assert_eq!(
+        said(&line),
+        (false, format!("Sent 0 mouse events to {uid}."))
+    );
+    assert_eq!(inputs(cx), n);
+    // As a program's output asks for it.
+    ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(terminal)
+            .unwrap()
+            .term
+            .feed(b"\x1b[?1000h\x1b[?1006h")
+    });
+    let line = mouse(cx, &token, click);
+    assert_eq!(
+        said(&line),
+        (false, format!("Sent 2 mouse events to {uid}."))
+    );
+    assert_eq!(inputs(cx), n + 2);
+    let by = ws.read_with(cx, |ws, _| {
+        ws.space.terminal(terminal).unwrap().keys_from.clone()
+    });
+    assert_eq!(by.map(|(by, _)| by).as_deref(), Some("API · phone"));
+    // A move with no button is every motion, which only `?1003` asks for.
+    let hover = json!([{ "kind": "move", "button": null, "row": 0, "col": 0 }]);
+    let line = mouse(cx, &token, hover.clone());
+    assert_eq!(
+        said(&line),
+        (false, format!("Sent 0 mouse events to {uid}."))
+    );
+    ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(terminal)
+            .unwrap()
+            .term
+            .feed(b"\x1b[?1003h")
+    });
+    let line = mouse(cx, &token, hover.clone());
+    assert_eq!(
+        said(&line),
+        (false, format!("Sent 1 mouse event to {uid}."))
+    );
+    // A Control token may not.
+    let control = with_token(&ws, cx, Scope::Control, None);
+    let line = mouse(cx, &control, hover);
+    assert_eq!(
+        refused(&line),
+        (
+            Some(i64::from(codes::SCOPE)),
+            "terminal_input needs a Full token.".to_string()
+        )
+    );
+}
+
 #[cfg(unix)]
 #[gpui_kit::test]
 fn input_to_an_ended_shell_is_refused(cx: &mut TestAppContext) {

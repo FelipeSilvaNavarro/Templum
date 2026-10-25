@@ -430,6 +430,24 @@ impl Workspace {
                 cx.notify();
                 Outcome::Now(Reply::ok(format!("Pasted into {block}.")))
             }
+            Input::Mouse(events) => {
+                // Home encodes each in the program's mode now; the ones it didn't ask for are
+                // dropped, and the answer counts those taken.
+                let mut taken = 0;
+                if let Some(pane) = self.pane_mut(&worker) {
+                    taken = events.iter().filter(|e| pane.term.mouse(e)).count();
+                    if taken > 0 {
+                        pane.scrolled.set(true);
+                        pane.keys_from = Some((by, Instant::now()));
+                    }
+                }
+                self.repaint_after_answered(cx);
+                cx.notify();
+                Outcome::Now(Reply::ok(match taken {
+                    1 => format!("Sent 1 mouse event to {block}."),
+                    n => format!("Sent {n} mouse events to {block}."),
+                }))
+            }
             Input::Keys(keys) => {
                 let said = match keys.len() {
                     1 => format!("Pressed 1 key in {block}."),

@@ -13,8 +13,10 @@ use templum_api::client::{
     Bad, Command, Kept, KeySource, Keys, Limits, Remote, SERVICE_DEV, Secrets, Status, Update, Why,
 };
 use templum_api::code::{Key, Trust};
+use templum_api::registry::mouse_value;
 use templum_api::store::{Listen, Scope, Settings, Tls};
 use templum_api::tls;
+use templum_terminal::{Button, MouseInput, MouseKind, Terminal};
 
 /// The secrets of `remote` for the share `text`: bound to where the remote goes.
 fn secrets_for(remote: &Remote, text: &str) -> Secrets {
@@ -1465,4 +1467,265 @@ fn barrier(mirror: &Mirror) -> Vec<Update> {
         "the barrier",
         |u| matches!(u, Update::Refused { sentence, .. } if sentence.starts_with("Paste at most")),
     )
+}
+
+fn mouse(kind: MouseKind, button: Option<Button>, row: usize, col: usize) -> MouseInput {
+    MouseInput {
+        button,
+        kind,
+        row,
+        col,
+        ctrl: false,
+        alt: false,
+        shift: false,
+    }
+}
+
+#[test]
+fn mouse_events_ride_the_typing_queue_in_order_and_waiting_moves_merge() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |_| {});
+    let mirror = live_on(&fake, &text);
+    let send = |command| mirror.send("r1", command);
+    let keys = |k: &str| Command::Keys {
+        block: "b7k2m".into(),
+        keys: vec![k.into()],
+    };
+    let event = |event| Command::Mouse {
+        block: "b7k2m".into(),
+        event,
+    };
+    let (left, inputs) = (Some(Button::Left), || calls_of(&fake, "terminal_input"));
+    fake.hold_calls.store(true, Ordering::SeqCst);
+    send(keys("a"));
+    wait_for("the first call", || inputs().len() == 1);
+    let (down, up) = (
+        mouse(MouseKind::Press, left, 1, 1),
+        mouse(MouseKind::Release, left, 1, 4),
+    );
+    send(event(down));
+    for col in 2..=4 {
+        send(event(mouse(MouseKind::Move, left, 1, col)));
+    }
+    send(event(up));
+    send(keys("b"));
+    barrier(&mirror);
+    fake.release_calls();
+    wait_for("the rest", || inputs().len() == 3);
+    let calls = inputs();
+    let moved = mouse(MouseKind::Move, left, 1, 4);
+    assert_eq!(
+        calls[1]["mouse"],
+        json!([mouse_value(&down), mouse_value(&moved), mouse_value(&up)]),
+        "in order, the waiting moves merged into the newest"
+    );
+    assert_eq!(
+        calls[2]["keys"],
+        json!(["b"]),
+        "the key typed after them goes after them"
+    );
+    // Seventy steps of the wheel: 64 a call at most.
+    fake.hold_calls.store(true, Ordering::SeqCst);
+    send(keys("c"));
+    wait_for("the held call", || inputs().len() == 4);
+    for _ in 0..70 {
+        send(event(mouse(MouseKind::Press, Some(Button::WheelUp), 0, 0)));
+    }
+    barrier(&mirror);
+    fake.release_calls();
+    wait_for("the wheel", || inputs().len() == 6);
+    let sizes: Vec<usize> = inputs()[4..]
+        .iter()
+        .map(|c| c["mouse"].as_array().unwrap().len())
+        .collect();
+    assert_eq!(sizes, [64, 6]);
+}
+
+/// A home terminal lent as `block`, its output `lines` lines `{prefix} 1.` …, and the viewer it
+/// streams to.
+fn streamed_with_lines(
+    fake: &Fake,
+    block: &str,
+    prefix: &str,
+    lines: usize,
+) -> (Terminal, Terminal) {
+    let home = viewer(20, 4);
+    lend(fake, block, "w3", &home);
+    let out: Vec<String> = (1..=lines).map(|n| format!("{prefix} {n}.")).collect();
+    home.feed(out.join("\r\n").as_bytes());
+    (home, viewer(20, 4))
+}
+
+fn history_of(mirror: &Mirror, block: &str) {
+    until(
+        mirror,
+        "r1",
+        "the history",
+        |u| matches!(u, Update::History(b) if b == block),
+    );
+}
+
+#[test]
+fn home_s_history_fills_the_viewer_once_until_a_frame_comes() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |_| {});
+    let (home, shown) = streamed_with_lines(&fake, "b7k2m", "row", 30);
+    let mirror = live_on(&fake, &text);
+    mirror.send(
+        "r1",
+        Command::Terminals(vec![("b7k2m".into(), shown.feeder())]),
+    );
+    wait_for("the live screen", || shown.shared().lines(1) == ["row 30."]);
+    let back = || {
+        mirror.send(
+            "r1",
+            Command::History {
+                block: "b7k2m".into(),
+            },
+        )
+    };
+    back();
+    history_of(&mirror, "b7k2m");
+    let all = shown.shared().lines(100);
+    assert_eq!(all.len(), 30, "{all:?}");
+    assert_eq!((all[0].as_str(), all[29].as_str()), ("row 1.", "row 30."));
+    assert_eq!(
+        calls_of(&fake, "read_terminal"),
+        [json!({"block": "b7k2m", "lines": 2000})]
+    );
+    back();
+    settled(&mirror);
+    assert_eq!(
+        calls_of(&fake, "read_terminal").len(),
+        1,
+        "nothing changed: not read again"
+    );
+    home.feed(b"\r\nrow 31.");
+    wait_for("the new line", || shown.shared().lines(1) == ["row 31."]);
+    back();
+    wait_for("read again after a frame", || {
+        calls_of(&fake, "read_terminal").len() == 2
+    });
+}
+
+#[test]
+fn one_terminal_s_history_at_a_time_and_it_goes_with_its_stream() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |_| {});
+    let (_a_home, a) = streamed_with_lines(&fake, "aaaaa", "a", 10);
+    let (_b_home, b) = streamed_with_lines(&fake, "bbbbb", "b", 10);
+    let mirror = live_on(&fake, &text);
+    mirror.send(
+        "r1",
+        Command::Terminals(vec![
+            ("aaaaa".into(), a.feeder()),
+            ("bbbbb".into(), b.feeder()),
+        ]),
+    );
+    wait_for("both live", || {
+        a.shared().lines(1) == ["a 10."] && b.shared().lines(1) == ["b 10."]
+    });
+    let back = |block: &str| {
+        mirror.send(
+            "r1",
+            Command::History {
+                block: block.into(),
+            },
+        )
+    };
+    // An answer for a terminal no longer asked for fills nothing (the held one answers "did
+    // read_terminal").
+    fake.hold_tool("read_terminal");
+    back("aaaaa");
+    wait_for("a's read held", || fake.held() == 1);
+    back("bbbbb");
+    fake.release_tool();
+    history_of(&mirror, "bbbbb");
+    assert_eq!(
+        a.shared().lines(100).len(),
+        4,
+        "{:?}",
+        a.shared().lines(100)
+    );
+    assert_eq!(b.shared().lines(100).len(), 10);
+    // Scrolling back in a drops b's.
+    back("aaaaa");
+    history_of(&mirror, "aaaaa");
+    assert_eq!(
+        (a.shared().lines(100).len(), b.shared().lines(100).len()),
+        (10, 4)
+    );
+    // a's stream ends: its history goes.
+    mirror.send("r1", Command::Terminals(vec![("bbbbb".into(), b.feeder())]));
+    wait_for("a's history dropped", || a.shared().lines(100).len() == 4);
+}
+
+#[test]
+fn a_frame_fed_while_the_history_is_read_makes_the_next_ask_read_again() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |_| {});
+    let (home, shown) = streamed_with_lines(&fake, "b7k2m", "row", 30);
+    let mirror = live_on(&fake, &text);
+    mirror.send(
+        "r1",
+        Command::Terminals(vec![("b7k2m".into(), shown.feeder())]),
+    );
+    wait_for("the live screen", || shown.shared().lines(1) == ["row 30."]);
+    let back = || {
+        mirror.send(
+            "r1",
+            Command::History {
+                block: "b7k2m".into(),
+            },
+        )
+    };
+    // The answer is made at home before the frame: it is only as new as the ask.
+    fake.hold_tool("read_terminal");
+    back();
+    wait_for("the read held", || fake.held() == 1);
+    home.feed(b"\r\nrow 31.");
+    wait_for("the new line", || shown.shared().lines(1) == ["row 31."]);
+    back();
+    // Nothing shows that the second ask was heard, and the one connection is busy with the first.
+    std::thread::sleep(Duration::from_millis(200));
+    fake.release_tool();
+    history_of(&mirror, "b7k2m");
+    back();
+    wait_for("read again", || calls_of(&fake, "read_terminal").len() == 2);
+}
+
+#[test]
+fn a_history_that_could_not_be_filled_stays_held_and_goes_with_its_stream() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |_| {});
+    let (_home, shown) = streamed_with_lines(&fake, "b7k2m", "row", 30);
+    let mirror = live_on(&fake, &text);
+    mirror.send(
+        "r1",
+        Command::Terminals(vec![("b7k2m".into(), shown.feeder())]),
+    );
+    wait_for("the live screen", || shown.shared().lines(1) == ["row 30."]);
+    let back = || {
+        mirror.send(
+            "r1",
+            Command::History {
+                block: "b7k2m".into(),
+            },
+        )
+    };
+    back();
+    history_of(&mirror, "b7k2m");
+    assert_eq!(shown.shared().lines(100).len(), 30);
+    // Home's program went full screen between the ask and the answer: nothing is filled.
+    shown.feed(b"\x1b[?1049h");
+    fake.hold_tool("read_terminal");
+    back();
+    wait_for("the read held", || fake.held() == 1);
+    fake.release_tool();
+    settled(&mirror);
+    shown.feed(b"\x1b[?1049l");
+    mirror.send("r1", Command::Terminals(vec![]));
+    wait_for("the history dropped", || {
+        shown.shared().lines(100).len() == 4
+    });
 }

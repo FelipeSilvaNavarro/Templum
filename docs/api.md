@@ -222,7 +222,7 @@ with the eight only the API has:
 | `set_automation` | `automation` (its number), `on` | control |
 | `run_automation` | `automation` | control |
 | `delete_automation` | `automation` | full |
-| `terminal_input` | `block`, then `text` (a paste) or `keys` (1 to 256, [a key's name](#a-keys-name)) | full |
+| `terminal_input` | `block`, then `text` (a paste), `keys` (1 to 256, [a key's name](#a-keys-name)) or `mouse` (1 to 64 events) | full |
 | `share_workspace` | `workspace`, `name`, `scope` (`control` or `full`), `expires` (Unix seconds, or null), `way`, `address` | full, a token for all workspaces |
 | `revoke_share` | `share` (left out: the calling token's own) | full, or the share itself |
 
@@ -321,9 +321,11 @@ data: {"size":{"cols":120,"rows":40},"cursor":{"row":3,"col":10,"shape":"block",
   moving. Size, `cursor` and `title` are in every frame; `cursor` is `null` while the program hides it, `shape` is
   `block`, `underline` or `beam`, `title` is the program's own (OSC 0/2) or `null` (the block's title is in the state).
 - **Modes.** Every frame has `modes`, what the program took of the keyboard and the mouse at home:
-  `{"full_screen":true,"mouse":true,"kitty_keys":true}`, each present only when true (`{}` when none). A frame
-  whose only change is a mode has no rows. A client that sends keys yields the shortcuts a program would take, and a
-  later one can send the mouse; a home older than this field sends none.
+  `{"full_screen":true,"mouse":true,"mouse_moves":true,"kitty_keys":true}`, each present only when true (`{}` when
+  none). `mouse_moves`: the program asked for every motion (`?1003`), not only clicks and drags: send a move with no
+  button held only then. A frame whose only change is a mode has no rows. A client that sends keys yields the
+  shortcuts a program would take, and a client that sends the mouse sends only what `mouse` and `mouse_moves` say; a
+  home older than this field sends none.
 - **The live screen.** The frame is what the program drew, never the scrollback the person scrolled to or their
   selection: `read_terminal` reads the scrollback.
 - **At most 20 frames a second** per terminal. Each stream queues 20 frames or 8 MiB; a client that falls further behind loses
@@ -364,7 +366,12 @@ follows (so a program still reads Esc alone where the person paused, now that a 
 their order. Type with `keys`: a character is a key, and a dialog that ignores pastes takes keys. Paste with `text`
 for long text. The block shows "answered by API · <token name>". A block that isn't a terminal, a subagent's transcript
 (read-only) and a shell that has ended ("b7k2m's shell has ended: nothing typed reaches it.") are `422`; a block the
-token doesn't see is `404`. The audit log names the call, never what was typed. No resize, and no mouse.
+token doesn't see is `404`. The audit log names the call, never what was typed. No resize.
+`{"mouse":[{"kind":"press","button":"left","row":3,"col":10},{"kind":"release","button":"left","row":3,"col":10}]}`
+clicks as your mouse does: `kind` `press`, `release` or `move`; `button` `left`, `middle`, `right`, `wheel_up`,
+`wheel_down`, or null for a move with none held; `row` and `col` a cell of the grid (clamped); `ctrl`, `alt`, `shift`
+optional. Home encodes each in the program's mode at that moment and drops the ones it didn't ask for (`modes`); the
+answer counts those taken (`Sent 2 mouse events to b7k2m.`). One of `text`, `keys`, `mouse` a call, 1 to 64 events.
 
 #### A key's name
 
@@ -565,10 +572,11 @@ What the banner says, what it means, and whether it tries again by itself:
 
 ### 7. What a mirror can't do yet
 
-Not mirrored: a note's, checklist's, editor's and board's content (a card names each), ink and shapes, scrolling back in
-a terminal, the mouse in a terminal. Not on a mirrored workspace: editors, adding notes (notes are read-only on a
-mirror for now), drawing, grid mode, Move to workspace, Copy and Paste of blocks, Stop, the Git popup. The banner's ⓘ
-lists them. Adding, closing and wiring blocks, naming wires, opening home's agents and handing them tasks work from the
+Not mirrored: a note's, checklist's, editor's and board's content (a card names each), ink and shapes. Scrolling back in
+a mirrored shell (the wheel, Shift+PageUp, Find) reads home's last 2000 lines, without colors, and again after it
+changed; the mouse reaches a program that asked for it, with a Full share. Not on a mirrored workspace: editors, adding
+notes (notes are read-only on a mirror for now), drawing, grid mode, Move to workspace, Copy and Paste of blocks, Stop,
+the Git popup. The banner's ⓘ lists them. Adding, closing and wiring blocks, naming wires, opening home's agents and handing them tasks work from the
 mirror, each done at home through its API; a block you close or a wire you make shows at once and home's state wins
 after two seconds. Ctrl+Z there undoes moves only: it stops once at each of those acts and says to undo the rest on
 home. A selection of several blocks moved on the mirror is one Ctrl+Z step per block on home.

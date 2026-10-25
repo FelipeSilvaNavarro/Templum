@@ -241,10 +241,19 @@ fn a_workspace_mirrors_itself_over_loopback(cx: &mut TestAppContext) {
     assert!(!workspaces.join("r1.json").exists());
 }
 
+/// A shell at home, mirrored as `r1` and live: r1 shown, its camera on the terminal at 100%, the
+/// viewer focused (it streams). The window, the workspace, home's terminal and its workspace's id,
+/// the viewer, and what keeps the data folder and the keys.
 #[cfg(unix)]
-#[gpui_kit::test]
-fn what_home_s_shell_prints_shows_on_the_mirror_and_keys_reach_it(cx: &mut TestAppContext) {
-    use super::remote::{draw, shown};
+#[allow(clippy::type_complexity)]
+fn shell_mirrored(
+    cx: &mut TestAppContext,
+) -> (
+    AnyWindowHandle,
+    Entity<Workspace>,
+    (BlockId, String, BlockId),
+    (tempfile::TempDir, Arc<mock::Store>),
+) {
     let dir = tempfile::tempdir().unwrap();
     let (handle, ws) = open_as(
         cx,
@@ -255,8 +264,7 @@ fn what_home_s_shell_prints_shows_on_the_mirror_and_keys_reach_it(cx: &mut TestA
     let terminal = first_id(&ws, cx);
     let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
     ws.update(cx, |ws, _| ws.space.pristine = false);
-    let (_first, _store) = mirrored(handle, &ws, cx, dir.path());
-    // r1 shown, its camera on the terminal at 100%, the viewer focused: it streams.
+    let (_first, store) = mirrored(handle, &ws, cx, dir.path());
     let uid = ws.read_with(cx, |ws, _| {
         ws.spaces().find(|s| s.id == first).unwrap().uids[&terminal].clone()
     });
@@ -276,20 +284,45 @@ fn what_home_s_shell_prints_shows_on_the_mirror_and_keys_reach_it(cx: &mut TestA
         })
     })
     .unwrap();
+    (handle, ws, (terminal, first, viewer), (dir, store))
+}
+
+/// Types `send` into the shell at home (the first workspace's terminal).
+#[cfg(unix)]
+fn home_shell(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    (terminal, first): (BlockId, &str),
+    send: &str,
+) {
+    ws.read_with(cx, |ws, _| {
+        let home = ws.spaces().find(|s| s.id == first).unwrap();
+        home.terminal(terminal).unwrap().term.text(send);
+    })
+}
+
+/// The last `lines` lines home's terminal printed.
+#[cfg(unix)]
+fn home_printed(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    (terminal, first): (BlockId, &str),
+    lines: usize,
+) -> Vec<String> {
+    ws.read_with(cx, |ws, _| {
+        let home = ws.spaces().find(|s| s.id == first).unwrap();
+        home.terminal(terminal).unwrap().term.shared().lines(lines)
+    })
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn what_home_s_shell_prints_shows_on_the_mirror_and_keys_reach_it(cx: &mut TestAppContext) {
+    use super::remote::{draw, shown};
+    let (handle, ws, (terminal, first, viewer), _keep) = shell_mirrored(cx);
     // The shell at home prints; the viewer shows it. (The command's own echo says `from-%s`.)
-    let home_shell = |cx: &mut TestAppContext, send: &str| {
-        ws.read_with(cx, |ws, _| {
-            let home = ws.spaces().find(|s| s.id == first).unwrap();
-            home.terminal(terminal).unwrap().term.text(send);
-        })
-    };
-    let printed = |cx: &mut TestAppContext| {
-        ws.read_with(cx, |ws, _| {
-            let home = ws.spaces().find(|s| s.id == first).unwrap();
-            home.terminal(terminal).unwrap().term.shared().lines(40)
-        })
-    };
-    home_shell(cx, "printf 'from-%s\\n' home\r");
+    let at = (terminal, first.as_str());
+    home_shell(&ws, cx, at, "printf 'from-%s\\n' home\r");
     pump_home(&ws, cx, "home's output on the mirror", |cx| {
         draw(handle, cx);
         shown(&ws, cx, viewer).contains("from-home")
@@ -300,13 +333,102 @@ fn what_home_s_shell_prints_shows_on_the_mirror_and_keys_reach_it(cx: &mut TestA
         .unwrap();
     pump_home(&ws, cx, "the keys to reach home's shell", |cx| {
         draw(handle, cx);
-        printed(cx)
+        home_printed(&ws, cx, at, 40)
             .iter()
             .any(|line| line.trim_end() == "from-mirror")
     });
     pump_home(&ws, cx, "the answer on the mirror", |cx| {
         draw(handle, cx);
         shown(&ws, cx, viewer).contains("from-mirror")
+    });
+}
+
+/// Past the screen: the lines home printed are only in home's history, which Find reads when it
+/// opens and searches again when it lands.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn three_hundred_lines_printed_at_home_are_found_from_the_mirror(cx: &mut TestAppContext) {
+    use super::remote::{draw, shown};
+    let (handle, ws, (terminal, first, viewer), _keep) = shell_mirrored(cx);
+    let at = (terminal, first.as_str());
+    home_shell(
+        &ws,
+        cx,
+        at,
+        "i=1; while [ $i -le 300 ]; do echo \"row $i.\"; i=$((i+1)); done\r",
+    );
+    pump_home(&ws, cx, "300 lines on the mirror", |cx| {
+        draw(handle, cx);
+        home_printed(&ws, cx, at, 40)
+            .iter()
+            .any(|line| line.trim_end() == "row 300.")
+            && shown(&ws, cx, viewer).contains("row 300.")
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_find(window, cx))
+    })
+    .unwrap();
+    cx.simulate_input(handle, "row 1.");
+    pump_home(&ws, cx, "home's history to be searched", |cx| {
+        draw(handle, cx);
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(viewer)
+                .unwrap()
+                .term
+                .shared()
+                .selection_text()
+                .as_deref()
+                == Some("row 1.")
+        })
+    });
+}
+
+/// A program at home that asks for the mouse hears the click made on the mirror.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_click_on_the_mirror_reaches_a_program_at_home_that_asked_for_the_mouse(
+    cx: &mut TestAppContext,
+) {
+    use super::remote::draw;
+    let (handle, ws, (terminal, first, viewer), _keep) = shell_mirrored(cx);
+    let at = (terminal, first.as_str());
+    home_shell(
+        &ws,
+        cx,
+        at,
+        "stty -icanon -echo min 1; printf '\\033[?1000h\\033[?1006h'; head -c 5 | cat -v; echo; \
+         printf '\\033[?1000l\\033[?1006l'; stty sane\r",
+    );
+    pump_home(&ws, cx, "the mouse mode on the mirror", |cx| {
+        draw(handle, cx);
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(viewer)
+                .unwrap()
+                .term
+                .shared()
+                .modes()
+                .mouse
+        })
+    });
+    let body = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("body", viewer.0 as usize)).bounds()
+        })
+        .unwrap();
+    let click_at = (
+        f32::from(body.origin.x) + 20.,
+        f32::from(body.origin.y) + 20.,
+    );
+    cx.update_window(handle, |_, window, cx| click(window, cx, click_at, 1))
+        .unwrap();
+    // A left press, SGR, as the program read it.
+    pump_home(&ws, cx, "the click to reach the program", |cx| {
+        draw(handle, cx);
+        home_printed(&ws, cx, at, 40)
+            .iter()
+            .any(|line| line.contains("^[[<0;"))
     });
 }
 

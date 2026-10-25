@@ -463,7 +463,13 @@ impl Workspace {
             shift: m.shift,
         };
         self.space.terminal(id).is_some_and(|pane| {
-            let told = pane.term.mouse(&input);
+            // A mirrored terminal's program is at home: its mouse goes there, in the modes the
+            // last frame painted.
+            let told = if pane.remote.is_some() {
+                self.remote_mouse(id, input)
+            } else {
+                pane.term.mouse(&input)
+            };
             if told {
                 pane.scrolled.set(true);
             }
@@ -474,13 +480,20 @@ impl Workspace {
     /// A press in terminal `id`'s body goes to its program when it asked for the mouse (a TUI,
     /// Claude Code full screen), unless Shift is held: Shift keeps selecting text. Its moves and
     /// its release follow it.
-    pub(crate) fn press_program(&mut self, id: BlockId, e: &MouseDownEvent) -> bool {
+    pub(crate) fn press_program(
+        &mut self,
+        id: BlockId,
+        e: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(button) = button_of(e.button).filter(|_| !e.modifiers.shift) else {
             return false;
         };
         let Some(cell) = self.cell_of(id, e.position) else {
             return false;
         };
+        self.tell_mouse(id, window, cx);
         if !self.report(id, cell, Some(button), MouseKind::Press, &e.modifiers) {
             return false;
         }
@@ -1006,6 +1019,16 @@ impl Workspace {
         // its own keyboard does. Printable text is the text path's, as a local terminal's: it
         // ends a dead key's mark there (`replace_text_in_range`) and sends the characters.
         if pane.remote.is_some() {
+            // Shift+PageUp and Shift+PageDown page through the history the mirror has.
+            if k.modifiers.shift
+                && !k.modifiers.control
+                && !k.modifiers.alt
+                && matches!(k.key.as_str(), "pageup" | "pagedown")
+                && self.remote_page(k.key == "pageup")
+            {
+                cx.stop_propagation();
+                return;
+            }
             if typed_text(&input).is_none()
                 && let Some(name) = key_name(&input)
             {
@@ -1201,6 +1224,7 @@ impl Workspace {
         &mut self,
         id: BlockId,
         e: &ScrollWheelEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if e.modifiers.control {
@@ -1223,7 +1247,10 @@ impl Workspace {
                 (0..lines.abs() as usize)
                     .all(|_| self.report(id, cell, Some(button), MouseKind::Press, &e.modifiers))
             });
-            if !told && let Some(pane) = self.space.terminal(id) {
+            let remote = self.space.terminal(id).is_some_and(|p| p.remote.is_some());
+            if !told && remote {
+                self.remote_scroll(id, lines as i32, window, cx);
+            } else if !told && let Some(pane) = self.space.terminal(id) {
                 pane.scrolled.set(true);
                 pane.term.scroll(lines as i32);
             }

@@ -111,8 +111,12 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   canvas by `closed` until home's state loses it), `remote_wire` and `remote_label` (wires held in `wires_held`),
   `remote_hand_task`; each canvas step leaves a `Change::Mark` so Ctrl+Z stops there instead of undoing an older move,
   and a hold that ends with no new state redraws home's last one (`remirror`, `Space::mirror_state`). Menus read the
-  rule per item when they are built (`Gates`, `gated_item`). `--bench-mirror` measures all of it: the mixed cockpit
-  mirrored by the same Templum over loopback.
+  rule per item when they are built (`Gates`, `gated_item`). A mirrored terminal's mouse goes home as
+  `terminal_input`'s `mouse` through the same typing queue (`remote_mouse`, only what the viewer's modes, painted from
+  home's frames, say the program asked for); scrolling back reads home's last 2000 lines with `read_terminal` on the
+  client's thread and fills them above the viewer's live screen (`Feeder::fill_history`), so the UI thread never holds
+  the text (`Command::History`, `Update::History`). `--bench-mirror` measures all of it: the mixed cockpit mirrored by
+  the same Templum over loopback.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera

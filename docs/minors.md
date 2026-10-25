@@ -2251,8 +2251,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **A certificate or key edited on disk is read at the next start of the server only.** Settings ▸ API ▸ My
   certificate reads the files when the server starts; replacing them (a renewal) needs a toggle of the switch. Fix: a
   *Reload* button, or a look at their modified times.
-- [ ] **No mouse input through the API.** A mirror can't click in a program that asked for the mouse. Fix: a `mouse`
-  argument on `terminal_input`, through `Terminal::mouse`.
 - [ ] **Under nonstop output a terminal stream may skip many looks in a row.** The reader (`terminals.rs`, `look`) reads
   with `try_lock_unfair` and skips a terminal whose lock is held, which the PTY thread does while it parses; a mirror of
   a terminal that prints nonstop sees fewer frames. Fix: after a second of skips, wait for the lock unfairly once, on a
@@ -2410,3 +2408,17 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   keeps no scroll. Fix: keep the closed body for `HOLD` and put it back on a refusal.
 - [ ] **A mirror's Add ▸ Terminal opens home's default shell, with no choice of shell.** (`menu/build.rs`, `adding`;
   `toolbar.rs`.) The shells of this computer are not home's. Fix: list home's shells in `GET /v1/state` and offer them.
+- [ ] **Shift+PageUp and Shift+PageDown scroll a mirrored shell but not a local one.** (`workspace/input.rs`,
+  `remote_page`.) Locally they reach the program as keys. Fix: page a local terminal's history the same way when no
+  program took the screen or the mouse.
+- [ ] **A mirrored terminal's history is read whole after any change.** (`client/remote.rs`, `Life::history`.) Up to
+  256 KiB per scroll back of a busy terminal. Fix: a `read_terminal` from a line on.
+- [ ] **Drags are sent to a program that asked only for clicks.** (`workspace/remote.rs`, `remote_mouse`.) The frame
+  doesn't say `?1002`, so home drops them; merged moves keep it to one call per pace. Fix: a `mouse_drags` mode.
+- [ ] **The history of a viewer that went full screen stays until it leaves.** (`templum-terminal`,
+  `Feeder::drop_history`.) The alternate screen has no history, and the main screen's is not reached from there, so a
+  stream that ends while the program is full screen leaves the history on the main screen until the viewer is fed
+  again with a fill. Fix: keep the inactive grid reachable (`Term::swap_alt` resets the alternate screen, so not that).
+- [ ] **The mouse and the wheel over a remote terminal, Shift+PageUp and Find through home's history were checked
+  headlessly only.** (`workspace/input.rs`, `workspace/remote.rs`.) The pointer over a remote terminal at other zooms,
+  and a wheel step over a program that took the mouse, were not looked at on a display. Fix: look.

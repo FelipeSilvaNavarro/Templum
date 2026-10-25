@@ -6,10 +6,13 @@ use crate::store::{Scope, Way};
 use serde_json::{Map, Value, json};
 use templum_mcp::control::{self, Rule};
 use templum_mcp::tools::MAX_TEXT;
-use templum_terminal::{KEY_NAMES, named_key};
+use templum_terminal::{Button, KEY_NAMES, MouseInput, MouseKind, named_key};
 
 /// The keys one `terminal_input` call presses (`send_keys` keeps its own, fewer: `MAX_KEYS`).
 pub const INPUT_KEYS: usize = 256;
+
+/// The mouse events one `terminal_input` call sends.
+pub const INPUT_MOUSE: usize = 64;
 
 /// The tools only the API serves: automations are the person's, not an agent's.
 const OWN: [&str; 8] = [
@@ -69,6 +72,7 @@ pub const NOT_TARGETS: &[&str] = &[
     "last_command",
     "lines",
     "model",
+    "mouse",
     "name",
     "note",
     "on",
@@ -162,17 +166,36 @@ pub fn tools() -> Vec<Value> {
             "terminal_input",
             "Types into a terminal as the person's keyboard does: text as a paste (bracketed when \
              its program asked), or keys by send_keys' names (a character is a key; 1 to 256, \
-             back to back, 50 ms after an escape that another key follows). Answers once they \
-             are in.",
+             back to back, 50 ms after an escape that another key follows), or clicks and scrolls \
+             as their mouse does (mouse: only what the program asked for). Answers once they are in.",
             json!({
                 "block": { "type": "string", "description": "A terminal block's id, as the state shows it." },
-                "text": { "type": "string", "description": "Pasted whole; at most 256 KiB. Give text or keys." },
+                "text": { "type": "string", "description": "Pasted whole; at most 256 KiB. Give text, keys or mouse." },
                 "keys": {
                     "type": "array",
                     "items": { "type": "string" },
                     "minItems": 1,
                     "maxItems": INPUT_KEYS,
                     "description": "Key names (enter, escape, ctrl+c, ctrl+shift+p, f5, a character…), 1 to 256.",
+                },
+                "mouse": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": INPUT_MOUSE,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": { "enum": ["press", "release", "move"] },
+                            "button": { "enum": ["left", "middle", "right", "wheel_up", "wheel_down", null] },
+                            "row": { "type": "integer", "minimum": 0 },
+                            "col": { "type": "integer", "minimum": 0 },
+                            "ctrl": { "type": "boolean" },
+                            "alt": { "type": "boolean" },
+                            "shift": { "type": "boolean" },
+                        },
+                        "required": ["kind", "row", "col"],
+                    },
+                    "description": "Mouse events at cells of the grid (clamped), encoded at home in the program's mode; one it didn't ask for is dropped. 1 to 64.",
                 },
             }),
             &["block"],
@@ -606,6 +629,77 @@ pub enum Input {
     Text(String),
     /// Keys by `send_keys`' names.
     Keys(Vec<String>),
+    /// Mouse events at cells of the grid.
+    Mouse(Vec<MouseInput>),
+}
+
+/// A mouse event as `terminal_input` takes it (`mouse_of` reads it back).
+pub fn mouse_value(e: &MouseInput) -> Value {
+    json!({
+        "kind": match e.kind {
+            MouseKind::Press => "press",
+            MouseKind::Release => "release",
+            MouseKind::Move => "move",
+        },
+        "button": e.button.map(|b| match b {
+            Button::Left => "left",
+            Button::Middle => "middle",
+            Button::Right => "right",
+            Button::WheelUp => "wheel_up",
+            Button::WheelDown => "wheel_down",
+        }),
+        "row": e.row,
+        "col": e.col,
+        "ctrl": e.ctrl,
+        "alt": e.alt,
+        "shift": e.shift,
+    })
+}
+
+/// The mouse event `v` says, or None when it isn't one: a press or release has a button, a cell
+/// is a whole number (past `usize`, the last cell: home clamps it), a modifier a boolean.
+pub fn mouse_of(v: &Value) -> Option<MouseInput> {
+    let kind = match v["kind"].as_str()? {
+        "press" => MouseKind::Press,
+        "release" => MouseKind::Release,
+        "move" => MouseKind::Move,
+        _ => return None,
+    };
+    let button = match v["button"].as_str() {
+        Some("left") => Some(Button::Left),
+        Some("middle") => Some(Button::Middle),
+        Some("right") => Some(Button::Right),
+        Some("wheel_up") => Some(Button::WheelUp),
+        Some("wheel_down") => Some(Button::WheelDown),
+        Some(_) => return None,
+        None if v["button"].is_null() && kind == MouseKind::Move => None,
+        None => return None,
+    };
+    let cell = |key: &str| {
+        let n = v[key].as_number()?;
+        match n.as_u64() {
+            Some(n) => Some(usize::try_from(n).unwrap_or(usize::MAX)),
+            // A whole number past u64 reads as a float; `as` saturates.
+            None => n
+                .as_f64()
+                .filter(|f| *f >= 0.0 && f.fract() == 0.0)
+                .map(|f| f as usize),
+        }
+    };
+    let flag = |key: &str| match &v[key] {
+        Value::Null => Some(false),
+        Value::Bool(b) => Some(*b),
+        _ => None,
+    };
+    Some(MouseInput {
+        button,
+        kind,
+        row: cell("row")?,
+        col: cell("col")?,
+        ctrl: flag("ctrl")?,
+        alt: flag("alt")?,
+        shift: flag("shift")?,
+    })
 }
 
 /// Never the text or the keys: a password typed through the API must not reach a log by `{:?}`.
@@ -614,6 +708,7 @@ impl std::fmt::Debug for Input {
         match self {
             Input::Text(text) => write!(f, "Text({} bytes)", text.len()),
             Input::Keys(keys) => write!(f, "Keys({})", keys.len()),
+            Input::Mouse(events) => write!(f, "Mouse({})", events.len()),
         }
     }
 }
@@ -713,11 +808,11 @@ pub fn parse_own(name: &str, args: &Value) -> Result<Own, String> {
                 .as_str()
                 .ok_or("terminal_input needs \"block\", a string")?
                 .to_string();
-            let (text, keys) = (&args["text"], &args["keys"]);
-            if text.is_null() == keys.is_null() {
-                return Err("terminal_input takes text or keys.".into());
+            let (text, keys, mouse) = (&args["text"], &args["keys"], &args["mouse"]);
+            if [text, keys, mouse].iter().filter(|v| !v.is_null()).count() != 1 {
+                return Err("terminal_input takes one of text, keys or mouse.".into());
             }
-            let input = if text.is_null() {
+            let input = if !keys.is_null() {
                 let keys = keys.as_array().ok_or("\"keys\" is a list of key names.")?;
                 if !(1..=INPUT_KEYS).contains(&keys.len()) {
                     return Err(format!("\"keys\" holds 1 to {INPUT_KEYS} keys."));
@@ -734,6 +829,24 @@ pub fn parse_own(name: &str, args: &Value) -> Result<Own, String> {
                     ));
                 }
                 Input::Keys(keys)
+            } else if !mouse.is_null() {
+                let events = mouse
+                    .as_array()
+                    .ok_or("\"mouse\" is a list of mouse events.")?;
+                if !(1..=INPUT_MOUSE).contains(&events.len()) {
+                    return Err(format!("\"mouse\" holds 1 to {INPUT_MOUSE} events."));
+                }
+                let mut parsed = Vec::with_capacity(events.len());
+                for (at, event) in events.iter().enumerate() {
+                    parsed.push(mouse_of(event).ok_or_else(|| {
+                        format!(
+                            "mouse[{at}] isn't a mouse event: \"kind\" is press, release or move, \
+                             \"button\" left, middle, right, wheel_up, wheel_down or null (a move with \
+                             none held), \"row\" and \"col\" whole numbers."
+                        )
+                    })?);
+                }
+                Input::Mouse(parsed)
             } else {
                 let text = text.as_str().ok_or("\"text\" is a string.")?;
                 if text.len() > MAX_TEXT {
@@ -1182,6 +1295,107 @@ mod tests {
     }
 
     #[test]
+    fn terminal_input_parses_mouse_events() {
+        let press = json!({"kind": "press", "button": "left", "row": 3, "col": 10});
+        let Own::TerminalInput {
+            input: Input::Mouse(events),
+            ..
+        } = parse_own(
+            "terminal_input",
+            &json!({"block": "b", "mouse": [press.clone()]}),
+        )
+        .unwrap()
+        else {
+            panic!("mouse")
+        };
+        assert_eq!(
+            events,
+            [MouseInput {
+                button: Some(Button::Left),
+                kind: MouseKind::Press,
+                row: 3,
+                col: 10,
+                ctrl: false,
+                alt: false,
+                shift: false
+            }]
+        );
+        let hover = json!({"kind": "move", "button": null, "row": 0, "col": 0});
+        assert!(
+            parse_own(
+                "terminal_input",
+                &json!({"block": "b", "mouse": vec![hover.clone(); INPUT_MOUSE]})
+            )
+            .is_ok()
+        );
+        let err = |args: Value| parse_own("terminal_input", &args).unwrap_err();
+        let holds = "\"mouse\" holds 1 to 64 events.";
+        assert_eq!(
+            err(json!({"block": "b", "mouse": vec![hover; INPUT_MOUSE + 1]})),
+            holds
+        );
+        assert_eq!(err(json!({"block": "b", "mouse": []})), holds);
+        assert_eq!(
+            err(json!({"block": "b", "mouse": "click"})),
+            "\"mouse\" is a list of mouse events."
+        );
+        let bad = err(
+            json!({"block": "b", "mouse": [press.clone(), press.clone(), press.clone(),
+            {"kind": "press", "button": null, "row": 0, "col": 0}]}),
+        );
+        assert!(
+            bad.starts_with("mouse[3] isn't a mouse event: \"kind\" is press, release or move"),
+            "{bad}"
+        );
+        assert_eq!(
+            err(json!({"block": "b", "keys": ["a"], "mouse": [press.clone()]})),
+            "terminal_input takes one of text, keys or mouse."
+        );
+        assert_eq!(
+            scope("terminal_input", &json!({"block": "b", "mouse": [press]})),
+            Ok(Scope::Full)
+        );
+    }
+
+    #[test]
+    fn a_mouse_event_reads_back_as_it_was_written() {
+        for button in [
+            None,
+            Some(Button::Left),
+            Some(Button::Middle),
+            Some(Button::Right),
+            Some(Button::WheelUp),
+            Some(Button::WheelDown),
+        ] {
+            let e = MouseInput {
+                button,
+                kind: if button.is_none() {
+                    MouseKind::Move
+                } else {
+                    MouseKind::Release
+                },
+                row: 7,
+                col: 2000,
+                ctrl: true,
+                alt: false,
+                shift: true,
+            };
+            assert_eq!(mouse_of(&mouse_value(&e)), Some(e));
+        }
+        let far = json!({"kind": "move", "row": 1e30, "col": 18446744073709551615u64});
+        let e = mouse_of(&far).expect("a cell past usize is the last one");
+        assert_eq!((e.row, e.col), (usize::MAX, usize::MAX));
+        assert_eq!(
+            mouse_of(&json!({"kind": "move", "row": -1, "col": 0})),
+            None
+        );
+        assert_eq!(
+            mouse_of(&json!({"kind": "move", "row": 1.5, "col": 0})),
+            None
+        );
+    }
+
+    #[test]
     fn terminal_input_parses_text_or_keys() {
         assert_eq!(
             parse_own("terminal_input", &json!({"block": "b", "text": "ls\n"})),
@@ -1201,7 +1415,7 @@ mod tests {
             })
         );
         let err = |args: Value| parse_own("terminal_input", &args).unwrap_err();
-        let one = "terminal_input takes text or keys.";
+        let one = "terminal_input takes one of text, keys or mouse.";
         assert_eq!(err(json!({"block": "b"})), one);
         assert_eq!(err(json!({"block": "b", "text": "x", "keys": ["y"]})), one);
         assert_eq!(

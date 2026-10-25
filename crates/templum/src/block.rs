@@ -660,7 +660,7 @@ pub(crate) fn render(
                             // press would take the keyboard back from the editor it opened.
                             if left && e.modifiers.secondary() && ws.open_link(id, e, window, cx) {
                                 cx.stop_propagation();
-                            } else if ws.press_program(id, e) {
+                            } else if ws.press_program(id, e, window, cx) {
                                 // The card focuses on a left press; the middle and right ones
                                 // are the program's, not the canvas's pan nor the block's menu.
                                 if !left {
@@ -676,15 +676,7 @@ pub(crate) fn render(
                 // Over bars the wheel moves the canvas: a far terminal's history stays still.
                 .when(live && level == Level::Full, |el| {
                     el.on_scroll_wheel(cx.listener(move |ws, e: &ScrollWheelEvent, window, cx| {
-                        // A remote terminal has no history to scroll yet.
-                        if ws.space.terminal(id).is_some_and(|p| p.remote.is_some()) {
-                            if !e.modifiers.control {
-                                cx.stop_propagation();
-                                ws.remote_wheel(id, window, cx);
-                            }
-                        } else {
-                            ws.scroll_terminal(id, e, cx)
-                        }
+                        ws.scroll_terminal(id, e, window, cx)
                     }))
                 })
                 .when(level != Level::Card, |el| {

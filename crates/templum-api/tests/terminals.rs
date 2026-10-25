@@ -290,7 +290,10 @@ fn input_is_terminal_input_and_needs_a_full_token() {
     );
     let neither = fake.call(req("POST", input).token(&full).json(&json!({})));
     assert_eq!(neither.status, 400);
-    assert_eq!(neither.message(), "terminal_input takes text or keys.");
+    assert_eq!(
+        neither.message(),
+        "terminal_input takes one of text, keys or mouse."
+    );
     assert_eq!(
         fake.calls().len(),
         1,

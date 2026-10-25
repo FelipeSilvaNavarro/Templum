@@ -17,7 +17,7 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use templum_terminal::Feeder;
+use templum_terminal::{Feeder, MouseInput};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 pub use dial::{proxy_from_env, proxy_of};
@@ -225,6 +225,8 @@ pub enum Update {
     Keyring(bool),
     /// The tools home has, read at each connect (`GET /v1/tools`).
     Tools(Tools),
+    /// The viewer of this block holds home's history now (above its live screen).
+    History(String),
     /// Something happened at home that isn't state: a task ended, an agent needs its person, a
     /// watch matched. Cleaned and short.
     Notice(Notice),
@@ -319,6 +321,18 @@ pub enum Command {
     Paste {
         block: String,
         text: String,
+    },
+    /// A mouse event for the program in a block, typed like keys: in order, merged while waiting
+    /// when it is a move.
+    Mouse {
+        block: String,
+        event: MouseInput,
+    },
+    /// Scrolling back in a block: read home's history of that streamed terminal into its viewer,
+    /// unless the viewer holds it already and no frame was fed since. `Update::History` says it
+    /// is there.
+    History {
+        block: String,
     },
     Move {
         block: String,

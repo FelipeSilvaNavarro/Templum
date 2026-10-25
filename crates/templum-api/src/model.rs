@@ -163,6 +163,8 @@ pub struct ModesView {
     #[serde(default, skip_serializing_if = "is_false")]
     pub mouse: bool,
     #[serde(default, skip_serializing_if = "is_false")]
+    pub mouse_moves: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub kitty_keys: bool,
 }
 

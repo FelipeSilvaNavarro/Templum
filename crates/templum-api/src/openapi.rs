@@ -238,7 +238,7 @@ fn view_schemas() -> Value {
     frame["properties"]["modes"] = json!({
         "type": "object",
         "description": "What the program took at home; a flag is present only when true. Every frame carries it, and a frame whose only change is the modes has no rows.",
-        "properties": { "full_screen": b(), "mouse": b(), "kitty_keys": b() },
+        "properties": { "full_screen": b(), "mouse": b(), "kitty_keys": b(), "mouse_moves": b() },
     });
     json!({
         "View": view(&[

@@ -15,14 +15,14 @@ use super::{
 };
 use crate::code::Trust;
 use crate::model::{ApplyError, FrameView, MeView};
-use crate::registry::INPUT_KEYS;
+use crate::registry::{INPUT_KEYS, INPUT_MOUSE, mouse_value};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use templum_mcp::tools::MAX_TEXT;
-use templum_terminal::Feeder;
+use templum_mcp::tools::{MAX_LINES, MAX_TEXT, tail};
+use templum_terminal::{Feeder, MouseInput, MouseKind};
 use tokio::runtime::Builder;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
@@ -34,7 +34,7 @@ use tokio_rustls::rustls::ClientConfig;
 const STREAMS_MOST: usize = 11;
 /// At most this many calls wait for a free connection, per remote; past it a new call is refused.
 const CALLS_WAITING_MOST: usize = 64;
-/// At most this many keys wait, per terminal; past it the new ones are dropped.
+/// At most this many keys and mouse events wait, per terminal; past it the new ones are dropped.
 const WAITING_MOST: usize = 1024;
 /// At most this many events wait for the coordinator: past it the event stream isn't read, so a
 /// home that writes faster than the state is kept is slowed by its own socket, not by memory.
@@ -246,6 +246,9 @@ enum To {
     /// A block moved: the answer is only heard when it is a refusal.
     Move(String),
     Answer(oneshot::Sender<Answered>),
+    /// A terminal's history, and `fed` when it was asked: the answer is filled into its viewer
+    /// here, never sent to the UI.
+    History(String, u64),
 }
 
 struct Batch {
@@ -277,6 +280,7 @@ enum Phase {
 enum Item {
     Key(String),
     Paste(String),
+    Mouse(MouseInput),
 }
 
 #[derive(Default)]
@@ -323,6 +327,11 @@ struct Life {
     typing_busy: bool,
     /// The blocks typed into while not live that were told so, until live again.
     refused: HashSet<String>,
+    /// The one terminal whose history a viewer holds: its block, the viewer and what
+    /// `Feeder::fed` was when it was asked for.
+    history: Option<(String, Feeder, u64)>,
+    /// The terminal whose history was asked for last: the only answer filled.
+    history_asked: Option<String>,
 }
 
 impl Life {
@@ -369,6 +378,8 @@ impl Life {
             turns: VecDeque::new(),
             typing_busy: false,
             refused: HashSet::new(),
+            history: None,
+            history_asked: None,
         }
     }
 
@@ -561,6 +572,7 @@ impl Life {
         }
         self.timer = None;
         self.streams.clear();
+        self.drop_stale_history();
         self.queues.clear();
         self.turns.clear();
         self.typing_busy = false;
@@ -846,6 +858,8 @@ impl Life {
             }
             Command::Keys { block, keys } => self.type_keys(block, keys),
             Command::Paste { block, text } => self.type_paste(block, text),
+            Command::Mouse { block, event } => self.type_mouse(block, event),
+            Command::History { block } => self.history(block),
             Command::Move { block, rect } => {
                 let args = json!({
                     "block": block, "x": rect.x, "y": rect.y, "w": rect.w, "h": rect.h,
@@ -922,6 +936,8 @@ impl Life {
             To::Answer(answer) => {
                 let _ = answer.send(Err(Refusal::of(sentence)));
             }
+            // Scrolling back says nothing when it can't read: the person keeps the live screen.
+            To::History(..) => {}
         }
     }
 
@@ -937,7 +953,7 @@ impl Life {
                 .jobs
                 .iter_mut()
                 .find(|waiting| matches!(&waiting.to, To::Move(b) if b == block)),
-            To::Answer(_) => None,
+            To::Answer(_) | To::History(..) => None,
         };
         if let Some(waiting) = twin {
             *waiting = job;
@@ -1063,14 +1079,15 @@ impl Life {
             }
             (To::Move(_), Ok(_)) => {}
             (to @ To::Move(_), Err(sentence)) => self.refuse(to, sentence),
+            (To::History(block, fed), Ok(json)) => self.fill_history(block, fed, &json),
+            (To::History(..), Err(_)) => {}
         }
         self.pump_calls();
     }
 
     /// Opens a stream for each wanted terminal that has none, and ends those no longer wanted.
     fn sync_terminals(&mut self) {
-        let Some(attempt) = &self.attempt else { return };
-        if self.phase != Phase::Live {
+        if self.phase != Phase::Live || self.attempt.is_none() {
             return;
         }
         let wanted = &self.wanted;
@@ -1080,6 +1097,8 @@ impl Life {
                 .iter()
                 .any(|(w, f)| w == block && f.same_viewer(feeder))
         });
+        self.drop_stale_history();
+        let Some(attempt) = &self.attempt else { return };
         for (block, feeder) in &self.wanted {
             if self.streams.contains_key(block) || self.blocked.contains(block) {
                 continue;
@@ -1098,6 +1117,88 @@ impl Life {
                     )),
                 ),
             );
+        }
+    }
+
+    /// Reads home's history of the terminal `block` into its viewer (`Command::History`): not when
+    /// the viewer holds it already and no frame was fed since, nor while a read of it is under
+    /// way. The answer is cut and filled here, on this thread; the UI only hears it is there.
+    fn history(&mut self, block: String) {
+        let Some(feeder) = self.streams.get(&block).map(|(feeder, _)| feeder.clone()) else {
+            return;
+        };
+        let Some(attempt) = self.attempt.as_ref().filter(|_| self.phase == Phase::Live) else {
+            return;
+        };
+        let fed = feeder.fed();
+        if self.history.as_ref().is_some_and(|(held, viewer, was)| {
+            *held == block && viewer.same_viewer(&feeder) && *was == fed
+        }) {
+            return;
+        }
+        self.history_asked = Some(block.clone());
+        let reading = |to: &To| matches!(to, To::History(b, _) if *b == block);
+        if attempt.quick.busy.iter().any(reading) || attempt.jobs.iter().any(|job| reading(&job.to))
+        {
+            return;
+        }
+        let call = Call {
+            tool: "read_terminal".into(),
+            args: json!({ "block": block, "lines": MAX_LINES }),
+            slow: false,
+        };
+        self.call(Job {
+            call,
+            to: To::History(block, fed),
+        });
+    }
+
+    /// Home's answer to a read of a terminal's history: filled above the live screen of its
+    /// viewer when it is still the one asked for and still streams. Home is not trusted: the text
+    /// is cut to its end, and `Feeder::fill_history` draws it and runs nothing.
+    /// `fed` is the viewer's when the read was asked, so a frame fed since makes the next ask read
+    /// again.
+    fn fill_history(&mut self, block: String, fed: u64, answer: &Value) {
+        if self.history_asked.as_ref() != Some(&block) {
+            return;
+        }
+        let Some(feeder) = self.streams.get(&block).map(|(feeder, _)| feeder.clone()) else {
+            return;
+        };
+        let Some(text) = answer.get("text").and_then(Value::as_str) else {
+            return;
+        };
+        if !feeder.fill_history(tail(text, MAX_TEXT)) {
+            // Unchanged: a held history stays held, so it is dropped when its stream ends.
+            return;
+        }
+        if let Some((held, viewer, _)) = self.history.take()
+            && (held != block || !viewer.same_viewer(&feeder))
+        {
+            viewer.drop_history();
+        }
+        self.history = Some((block.clone(), feeder, fed));
+        self.say(Update::History(block));
+    }
+
+    /// Forgets the history of a terminal that no longer streams to its viewer: a viewer's
+    /// scrollback is 0 again.
+    fn drop_stale_history(&mut self) {
+        let streaming = |block: &str, viewer: &Feeder| {
+            self.streams
+                .get(block)
+                .is_some_and(|(feeder, _)| feeder.same_viewer(viewer))
+        };
+        if let Some((block, viewer, _)) = &self.history
+            && !streaming(block, viewer)
+        {
+            viewer.drop_history();
+            self.history = None;
+        }
+        if let Some(block) = &self.history_asked
+            && !self.streams.contains_key(block)
+        {
+            self.history_asked = None;
         }
     }
 
@@ -1155,6 +1256,29 @@ impl Life {
         self.pump();
     }
 
+    /// A mouse event waits with the keys, in order. A move takes the place of the move waiting
+    /// last (a drag or a hover storm is one call, not hundreds), so a click's press and release
+    /// are never merged.
+    fn type_mouse(&mut self, block: String, event: MouseInput) {
+        if self.phase != Phase::Live {
+            return self.not_live(block);
+        }
+        let queue = self.queue_of(&block);
+        if event.kind == MouseKind::Move
+            && let Some(Item::Mouse(last)) = queue.items.back_mut()
+            && last.kind == MouseKind::Move
+            && last.button == event.button
+        {
+            *last = event;
+        } else if queue.keys < WAITING_MOST {
+            queue.items.push_back(Item::Mouse(event));
+            queue.keys += 1;
+        } else {
+            return self.said_dropped(block);
+        }
+        self.pump();
+    }
+
     /// `Dropped`, once while the block's queue stays full.
     fn said_dropped(&mut self, block: String) {
         let queue = self.queue_of(&block);
@@ -1196,6 +1320,18 @@ impl Life {
                     }
                     queue.keys -= keys.len();
                     json!({ "block": block, "keys": keys })
+                }
+                Some(Item::Mouse(first)) => {
+                    let mut events = vec![mouse_value(&first)];
+                    while events.len() < INPUT_MOUSE
+                        && matches!(queue.items.front(), Some(Item::Mouse(_)))
+                    {
+                        if let Some(Item::Mouse(event)) = queue.items.pop_front() {
+                            events.push(mouse_value(&event));
+                        }
+                    }
+                    queue.keys -= events.len();
+                    json!({ "block": block, "mouse": events })
                 }
             };
             if queue.keys < WAITING_MOST && queue.paste_bytes == 0 {

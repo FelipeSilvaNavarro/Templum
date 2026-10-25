@@ -47,7 +47,9 @@ impl Painter {
         let mut out = String::new();
         self.modes_into(&frame.modes, &mut out);
         if frame.whole {
-            out.push_str("\x1b[H\x1b[2J");
+            // Not `CSI 2J`: on the main screen it pushes the old screen into the history a viewer
+            // may hold; from the top left, `CSI J` clears it in place.
+            out.push_str("\x1b[H\x1b[J");
         }
         for row in frame.rows.iter().filter(|row| row.y < frame.size.rows) {
             out.push_str(&format!("\x1b[{};1H\x1b[0m\x1b[2K", row.y + 1));
@@ -78,12 +80,15 @@ impl Painter {
                 "\x1b[?1049l"
             });
         }
-        if changed(|m| m.mouse) {
-            out.push_str(if now.mouse {
-                "\x1b[?1000h"
-            } else {
-                "\x1b[?1000l"
-            });
+        // alacritty's mouse modes replace each other (`?1000h` removes `?1003` and the other way
+        // round), so the two are written as one pair.
+        if changed(|m| m.mouse) || changed(|m| m.mouse_moves) {
+            out.push_str("\x1b[?1000l\x1b[?1003l");
+            if now.mouse_moves {
+                out.push_str("\x1b[?1003h");
+            } else if now.mouse {
+                out.push_str("\x1b[?1000h");
+            }
         }
         // alacritty keeps a kitty stack per screen, and a switch of screens swaps them: a push
         // and a pop would drift from home's. So the active stack is emptied (`CSI < 99 u`) and
@@ -336,6 +341,42 @@ mod tests {
         assert!(has(&off, "\x1b[<99u") && !has(&off, "\x1b[>1u"));
         mirror.feed(&off);
         assert!(!mirror.shared().modes().kitty_keys);
+    }
+
+    #[test]
+    fn a_whole_frame_keeps_the_viewer_s_history() {
+        let mirror = viewer(10, 2);
+        let mut painter = Painter::default();
+        painter
+            .paint(&frame_of(10, 2, vec![run("old")]), &mirror.feeder())
+            .unwrap();
+        assert!(mirror.feeder().fill_history("h1\nh2\nold"));
+        painter
+            .paint(&frame_of(10, 2, vec![run("new")]), &mirror.feeder())
+            .unwrap();
+        assert_eq!(
+            mirror.shared().lines(100),
+            ["h1", "h2", "new"],
+            "the old screen isn't pushed into the history"
+        );
+    }
+
+    #[test]
+    fn the_mouse_modes_reach_the_viewer_as_home_has_them() {
+        let mirror = viewer(10, 2);
+        let mut painter = Painter::default();
+        let mut frame = frame_of(10, 2, vec![run("x")]);
+        let mut paint = |mouse, moves| {
+            frame.modes.mouse = mouse;
+            frame.modes.mouse_moves = moves;
+            painter.paint(&frame, &mirror.feeder()).unwrap();
+            let m = mirror.shared().modes();
+            (m.mouse, m.mouse_moves)
+        };
+        assert_eq!(paint(true, true), (true, true));
+        // alacritty's mouse modes replace each other: back to clicks only is clicks only.
+        assert_eq!(paint(true, false), (true, false));
+        assert_eq!(paint(false, false), (false, false));
     }
 
     #[test]

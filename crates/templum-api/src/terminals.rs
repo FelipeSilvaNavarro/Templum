@@ -97,6 +97,7 @@ pub(crate) fn frame(last: Option<&Screen>, now: &Screen) -> Option<FrameView> {
         modes: ModesView {
             full_screen: now.modes.full_screen,
             mouse: now.modes.mouse,
+            mouse_moves: now.modes.mouse_moves,
             kitty_keys: now.modes.kitty_keys,
         },
     })
@@ -616,6 +617,18 @@ mod tests {
             json!({"mouse": true})
         );
         assert_eq!(serde_json::to_value(whole(&a)).unwrap()["modes"], json!({}));
+    }
+
+    #[test]
+    fn every_motion_rides_on_frames_as_mouse_moves() {
+        let v = viewer(10, 3);
+        let a = screen(&v);
+        v.feed(b"\x1b[?1003h");
+        let sent = frame(Some(&a), &screen(&v)).expect("a mode alone is a change");
+        assert_eq!(
+            serde_json::to_value(&sent).unwrap()["modes"],
+            json!({"mouse": true, "mouse_moves": true})
+        );
     }
 
     #[test]

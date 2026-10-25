@@ -839,21 +839,6 @@ fn a_viewer_keeps_home_s_grid_and_fits_its_block(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
-fn the_wheel_over_a_remote_terminal_says_so_once_and_scrolls_nothing(cx: &mut TestAppContext) {
-    let (handle, ws, _dir) = offline(cx);
-    apply(handle, &ws, cx, terminal_of_home(None));
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| {
-            ws.switch_to(1, window, cx);
-            let id = ws.space.canvas.top().unwrap();
-            assert!(ws.remote_wheel(id, window, cx), "the first wheel says it");
-            assert!(!ws.remote_wheel(id, window, cx), "once per terminal");
-        })
-    })
-    .unwrap();
-}
-
 // The banner, the tile, and every state of the connection.
 
 use crate::workspace::remote::{Act, banner_words};
@@ -1996,8 +1981,6 @@ fn the_banner_tooltips_say_the_real_round_trip_and_what_isnt_mirrored() {
         "boards",
         "ink",
         "shapes",
-        "scrolling back",
-        "the mouse",
         "Git popup",
         "500 blocks",
     ] {
@@ -2406,6 +2389,274 @@ fn a_letter_after_a_dead_key_ends_its_mark_and_reaches_home_once(cx: &mut TestAp
         inputs(cx) > before
     });
     assert_eq!(inputs(cx), before + 1, "once");
+}
+
+/// Home's terminal prints `bytes` as a program's output (fed into its grid).
+fn home_prints(home: &Entity<Workspace>, cx: &mut TestAppContext, terminal: BlockId, bytes: &[u8]) {
+    home.read_with(cx, |ws, _| {
+        ws.space.terminal(terminal).unwrap().term.feed(bytes)
+    });
+}
+
+/// The modes of home's program as the viewer on the mirror holds them.
+fn viewer_modes(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    viewer: BlockId,
+) -> templum_terminal::Modes {
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(viewer).unwrap().term.shared().modes()
+    })
+}
+
+/// The viewer's body on the mirror's screen.
+fn body_of(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    viewer: BlockId,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    cx.update_window(handle, |_, window, _| {
+        window.find(("body", viewer.0 as usize)).bounds()
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn a_click_reaches_a_program_at_home_that_asked_for_the_mouse(cx: &mut TestAppContext) {
+    let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    let viewer = focus_viewer(handle, &ws, cx);
+    let inputs = |cx: &mut TestAppContext| {
+        home.read_with(cx, |ws, _| {
+            ws.space.terminal(terminal).unwrap().term.inputs()
+        })
+    };
+    // Not asked for yet: a click selects, and sends nothing.
+    let body = body_of(handle, cx, viewer);
+    let at = (
+        f32::from(body.origin.x) + 20.,
+        f32::from(body.origin.y) + 20.,
+    );
+    cx.update_window(handle, |_, window, cx| click(window, cx, at, 1))
+        .unwrap();
+    home_prints(&home, cx, terminal, b"\x1b[?1000h\x1b[?1006h");
+    pump_home(&home, cx, "the mouse mode to reach the viewer", |cx| {
+        draw(handle, cx);
+        draw(home_handle, cx);
+        viewer_modes(&ws, cx, viewer).mouse
+    });
+    let before = inputs(cx);
+    cx.update_window(handle, |_, window, cx| click(window, cx, at, 1))
+        .unwrap();
+    pump_home(&home, cx, "the press and the release to reach home", |cx| {
+        draw(handle, cx);
+        inputs(cx) == before + 2
+    });
+    assert!(said(&ws, cx).is_empty(), "{:?}", said(&ws, cx));
+}
+
+#[gpui_kit::test]
+fn a_control_share_s_press_says_once_and_selects_text(cx: &mut TestAppContext) {
+    use crate::workspace::Drag;
+    let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) =
+        shown_mirror_as(cx, Scope::Control);
+    let viewer = focus_viewer(handle, &ws, cx);
+    home_prints(&home, cx, terminal, b"\x1b[?1000h\x1b[?1006h");
+    pump_home(&home, cx, "the mouse mode to reach the viewer", |cx| {
+        draw(handle, cx);
+        draw(home_handle, cx);
+        viewer_modes(&ws, cx, viewer).mouse
+    });
+    let body = body_of(handle, cx, viewer);
+    let position = gpui_kit::point(
+        body.origin.x + gpui_kit::px(20.),
+        body.origin.y + gpui_kit::px(20.),
+    );
+    for _ in 0..2 {
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(
+                matches!(ws.drag, Some(Drag::Select(_))),
+                "the press selects text, as with Shift locally"
+            )
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+        })
+        .unwrap();
+    }
+    let computer = computer(&ws, cx);
+    assert_eq!(
+        said(&ws, cx),
+        [format!(
+            "Using the mouse in a terminal needs a Full share: share again on {computer}."
+        )],
+        "once"
+    );
+}
+
+/// Home's terminal shows `n` lines `row 1.` … as a program's output (fed into its grid).
+fn home_printed(home: &Entity<Workspace>, cx: &mut TestAppContext, terminal: BlockId, n: usize) {
+    let text: String = (1..=n).map(|i| format!("row {i}.\r\n")).collect();
+    home_prints(home, cx, terminal, text.as_bytes());
+}
+
+/// The rows the viewer holds, history and screen.
+fn viewer_lines(ws: &Entity<Workspace>, cx: &mut TestAppContext, viewer: BlockId) -> Vec<String> {
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(viewer).unwrap().term.shared().lines(500)
+    })
+}
+
+fn scrolled_back(ws: &Entity<Workspace>, cx: &mut TestAppContext, viewer: BlockId) -> bool {
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(viewer).unwrap().term.scrolled_back()
+    })
+}
+
+#[gpui_kit::test]
+fn the_wheel_over_a_remote_shell_reads_home_s_history_and_scrolls_in_it(cx: &mut TestAppContext) {
+    let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    let viewer = focus_viewer(handle, &ws, cx);
+    home_printed(&home, cx, terminal, 60);
+    pump_home(&home, cx, "home's output on the mirror", |cx| {
+        draw(handle, cx);
+        draw(home_handle, cx);
+        shown(&ws, cx, viewer).contains("row 60.")
+    });
+    let body = body_of(handle, cx, viewer);
+    let at = (
+        f32::from(body.origin.x) + 20.,
+        f32::from(body.origin.y) + 20.,
+    );
+    let up = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            wheel(window, cx, at, ScrollDelta::Lines(point(0., 1.)), false)
+        })
+        .unwrap();
+    };
+    up(cx);
+    pump_home(&home, cx, "home's history in the viewer", |cx| {
+        draw(handle, cx);
+        viewer_lines(&ws, cx, viewer).iter().any(|l| l == "row 1.")
+    });
+    up(cx);
+    assert!(scrolled_back(&ws, cx, viewer), "the history scrolls");
+    assert!(said(&ws, cx).is_empty(), "{:?}", said(&ws, cx));
+    // Typing brings it back to the live screen.
+    cx.update_window(handle, |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    assert!(!scrolled_back(&ws, cx, viewer));
+}
+
+#[gpui_kit::test]
+fn the_wheel_over_a_program_at_home_is_its_mouse_or_arrow_keys(cx: &mut TestAppContext) {
+    let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    let viewer = focus_viewer(handle, &ws, cx);
+    let inputs = |cx: &mut TestAppContext| {
+        home.read_with(cx, |ws, _| {
+            ws.space.terminal(terminal).unwrap().term.inputs()
+        })
+    };
+    let body = body_of(handle, cx, viewer);
+    let at = (
+        f32::from(body.origin.x) + 20.,
+        f32::from(body.origin.y) + 20.,
+    );
+    let up = |cx: &mut TestAppContext, steps: f32| {
+        cx.update_window(handle, |_, window, cx| {
+            wheel(window, cx, at, ScrollDelta::Lines(point(0., steps)), false)
+        })
+        .unwrap();
+    };
+    // Full screen, no mouse: arrow keys.
+    home_prints(&home, cx, terminal, b"\x1b[?1049h");
+    pump_home(&home, cx, "full screen on the mirror", |cx| {
+        draw(handle, cx);
+        draw(home_handle, cx);
+        viewer_modes(&ws, cx, viewer).full_screen
+    });
+    let before = inputs(cx);
+    up(cx, 2.);
+    pump_home(&home, cx, "two arrow keys", |cx| {
+        draw(handle, cx);
+        inputs(cx) == before + 2
+    });
+    // The main screen with the mouse: a wheel press, where a viewer scrolled locally sends nothing.
+    home_prints(&home, cx, terminal, b"\x1b[?1049l\x1b[?1000h\x1b[?1006h");
+    pump_home(&home, cx, "the mouse on the mirror", |cx| {
+        draw(handle, cx);
+        draw(home_handle, cx);
+        let modes = viewer_modes(&ws, cx, viewer);
+        modes.mouse && !modes.full_screen
+    });
+    up(cx, 1.);
+    pump_home(&home, cx, "a wheel press", |cx| {
+        draw(handle, cx);
+        inputs(cx) == before + 3
+    });
+}
+
+#[gpui_kit::test]
+fn shift_page_up_pages_back_through_home_s_history_and_never_reaches_home(cx: &mut TestAppContext) {
+    let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    let viewer = focus_viewer(handle, &ws, cx);
+    let inputs = |cx: &mut TestAppContext| {
+        home.read_with(cx, |ws, _| {
+            ws.space.terminal(terminal).unwrap().term.inputs()
+        })
+    };
+    home_printed(&home, cx, terminal, 60);
+    pump_home(&home, cx, "home's output on the mirror", |cx| {
+        draw(handle, cx);
+        draw(home_handle, cx);
+        shown(&ws, cx, viewer).contains("row 60.")
+    });
+    let before = inputs(cx);
+    let press = |cx: &mut TestAppContext, key: &str| {
+        cx.update_window(handle, |_, window, cx| window.press(key, cx))
+            .unwrap();
+    };
+    press(cx, "shift-pageup");
+    pump_home(&home, cx, "home's history in the viewer", |cx| {
+        draw(handle, cx);
+        viewer_lines(&ws, cx, viewer).iter().any(|l| l == "row 1.")
+    });
+    press(cx, "shift-pageup");
+    assert!(scrolled_back(&ws, cx, viewer));
+    press(cx, "shift-pagedown");
+    press(cx, "shift-pagedown");
+    assert!(!scrolled_back(&ws, cx, viewer));
+    // The keys typed go in order: a Shift+PageUp sent home would have come before the x.
+    cx.simulate_input(handle, "x");
+    pump_home(&home, cx, "the x to reach home", |cx| {
+        draw(handle, cx);
+        inputs(cx) == before + 1
+    });
+    for _ in 0..20 {
+        home.update(cx, |ws, cx| ws.api_tick_once(cx));
+        draw(handle, cx);
+    }
+    assert_eq!(inputs(cx), before + 1, "only the x reached home");
 }
 
 #[gpui_kit::test]

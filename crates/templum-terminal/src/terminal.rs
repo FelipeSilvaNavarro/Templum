@@ -21,7 +21,9 @@ use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::CursorStyle;
 
 use crate::agent::{Detect, agent_of};
-use crate::input::{KeyInput, MouseInput, encode_key, encode_mouse, paste_bytes, typed_bytes};
+use crate::input::{
+    KeyInput, MouseInput, MouseKind, encode_key, encode_mouse, paste_bytes, typed_bytes,
+};
 use crate::palette::{self, Palette};
 use crate::tap::{Mark, Pattern, Status, Tap};
 
@@ -62,6 +64,8 @@ pub(crate) struct Shared {
     /// matched it. `watching` spares the reader thread the lock while there are none.
     watches: Mutex<Vec<(u64, Pattern, Option<String>)>>,
     watching: AtomicBool,
+    /// How many times a viewer was fed (`Feeder::feed`; never a history).
+    fed: AtomicU64,
 }
 
 impl Shared {
@@ -83,6 +87,7 @@ impl Shared {
             marks: Mutex::default(),
             watches: Mutex::default(),
             watching: AtomicBool::new(false),
+            fed: AtomicU64::new(0),
         }
     }
 
@@ -228,6 +233,90 @@ impl Feeder {
         let mut parser: alacritty_terminal::vte::ansi::Processor =
             alacritty_terminal::vte::ansi::Processor::new();
         parser.advance(&mut *self.0.0.lock(), bytes);
+        self.0.1.fed.fetch_add(1, Ordering::Relaxed);
+        self.0.1.wake();
+    }
+
+    /// How many times `feed` ran: the frames of a mirror, never a history.
+    pub fn fed(&self) -> u64 {
+        self.0.1.fed.load(Ordering::Relaxed)
+    }
+
+    /// Puts home's history above the live screen: `text` is what home's `read_terminal` answers,
+    /// its history and then its screen down to the last row written. The screen the viewer shows
+    /// (its rows, its cursor, how far it is scrolled back) stays; a selection goes, and so does
+    /// the history held before. The text is drawn, never run: every control character but a tab
+    /// is dropped (a tab only moves the cursor), and a line longer than the grid wraps as it did
+    /// at home. At most [`VIEWER_HISTORY`] rows stay. False, and nothing changed, in the alternate
+    /// screen: a full-screen program has no history.
+    pub fn fill_history(&self, text: &str) -> bool {
+        let mut term = self.0.0.lock();
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return false;
+        }
+        let (rows, cols) = (term.screen_lines(), term.columns());
+        let wrap = term.mode().contains(TermMode::LINE_WRAP);
+        let (screen, cursor, offset) = {
+            let grid = term.grid();
+            let screen: Vec<_> = (0..rows).map(|y| grid[Line(y as i32)].clone()).collect();
+            (screen, grid.cursor.clone(), grid.display_offset())
+        };
+        // Home's text ends with its screen down to the last row written, which the live screen
+        // draws: the rows of the text under the history are that many.
+        let used = screen
+            .iter()
+            .rposition(|row| (0..cols).any(|x| row[Column(x)].c != ' '))
+            .map_or(0, |y| y + 1);
+        // From the end, so only the lines kept are cleaned and allocated.
+        let mut lines: Vec<String> = text
+            .lines()
+            .rev()
+            .map(|line| {
+                line.chars()
+                    .filter(|c| !c.is_control() || *c == '\t')
+                    .collect()
+            })
+            .skip_while(String::is_empty)
+            .take(VIEWER_HISTORY + rows)
+            .collect();
+        lines.reverse();
+        let mut parser: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+        term.grid_mut().update_history(VIEWER_HISTORY);
+        parser.advance(&mut *term, b"\x1b[3J\x1b[H\x1b[J\x1b[0m\x1b[?7h");
+        parser.advance(&mut *term, lines.join("\r\n").as_bytes());
+        if !lines.is_empty() {
+            // The cursor is on the text's last row: `CSI S` on the whole screen pushes the rows
+            // above the live screen's into the history.
+            let above = (term.grid().cursor.point.line.0.max(0) as usize + 1).saturating_sub(used);
+            if above > 0 {
+                parser.advance(&mut *term, format!("\x1b[{above}S").as_bytes());
+            }
+        }
+        parser.advance(&mut *term, if wrap { b"\x1b[?7h" } else { b"\x1b[?7l" });
+        let grid = term.grid_mut();
+        for (y, row) in screen.into_iter().enumerate() {
+            grid[Line(y as i32)] = row;
+        }
+        grid.cursor = cursor;
+        term.scroll_display(Scroll::Delta(offset as i32));
+        term.selection = None;
+        drop(term);
+        self.0.touched();
+        self.0.1.wake();
+        true
+    }
+
+    /// Forgets the history `fill_history` put above the screen.
+    pub fn drop_history(&self) {
+        let mut term = self.0.0.lock();
+        let mut parser: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut *term, b"\x1b[3J");
+        term.grid_mut().update_history(0);
+        term.selection = None;
+        drop(term);
+        self.0.touched();
         self.0.1.wake();
     }
 
@@ -253,6 +342,9 @@ impl Feeder {
         self.0.touched();
     }
 }
+
+/// The rows of home's history a mirror's viewer keeps above its screen.
+pub const VIEWER_HISTORY: usize = 2000;
 
 /// Settings a running terminal can change: the history length and the default cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -289,6 +381,8 @@ impl TermOptions {
 pub struct Modes {
     /// Mouse events (clicks, the wheel; maybe moves).
     pub mouse: bool,
+    /// Every motion, not only clicks and drags (`?1003`).
+    pub mouse_moves: bool,
     /// Keys in the kitty keyboard protocol.
     pub kitty_keys: bool,
     /// The alternate screen: it runs full screen.
@@ -302,9 +396,19 @@ impl Modes {
     pub(crate) fn of(mode: TermMode) -> Modes {
         Modes {
             mouse: mode.intersects(TermMode::MOUSE_MODE),
+            mouse_moves: mode.contains(TermMode::MOUSE_MOTION),
             kitty_keys: mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL),
             full_screen: mode.contains(TermMode::ALT_SCREEN),
             typing: mode.contains(TermMode::BRACKETED_PASTE | TermMode::SHOW_CURSOR),
+        }
+    }
+
+    /// Whether the program asked for this event: a move with no button needs every motion,
+    /// anything else any mouse mode.
+    pub fn wants(&self, e: &MouseInput) -> bool {
+        match (e.kind, e.button) {
+            (MouseKind::Move, None) => self.mouse_moves,
+            _ => self.mouse,
         }
     }
 }
@@ -1720,7 +1824,7 @@ mod tests {
                 mouse: true,
                 kitty_keys: true,
                 full_screen: true,
-                typing: false
+                ..Modes::default()
             }
         );
         // Bracketed pastes and a shown cursor: its input box. Claude Code and Codex hide the cursor
@@ -2236,5 +2340,195 @@ mod tests {
             None,
             "no shell integration, no command"
         );
+    }
+    #[test]
+    fn modes_say_every_motion_apart_from_the_mouse() {
+        let v = Terminal::viewer(
+            "v",
+            (10, 2),
+            Palette::default(),
+            TermOptions::default(),
+            Arc::new(|| {}),
+        );
+        let modes = |bytes: &[u8]| {
+            v.feed(bytes);
+            let m = v.shared().modes();
+            (m.mouse, m.mouse_moves)
+        };
+        assert_eq!(modes(b"\x1b[?1000h"), (true, false), "clicks");
+        assert_eq!(modes(b"\x1b[?1002h"), (true, false), "drags");
+        assert_eq!(modes(b"\x1b[?1003h"), (true, true), "every motion");
+        assert_eq!(modes(b"\x1b[?1003l"), (false, false));
+    }
+
+    #[test]
+    fn a_mouse_event_is_wanted_as_the_modes_say() {
+        use crate::input::Button;
+        let at = |kind, button| MouseInput {
+            button,
+            kind,
+            row: 0,
+            col: 0,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        };
+        let clicks = Modes {
+            mouse: true,
+            ..Modes::default()
+        };
+        let every = Modes {
+            mouse: true,
+            mouse_moves: true,
+            ..Modes::default()
+        };
+        for e in [
+            at(MouseKind::Press, Some(Button::Left)),
+            at(MouseKind::Release, Some(Button::Left)),
+            at(MouseKind::Press, Some(Button::WheelUp)),
+            at(MouseKind::Move, Some(Button::Left)),
+        ] {
+            assert!(
+                clicks.wants(&e) && every.wants(&e) && !Modes::default().wants(&e),
+                "{e:?}"
+            );
+        }
+        let hover = at(MouseKind::Move, None);
+        assert!(!clicks.wants(&hover) && every.wants(&hover));
+    }
+
+    /// A viewer as a mirror makes one: no scrollback of its own, home's rows written without
+    /// autowrap.
+    fn mirrored(cols: u16, rows: u16, screen: &[u8]) -> Terminal {
+        let options = TermOptions {
+            scrollback: 0,
+            ..TermOptions::default()
+        };
+        let v = Terminal::viewer(
+            "v",
+            (cols, rows),
+            Palette::default(),
+            options,
+            Arc::new(|| {}),
+        );
+        v.feed(b"\x1b[?7l");
+        v.feed(screen);
+        v
+    }
+
+    #[test]
+    fn history_goes_above_the_live_screen_and_the_screen_stays() {
+        let v = mirrored(10, 4, b"s1\r\ns2\r\ns3\r\ns4");
+        let before = v.shared().screen().unwrap();
+        assert!(v.feeder().fill_history("h1\nh2\nh3\ns1\ns2\ns3\ns4"));
+        assert_eq!(
+            v.shared().lines(100),
+            ["h1", "h2", "h3", "s1", "s2", "s3", "s4"]
+        );
+        assert_eq!(
+            v.shared().screen().unwrap(),
+            before,
+            "the live screen and its cursor stay"
+        );
+    }
+
+    #[test]
+    fn history_above_a_screen_that_isnt_full_loses_and_doubles_nothing() {
+        let v = mirrored(10, 4, b"s1\r\ns2\r\n");
+        let before = v.shared().screen().unwrap();
+        // Home's text ends with its screen down to the last row written; a trailing blank line
+        // is tolerated.
+        assert!(v.feeder().fill_history("h1\nh2\nh3\ns1\ns2\n"));
+        assert_eq!(v.shared().lines(100), ["h1", "h2", "h3", "s1", "s2"]);
+        assert_eq!(v.shared().screen().unwrap(), before);
+        let v = mirrored(10, 4, b"s1\r\ns2");
+        assert!(v.feeder().fill_history("h1\ns1\ns2"));
+        assert_eq!(v.shared().lines(100), ["h1", "s1", "s2"]);
+    }
+
+    #[test]
+    fn long_lines_wrap_again_at_home_s_width() {
+        let v = mirrored(10, 4, b"s1");
+        assert!(v.feeder().fill_history("abcdefghijklmno\ns1"));
+        assert_eq!(v.shared().lines(100), ["abcdefghijklmno", "s1"]);
+    }
+
+    #[test]
+    fn a_fill_leaves_the_viewer_s_line_wrap_as_it_was() {
+        // The painter turns the wrap off once, on its first frame: a row longer than the grid
+        // after a fill must not wrap onto the next one.
+        let v = mirrored(10, 4, b"s1");
+        assert!(v.feeder().fill_history("h1\ns1"));
+        v.feed(b"\x1b[2;1Hxy\x1b[1;1HABCDEFGHIJKLMNOP");
+        assert_eq!(v.shared().lines(100), ["h1", "ABCDEFGHIP", "xy"]);
+    }
+
+    #[test]
+    fn a_viewer_in_the_alternate_screen_takes_no_history() {
+        let v = mirrored(10, 4, b"\x1b[?1049hvim");
+        assert!(!v.feeder().fill_history("h1\nvim"));
+        v.feed(b"\x1b[?1049l");
+        assert!(!v.shared().lines(100).iter().any(|l| l == "h1"));
+    }
+
+    #[test]
+    fn history_from_home_is_drawn_never_run() {
+        let v = mirrored(40, 4, b"s1");
+        assert!(
+            v.feeder()
+                .fill_history("\x1b]2;evil\x07a\x1b[?1049hb\x07\nh2\ns1")
+        );
+        let shared = v.shared();
+        assert_eq!(
+            shared.lines(100),
+            ["]2;evila[?1049hb", "h2", "s1"],
+            "shown as text, not run"
+        );
+        assert_eq!(shared.screen().unwrap().title, None);
+        assert!(!shared.modes().full_screen);
+    }
+
+    #[test]
+    fn history_keeps_at_most_two_thousand_rows() {
+        let v = mirrored(10, 4, b"");
+        let text: Vec<String> = (0..3000).map(|n| n.to_string()).collect();
+        assert!(v.feeder().fill_history(&text.join("\n")));
+        let lines = v.shared().lines(10_000);
+        assert!(lines.len() <= VIEWER_HISTORY, "{}", lines.len());
+        assert_eq!(lines.last().map(String::as_str), Some("2999"));
+    }
+
+    #[test]
+    fn a_fill_keeps_the_view_where_the_person_left_it() {
+        let v = mirrored(10, 4, b"s1");
+        let text: Vec<String> = (1..=30)
+            .map(|n| format!("h{n}"))
+            .chain(["s1".into()])
+            .collect();
+        assert!(v.feeder().fill_history(&text.join("\n")));
+        v.scroll(5);
+        v.shared()
+            .select_start(0, 0, Side::Left, SelectionKind::Line);
+        assert!(v.feeder().fill_history(&text.join("\n")));
+        assert!(v.scrolled_back(), "still scrolled back");
+        assert_eq!(
+            v.shared().selection_text(),
+            None,
+            "a selection in the old history goes"
+        );
+        v.feeder().drop_history();
+        assert!(!v.scrolled_back());
+        assert_eq!(v.shared().lines(100), ["s1"]);
+    }
+
+    #[test]
+    fn fed_counts_what_the_painter_feeds_never_a_fill() {
+        let v = mirrored(10, 4, b"");
+        let f = v.feeder();
+        let n = f.fed();
+        f.feed(b"x");
+        assert_eq!(f.fed(), n + 1);
+        assert!(f.fill_history("h1\nx"));
+        assert_eq!(f.fed(), n + 1, "a history isn't a frame");
     }
 }

@@ -19,7 +19,7 @@ use templum_api::model::{AgentView, BlockView, MeView, RequestView, State, Works
 use templum_api::store::Scope;
 use templum_canvas::{BlockId, Camera, Point, Rect, Size, Wire, chrome};
 use templum_mcp::control::Kind;
-use templum_terminal::Terminal;
+use templum_terminal::{MouseInput, Terminal};
 
 use super::holds::Holds;
 use super::waits::{Approved, Asked, RemoteAsk, Wait, Waiting};
@@ -187,8 +187,6 @@ pub(crate) struct RemoteSpace {
     /// The client was told to connect it this run: a remote kept nowhere and not started has
     /// nothing to try again, only a new code.
     pub started: bool,
-    /// The terminals the wheel already told "Only the live screen is mirrored for now.".
-    pub wheel_told: HashSet<BlockId>,
     /// The keys new codes replaced: deleted once the newest one is kept (`replace_code`), or with
     /// the remote. A code pasted again before `Kept` leaves the one before it here too.
     pub old_keys: Vec<(String, bool)>,
@@ -360,7 +358,6 @@ impl RemoteSpace {
             home_look: false,
             streaming: Vec::new(),
             chosen: None,
-            wheel_told: Default::default(),
             told: Default::default(),
             requests_told: HashSet::new(),
             requests_budget: Budget::default(),
@@ -666,6 +663,10 @@ pub(super) struct Heard {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Deed {
     Type,
+    /// A mouse event for the program in a terminal, which asked for the mouse.
+    Mouse,
+    /// Reading home's history of a terminal, to scroll back through it.
+    ScrollBack,
     Move,
     /// Answering a request that asks this scope of the share.
     Answer(Scope),
@@ -700,6 +701,14 @@ impl Deed {
         use serde_json::json;
         Some(match self {
             Deed::Type => ("terminal_input", json!({ "block": "b", "keys": ["a"] })),
+            Deed::ScrollBack => ("read_terminal", json!({ "block": "b" })),
+            Deed::Mouse => (
+                "terminal_input",
+                json!({
+                    "block": "b",
+                    "mouse": [{ "kind": "press", "button": "left", "row": 0, "col": 0 }],
+                }),
+            ),
             Deed::Move => ("move_block", json!({ "block": "b", "x": 0.0, "y": 0.0 })),
             Deed::Answer(_) => ("answer_request", json!({ "request": "r1" })),
             Deed::Start => ("show", json!({ "workspace": "w" })),
@@ -726,6 +735,7 @@ impl Deed {
     pub(crate) fn needs(self) -> &'static [&'static str] {
         match self {
             Deed::Label => &["label"],
+            Deed::Mouse => &["mouse"],
             _ => &[],
         }
     }
@@ -782,6 +792,7 @@ pub(crate) const NOT_CONNECTED: &str = "Not connected: what you type isn't sent.
 const NOT_LIVE: &str = "not live";
 const NEEDS_FULL: &str = "needs full";
 const OLDER: &str = "older";
+const MOUSE_NEEDS_FULL: &str = "mouse needs full";
 
 /// What the banner over a remote's canvas can be asked to do (its buttons).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1059,9 +1070,9 @@ fn session_of(agent: &AgentView) -> Option<templum_usage::Session> {
 
 /// The banner's ⓘ: what a mirror doesn't have yet.
 pub(crate) const NOT_MIRRORED: &str = "Not mirrored yet: notes', checklists', editors' and \
-     boards' content (a card shows each), ink and shapes, scrolling back in a terminal, the mouse \
-     in a terminal. Not on a mirrored workspace yet: editors, adding notes, drawing, grid mode, \
-     Move to workspace, Copy and Paste of blocks, Stop, the Git popup.";
+     boards' content (a card shows each), ink and shapes. Not on a mirrored workspace yet: \
+     editors, adding notes, drawing, grid mode, Move to workspace, Copy and Paste of blocks, \
+     Stop, the Git popup.";
 
 /// The tooltip of a control a mirrored workspace doesn't have yet.
 pub(crate) const NOT_YET: &str = "Not on a mirrored workspace yet";
@@ -1526,6 +1537,10 @@ impl Workspace {
                 self.remote_notice(id, notice, window, cx);
                 return heard;
             }
+            Update::History(block) => {
+                self.history_came(id, &block, cx);
+                return heard;
+            }
             Update::Dropped(_) => {
                 let computer = self
                     .space_named(id)
@@ -1595,6 +1610,7 @@ impl Workspace {
             // Said above, or the probe's, which has no remote.
             Update::Refused { .. }
             | Update::Dropped(_)
+            | Update::History(_)
             | Update::Keyring(_)
             | Update::Notice(_) => {}
         }
@@ -2212,37 +2228,115 @@ impl Workspace {
         .detach();
     }
 
-    /// The wheel over remote terminal `id`: scrolling back isn't mirrored yet, which is said once
-    /// per terminal. True when it was said now.
-    pub(crate) fn remote_wheel(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(remote) = self.space.remote.as_mut() else {
-            return false;
-        };
-        if !remote.wheel_told.insert(id) {
-            return false;
-        }
-        show_notification(
-            window,
-            cx,
-            Notification::info("Only the live screen is mirrored for now."),
-        );
-        true
-    }
-
-    /// The focused terminal of the remote shown, when what is typed can reach it: its workspace's
-    /// id and home's id of the block. Else None, and the person is told why, once: the remote
-    /// isn't live (keys are dropped, never queued, never sent late), or the share only controls.
+    /// The focused terminal of the remote shown, when what is typed can reach it: see
+    /// [`Workspace::typing_into`].
     fn typing_at(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<(String, String)> {
         let id = self.space.focused?;
+        self.typing_into(id, window, cx)
+    }
+
+    /// Scrolling back in remote terminal `id`: the client reads home's history into its viewer
+    /// (`Command::History`, which decides whether it needs reading), unless a full-screen program
+    /// or one that took the mouse has the screen, or the rule says no. The UI thread never holds
+    /// the text: it hears `Update::History` when it is there.
+    pub(crate) fn remote_history(&self, id: BlockId) {
+        let Some(pane) = self.space.terminal(id) else {
+            return;
+        };
+        let Some(block) = pane.remote.as_ref().map(|r| r.block.clone()) else {
+            return;
+        };
+        let modes = pane.term.shared().modes();
+        let allowed = self
+            .space
+            .remote
+            .as_deref()
+            .is_some_and(|remote| remote.why_not(Deed::ScrollBack).is_none());
+        if !modes.full_screen && !modes.mouse && allowed {
+            self.mirror_send(&self.space.id, Command::History { block });
+        }
+    }
+
+    /// The wheel moved remote terminal `id` by `lines` (up is positive) and its program took no
+    /// mouse: a full-screen program is sent arrow keys, as typing; else the viewer scrolls through
+    /// the history it has, and home's is read when the person starts to go back.
+    pub(crate) fn remote_scroll(
+        &mut self,
+        id: BlockId,
+        lines: i32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pane) = self.space.terminal(id) else {
+            return;
+        };
+        if pane.term.shared().modes().full_screen {
+            if let Some((space, block)) = self.typing_into(id, window, cx) {
+                let key = if lines > 0 { "up" } else { "down" };
+                let keys = vec![key.to_string(); lines.unsigned_abs() as usize];
+                self.mirror_send(&space, Command::Keys { block, keys });
+            }
+            return;
+        }
+        if lines > 0 && !pane.term.scrolled_back() {
+            self.remote_history(id);
+        }
+        pane.scrolled.set(true);
+        pane.term.scroll(lines);
+    }
+
+    /// Shift+PageUp or Shift+PageDown in the focused remote terminal pages through the history
+    /// the viewer has (home's is read when the person starts to go back). False: a program has
+    /// the screen or the mouse, and the key goes home as any other.
+    pub(super) fn remote_page(&mut self, up: bool) -> bool {
+        let Some(id) = self.space.focused else {
+            return false;
+        };
+        let Some(pane) = self.space.terminal(id) else {
+            return false;
+        };
+        let modes = pane.term.shared().modes();
+        if modes.full_screen || modes.mouse {
+            return false;
+        }
+        let rows = i32::from(pane.term.shared().grid_size().1);
+        if up && !pane.term.scrolled_back() {
+            self.remote_history(id);
+        }
+        pane.scrolled.set(true);
+        pane.term.scroll(if up { rows } else { -rows });
+        true
+    }
+
+    /// Home's history of the block `block` is in its viewer: an open Find searches again.
+    pub(super) fn history_came(&mut self, id: &str, block: &str, cx: &mut Context<Self>) {
+        if self.space.id != id {
+            return;
+        }
+        let viewer = self
+            .space
+            .remote
+            .as_deref()
+            .and_then(|remote| remote.homes.get(block).copied());
+        if let Some(viewer) = viewer {
+            self.search_again(viewer, cx);
+        }
+        cx.notify();
+    }
+
+    /// The remote terminal `id`, when what is typed can reach it: its workspace's id and home's
+    /// id of the block. Else None, and the person is told why, once: the remote isn't live (keys
+    /// are dropped, never queued, never sent late), or the share only controls.
+    pub(crate) fn typing_into(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(String, String)> {
         let block = self
             .space
             .terminal(id)?
@@ -2269,6 +2363,78 @@ impl Workspace {
             self.warn(sentence, window, cx);
         }
         None
+    }
+
+    /// The mouse event `input` for the program in remote terminal `id`: sent home when the program
+    /// there asked for it (its modes, as the last frame painted them into the viewer), the pane
+    /// isn't read-only and the rule lets the share. False: nothing was sent, and the person's
+    /// press does what it does with no mouse program (select).
+    pub(crate) fn remote_mouse(&self, id: BlockId, input: MouseInput) -> bool {
+        let Some(pane) = self.space.terminal(id) else {
+            return false;
+        };
+        let Some(block) = pane
+            .remote
+            .as_ref()
+            .filter(|r| !r.read_only)
+            .map(|r| &r.block)
+        else {
+            return false;
+        };
+        let allowed = self
+            .space
+            .remote
+            .as_deref()
+            .is_some_and(|remote| remote.why_not(Deed::Mouse).is_none());
+        if !allowed || !pane.term.shared().modes().wants(&input) {
+            return false;
+        }
+        self.mirror_send(
+            &self.space.id,
+            Command::Mouse {
+                block: block.clone(),
+                event: input,
+            },
+        );
+        true
+    }
+
+    /// A press in remote terminal `id` whose program asked for the mouse, on a share that can't
+    /// send it (or a home that can't take it): says why, once per terminal. The press then selects
+    /// text, as it does with a mouse program under Shift.
+    pub(super) fn tell_mouse(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.space.terminal(id) else {
+            return;
+        };
+        let Some(block) = pane
+            .remote
+            .as_ref()
+            .filter(|r| !r.read_only)
+            .map(|r| r.block.clone())
+        else {
+            return;
+        };
+        if !pane.term.shared().modes().mouse {
+            return;
+        }
+        let Some(remote) = self.space.remote.as_mut() else {
+            return;
+        };
+        let computer = crate::mirror::computer_of(remote);
+        let (said, sentence) = match remote.why_not(Deed::Mouse) {
+            Some(Nay::NeedsFull) => (
+                MOUSE_NEEDS_FULL,
+                format!(
+                    "Using the mouse in a terminal needs a Full share: share again on {computer}."
+                ),
+            ),
+            Some(older @ Nay::Older) => (OLDER, older.words(&computer)),
+            // Not live: the banner and the veil say it.
+            _ => return,
+        };
+        if remote.told.insert((block, said)) {
+            self.warn(sentence, window, cx);
+        }
     }
 
     /// A warning about a mirrored workspace, in words the person reads.
@@ -2311,7 +2477,17 @@ impl Workspace {
             return;
         }
         if let Some((space, block)) = self.typing_at(window, cx) {
+            self.to_bottom();
             self.mirror_send(&space, Command::Keys { block, keys });
+        }
+    }
+
+    /// The focused terminal shows its live screen again, as typing in a local one does.
+    fn to_bottom(&self) {
+        if let Some(pane) = self.space.focused_terminal()
+            && pane.term.scrolled_back()
+        {
+            pane.term.scroll(-(templum_terminal::VIEWER_HISTORY as i32));
         }
     }
 
@@ -2333,6 +2509,7 @@ impl Workspace {
             );
             return;
         }
+        self.to_bottom();
         self.mirror_send(&space, Command::Paste { block, text });
     }
 
@@ -3523,6 +3700,8 @@ mod tests {
             templum_api::registry::scope(tool, &args).expect("parses")
         };
         assert_eq!(scope(Deed::Type), Scope::Full);
+        assert_eq!(scope(Deed::Mouse), Scope::Full);
+        assert_eq!(scope(Deed::ScrollBack), Scope::Read);
         assert_eq!(scope(Deed::Move), Scope::Control);
         assert_eq!(scope(Deed::Start), Scope::Control);
         assert_eq!(scope(Deed::Answer(Scope::Control)), Scope::Control);
@@ -3539,6 +3718,27 @@ mod tests {
         ] {
             assert_eq!(scope(control), Scope::Control, "{control:?}");
         }
+    }
+
+    #[test]
+    fn the_mouse_needs_a_home_that_takes_it() {
+        let mut remote = remote_at("https://winx-desktop.example.com", Status::Live);
+        remote.me = Some(MeView {
+            scope: Scope::Full,
+            ..MeView::default()
+        });
+        let input = |props: serde_json::Value| {
+            Tools::read(&serde_json::json!([
+                { "name": "terminal_input", "inputSchema": { "properties": props } }
+            ]))
+        };
+        remote.tools = Some(input(
+            serde_json::json!({ "block": {}, "text": {}, "keys": {} }),
+        ));
+        assert_eq!(remote.why_not(Deed::Mouse), Some(Nay::Older));
+        assert_eq!(remote.why_not(Deed::Type), None, "typing still works");
+        remote.tools = Some(input(serde_json::json!({ "block": {}, "mouse": {} })));
+        assert_eq!(remote.why_not(Deed::Mouse), None);
     }
 
     #[test]

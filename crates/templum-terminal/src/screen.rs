@@ -350,7 +350,7 @@ mod tests {
                 full_screen: true,
                 mouse: true,
                 kitty_keys: true,
-                typing: false,
+                ..Modes::default()
             }
         );
         // Bracketed paste with the cursor shown is `typing` for Terminal::modes, never for a frame.

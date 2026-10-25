@@ -345,6 +345,23 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
                     park_tool.lock().unwrap().push((id, message.reply));
                     continue;
                 }
+                // A lent terminal is read as home's `read_terminal` does: its history and screen.
+                "tools/call"
+                    if name == "read_terminal"
+                        && lent
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .any(|t| params["arguments"]["block"] == t.block.as_str()) =>
+                {
+                    let lines = params["arguments"]["lines"].as_u64().unwrap_or(200) as usize;
+                    let all = lent.lock().unwrap().clone();
+                    let term = all
+                        .iter()
+                        .find(|t| params["arguments"]["block"] == t.block.as_str());
+                    let text = term.map(|t| t.term.lines(lines).join("\n"));
+                    tools::tool_result(&id, &Reply::ok(text.unwrap_or_default()))
+                }
                 "tools/call" if name == "delegate" && params["arguments"]["wait"] == true => {
                     held.push(message.reply);
                     continue;

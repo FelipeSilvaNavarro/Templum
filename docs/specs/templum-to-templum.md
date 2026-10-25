@@ -3,8 +3,8 @@
 - **Date:** 2026-10-25
 - **Status:** Batch 1 implemented (kanban card 171, part 2; plans 2026-10-25-t2t-batch-1a…1d: home's side; the
   mirror's client; the remote workspace on the canvas; acting from the mirror, Edit…, the end-to-end test and
-  `--bench-mirror`). Batch 2: parts 2a and 2b built (plans 2026-10-25-t2t-batch-2a-footing and
-  2026-10-25-t2t-batch-2b-canvas); parts 2c–2h designed, not built
+  `--bench-mirror`). Batch 2: parts 2a, 2b and 2c built (plans 2026-10-25-t2t-batch-2a-footing,
+  2026-10-25-t2t-batch-2b-canvas and 2026-10-25-t2t-batch-2c-terminals); parts 2d–2h designed, not built
   ([Batch 2](#batch-2-the-whole-workspace-live)). Later batches (see [Later batches](#later-batches)) are sketched.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
@@ -1788,3 +1788,50 @@ a notice shows one line) and waits a few rounds after `submitted` so home's answ
 the add test compares the toolbar's point with `room_around` (`new_terminal_rect` pans the view, so calling it twice
 differs). Checked headlessly only, and logged in `docs/minors.md`: the Open dialog, Hand a task…, the dimmed menu
 items and tooltips, the dimmed ✕ and fullscreen.
+
+### Batch 2c (terminals: scrolling back and the mouse)
+
+Plan: [2026-10-25-t2t-batch-2c-terminals.md](../plans/2026-10-25-t2t-batch-2c-terminals.md). The plan's "Open for the
+orchestrator" items were settled as it recommended: the history keeps the live screen in place (no reopened stream);
+scrolling back is a client command (`Command::History`), not `remote_call`, so the UI thread never holds the text;
+"changed since the last read" is a frame fed to the viewer (`Feeder::fed`); Shift+PageUp and Shift+PageDown page a
+mirrored shell only; the history is read only while neither `full_screen` nor `mouse` is on; a refused press tells only
+for `NeedsFull` and `Older`, once per terminal; the wheel in a full-screen program is arrow keys through typing; zero
+events taken is not a refusal; drag moves are sent whenever `mouse` is on; typing into a scrolled-back remote terminal
+brings it to the bottom; a history line keeps its tabs; a failed read says nothing. What the builder chose or changed:
+
+- **Home:** `modes.mouse_moves` (`Modes::mouse_moves`, `?1003`; `Modes::wants` says whether the program asked for an
+  event, and the glue and the viewer's painter read it from one place). `terminal_input` takes `mouse` (1 to
+  `INPUT_MOUSE` = 64 events; `registry::{mouse_value, mouse_of}`; `Input::Mouse`), each event through
+  `Terminal::mouse` in the program's mode when it arrives; the answer counts those taken (`Sent 0 mouse events to
+  b7k2m.` is not an error). `"mouse"` is in `NOT_TARGETS`.
+- **The viewer's modes:** the painter writes `mouse` and `mouse_moves` as one pair (`?1000l ?1003l`, then the one that
+  is on), because alacritty's mouse modes replace each other; a whole frame clears with `CSI H CSI J`, not `CSI 2J`,
+  which on the main screen would push the old screen into a viewer's history.
+- **The history:** `Feeder::fill_history(text)` (in `templum-terminal`) takes what `read_terminal` answers, history and
+  screen together: it keeps the viewer's screen rows, cursor and place from the bottom, parses `CSI 3 J`, `CSI H`,
+  `CSI J` and the cleaned lines (every control character but a tab dropped, the last `VIEWER_HISTORY` + rows lines, a
+  long line wrapping again at home's width), then `CSI n S` with `n` = the rows the text takes beyond the screen's used
+  rows, which pushes the rest into the history; the screen rows and cursor are put back and the selection goes.
+  False, and nothing changed, in the alternate screen. `drop_history`; `Feeder::fed` counts `feed`s (frames), never a
+  fill. The client holds one terminal's history at a time (`Life::history`), filled on its thread from the call's
+  answer cut to `MAX_TEXT` (`To::History`); the UI hears only `Update::History(block)` and searches Find again.
+- **The mouse:** `Command::Mouse` rides the typing queue (`Item::Mouse`: events together up to 64 a call, a waiting move
+  of the same button replaces the move before it, `WAITING_MOST` counts keys and mouse events alike). `report` reaches
+  home for a remote pane through `remote_mouse` (modes, `Deed::Mouse`: Full, `needs ["mouse"]`); `press_program`
+  tells once per terminal (`tell_mouse`) when the share can't, and the press selects.
+- **Scrolling:** `Deed::ScrollBack` (read). `remote_history` asks the client; `remote_scroll` (the wheel) and
+  `remote_page` (Shift+PageUp/Down) scroll what the viewer has and ask for home's when the person starts to go back;
+  `open_find` asks too. `typing_into(id)` is `typing_at` for any remote terminal. `remote_wheel` and
+  "Only the live screen is mirrored for now." are gone.
+
+Departures from the plan: the fake home answers `read_terminal` from a lent terminal only for a block that is lent
+(else its old "did read_terminal", which `tests/server.rs` reads); the client keeps `fed()` as it was when the read was
+asked, carried in the job (`To::History(block, fed)`), not after the fill and not set by a later ask that sends no read
+(`history_asked: Option<String>` only names the block asked last), so a frame that lands between the ask and the fill
+makes the next scroll read again instead of hiding the change; a fill that returns false (home's program went full
+screen between the ask and the answer) leaves the history held as it was, so it is still dropped when the stream ends;
+an answer already in flight for a block is not asked
+again (found in the attempt's waiting jobs and its quick wire, no flag to stick); `remote_history` and `remote_page`
+take `&self`/`&mut self` as the borrows needed (`remote_history` is `&self`); `fill_history` puts back the autowrap mode
+the viewer had instead of always `?7l`; the typing tests count home's `inputs()`.
