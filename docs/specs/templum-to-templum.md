@@ -1,13 +1,14 @@
 # Templum to Templum: a workspace of another computer, as if it were here
 
 - **Date:** 2026-10-25
-- **Status:** Designed (kanban card 171, part 2). Batches 1a–1c implemented (home's side; the mirror's client; the
-  remote workspace on the canvas, view-only); acting from the mirror and the Edit… dialog (batch 1d) is next.
+- **Status:** Batch 1 implemented (kanban card 171, part 2; plans 2026-10-25-t2t-batch-1a…1d: home's side; the
+  mirror's client; the remote workspace on the canvas; acting from the mirror, Edit…, the end-to-end test and
+  `--bench-mirror`). Later batches (see [Later batches](#later-batches)) are designed, not built.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
   [cockpit.md](cockpit.md#6-the-workspaces-screen) (the sidebar, the Edit… dialog), [ask-inbox.md](ask-inbox.md)
   (requests), [connections.md](connections.md) (block ids, the bus), [shell-integration.md](shell-integration.md)
-- **For people:** [docs/api.md](../api.md) gains a section as batch 1 lands.
+- **For people:** [docs/api.md](../api.md#templum-to-templum).
 
 The person said, for this card: "Pode decidir, fomente bem a ideia para ser uma funcionalidade bem boa … não precisa
 ficar perguntando para mim, sobre segurança tome medidas cabíveis para ser seguro e criptografado as conexões." (Decide,
@@ -224,7 +225,7 @@ answering are disabled.
 | Pinned, and the certificate's fingerprint differs | "winx-desktop's certificate changed since you connected. If you made a New certificate there, share again and paste the new code. If you didn't, someone may be between the two computers: don't connect." **Paste a new code…** · **Forget** | No |
 | Public, and the certificate isn't valid | "templum.example.com's certificate isn't valid: it expired / it is for another name / no authority this computer trusts signed it. Fix it where the tunnel or proxy runs, then **Try again**." A self-signed one adds: "If it is Templum's own, share Directly instead: it is pinned." | No |
 | Public, valid only through an authority this computer added | [A private authority](#a-private-authority) | No |
-| Cloudflare Access answered (a redirect to `*.cloudflareaccess.com`, or its 403) | "Cloudflare Access stands in front of templum.example.com. Add a service token in Edit… ▸ More…, and allow it in the Access policy." | No |
+| Cloudflare Access answered (a redirect to `*.cloudflareaccess.com`, or its 403) | "Cloudflare Access stands in front of templum.example.com. Add a service token in Paste a new code… ▸ More…, and allow it in the Access policy." | No |
 | Something that isn't a Templum answered (HTML, a 404 without Templum's error body) | "templum.example.com didn't answer as a Templum (HTTP 404, text/html). Check that the tunnel points at port 7411." **Try again** | No |
 | Home is too old (Templum's 404 for `GET /v1/me`) | "winx-desktop runs a Templum that can't be mirrored: update it." **Try again** | No |
 | The proxy refused (anything but its 502, 503, 504, which are "home doesn't answer") | "The proxy proxy.corp:8080 refused the connection (407: it asks for a login Templum can't give)." **Try again** | No |
@@ -961,3 +962,99 @@ blocks, the live terminals, the banner and every state of the connection. What t
   (left out for a local workspace; OpenAPI schema `Remote`); its blocks are never in the state. docs/api.md has the
   field's line; plan 1d writes the section for people.
 - **Not done:** `--bench-mirror` (a later plan).
+
+### Batch 1d (acting from the mirror)
+
+Plan: [2026-10-25-t2t-batch-1d-act.md](../plans/2026-10-25-t2t-batch-1d-act.md). Typing, moving and resizing, home's
+requests, Edit… and Paste a new code…, the end-to-end test, `--bench-mirror` and the docs. What the builder chose or
+changed:
+
+- **Typing:** `templum_terminal::key_name` is the inverse of `named_key` (`text_names` for the text path): a printable
+  character (or AltGr's) is itself, a space is `space`, any other key is its modifiers (`ctrl+`, `alt+`, `shift+`) and
+  its name; an unnamed key (F13, a media key) isn't sent. `on_key_down` of a focused remote terminal sends the name of a
+  key that types no text and stops it there; printable text (`templum_terminal::typed_text`: a character with no
+  Ctrl or Alt, or AltGr's) is left to the text path as a local terminal's, which sends `text_names` in
+  `replace_text_in_range` and ends a dead key's mark there (stopping it would leave "´" drawn); the Paste command
+  (`paste_clipboard`, now with the window) sends a paste. Nothing is typed into the viewer itself, `person_keyed` and
+  the agent's draft bookkeeping don't run for it. `typing_at` tells once per terminal, with `RemoteSpace::told`: not
+  live ("Not connected: what you type isn't sent.", again after it was live in between), a share that doesn't type
+  ("Typing needs a Full share: share again on winx-desktop."), and a paste over 256 KiB each time. The client's own
+  refusal and `Dropped` go through the same `warn`. Text is a key press at home, so a program that asked the kitty
+  protocol for every key as an escape code gets it as a code (locally it would be text).
+- **Updates have a door of their own:** `Workspace::heard(id, update)` takes one client update, so tests can say
+  what the client would (a refusal, `Dropped`); `drain_mirror` calls it. A `#[cfg(test)] Workspace::said` keeps what
+  mirrored workspaces told the person (notifications can't be read back).
+- **Moving and resizing:** a release (`end_placing`) and an undo or redo (`place`) call `remote_moved(ids, now)`, which
+  sends one `move_block` per block whose rectangle differs from what home has *as far as the mirror knows*: a move sent
+  and not shown yet counts as home's, so moving a block back before home's state came still sends. `held` keeps the
+  rectangle sent for `HOLD` (2 s); `rect_shown` (in `mirror_blocks`) shows it until home's rectangle is the same (within
+  0.5) or the time passes; `expire_holds` (each frame, repainting at the due time through `stream_at`) hands the block
+  back to home when no state comes. A block in the person's hand (`placed`) keeps following the pointer when home's
+  state arrives, and its hold isn't expired under it (`expire_holds`; its release holds it again). A refusal (`About::Move`) takes the block back to home's last rectangle. Not live: a drag, a resize and
+  Ctrl+Z do nothing (`remote_frozen`), and a release that got through sends nothing and goes back.
+- **Requests:** `remote_requests` (from `apply_remote`, with the state's requests of home's workspace) makes a wait
+  marked `remote` (`RemoteAsk`: the workspace, home's request id, its scope, `sent`, `quiet`) for each new one, through
+  `wait_as`, with the viewer of its block as its asker (`Workspace::asker`, since a viewer is no caller of this
+  computer's tools); one home no longer lists is withdrawn with no reply. Home's request ids are `r<key>` with the wait key
+  counting from the Unix time in milliseconds at home's start (`Workspace::next_wait`), so an id never names another
+  request after home restarts, and a wait is home's request when the ids are equal (no clock or text to compare).
+  A press in the gap between a reconnect and home's first state answers an id home doesn't know: `not_found`, a
+  refusal that shows the request again. A new code (`replace_code`) withdraws every wait of the remote. The person is
+  told of a request once per id per connection (`RemoteSpace::requests_told`, reset by a new code), and at most 3
+  notifications in 60 s per remote: the rest of a burst is one "N more requests ask you" notification
+  (`tell_folded`, "1 more request asks you" for one), and at most one of those in 60 s (`RemoteSpace::folded_at`),
+  so a home that makes a request in every state brings at most 4 notices a minute; the requests are all in the inbox
+  either way. What home sends is capped (50 requests, 10
+  questions, 30 options, lines of 300 characters, descriptions and previews of 4,000, a plan of 64 KiB, buttons of 24)
+  and cleaned. `Approved::Remote { line, yes, no }` carries home's summary and its buttons' words (`Approved::buttons`
+  answers `String`s). Answering sends `answer_request` (`remote_answer`): the wait is hidden until home drops it, or
+  shows again on a refusal. The client refuses every call still in flight when its attempt is dropped (`Attempt::calling`,
+  "Couldn't reach the other computer."; also a stream home ended cleanly, which looks again without changing the
+  status); if home did hear it, its next state drops the request. The mirror's API (`request_views`) skips remote waits, so no local tool lists or answers
+  one, and none of the agent-facing bookkeeping (`needs_you`) runs for them. A request whose block has no viewer here
+  is skipped (a minor). A request that can't be answered now (`remote_blocked`: not live, or the share's scope is
+  below the request's) has its foot dimmed and covered, with the reason as a tooltip.
+- **Edit… and a new code:** a remote's Edit… is `space_dialog`'s (a `remote` flag): home's name, Color and Icon, the
+  Connection rows and **Paste a new code…**; Save keeps the look (`edit_remote_look`; none of either means home's look, and Save with the look as it opened, home's,
+  leaves it home's).
+  The remote tile's menu gains Edit…. Paste a new code… (and Connect on a remote that never started this run) is the
+  Connect dialog for that remote (`connect_dialog::open_for`); `replace_code` gives the remote the new code's address,
+  way in, pin, Access ID and proxy, an entry of its own and `trust_added_authority` false, connects with
+  `KeySource::Save`, and drops the old keys (`Mirror::drop_key`; `RemoteSpace::old_keys`, one per code replaced, even one not yet kept) once
+  the newest is `Kept`, or with the remote when it is forgotten. `Keys` remembers the entries it deleted this run and
+  refuses to save one: the save of a code replaced again before it finished can't bring its key back. The dialog
+  closes at once; how it goes shows in the banner. Its **More…** opens with the remote's Access Client ID and proxy
+  address; the secrets are never shown, and what the dialog leaves empty of them (the Client Secret for the same Client
+  ID and address, the proxy's login for the same proxy) stays: `KeySource::Save { from: Some(Inherit) }` makes the
+  client read them from the old key and save them with the new one, so they don't pass through the UI and the old key
+  is deleted only after. The Client Secret is carried over only when the new code's scheme, host and port equal the
+  old key's own (`Secrets::url`, bound to it since 1b, not the index entry); otherwise it is left out and the banner
+  says "The address changed: type the Client Secret again in More…". If the old key can't be read, the client stops
+  before saving (`Why::Keyring`, no `Kept`, so no key is dropped; Try again reads it again), since it may hold the
+  only copy of the secret. A code pasted again before the last is kept reads from the same key the last one's Save read from
+  (`holder`, `RemoteSpace::inherits`, cleared at `Kept`), the entry that holds the secret, never an entry that may not
+  have been written; a connection kept nowhere has none to inherit.
+  The Access banner says "Add a service token in Paste a new code… ▸ More…" and offers that button.
+- **The banner:** the round trip is yellow past 250 ms as 1c built it, and its tooltip says the real round trip, not
+  one rounded to tens (the plan's `Banner::slow` wasn't needed). Under a day the share's end is told in hours or minutes
+  ("ends in 5 h: share again on winx-desktop"), else in days rounded up. The ⓘ is `NOT_MIRRORED` plus the 500-block and
+  200-wire caps.
+- **The end-to-end test** (`workspace/tests/mirror_end_to_end.rs`): one headless workspace is both ends, as the plan
+  said. The shell half (`sh` echoes what the mirror types) is `#[cfg(unix)]`.
+- **`--bench-mirror`:** one Templum as both ends in a temporary data folder (`templum-bench-mirror-<pid>`, made empty,
+  removed at the end or on a failure; the first-run welcome closed). The API on loopback, a Full share of the first
+  workspace made with `share_workspace`, connected as `r1` with `Keys::without_keyring(None)` (the key lives in memory),
+  `r1` shown at 50% on the middle of its blocks; it waits (30 s) until `mirror_streams_all`, makes home's five
+  terminals redraw, and measures with the mixed scenario's zoom and pan (`sweep_and_circle`, shared with
+  `--bench-mixed`), printing the same line with `"bench":"mirror"`. A deadline missed prints
+  `{"bench":"mirror","error":…}` and exits 1.
+
+#### Batch 1 as built, in short
+
+What differs from the design across the four plans: the tokens and shares are one registry (a share is a limited token
+with its details); the client has one coordinator per remote and no `select!`; a frame is fed as it is read, with no
+pending frame; the mirror keeps no scrollback and says so once; typing is the person's keyboard as `terminal_input`
+(`key_name` is the inverse of `named_key`); the mirror's rectangle for a moved block stands until home shows it or 2 s;
+a request of home's is a wait of the mirror's inbox that is answered through the API and listed nowhere else. Not done
+in batch 1, by design: notes, checklists, editors and boards as live blocks, ink and shapes, scrolling back and the
+mouse in a terminal, and adding, closing and wiring blocks on a mirror.

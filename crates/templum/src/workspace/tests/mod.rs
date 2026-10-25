@@ -754,6 +754,7 @@ mod instructions;
 mod kanban;
 mod lod;
 mod menus;
+mod mirror_end_to_end;
 mod moving;
 mod navigation;
 mod notes;

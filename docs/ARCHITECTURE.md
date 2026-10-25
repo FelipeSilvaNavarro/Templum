@@ -95,7 +95,12 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   `workspace/remote.rs`: a remote workspace is a `Space` with `remote` (never saved as a canvas, only its index
   entry), its blocks are home's and live only in `RemoteSpace::homes` (no uid, so no local tool names one); the
   workspace drains the client on a wake, applies the newest state, and chooses the terminals to stream while the
-  canvas is painted.
+  canvas is painted. Acting from the mirror is the same glue: a key on a focused remote terminal becomes its name
+  (`templum_terminal::key_name`) and goes to the client's typing queue (`remote_type`); a released drag sends one
+  `move_block` per block and the mirror's rectangle stands until home's state shows it or 2 s (`remote_moved`,
+  `held`); home's requests become waits marked `remote` (`remote_requests`) and are answered with `answer_request`
+  (`remote_answer`), never by a local tool. `--bench-mirror` measures all of it: the mixed cockpit mirrored by the
+  same Templum over loopback.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera
@@ -222,7 +227,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   ([specs/templum-to-templum.md](specs/templum-to-templum.md)). `remote.rs` has `RemoteSpace`, the client's drain,
   `apply_remote` (home's blocks, wires and camera), the stream set and `fit_zoom`, `banner_words`, the guards'
   `on_remote`; `mirror.rs` draws the banner, the veil, the stopped card, the tile's mark and the Forget… dialog;
-  `connect_dialog.rs` is Connect to a Templum….
+  `connect_dialog.rs` is Connect to a Templum… and Paste a new code… (`replace_code`); a remote's Edit… is
+  `space_dialog.rs`'s.
 - `workspace/api.rs`, `workspace/api_state.rs`, `settings/api.rs`: the Templum API's glue
   ([specs/api.md](specs/api.md)).
   `api.rs` serves the bus messages of client `api` on the UI thread (the token's scope and workspaces checked,

@@ -256,7 +256,10 @@ fn a_paste_is_a_draft(cx: &mut TestAppContext) {
     let (terminal, _) = me(&ws, cx, mine);
     focus(handle, &ws, cx, mine);
     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("pasted text".into()));
-    ws.update(cx, |ws, cx| ws.paste_clipboard(cx));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.paste_clipboard(window, cx))
+    })
+    .unwrap();
     assert!(has_draft(&ws, cx, mine));
     done_task(handle, &ws, cx, &terminal, theirs, "One.");
     long_ago(&ws, cx, mine);

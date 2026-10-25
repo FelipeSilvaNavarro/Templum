@@ -608,7 +608,10 @@ terminal frames and `terminal_input`; it adds `GET /v1/me`, shares, a block's `r
 frame's `modes` and more key names. Home's side is built (plan
 [2026-10-25-t2t-batch-1a-home.md](../plans/2026-10-25-t2t-batch-1a-home.md)): the `share_workspace` and
 `revoke_share` tools and their aliases, the connection code (`templum_api::code`), `Templum-Mirror` and
-`event: replaced`, and the audit log's grouping of `terminal_input` and `GET /v1/me`.
+`event: replaced`, and the audit log's grouping of `terminal_input` and `GET /v1/me`. The mirror's client and the
+remote workspace are built too (plans 1b to 1d): batch 1 of Templum to Templum is implemented, and nothing of it
+needed another route, tool or field than the above. A mirror's own state shows its remote workspace as `remote`, never
+its blocks or its home's requests.
 
 ## Left to the builder
 

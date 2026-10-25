@@ -67,7 +67,10 @@ elsewhere; a green dot on a tile means Claude Code or Codex is running in it.
   Ctrl+Shift+O) shows a card per workspace with what it holds ("3 terminals · 1 Claude Code running"). Type to find
   one, Up/Down and Enter to open it, drag cards to reorder.
 - **Edit…** (right-click a tile or a card) names a workspace and gives it a color, a Lucide icon or an image, and a
-  folder: new terminals start there.
+  folder: new terminals start there. Its **Share…** lets another computer's Templum mirror the workspace live.
+- **Connect to a Templum…** (the plug under **+**) pastes a share's code and opens another computer's workspace here:
+  its blocks and terminals live, where you can type, move blocks and answer its agents. See
+  [api.md](api.md#templum-to-templum).
 - **Stop** ends every program of a workspace (shells, agents, servers) and keeps its layout; opening it starts its
   terminals again, agents resumed. A stopped workspace stays stopped across restarts and costs nothing at launch.
 - **Move to workspace ▸** (right-click a block or a selection) sends blocks to another workspace while they run: an

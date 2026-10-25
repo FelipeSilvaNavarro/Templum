@@ -71,7 +71,7 @@ impl Workspace {
     /// A press on a selected block's title, or on its body (`picks` it, if let go in place), or on
     /// the empty canvas in the selection's box: dragging moves every selected block.
     pub(crate) fn begin_group_move(&mut self, pos: PixelPoint<Pixels>, picks: Option<BlockId>) {
-        if self.space.grid.is_some() {
+        if self.space.grid.is_some() || self.remote_frozen() {
             return;
         }
         let p = self.local(pos);

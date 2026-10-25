@@ -87,7 +87,9 @@ fn main() {
     let far = std::env::args().any(|a| a == "--bench-far");
     let zoom = std::env::args().find_map(|a| a.strip_prefix("--bench-zoom=").map(str::to_string));
     let git = std::env::args().any(|a| a == "--bench-git");
-    let bench = mixed || far || zoom.is_some() || git || std::env::args().any(|a| a == "--bench");
+    let mirror = std::env::args().any(|a| a == "--bench-mirror");
+    let bench =
+        mixed || far || zoom.is_some() || git || mirror || std::env::args().any(|a| a == "--bench");
     // A build being worked on, beside the installed Templum: its own workspaces, settings and bus.
     let dev = std::env::args().any(|a| a == "--dev");
     // The agents installed where only .bashrc or .zshrc put them.
@@ -99,8 +101,15 @@ fn main() {
     #[cfg(windows)]
     templum_terminal::quit_before_terminals();
     let dirs = move |dir: Option<std::path::PathBuf>| if dev { dir.map(session::dev) } else { dir };
-    // The bench starts from one terminal and must not touch the user's saved canvas.
-    let data_dir = if bench { None } else { dirs(session::dir()) };
+    // The bench starts from one terminal and must not touch the user's saved canvas. The mirror
+    // bench needs a folder for its API's key and share: a temporary one, removed at its end.
+    let data_dir = if mirror {
+        Some(bench::make_mirror_dir())
+    } else if bench {
+        None
+    } else {
+        dirs(session::dir())
+    };
     let config_dir = dirs(config::dir());
     // One Templum per data folder: a second would restore the same canvas, resume the same
     // agents and write over the first's files. It keeps nothing instead.
@@ -169,6 +178,8 @@ fn main() {
             .expect("failed to open window");
             if let Some(kind) = zoom {
                 bench::run_zoom(window, ws, kind, cx);
+            } else if mirror {
+                bench::run_mirror(window, ws, cx);
             } else if git {
                 bench::run_git(window, ws, cx);
             } else if far {
@@ -181,6 +192,9 @@ fn main() {
         });
     // Free before an installer starts the next Templum.
     drop(lock);
+    if mirror {
+        let _ = std::fs::remove_dir_all(bench::mirror_dir());
+    }
     // Restart into an installer (Windows): it replaces Templum, so it starts once Templum is done.
     let installer = update::INSTALLER
         .lock()

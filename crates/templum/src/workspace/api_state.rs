@@ -262,6 +262,11 @@ impl Workspace {
             .waits
             .iter()
             .filter_map(|wait| {
+                // Another computer's requests are shown here, never relayed: this computer's API
+                // doesn't list them and can't answer them.
+                if wait.remote.is_some() {
+                    return None;
+                }
                 let (kind, buttons, scope) = match &wait.what {
                     Waiting::Question { ask, .. } if ask.plan.is_some() => {
                         ("plan", None, Scope::Control)
@@ -269,7 +274,7 @@ impl Workspace {
                     Waiting::Question { .. } => ("question", None, Scope::Control),
                     Waiting::Allow { then } => {
                         let (yes, no) = then.buttons();
-                        let buttons = Some([yes.to_string(), no.to_string()]);
+                        let buttons = Some([yes, no]);
                         match then {
                             Approved::Connect { .. } => ("connect", buttons, Scope::Control),
                             Approved::RemoveWorktree { .. } => {
@@ -278,6 +283,7 @@ impl Workspace {
                             Approved::MergeWorktree { .. } => {
                                 ("merge_worktree", buttons, Scope::Full)
                             }
+                            Approved::Remote { .. } => return None,
                         }
                     }
                     Waiting::Turn { .. } | Waiting::Event { .. } => return None,

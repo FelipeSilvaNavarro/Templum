@@ -130,6 +130,16 @@ As today (ask-user.md, Telling the person), with these changes:
 A request belongs to its terminal (`Wait.from`): when its block moves to another workspace, the request goes with it
 to that workspace's inbox; when its block closes, the request ends as today.
 
+### Requests from a mirrored workspace
+
+With a remote workspace shown ([templum-to-templum.md](templum-to-templum.md#requests)), the inbox lists the requests
+of its home's agents, drawn as local ones and answered through the mirror (`answer_request` at home: the request
+leaves the list at once and the wait goes when home's state drops it, or comes back if home refuses). Such a wait
+is marked `remote` and kept by the viewer of its block; it chimes and notifies as a local one, titled "API on
+winx-desktop". Its buttons are dim, with the reason as a tooltip, while the remote isn't live ("Not connected.") or when
+the share can't answer it ("Needs a Full share: share again on winx-desktop.", for a worktree's request). The mirror's
+own API never lists or answers one.
+
 ## Constraints
 
 - CLAUDE.md: only crates/templum depends on the UI framework; tests for every logic change (GPUI test-support tests in

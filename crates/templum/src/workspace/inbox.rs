@@ -34,8 +34,10 @@ impl Workspace {
         self.waits
             .iter()
             .filter(|w| matches!(w.what, Waiting::Question { .. } | Waiting::Allow { .. }))
+            // An answer sent to another computer leaves the list until its state drops it.
+            .filter(|w| !w.remote.as_ref().is_some_and(|r| r.sent))
             .filter(|w| {
-                self.caller(&w.from)
+                self.asker(w)
                     .is_some_and(|(space, _)| space == self.space.id)
             })
             .collect()
@@ -139,7 +141,7 @@ impl Workspace {
             .waits
             .iter()
             .find(|w| w.key == key)
-            .and_then(|w| self.caller(&w.from))
+            .and_then(|w| self.asker(w))
             .map_or_else(|| space.to_string(), |(space, _)| space);
         let Some(to) = self.order().iter().position(|s| s.id == now) else {
             return;
@@ -155,7 +157,7 @@ impl Workspace {
             .waits
             .iter()
             .find(|w| w.key == key)
-            .and_then(|w| self.caller(&w.from))
+            .and_then(|w| self.asker(w))
         else {
             return;
         };

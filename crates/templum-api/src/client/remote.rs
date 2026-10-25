@@ -166,6 +166,10 @@ pub(crate) fn run(
                         let _ = tx.send(Msg::Forget { revoke });
                     }
                 }
+                Order::DropKey(entry, file) => {
+                    let keys = keys.clone();
+                    tokio::task::spawn_blocking(move || keys.delete(&entry, file));
+                }
                 Order::Probe => {
                     let (keys, out) = (keys.clone(), out.clone());
                     tokio::task::spawn_blocking(move || {
@@ -192,6 +196,9 @@ struct Attempt {
     calls: UnboundedSender<Call>,
     typing: Option<UnboundedSender<Batch>>,
     events_started: bool,
+    /// What its calls were handed for and haven't answered: ended with the attempt, each is
+    /// refused then.
+    calling: Vec<About>,
     _tasks: Vec<Task>,
 }
 
@@ -362,9 +369,45 @@ impl Life {
             KeySource::Memory(secrets) => secrets,
             KeySource::Save {
                 entry,
-                secrets,
+                mut secrets,
                 file,
+                from,
             } => {
+                if let Some(from) = from {
+                    let keys = self.keys.clone();
+                    let old = blocking(move || keys.load(&from.entry, from.file))
+                        .await
+                        .and_then(Result::ok);
+                    let Some(old) = old else {
+                        // It may be the only copy of the Access token: nothing is saved, so
+                        // nothing is dropped, and Try again reads it again.
+                        self.say(Update::Refused {
+                            about: About::Show,
+                            sentence: "Templum couldn't read the old key for the Access token or the proxy login: try again, or connect again with a new code.".into(),
+                        });
+                        return Err(Why::Keyring);
+                    };
+                    if from.access {
+                        // The secret was bound to its address (1b): it goes only to the same
+                        // origin, whatever the old index entry says.
+                        let same = place(&old.url)
+                            .zip(place(&secrets.url))
+                            .is_some_and(|(old, new)| old.same_origin(&new));
+                        if same {
+                            secrets.access_secret = old.access_secret;
+                        } else {
+                            self.say(Update::Refused {
+                                about: About::Show,
+                                sentence:
+                                    "The address changed: type the Client Secret again in More…"
+                                        .into(),
+                            });
+                        }
+                    }
+                    if from.login {
+                        secrets.proxy_auth = old.proxy_auth;
+                    }
+                }
                 let (keys, kept) = (self.keys.clone(), secrets.clone());
                 let saved = blocking(move || keys.save(&entry, &kept, file))
                     .await
@@ -458,7 +501,12 @@ impl Life {
     /// What its tasks already said is ignored from now on: the epoch moves.
     fn drop_attempt(&mut self) {
         self.epoch += 1;
-        self.attempt = None;
+        for about in self.attempt.take().map(|a| a.calling).unwrap_or_default() {
+            self.say(Update::Refused {
+                about,
+                sentence: "Couldn't reach the other computer.".into(),
+            });
+        }
         self.timer = None;
         self.streams.clear();
         self.queues.clear();
@@ -501,6 +549,7 @@ impl Life {
             calls,
             typing: None,
             events_started: false,
+            calling: Vec::new(),
             _tasks: vec![task],
         });
     }
@@ -800,15 +849,21 @@ impl Life {
 
     /// Hands a call to the calls task, or says it can't be made now.
     fn call(&mut self, about: About, tool: &'static str, args: Value) {
-        let sent = match (&self.attempt, self.phase) {
-            (Some(attempt), Phase::Live) => attempt
-                .calls
-                .send(Call {
-                    about: about.clone(),
-                    tool,
-                    args,
-                })
-                .is_ok(),
+        let sent = match (&mut self.attempt, self.phase) {
+            (Some(attempt), Phase::Live) => {
+                let sent = attempt
+                    .calls
+                    .send(Call {
+                        about: about.clone(),
+                        tool,
+                        args,
+                    })
+                    .is_ok();
+                if sent {
+                    attempt.calling.push(about.clone());
+                }
+                sent
+            }
             _ => false,
         };
         if !sent {
@@ -820,6 +875,13 @@ impl Life {
     }
 
     fn called(&mut self, about: About, result: Result<Value, Failure>, took: Duration) {
+        // A failure that ends the attempt leaves its call to `drop_attempt`, which refuses it.
+        if !matches!(&result, Err(Failure::Auth | Failure::Stop(_)))
+            && let Some(calling) = self.attempt.as_mut().map(|a| &mut a.calling)
+            && let Some(at) = calling.iter().position(|a| *a == about)
+        {
+            calling.remove(at);
+        }
         match result {
             Ok(_) => self.say(Update::Latency(took)),
             Err(Failure::Refused(sentence) | Failure::Missing(sentence)) => {
@@ -1636,6 +1698,134 @@ mod tests {
     }
 
     #[test]
+    fn a_new_code_keeps_the_access_secret_and_the_proxy_login_it_leaves_empty() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = Keys::without_keyring(Some(dir.path()));
+            let secrets =
+                |token: &str, access: Option<&str>, login: Option<&str>| super::super::Secrets {
+                    token: Key::new(token.into()),
+                    access_secret: access.map(Into::into),
+                    proxy_auth: login.map(Into::into),
+                    url: "http://127.0.0.1:9".into(),
+                    trust: Trust::Loopback,
+                    trust_added: false,
+                    proxy: None,
+                };
+            let old = secrets("tpl_old", Some("the-secret"), Some("me:pw"));
+            assert_eq!(keys.save("remote-old", &old, true), Ok(Kept::File));
+            for (access, login, want) in [
+                (true, true, (Some("the-secret"), Some("me:pw"))),
+                (true, false, (Some("the-secret"), None)),
+                (false, false, (None, None)),
+            ] {
+                let mut life = life_at("http://127.0.0.1:9");
+                life.keys = keys.clone();
+                life.remote.key = KeySource::Save {
+                    entry: "remote-new".into(),
+                    secrets: secrets("tpl_new", None, None),
+                    file: true,
+                    from: Some(super::super::Inherit {
+                        entry: "remote-old".into(),
+                        file: true,
+                        access,
+                        login,
+                    }),
+                };
+                life.prepare().await.unwrap();
+                let kept = keys.load("remote-new", true).unwrap();
+                assert_eq!(
+                    (kept.access_secret.as_deref(), kept.proxy_auth.as_deref()),
+                    want
+                );
+                assert_eq!(kept.token.expose(), "tpl_new");
+            }
+        });
+    }
+
+    /// A life that saves a new key for `url`, inheriting from the old one kept at "remote-old".
+    fn inheriting(keys: &Keys, url: &str, access: bool, login: bool) -> Life {
+        let mut life = life_at(url);
+        life.keys = keys.clone();
+        life.out.inner().current.insert("r1".into(), 1);
+        life.remote.key = KeySource::Save {
+            entry: "remote-new".into(),
+            secrets: super::super::Secrets {
+                token: Key::new("tpl_new".into()),
+                access_secret: None,
+                proxy_auth: None,
+                url: url.into(),
+                trust: Trust::Loopback,
+                trust_added: false,
+                proxy: None,
+            },
+            file: true,
+            from: Some(super::super::Inherit {
+                entry: "remote-old".into(),
+                file: true,
+                access,
+                login,
+            }),
+        };
+        life
+    }
+
+    #[test]
+    fn the_access_secret_of_an_old_key_is_inherited_only_by_the_same_origin() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = Keys::without_keyring(Some(dir.path()));
+            let old = super::super::Secrets {
+                token: Key::new("tpl_old".into()),
+                access_secret: Some("the-secret".into()),
+                proxy_auth: Some("me:pw".into()),
+                url: "http://127.0.0.1:9/a".into(),
+                trust: Trust::Loopback,
+                trust_added: false,
+                proxy: None,
+            };
+            assert_eq!(keys.save("remote-old", &old, true), Ok(Kept::File));
+            // Another path of the same origin keeps it; another host or port never gets it.
+            for (url, want) in [
+                ("http://127.0.0.1:9/b", Some("the-secret")),
+                ("http://127.0.0.1:10", None),
+                ("http://localhost:9", None),
+            ] {
+                let mut life = inheriting(&keys, url, true, true);
+                life.prepare().await.unwrap();
+                let kept = keys.load("remote-new", true).unwrap();
+                assert_eq!(kept.access_secret.as_deref(), want, "{url}");
+                assert_eq!(kept.proxy_auth.as_deref(), Some("me:pw"), "the same proxy");
+                let said = life.out.inner().updates.clone();
+                let told = said.iter().any(|(_, u)| {
+                    matches!(u, Update::Refused { sentence, .. } if sentence.starts_with("The address changed"))
+                });
+                assert_eq!(told, want.is_none(), "{url}");
+            }
+        });
+    }
+
+    #[test]
+    fn an_old_key_that_cannot_be_read_stops_before_anything_is_saved() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = Keys::without_keyring(Some(dir.path()));
+            let mut life = inheriting(&keys, "http://127.0.0.1:9", true, true);
+            assert!(matches!(life.prepare().await, Err(Why::Keyring)));
+            assert!(keys.load("remote-new", true).is_err(), "nothing was saved");
+            let said = life.out.inner().updates.clone();
+            assert!(
+                said.iter().all(|(_, u)| !matches!(u, Update::Kept(_))),
+                "no Kept, so nothing is dropped"
+            );
+            assert!(
+                said.iter()
+                    .any(|(_, u)| matches!(u, Update::Refused { .. }))
+            );
+        });
+    }
+
+    #[test]
     fn try_now_restarts_an_opening_attempt_too() {
         block_on(async {
             let mut life = life_at("http://127.0.0.1:9");
@@ -1646,6 +1836,32 @@ mod tests {
             life.command(Command::TryNow).await;
             assert!(life.epoch > epoch, "a new attempt");
             assert_eq!(life.phase, Phase::Opening);
+        });
+    }
+
+    #[test]
+    fn a_call_in_flight_when_the_attempt_is_dropped_is_refused() {
+        block_on(async {
+            let mut life = life_at("http://127.0.0.1:9");
+            life.out.inner().current.insert("r1".into(), 1);
+            life.prepare().await.unwrap();
+            life.begin();
+            life.phase = Phase::Live;
+            life.call(About::Answer("r3".into()), "answer_request", json!({}));
+            life.call(About::Answer("r4".into()), "answer_request", json!({}));
+            // One was answered before: it is not refused too.
+            life.called(About::Answer("r4".into()), Ok(json!({})), Duration::ZERO);
+            // The stream ended and home was looked at again: no status changes, no refusal comes.
+            life.begin();
+            let said = life.out.inner().updates.clone();
+            let refused: Vec<_> = said
+                .iter()
+                .filter_map(|(_, u)| match u {
+                    Update::Refused { about, .. } => Some(about.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(refused, [About::Answer("r3".into())], "{said:?}");
         });
     }
 

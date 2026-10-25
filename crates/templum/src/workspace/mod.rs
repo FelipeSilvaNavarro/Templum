@@ -1612,7 +1612,9 @@ pub struct Workspace {
     _bus: Task<()>,
     /// The tool calls waiting for an answer, oldest first (`waits.rs`).
     waits: Vec<waits::Wait>,
-    /// The last wait's key.
+    /// The last wait's key. It starts at the Unix time in milliseconds: home's request ids
+    /// (`r<key>`) are named by a mirror that may outlive home's process, and a restarted home
+    /// must not reuse one.
     next_wait: u64,
     /// When a request last made its sound (`chime::GAP`), by the executor's clock.
     pub(crate) last_chime: Option<std::time::Instant>,
@@ -1655,6 +1657,9 @@ pub struct Workspace {
     stream_waiting: bool,
     /// The remote the Connect dialog is waiting on, by id, and how that went (`remote.rs`).
     pub(crate) pending_connect: Option<String>,
+    /// Test: what a remote workspace warned the person of.
+    #[cfg(test)]
+    pub(crate) said: Vec<String>,
     connect_done: Option<Result<(), String>>,
     /// The code as the clipboard may still hold it: cleared after a success, dropped otherwise.
     connect_clip: Option<String>,
@@ -2023,7 +2028,9 @@ impl Workspace {
             bus_env,
             _bus: bus_task,
             waits: Vec::new(),
-            next_wait: 0,
+            next_wait: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |t| t.as_millis() as u64),
             last_chime: None,
             next_task: 0,
             tool_conns: HashMap::new(),
@@ -2050,6 +2057,8 @@ impl Workspace {
             _mirror: Task::ready(()),
             stream_waiting: false,
             pending_connect: None,
+            #[cfg(test)]
+            said: Vec::new(),
             connect_done: None,
             connect_clip: None,
             keyring: None,

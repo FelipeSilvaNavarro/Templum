@@ -216,6 +216,15 @@ impl Workspace {
         let Waiting::Question { ask, stopped, .. } = &wait.what else {
             return;
         };
+        // Another computer's agent asked: its answer goes there.
+        if wait.remote.is_some() {
+            let mut args = serde_json::json!({ "answers": answers });
+            if !note.trim().is_empty() {
+                args["note"] = note.into();
+            }
+            self.remote_answer(key, args, cx);
+            return;
+        }
         let reply = ask.reply(&answers, note);
         let notice = stopped.then(|| (wait.from.clone(), ask.notice(&reply.text)));
         self.close_question(key, reply, window, cx);
@@ -226,6 +235,14 @@ impl Workspace {
 
     /// Dismisses the question `key` without the inbox's too-soon guard (the API's).
     pub(super) fn dismiss_now(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .waits
+            .iter()
+            .any(|w| w.key == key && w.remote.is_some())
+        {
+            self.remote_answer(key, serde_json::json!({ "dismiss": true }), cx);
+            return;
+        }
         self.close_question(key, Reply::err(DISMISSED), window, cx);
     }
 
@@ -237,7 +254,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if !self.question_too_soon(key, cx) {
-            self.close_question(key, Reply::err(DISMISSED), window, cx);
+            self.dismiss_now(key, window, cx);
         }
     }
 

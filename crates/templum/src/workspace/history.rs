@@ -97,6 +97,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // Home is the truth: a mirror that isn't live moves nothing.
+        if self.remote_frozen() {
+            return false;
+        }
         loop {
             let stack = if redo {
                 &self.space.redo
@@ -212,6 +216,8 @@ impl Workspace {
             b.rect = rect;
             self.fit_terminal(id, rect);
         }
+        let ids: Vec<BlockId> = before.iter().map(|(id, _)| *id).collect();
+        self.remote_moved(&ids, std::time::Instant::now());
         self.keep(Change::Place(before), then);
         cx.notify();
     }
@@ -247,6 +253,9 @@ impl Workspace {
         let moved = self.displaced();
         let placed = std::mem::take(&mut self.placed);
         if moved {
+            // A mirrored block is home's: home moves it too.
+            let ids: Vec<BlockId> = placed.iter().map(|(id, _)| *id).collect();
+            self.remote_moved(&ids, std::time::Instant::now());
             self.keep(Change::Place(placed), Then::New);
         }
     }

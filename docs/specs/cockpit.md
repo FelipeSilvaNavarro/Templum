@@ -372,6 +372,11 @@ Replaces the sidebar's **Rename…**, which becomes **Edit…** everywhere. A di
   accent dot, "last used 3 h ago from 203.0.113.7" or "never used") with **Revoke**, and **Share…** for one more.
   Share… opens a second dialog (name, what it can do, expiry, how the other computer reaches this one) that makes the
   connection code and shows it once ([templum-to-templum.md](templum-to-templum.md#on-home-sharing-a-workspace)).
+- **A remote workspace's Edit…** ([templum-to-templum.md](templum-to-templum.md#the-remote-workspace)) has no Name
+  field (home's, dim: "named on winx-desktop"), Image, Folder or Sharing; it keeps Color and Icon (the local look, none:
+  home's) and gains **Connection**: the address, the way in, whether it trusts an authority this computer added, the
+  Access Client ID and the proxy when set, what the share can do, when it ends and the round trip, and **Paste a new
+  code…** (the Connect dialog for this remote).
 - **Save** and Cancel. Enter saves. Every change previews in the tile at once; Cancel puts everything back.
 
 ### Where the look shows

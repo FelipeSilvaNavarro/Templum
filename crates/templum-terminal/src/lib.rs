@@ -24,8 +24,8 @@ pub use alacritty_terminal::index::Side;
 pub use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
 pub use find::{Find, Toward};
 pub use input::{
-    Button, KEY_NAMES, KeyInput, MouseInput, MouseKind, NamedKey, named_key, paste_bytes,
-    typed_bytes,
+    Button, KEY_NAMES, KeyInput, MouseInput, MouseKind, NamedKey, key_name, named_key, paste_bytes,
+    text_names, typed_bytes, typed_text,
 };
 pub use integration::install;
 pub use link::{Target, resolve};

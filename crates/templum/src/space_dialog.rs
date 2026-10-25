@@ -131,6 +131,9 @@ pub(crate) struct SpaceDialog {
     note: Option<String>,
     /// The icons found, and the search they are for.
     found: (String, Vec<IconName>),
+    /// A mirror of another computer's workspace: its name is home's, and it has a connection
+    /// instead of a folder and sharing.
+    remote: bool,
     theme: Rc<Theme>,
     ui: Ui,
 }
@@ -201,6 +204,102 @@ impl SpaceDialog {
             .font_weight(FontWeight::MEDIUM)
             .text_color(self.ui.title)
             .child(text)
+    }
+
+    /// A remote's connection: what it reaches and how, what the share can do, when it ends and
+    /// how far it is; and Paste a new code….
+    fn connection(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use templum_api::store::Scope;
+        let ui = self.ui;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let ws = self.workspace.read(cx);
+        let remote = ws
+            .spaces()
+            .find(|s| s.id == self.id)
+            .and_then(|s| s.remote.as_deref());
+        let mut rows: Vec<(&'static str, String)> = Vec::new();
+        if let Some(remote) = remote {
+            let entry = &remote.entry;
+            let code = templum_api::code::Code {
+                url: entry.url.clone(),
+                key: templum_api::code::Key::new(String::new()),
+                trust: entry.trust(),
+            };
+            rows.push(("Address", entry.url.clone()));
+            rows.push(("Way in", code.said()));
+            if entry.trust_added_authority {
+                rows.push(("Trust", "Trusts an authority this computer added".into()));
+            }
+            if let Some(id) = &entry.access_id {
+                rows.push(("Access Client ID", id.clone()));
+            }
+            if let Some(proxy) = &entry.proxy {
+                rows.push(("Proxy", proxy.clone()));
+            }
+            if let Some(me) = &remote.me {
+                rows.push((
+                    "The share can",
+                    match me.scope {
+                        Scope::Full => {
+                            "Full: watch, move blocks, answer requests and type into terminals"
+                        }
+                        _ => "Control: watch, move blocks and answer requests",
+                    }
+                    .into(),
+                ));
+                rows.push((
+                    "Expires",
+                    crate::settings::api::expiry_words(me.expires, now),
+                ));
+            }
+            if let Some(latency) = remote.latency {
+                rows.push(("Round trip", format!("{} ms", latency.as_millis())));
+            }
+        }
+        let (workspace, id) = (self.workspace.clone(), self.id.clone());
+        div()
+            .id("space-connection")
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .children(rows.into_iter().map(|(name, value)| {
+                div()
+                    .id(ElementId::Name(format!("space-connection-{name}").into()))
+                    .flex()
+                    .gap(px(8.0))
+                    .text_size(px(12.0))
+                    .child(
+                        div()
+                            .w(px(110.0))
+                            .flex_shrink_0()
+                            .text_color(ui.title_dim)
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_color(ui.title)
+                            .child(value),
+                    )
+                    .test_support()
+            }))
+            .child(
+                div().flex().mt(px(4.0)).child(
+                    Button::new("space-paste-code")
+                        .label("Paste a new code…")
+                        .small()
+                        .on_click(move |_: &ClickEvent, window, cx| {
+                            workspace.update(cx, |ws, cx| {
+                                crate::connect_dialog::open_for(ws, &id, window, cx)
+                            })
+                        }),
+                ),
+            )
+            .test_support()
     }
 
     /// Sharing: applied at once, not on Save. With no share, what sharing does and Share…; else a
@@ -507,6 +606,14 @@ impl Render for SpaceDialog {
                         })),
                 )
             });
+        let remote = self.remote;
+        let computer = self
+            .workspace
+            .read(cx)
+            .spaces()
+            .find(|s| s.id == self.id)
+            .and_then(|s| s.remote.as_deref())
+            .map(crate::mirror::computer_of);
         div()
             .id("space-dialog")
             .flex()
@@ -514,18 +621,37 @@ impl Render for SpaceDialog {
             .gap(px(10.0))
             .child(preview)
             .child(self.label("Name"))
-            .child(Input::new(&self.name))
+            .child(if remote {
+                div()
+                    .id("space-named-at-home")
+                    .text_size(px(12.0))
+                    .text_color(ui.title_dim)
+                    .child(format!(
+                        "named on {}",
+                        computer.clone().unwrap_or_else(|| "home".into())
+                    ))
+                    .test_support()
+                    .into_any_element()
+            } else {
+                Input::new(&self.name).into_any_element()
+            })
             .child(self.label("Color"))
             .child(self.swatches(cx))
             .child(self.label("Icon"))
             .child(Input::new(&self.search))
             .child(self.icons(cx))
-            .child(self.label("Image"))
-            .child(image)
-            .child(self.label("Folder"))
-            .child(folder)
-            .child(self.label("Sharing"))
-            .child(self.sharing(cx))
+            .when(!remote, |el| {
+                el.child(self.label("Image"))
+                    .child(image)
+                    .child(self.label("Folder"))
+                    .child(folder)
+                    .child(self.label("Sharing"))
+                    .child(self.sharing(cx))
+            })
+            .when(remote, |el| {
+                el.child(self.label("Connection"))
+                    .child(self.connection(cx))
+            })
             .children(self.note.clone().map(|note| {
                 div()
                     .id("space-note")
@@ -560,6 +686,7 @@ pub(crate) fn open(ws: &Workspace, id: &str, window: &mut Window, cx: &mut Conte
             folder: space.folder.clone(),
             note: None,
             found: (String::new(), find_icons("")),
+            remote: space.is_remote(),
             theme: ws.theme.clone(),
             ui: ws.ui,
         }
@@ -606,6 +733,11 @@ fn save(
         d.look.clone(),
         d.folder.clone(),
     );
+    // A mirror keeps only the look: its name is home's, and it has no folder.
+    if d.remote {
+        workspace.update(cx, |ws, cx| ws.edit_remote_look(&id, look, window, cx));
+        return true;
+    }
     match workspace.update(cx, |ws, cx| {
         ws.edit_space(&id, &name, look, folder, window, cx)
     }) {

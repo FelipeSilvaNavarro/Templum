@@ -41,6 +41,7 @@ fn kind(wait: &Wait) -> String {
             Approved::Connect { .. } => "a request to connect".into(),
             Approved::RemoveWorktree { .. } => "a request to delete a worktree".into(),
             Approved::MergeWorktree { .. } => "a request to merge a worktree".into(),
+            Approved::Remote { .. } => "a request".into(),
         },
         Waiting::Turn { .. } | Waiting::Event { .. } => String::new(),
     }
@@ -61,6 +62,13 @@ fn asker(ws: &Workspace, wait: &Wait) -> String {
     let Some(pane) = ws.pane(&wait.from) else {
         return String::new();
     };
+    // Another computer's agent, as its block says.
+    if let Some(remote) = &pane.remote {
+        return match &remote.agent {
+            Some(agent) => format!("{} · {}", agent.agent, remote.title),
+            None => remote.title.clone(),
+        };
+    }
     let title = pane.term.title();
     match ws.agent_name(pane) {
         Some(agent) => format!("{agent} · {title}"),
@@ -246,9 +254,7 @@ fn detail(ws: &Workspace, wait: &Wait, w: f32, h: f32, cx: &mut Context<Workspac
         wait.shown.set(Some(cx.background_executor().now()));
     }
     let key = wait.key;
-    let n = ws
-        .caller(&wait.from)
-        .map_or(0, |(_, BlockId(id))| id as usize);
+    let n = ws.asker(wait).map_or(0, |(_, BlockId(id))| id as usize);
     let Some(request) = balloon::request(ws, wait, n, w, h - 2.0 - FOOT, cx) else {
         return div().flex_1().into_any_element();
     };

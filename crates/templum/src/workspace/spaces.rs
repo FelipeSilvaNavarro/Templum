@@ -575,6 +575,10 @@ impl Workspace {
         if space.is_remote()
             && let Some(mirror) = &self.mirror
         {
+            // The keys that new codes replaced and the client never heard `Kept` for go too.
+            for (entry, file) in space.remote.iter().flat_map(|r| &r.old_keys) {
+                mirror.drop_key(entry, *file);
+            }
             mirror.forget(&space.id, revoke);
         }
         if let Some(dir) = &self.data_dir {

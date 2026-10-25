@@ -13,7 +13,10 @@ use templum_canvas::{
     BlockId, Direction, Drawing, Edges, Gesture, Point, Rect, STRING_PX, Size, chrome, constrain,
     edge_scroll,
 };
-use templum_terminal::{Button, KeyInput, MouseInput, MouseKind, SelectionKind, Side, Target};
+use templum_terminal::{
+    Button, KeyInput, MouseInput, MouseKind, SelectionKind, Side, Target, key_name, text_names,
+    typed_text,
+};
 
 use crate::git_block;
 use crate::keys::{self, Command};
@@ -123,6 +126,9 @@ impl Workspace {
     }
 
     pub(crate) fn begin_move(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
+        if self.remote_frozen() {
+            return;
+        }
         // A tile is dropped on another to trade places.
         if self.space.grid.is_some() {
             let at = self.local(pos);
@@ -168,6 +174,9 @@ impl Workspace {
     }
 
     pub(crate) fn begin_resize(&mut self, id: BlockId, edges: Edges, pos: PixelPoint<Pixels>) {
+        if self.remote_frozen() {
+            return;
+        }
         let p = self.local(pos);
         let min = self
             .space
@@ -620,11 +629,17 @@ impl Workspace {
         }
     }
 
-    pub(crate) fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn paste_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        if let Some(pane) = self
+        if self
+            .space
+            .focused_terminal()
+            .is_some_and(|pane| pane.remote.is_some())
+        {
+            self.remote_paste(text, window, cx);
+        } else if let Some(pane) = self
             .space
             .focused_terminal()
             .filter(|p| p.follows.is_none())
@@ -722,7 +737,7 @@ impl Workspace {
             // Blocks on the clipboard are pasted on the canvas, unless a field has the keyboard.
             Command::Paste => {
                 if !(self.canvas_has_keys(window) && self.paste_blocks(window, cx)) {
-                    self.paste_clipboard(cx);
+                    self.paste_clipboard(window, cx);
                 }
             }
             Command::PreviousPrompt => self.jump_to_prompt(true, cx),
@@ -981,6 +996,18 @@ impl Workspace {
                     && !option_types_text(&k.key, k.key_char.as_deref(), cfg!(target_os = "macos")),
             shift: k.modifiers.shift,
         };
+        // A mirrored terminal is home's: the key goes there by its name, and home presses it as
+        // its own keyboard does. Printable text is the text path's, as a local terminal's: it
+        // ends a dead key's mark there (`replace_text_in_range`) and sends the characters.
+        if pane.remote.is_some() {
+            if typed_text(&input).is_none()
+                && let Some(name) = key_name(&input)
+            {
+                self.remote_type(vec![name], window, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
         pane.person_keyed(&input);
         if pane.term.key(&input) {
             // Keeps the platform from also feeding key_char to the text-input path.
@@ -1245,11 +1272,17 @@ impl EntityInputHandler for Workspace {
         &mut self,
         _: Option<Range<usize>>,
         text: &str,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.marked = None;
-        if let Some(pane) = self
+        if self
+            .space
+            .focused_terminal()
+            .is_some_and(|pane| pane.remote.is_some())
+        {
+            self.remote_type(text_names(text), window, cx);
+        } else if let Some(pane) = self
             .space
             .focused_terminal()
             .filter(|p| p.follows.is_none())

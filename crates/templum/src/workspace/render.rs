@@ -406,7 +406,13 @@ impl Render for Workspace {
             self.space.rest = self.space.view.zoom();
         }
         // The remote workspaces' terminals to stream follow what is in view.
-        if let Some(due) = self.stream_terminals(Instant::now()) {
+        let now = Instant::now();
+        let held = self.expire_holds(now);
+        if let Some(due) = [self.stream_terminals(now), held]
+            .into_iter()
+            .flatten()
+            .min()
+        {
             self.stream_at(due, window, cx);
         }
         let visible: Vec<_> = self

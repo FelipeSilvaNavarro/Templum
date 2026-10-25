@@ -96,6 +96,7 @@ fn the_key_is_saved_before_connecting() {
         entry: "remote-ab12cd34".into(),
         secrets: secrets.clone(),
         file: false,
+        from: None,
     };
     first.connect("r1", remote.clone());
     let seen = until(&first, "r1", "live", live);
@@ -789,6 +790,7 @@ fn forget_revokes_then_deletes_the_key() {
         entry: "remote-ab12cd34".into(),
         secrets: secrets_for(&remote, &text),
         file: false,
+        from: None,
     };
     mirror.connect("r1", remote);
     until(&mirror, "r1", "live", live);
@@ -854,6 +856,7 @@ fn nothing_shows_the_key() {
         entry: "remote-ab12cd34".into(),
         secrets: secrets.clone(),
         file: false,
+        from: None,
     };
     let keys = Keys::with_store(keyring_core::mock::Store::new().unwrap(), SERVICE_DEV, None);
     let (mirror, _) = common::mirror(keys);
@@ -979,6 +982,7 @@ fn a_key_is_never_sent_where_the_index_now_says() {
         entry: "remote-ab12cd34".into(),
         secrets: secrets_for(&remote, &text),
         file: false,
+        from: None,
     };
     mirror.connect("kept", remote.clone());
     until(&mirror, "kept", "live from its own address", live);

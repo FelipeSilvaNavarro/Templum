@@ -208,7 +208,8 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`crates/templum/src/workspace/tests/git_message.rs`.) Fix: check it is "didn't answer within".
 - [ ] **`the_shell_page_switches_shell_integration` failed once in a full run.**
   (`crates/templum/src/workspace/tests/welcome.rs:206`, seen at e04f859: integration still on after the click; it
-  passed alone and on the next full run.) A person sees nothing; a contributor may see CI fail once. Fix: find what
+  passed alone and on the next full run; seen again in the reduced-env run of T2T batch 1d, and passed alone three
+  times.) A person sees nothing; a contributor may see CI fail once. Fix: find what
   the click misses under load (the row after `to_bottom` maybe not laid out yet): render a frame between `to_bottom`
   and the click, or click by the field's element id once it is in view.
 - [ ] **`a_far_editor_draws_bars_where_its_code_was` fails when the machine is busy.**
@@ -2333,9 +2334,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **A remote terminal's effort has no place on its block.** (`workspace/remote.rs`, `mirror_blocks`.) Home's
   `agent.effort` is kept in the pane's `RemotePane::agent` but only the usage chip (context, cost, model) shows.
   Fix: put it in the chip's tooltip.
-- [ ] **Home's look on a remote tile is applied only while the person gave none.** (`workspace/remote.rs`,
-  `apply_remote`.) Once the person picks an icon or color in Edit… it stays theirs; clearing it brings home's back
-  at the next state. Fix: a "use home's look" switch in the remote's Edit… (plan 1d).
 - [ ] **A remote terminal has no right-click menu.** (`menu/mod.rs`, `open_menu`.) The menus of the canvas, a block, a
   wire and a drawing say "Not on a mirrored workspace yet" in a notification instead of opening, so Copy of a mirrored
   terminal's selection is only by the keyboard. Fix: a menu with Copy alone, and the rest disabled with the tooltip.
@@ -2380,3 +2378,25 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   64 MB, mostly in collections (notes, checklists, boards) the mirror never reads; a tiny change every few ms makes the
   UI thread clone all of it on each wake, so a big home's mirror stutters. Fix: have a mirror drop (or not weigh) the
   collections it doesn't read, or hand the state out through an `Arc`.
+- [ ] **A selection of several blocks moved on the mirror is one Ctrl+Z step per block at home.**
+  (`workspace/remote.rs`, `remote_moved`; `workspace/history.rs`, `end_placing`.) One `move_block` is sent per block
+  (the spec's known limit). Fix: a `move_block` taking several blocks.
+- [ ] **A request whose block has no viewer on the mirror isn't listed there.** (`workspace/remote.rs`, `remote_wait`.)
+  Agents' requests come from their terminal, so only a request from a block the mirror shows as a card (or one over
+  the 500-block cap) is skipped, and the mirror's Requests button doesn't count it. Fix: list it under the workspace
+  with no block to go to.
+- [ ] **Only the first 50 requests of a mirrored workspace are listed.** (`workspace/remote.rs`, `MOST_REQUESTS`.) A
+  home with more waiting shows the rest once those are answered. Fix: say "and N more" in the inbox.
+- [ ] **A mirrored request is aged from when the mirror heard of it.** (`workspace/remote.rs`, `remote_wait`;
+  `workspace/waits.rs`, `Wait::since`.) The inbox's "2m" counts from the first state that listed it, not from
+  `RequestView::since`. Fix: take the age from home's `since`.
+- [ ] **Shift+Enter in an agent without the kitty keyboard reaches home as Enter.** (`workspace/input.rs`,
+  `on_key_down`; `workspace/delegate.rs`, `press_each`.) Home's newline rule is its local keyboard's, not
+  `terminal_input`'s, so a mirror's Shift+Enter in Claude Code before it turned the kitty keyboard on sends Enter. Fix:
+  apply the rule in `press_each` for `terminal_input`.
+- [ ] **Paste a new code… closes its dialog at once.** (`connect_dialog.rs`, `connect`; `workspace/remote.rs`,
+  `replace_code`.) A code home refuses, or an address that can't be reached, is told by the banner, not in the dialog.
+  Fix: wait for the first status as Connect does, without forgetting the remote on failure.
+- [ ] **Typing, a remote's Edit…, Paste a new code…, and the dim foot of a request were checked headlessly only.**
+  (`workspace/input.rs`, `space_dialog.rs`, `connect_dialog.rs`, `balloon.rs`.) Their looks and the feel of typing
+  through a real tunnel were not seen on a display. Fix: look at them with two `--dev` instances.

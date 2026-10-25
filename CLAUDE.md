@@ -53,7 +53,8 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
   `--bench-mixed`, an agent cockpit: TUIs, editors, a note, kanban; and `--bench-zoom=<kind>` for a change to
   zooming, run from a real project folder: `cd ~/Documents/github/DaemonQuest &&
   ~/Documents/github/Templum/target/release/templum --bench-zoom=editor`; `--bench-far`, run the same way, for a
-  change to drawing at far zoom; and `--bench-git` for a change to the Git popup's diff panel).
+  change to drawing at far zoom; `--bench-git` for a change to the Git popup's diff panel; and `--bench-mirror`,
+  the cockpit mirrored by the same Templum over loopback, for a change to the mirror's painting or its client).
   The bar is `p95_ms` <= 16.7 (see [ADR-0002](docs/adr/0002-ui-framework.md)).
 
 ## Before saying "done"

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::input::InputState;
 use gpui_kit::{App, Context, Entity, Focusable as _, Subscription, Window};
 use serde_json::Value;
+use templum_api::store::Scope;
 use templum_canvas::BlockId;
 use templum_mcp::ask::{Ask, Form, Row};
 use templum_mcp::tools::Event;
@@ -55,6 +56,24 @@ pub(crate) struct Wait {
     /// The row the keys just moved the highlight to: the body scrolls to show it once, when it is
     /// drawn (a wheel that scrolled it away since isn't fought).
     pub reveal: Rc<Cell<Option<Row>>>,
+    /// A request of an agent on another computer, shown here from a mirrored workspace: it is
+    /// answered there, never here.
+    pub remote: Option<RemoteAsk>,
+}
+
+/// Where a mirrored request is answered.
+pub(crate) struct RemoteAsk {
+    /// The remote workspace's id here.
+    pub space: String,
+    /// Home's id of the request (`r<n>`, unique across home's restarts: see `next_wait`).
+    pub request: String,
+    /// What answering it takes there.
+    pub scope: Scope,
+    /// The answer was sent: it leaves the inbox when home's state no longer has it.
+    pub sent: bool,
+    /// No notification for it: it was told already, or folded into a notice of several
+    /// (`remote_tells`).
+    pub quiet: bool,
 }
 
 /// A field of a question's dialog, and what it hears from it.
@@ -114,16 +133,25 @@ pub(crate) enum Approved {
         unmerged: u32,
         into: String,
     },
+    /// A request of another computer's agent, answered there: `line` says what it asks, `yes` and
+    /// `no` are its buttons' words, home's.
+    Remote {
+        line: String,
+        yes: String,
+        no: String,
+    },
 }
 
 impl Approved {
     /// Its two buttons' words: yes, then no.
-    pub(crate) fn buttons(&self) -> (&'static str, &'static str) {
-        match self {
+    pub(crate) fn buttons(&self) -> (String, String) {
+        let (yes, no) = match self {
             Approved::Connect { .. } => ("Allow", "Deny"),
             Approved::RemoveWorktree { .. } => ("Delete", "Keep"),
             Approved::MergeWorktree { .. } => ("Merge", "Cancel"),
-        }
+            Approved::Remote { yes, no, .. } => (yes.as_str(), no.as_str()),
+        };
+        (yes.into(), no.into())
     }
 }
 
@@ -156,6 +184,9 @@ impl Wait {
             Waiting::Allow {
                 then: Approved::MergeWorktree { name, .. },
             } => format!("merge {name}"),
+            Waiting::Allow {
+                then: Approved::Remote { line, .. },
+            } => line.clone(),
             Waiting::Turn { .. } | Waiting::Event { .. } => String::new(),
         }
     }
@@ -167,8 +198,22 @@ impl Workspace {
     pub(super) fn wait(
         &mut self,
         asked: Asked,
+        what: Waiting,
+        seconds: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.wait_as(asked, what, seconds, None, window, cx);
+    }
+
+    /// `wait`, for a request that may be another computer's (`remote`): it is shown here and
+    /// answered there.
+    pub(super) fn wait_as(
+        &mut self,
+        asked: Asked,
         mut what: Waiting,
         seconds: Option<u64>,
+        remote: Option<RemoteAsk>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -203,6 +248,7 @@ impl Workspace {
             more: Cell::new(false),
             body: Default::default(),
             reveal: Rc::default(),
+            remote,
         };
         let looks = matches!(
             wait.what,
@@ -213,7 +259,7 @@ impl Workspace {
         );
         if matches!(wait.what, Waiting::Question { .. } | Waiting::Allow { .. }) {
             if self
-                .caller(&wait.from)
+                .asker(&wait)
                 .is_some_and(|(space, _)| space == self.space.id)
             {
                 self.inbox_arrived(cx);
@@ -221,8 +267,11 @@ impl Workspace {
             self.tell_asking(&wait, window, cx);
             self.chime(cx);
             // Its block waits for its person now. The agent that handed it a task hears nothing:
-            // the person sees the request in the inbox, and that agent can't answer it.
-            self.needs_you(&wait.from, Some(&wait.summary()), false, cx);
+            // the person sees the request in the inbox, and that agent can't answer it. (Another
+            // computer's agent is not one of this one's to tell.)
+            if wait.remote.is_none() {
+                self.needs_you(&wait.from, Some(&wait.summary()), false, cx);
+            }
         }
         self.waits.push(wait);
         if looks {
@@ -366,7 +415,7 @@ impl Workspace {
         // The Templum Agent and the API ask from no block.
         if wait.from != templum_agent::ASKER
             && wait.from != templum_api::ASKER
-            && self.caller(&wait.from).is_none()
+            && self.asker(wait).is_none()
         {
             return Some(Reply::err(
                 "Your block was closed; the request was withdrawn.",
@@ -438,6 +487,10 @@ impl Workspace {
         let Some(at) = self.waits.iter().position(|w| w.key == key) else {
             return;
         };
+        if self.waits[at].remote.is_some() {
+            self.remote_answer(key, serde_json::json!({ "allow": yes }), cx);
+            return;
+        }
         let Waiting::Allow { then } = &self.waits[at].what else {
             return;
         };
@@ -469,8 +522,10 @@ impl Workspace {
                         *unmerged,
                         cx,
                     )),
-                    // Answered by the arm above.
-                    Approved::Connect { .. } => Err(Reply::err("Connected.")),
+                    // Answered by the arms above, and by `remote_answer`.
+                    Approved::Connect { .. } | Approved::Remote { .. } => {
+                        Err(Reply::err("Connected."))
+                    }
                 },
             },
         };
@@ -531,6 +586,9 @@ impl Workspace {
         let Waiting::Allow { then } = &wait.what else {
             return String::new();
         };
+        if let Approved::Remote { line, .. } = then {
+            return line.clone();
+        }
         let Some((space_id, me)) = self.caller(&wait.from) else {
             return String::new();
         };
@@ -567,7 +625,23 @@ impl Workspace {
                 into,
                 ..
             } => format!("{from} wants to merge {name} ({unmerged} commits) into {into}."),
+            Approved::Remote { line, .. } => line.clone(),
         }
+    }
+
+    /// The workspace and block a request comes from: for another computer's, the viewer of its
+    /// block (a viewer is no caller of this computer's tools); else the terminal that called.
+    pub(crate) fn asker(&self, wait: &Wait) -> Option<(String, BlockId)> {
+        if wait.remote.is_none() {
+            return self.caller(&wait.from);
+        }
+        self.spaces().filter(|s| s.is_remote()).find_map(|space| {
+            space
+                .blocks
+                .iter()
+                .find(|(_, body)| body.terminal().is_some_and(|p| p.term.id() == wait.from))
+                .map(|(id, _)| (space.id.clone(), *id))
+        })
     }
 
     /// What the agent in terminal `terminal` asks the person, oldest first: the first, and how
@@ -600,22 +674,65 @@ impl Workspace {
     /// from another workspace; a request here, the window in front, is told by the inbox's
     /// badge alone.
     fn tell_asking(&mut self, wait: &Wait, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((space_id, me)) = self.caller(&wait.from) else {
+        let Some((space_id, me)) = self.asker(wait) else {
             return;
         };
         let space = self.space_named(&space_id).expect("the caller's workspace");
-        let (_, title, _) = self.about(&space.blocks[&me], cx);
+        // Another computer's request is titled by where it is: "API on winx-desktop".
+        let title = match space.remote.as_deref().filter(|_| wait.remote.is_some()) {
+            Some(remote) => format!("{} on {}", space.name, crate::mirror::computer_of(remote)),
+            None => self.about(&space.blocks[&me], cx).1,
+        };
         let Some(text) = self.asking_text(wait, cx) else {
             return;
         };
+        let quiet = wait.remote.as_ref().is_some_and(|a| a.quiet);
+        #[cfg(test)]
+        if wait.remote.is_some() && !quiet {
+            self.said.push(format!("{title}: {text}"));
+        }
         if let Some(pane) = self.pane_mut(&wait.from) {
             pane.alert = Some(Alert::Attention(Some(text.clone())));
         }
         // A request here, the window in front, is told by the badge: no notification.
-        if window.is_window_active() && space_id == self.space.id {
+        if quiet || window.is_window_active() && space_id == self.space.id {
             return;
         }
         self.notify_from(space_id, me, title, text, Some(wait.key), window, cx);
+    }
+
+    /// One notification for `count` requests of another computer's that were not told one each
+    /// (the last of them, `key`, is what it opens).
+    pub(super) fn tell_folded(
+        &mut self,
+        key: u64,
+        count: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((space_id, me)) = self
+            .waits
+            .iter()
+            .find(|w| w.key == key)
+            .and_then(|w| self.asker(w))
+        else {
+            return;
+        };
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        let Some(remote) = space.remote.as_deref() else {
+            return;
+        };
+        let title = format!("{} on {}", space.name, crate::mirror::computer_of(remote));
+        let text = match count {
+            1 => "1 more request asks you".to_string(),
+            _ => format!("{count} more requests ask you"),
+        };
+        #[cfg(test)]
+        self.said.push(format!("{title}: {text}"));
+        if window.is_window_active() && space_id == self.space.id {
+            return;
+        }
+        self.notify_from(space_id, me, title, text, Some(key), window, cx);
     }
 
     /// What the request `wait` says to the person, as a notification and the block's alert: None

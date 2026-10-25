@@ -738,7 +738,7 @@ enum Items {
         /// Its terminals at work, and why.
         busy: Vec<String>,
     },
-    /// A remote workspace's tile: Open, Disconnect (or Connect), Forget….
+    /// A remote workspace's tile: Open, Edit…, Disconnect (or Connect), Forget….
     Remote {
         id: String,
         active: bool,

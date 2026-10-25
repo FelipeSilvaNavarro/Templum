@@ -58,6 +58,8 @@ pub(crate) struct ConnectFlow {
     file: bool,
     /// Connect was pressed and the remote has not said yet.
     connecting: bool,
+    /// The remote a new code is for (Paste a new code…), else the dialog makes a new one.
+    replace: Option<String>,
     error: Option<String>,
     theme: std::rc::Rc<Theme>,
     ui: Ui,
@@ -98,9 +100,9 @@ impl ConnectFlow {
             let value = input.read(cx).value().trim().to_string();
             (!value.is_empty()).then_some(value)
         };
-        let access = text(&self.client_id, cx)
-            .zip(text(&self.client_secret, cx))
-            .map(|(id, secret)| (id, Key::new(secret)));
+        // (A new code for a remote that left the secret empty keeps the one it has.)
+        let secret = text(&self.client_secret, cx).map(Key::new);
+        let access = text(&self.client_id, cx).map(|id| (id, secret));
         let proxy = text(&self.proxy, cx);
         let draft = Connecting {
             code,
@@ -116,6 +118,18 @@ impl ConnectFlow {
         if let Some((address, _)) = proxy.and_then(|p| proxy_of(&p).ok()) {
             self.proxy
                 .update(cx, |input, cx| input.set_value(address, window, cx));
+        }
+        // A new code for a remote that is already here: the banner tells how it goes.
+        if let Some(id) = self.replace.clone() {
+            let done = self
+                .workspace
+                .update(cx, |ws, cx| ws.replace_code(&id, draft, window, cx));
+            match done {
+                Ok(()) => window.close_dialog(cx),
+                Err(why) => self.error = Some(why),
+            }
+            cx.notify();
+            return;
         }
         let made = self
             .workspace
@@ -287,16 +301,67 @@ impl Render for ConnectFlow {
 
 /// Connect to a Templum…: the code's field, then Connect.
 pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    open_as(ws, None, window, cx);
+}
+
+/// Paste a new code… for the remote workspace `id`: the same dialog, which replaces that
+/// connection's code instead of making a workspace.
+pub(crate) fn open_for(
+    ws: &mut Workspace,
+    id: &str,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    open_as(ws, Some(id.to_string()), window, cx);
+}
+
+fn open_as(
+    ws: &mut Workspace,
+    replace: Option<String>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     ws.probe_keyring(window, cx);
+    let title = match replace
+        .as_deref()
+        .and_then(|id| ws.spaces().find(|s| s.id == id))
+    {
+        Some(space) => format!(
+            "Paste a new code for {}",
+            space.remote.as_deref().map_or_else(
+                || space.name.clone(),
+                |r| format!("{} on {}", space.name, crate::mirror::computer_of(r))
+            )
+        ),
+        None => "Connect to a Templum…".to_string(),
+    };
     let workspace = cx.entity();
     let code = cx.new(|cx| InputState::new(window, cx).placeholder("tplc1_…"));
     let client_id = cx.new(|cx| InputState::new(window, cx).placeholder("Client ID"));
+    let secret_says = match replace {
+        Some(_) => "Client Secret (empty keeps it)",
+        None => "Client Secret",
+    };
     let client_secret = cx.new(|cx| {
         InputState::new(window, cx)
-            .placeholder("Client Secret")
+            .placeholder(secret_says)
             .masked(true)
     });
     let proxy = cx.new(|cx| InputState::new(window, cx).placeholder("http://proxy.corp:8080"));
+    // A new code for a remote starts from what that remote reaches home with; the secrets are
+    // not shown, and left empty they stay (`replace_code`).
+    let (old_id, old_proxy) = replace
+        .as_deref()
+        .and_then(|id| ws.spaces().find(|s| s.id == id))
+        .and_then(|space| space.remote.as_deref())
+        .map(|r| (r.entry.access_id.clone(), r.entry.proxy.clone()))
+        .unwrap_or_default();
+    let more = old_id.is_some() || old_proxy.is_some();
+    for (input, value) in [(&client_id, old_id), (&proxy, old_proxy.clone())] {
+        if let Some(value) = value {
+            input.update(cx, |input, cx| input.set_value(value, window, cx));
+        }
+    }
     let view = cx.new(|cx| {
         // The remote's progress and the keyring's answer change what the dialog says.
         cx.observe_in(
@@ -314,10 +379,11 @@ pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
             client_id: client_id.clone(),
             client_secret: client_secret.clone(),
             proxy: proxy.clone(),
-            more: false,
-            prefilled: false,
+            more,
+            prefilled: old_proxy.is_some(),
             file: false,
             connecting: false,
+            replace,
             error: None,
             theme: ws.theme.clone(),
             ui: ws.ui,
@@ -377,7 +443,7 @@ pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
         let (workspace, flow_close) = (flow.read(cx).workspace.clone(), flow.clone());
         alert
             .confirm()
-            .title("Connect to a Templum…")
+            .title(title.clone())
             .w(px(520.0))
             .footer(footer)
             .child(flow.clone())

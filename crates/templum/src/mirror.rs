@@ -19,7 +19,9 @@ use templum_api::client::Status;
 use crate::grid::hsla;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
-use crate::workspace::remote::{Act, Banner, MOST_BLOCKS, MOST_WIRES, RemoteSpace, banner_words};
+use crate::workspace::remote::{
+    Act, Banner, MOST_BLOCKS, MOST_WIRES, NOT_MIRRORED, RemoteSpace, banner_words,
+};
 
 /// A round trip past this is yellow: each key waits for it.
 const SLOW: Duration = Duration::from_millis(250);
@@ -42,14 +44,10 @@ pub(crate) fn slow_tip(latency: Duration, computer: &str) -> String {
     )
 }
 
-/// What the banner's ⓘ lists: the kinds of block and the parts of a canvas a mirror doesn't show
-/// yet, and how many blocks it takes at most.
-pub(crate) fn not_mirrored_tip(computer: &str) -> String {
-    format!(
-        "Not mirrored yet: notes, checklists, editors and boards (open them on {computer}), ink \
-         and shapes, and a terminal's scrollback. Only the front {MOST_BLOCKS} blocks and \
-         {MOST_WIRES} wires are shown."
-    )
+/// What the banner's ⓘ lists: what a mirror doesn't show or do yet, and how many blocks it takes
+/// at most.
+pub(crate) fn not_mirrored_tip() -> String {
+    format!("{NOT_MIRRORED} Only the front {MOST_BLOCKS} blocks and {MOST_WIRES} wires are shown.")
 }
 
 /// What Start it does: "Starts API on winx-desktop and shows it on its screen."
@@ -121,7 +119,7 @@ pub(crate) fn banner(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyE
         None => (text.clone(), None, String::new()),
     };
     let slow_tip = slow.map(|l| slow_tip(l, &computer));
-    let info_tip = not_mirrored_tip(&computer);
+    let info_tip = not_mirrored_tip();
     let chain_tip = matches!(
         status,
         Status::Cut(templum_api::client::Why::AddedAuthority)

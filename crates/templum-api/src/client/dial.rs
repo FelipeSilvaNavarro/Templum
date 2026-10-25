@@ -49,6 +49,13 @@ pub(crate) fn place(url: &str) -> Option<Place> {
 }
 
 impl Place {
+    /// Whether both are the same scheme, host and port: the paths may differ.
+    pub(crate) fn same_origin(&self, other: &Place) -> bool {
+        self.https == other.https
+            && self.port == other.port
+            && self.host.eq_ignore_ascii_case(&other.host)
+    }
+
     /// `host` or `host:port`, as a `Host` header says it (a default port is left out).
     pub(crate) fn host_header(&self) -> String {
         let host = if self.host.contains(':') {

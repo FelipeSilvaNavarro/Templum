@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use keyring_core::mock;
 use serde_json::json;
-use templum_api::client::{Keys, SERVICE_DEV, Secrets, Status, Why, entry_name};
+use templum_api::client::{About, Keys, SERVICE_DEV, Secrets, Status, Why, entry_name};
 use templum_api::code::{self, Code};
 use templum_api::model::{AgentView, BlockView, Rect as ApiRect, State, WorkspaceView};
 use templum_api::store::{Scope, Way};
@@ -15,9 +15,10 @@ use templum_api::store::{Scope, Way};
 use super::api::{port, turn_on, with_data};
 use super::*;
 use crate::session::{self, IndexEntry, Keeping, RemoteEntry};
-use crate::workspace::Body;
 use crate::workspace::api::ShareDraft;
 use crate::workspace::remote::{Connecting, RemoteSpace};
+use crate::workspace::waits::Approved;
+use crate::workspace::{Body, Waiting};
 
 /// Pumps both ends until `done`, for at most 10 s.
 pub(super) fn pump_until(
@@ -44,6 +45,20 @@ pub(super) fn both_ends(
     String,
     String,
 ) {
+    both_ends_as(cx, Scope::Full)
+}
+
+/// `both_ends` with a share of `scope`.
+pub(super) fn both_ends_as(
+    cx: &mut TestAppContext,
+    scope: Scope,
+) -> (
+    AnyWindowHandle,
+    Entity<Workspace>,
+    tempfile::TempDir,
+    String,
+    String,
+) {
     let (handle, home, dir) = with_data(cx);
     turn_on(&home, cx);
     let address = format!("http://127.0.0.1:{}", port(&home, cx));
@@ -54,7 +69,7 @@ pub(super) fn both_ends(
                 ShareDraft {
                     workspace: space.clone(),
                     name: "Another computer".into(),
-                    scope: Scope::Full,
+                    scope,
                     expires: None,
                     way: Way::Public,
                     address,
@@ -248,7 +263,7 @@ fn connect(
 ) -> Result<String, String> {
     let draft = Connecting {
         code: code::decode(code).unwrap(),
-        access,
+        access: access.map(|(id, secret)| (id, Some(secret))),
         proxy: None,
         file: false,
     };
@@ -394,7 +409,7 @@ fn the_connect_dialog_reads_the_code_empties_its_field_and_closes_live(cx: &mut 
 
 /// `pump_until`, with home publishing its state on each round: its tick doesn't run on the
 /// tests' clock by itself.
-fn pump_home(
+pub(super) fn pump_home(
     home: &Entity<Workspace>,
     cx: &mut TestAppContext,
     what: &str,
@@ -701,13 +716,13 @@ fn a_remote_workspace_paints_its_blocks_and_its_agent_s_dot(cx: &mut TestAppCont
 }
 
 /// The mirror's frame: the stream set is chosen while it is drawn.
-fn draw(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+pub(super) fn draw(handle: AnyWindowHandle, cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
 }
 
 /// What a viewer shows, its rows joined.
-fn shown(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> String {
+pub(super) fn shown(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> String {
     ws.read_with(cx, |ws, _| {
         let mut snap = templum_terminal::Snapshot::default();
         snap.refresh(
@@ -1046,8 +1061,8 @@ fn the_tile_menu_forgets_and_revokes_the_share_at_home(cx: &mut TestAppContext) 
             )
         });
         window.render_frame(cx);
-        // Open, Disconnect, a separator, Forget….
-        window.within("popup-menu").click(3usize, cx);
+        // Open, Edit…, Disconnect, a separator, Forget….
+        window.within("popup-menu").click(4usize, cx);
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx));
         assert!(window.try_find("forget-revoke").is_some());
@@ -1075,7 +1090,21 @@ fn shown_mirror(
     (BlockId, BlockId, BlockId),
     [tempfile::TempDir; 2],
 ) {
-    let (home_handle, home, home_dir, code, _) = both_ends(cx);
+    shown_mirror_as(cx, Scope::Full)
+}
+
+/// `shown_mirror` with a share of `scope`.
+#[allow(clippy::type_complexity)]
+fn shown_mirror_as(
+    cx: &mut TestAppContext,
+    scope: Scope,
+) -> (
+    (AnyWindowHandle, Entity<Workspace>),
+    (AnyWindowHandle, Entity<Workspace>),
+    (BlockId, BlockId, BlockId),
+    [tempfile::TempDir; 2],
+) {
+    let (home_handle, home, home_dir, code, _) = both_ends_as(cx, scope);
     let ids = three_blocks(home_handle, &home, cx);
     let (handle, ws, dir, _store) = with_remote(cx, &code, Keeping::Keyring, true);
     pump_home(&home, cx, "home's three blocks", |cx| {
@@ -1747,7 +1776,7 @@ fn the_banner_tooltips_say_the_real_round_trip_and_what_isnt_mirrored() {
         tip,
         "Each key waits about 412 ms for winx-desktop's answer."
     );
-    let tip = crate::mirror::not_mirrored_tip("winx-desktop");
+    let tip = crate::mirror::not_mirrored_tip();
     for word in [
         "notes",
         "checklists",
@@ -1755,7 +1784,10 @@ fn the_banner_tooltips_say_the_real_round_trip_and_what_isnt_mirrored() {
         "boards",
         "ink",
         "shapes",
-        "scrollback",
+        "scrolling back",
+        "the mouse",
+        "Git popup",
+        "500 blocks",
     ] {
         assert!(tip.contains(word), "{word} in {tip}");
     }
@@ -2081,4 +2113,1207 @@ fn a_camera_beyond_reach_leaves_the_first_fit_to_the_blocks(cx: &mut TestAppCont
             "it framed the blocks"
         );
     });
+}
+
+// Acting from the mirror (plan 1d).
+
+/// The viewer of home's terminal on the mirror, focused.
+fn focus_viewer(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> BlockId {
+    let viewer = ws.read_with(cx, |ws, _| {
+        ws.space
+            .blocks
+            .iter()
+            .find(|(_, body)| matches!(body, Body::Terminal(_)))
+            .map(|(id, _)| *id)
+            .expect("home's terminal is drawn as a viewer")
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(viewer, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    viewer
+}
+
+/// What the mirror warned the person of so far.
+fn said(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<String> {
+    ws.read_with(cx, |ws, _| ws.said.clone())
+}
+
+#[gpui_kit::test]
+fn typed_keys_reach_home_in_order(cx: &mut TestAppContext) {
+    use crate::workspace::delegate::KEY_GAP;
+    let ((_, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    focus_viewer(handle, &ws, cx);
+    let inputs = |cx: &mut TestAppContext| {
+        home.read_with(cx, |ws, _| {
+            ws.space.terminal(terminal).unwrap().term.inputs()
+        })
+    };
+    let before = inputs(cx);
+    // Esc, j, then what the text path commits.
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.press("j", cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, "ok");
+    // Home presses Esc alone, KEY_GAP before the key that follows it in the same call.
+    pump_home(&home, cx, "four keys to reach home", |cx| {
+        cx.executor()
+            .advance_clock(KEY_GAP + Duration::from_millis(1));
+        inputs(cx) == before + 4
+    });
+    assert!(said(&ws, cx).is_empty(), "{:?}", said(&ws, cx));
+}
+
+#[gpui_kit::test]
+fn a_letter_after_a_dead_key_ends_its_mark_and_reaches_home_once(cx: &mut TestAppContext) {
+    use crate::workspace::delegate::KEY_GAP;
+    let ((_, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    focus_viewer(handle, &ws, cx);
+    let inputs = |cx: &mut TestAppContext| {
+        home.read_with(cx, |ws, _| {
+            ws.space.terminal(terminal).unwrap().term.inputs()
+        })
+    };
+    let before = inputs(cx);
+    // The keyboard started a mark (´), then the letter that completes it.
+    ws.update(cx, |ws, _| ws.marked = Some("´".into()));
+    cx.update_window(handle, |_, window, cx| window.press("a", cx))
+        .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.marked, None, "the mark is gone"));
+    pump_home(&home, cx, "the letter to reach home", |cx| {
+        cx.executor()
+            .advance_clock(KEY_GAP + Duration::from_millis(1));
+        inputs(cx) > before
+    });
+    assert_eq!(inputs(cx), before + 1, "once");
+}
+
+#[gpui_kit::test]
+fn typing_says_why_it_isnt_sent(cx: &mut TestAppContext) {
+    let ((_, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror_as(cx, Scope::Control);
+    let viewer = focus_viewer(handle, &ws, cx);
+    let inputs = |cx: &mut TestAppContext| {
+        home.read_with(cx, |ws, _| {
+            ws.space.terminal(terminal).unwrap().term.inputs()
+        })
+    };
+    let before = inputs(cx);
+    let press = |key: &str, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| window.press(key, cx))
+            .unwrap();
+    };
+    press("a", cx);
+    assert_eq!(
+        said(&ws, cx),
+        ["Typing needs a Full share: share again on ".to_string() + &computer(&ws, cx) + "."]
+    );
+    press("b", cx);
+    cx.simulate_input(handle, "c");
+    assert_eq!(said(&ws, cx).len(), 1, "once per terminal");
+    // Not a paste either.
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("text".into()));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.paste_clipboard(window, cx))
+    })
+    .unwrap();
+    for _ in 0..40 {
+        home.update(cx, |ws, cx| {
+            ws.api_tick_once(cx);
+        });
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(inputs(cx), before, "home saw nothing");
+
+    // A Full share that isn't live: told once, until it is live again.
+    let ((_, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    focus_viewer(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.remote.as_mut().unwrap().status = Status::Disconnected
+    });
+    cx.update_window(handle, |_, window, cx| window.press("a", cx))
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| window.press("b", cx))
+        .unwrap();
+    assert_eq!(said(&ws, cx), ["Not connected: what you type isn't sent."]);
+    let _ = (home, terminal, viewer);
+
+    // Live again (as the client says it), what typing told about not being live is forgotten: a
+    // paste past 256 KiB is refused and a key says nothing.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.heard(
+                "r1",
+                templum_api::client::Update::Status(Status::Live),
+                window,
+                cx,
+            );
+            assert!(ws.space.remote.as_ref().unwrap().told.is_empty());
+        })
+    })
+    .unwrap();
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("x".repeat(257 * 1024)));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.paste_clipboard(window, cx))
+    })
+    .unwrap();
+    assert_eq!(
+        said(&ws, cx).last().map(String::as_str),
+        Some("Paste at most 256 KiB into a mirrored terminal.")
+    );
+    // Typing faster than home answers.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.heard(
+                "r1",
+                templum_api::client::Update::Dropped("b".into()),
+                window,
+                cx,
+            );
+        })
+    })
+    .unwrap();
+    let computer = computer(&ws, cx);
+    assert_eq!(
+        said(&ws, cx).last().cloned(),
+        Some(format!(
+            "Typing faster than {computer} answers: some keys were dropped."
+        ))
+    );
+}
+
+/// The viewer of home's terminal on the mirror.
+fn viewer_of(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
+    ws.read_with(cx, |ws, _| {
+        ws.space
+            .blocks
+            .iter()
+            .find(|(_, body)| matches!(body, Body::Terminal(_)))
+            .map(|(id, _)| *id)
+            .expect("home's terminal is drawn as a viewer")
+    })
+}
+
+fn rect_on(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Rect {
+    ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect)
+}
+
+/// The person drags `id` by `by` and lets go, as a drag of its title does.
+fn drag_by(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, by: (f32, f32)) {
+    ws.update(cx, |ws, _| {
+        ws.placing(&[id]);
+        let b = ws.space.canvas.get_mut(id).unwrap();
+        b.rect.x += by.0;
+        b.rect.y += by.1;
+        ws.end_drag();
+    });
+}
+
+fn home_rect(home: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Rect {
+    home.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect)
+}
+
+/// The mirror shows a state of its own making: home's terminal `abcde` at `rect`.
+fn home_at(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext, rect: Rect) {
+    let mut state = terminal_of_home(None);
+    state.blocks[0].rect = ApiRect {
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+    };
+    apply(handle, ws, cx, state);
+}
+
+#[gpui_kit::test]
+fn a_moved_block_goes_to_home_once_and_home_s_state_ends_the_hold(cx: &mut TestAppContext) {
+    let ((_, home), (_, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    let viewer = viewer_of(&ws, cx);
+    let before = rect_on(&ws, cx, viewer);
+    assert_eq!(before, home_rect(&home, cx, terminal));
+    let steps = home.read_with(cx, |ws, _| ws.space.undo.len());
+    drag_by(&ws, cx, viewer, (100.0, 0.0));
+    let moved = Rect::new(before.x + 100.0, before.y, before.w, before.h);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.remote.as_ref().unwrap().held.contains_key(&viewer));
+    });
+    pump_home(&home, cx, "home's block to move", |cx| {
+        home_rect(&home, cx, terminal) == moved
+    });
+    pump_home(&home, cx, "home's state to end the hold", |cx| {
+        ws.read_with(cx, |ws, _| {
+            ws.space.remote.as_ref().unwrap().held.is_empty()
+        })
+    });
+    assert_eq!(rect_on(&ws, cx, viewer), moved);
+    assert_eq!(
+        home.read_with(cx, |ws, _| ws.space.undo.len()),
+        steps + 1,
+        "one move_block"
+    );
+}
+
+#[gpui_kit::test]
+fn a_moved_block_stands_until_home_shows_it(cx: &mut TestAppContext) {
+    use crate::workspace::remote::HOLD;
+    let (handle, ws, _dir) = offline(cx);
+    show_remote(handle, &ws, cx);
+    let home = Rect::new(0.0, 0.0, 400.0, 300.0);
+    home_at(handle, &ws, cx, home);
+    let viewer = viewer_of(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.remote.as_mut().unwrap().status = Status::Live
+    });
+    drag_by(&ws, cx, viewer, (100.0, 0.0));
+    let moved = Rect::new(100.0, 0.0, 400.0, 300.0);
+    // Home still says the old rectangle: the person's stands.
+    home_at(handle, &ws, cx, home);
+    assert_eq!(rect_on(&ws, cx, viewer), moved);
+    // Home shows it: the hold goes.
+    home_at(handle, &ws, cx, moved);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.remote.as_ref().unwrap().held.is_empty())
+    });
+    // Home moved it again: its rectangle wins.
+    home_at(handle, &ws, cx, home);
+    assert_eq!(rect_on(&ws, cx, viewer), home);
+    // A hold past HOLD loses to whatever home says, even before its next state.
+    ws.update(cx, |ws, _| {
+        let long_ago = Instant::now() - HOLD - Duration::from_millis(1);
+        ws.space.canvas.get_mut(viewer).unwrap().rect = moved;
+        ws.remote_moved(&[viewer], long_ago);
+    });
+    home_at(handle, &ws, cx, Rect::new(0.0, 50.0, 400.0, 300.0));
+    assert_eq!(rect_on(&ws, cx, viewer), Rect::new(0.0, 50.0, 400.0, 300.0));
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(viewer).unwrap().rect = moved;
+        ws.remote_moved(&[viewer], Instant::now() - HOLD - Duration::from_millis(1));
+        assert!(ws.expire_holds(Instant::now()).is_none());
+        assert_eq!(
+            ws.space.canvas.get(viewer).unwrap().rect,
+            Rect::new(0.0, 50.0, 400.0, 300.0),
+            "no state came: the frame puts home's back"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn a_block_in_the_hand_isn_t_taken_from_it_by_home_s_state(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = offline(cx);
+    show_remote(handle, &ws, cx);
+    let home = Rect::new(0.0, 0.0, 400.0, 300.0);
+    home_at(handle, &ws, cx, home);
+    let viewer = viewer_of(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.placing(&[viewer]);
+        ws.space.canvas.get_mut(viewer).unwrap().rect.x = 60.0;
+    });
+    home_at(handle, &ws, cx, home);
+    assert_eq!(rect_on(&ws, cx, viewer).x, 60.0, "it follows the pointer");
+}
+
+#[gpui_kit::test]
+fn undo_on_the_mirror_moves_home_back(cx: &mut TestAppContext) {
+    let ((_, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    let viewer = viewer_of(&ws, cx);
+    let before = rect_on(&ws, cx, viewer);
+    drag_by(&ws, cx, viewer, (100.0, 0.0));
+    let moved = Rect::new(before.x + 100.0, before.y, before.w, before.h);
+    pump_home(&home, cx, "home's block to move", |cx| {
+        home_rect(&home, cx, terminal) == moved
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| assert!(ws.undo_canvas(false, window, cx)))
+    })
+    .unwrap();
+    pump_home(&home, cx, "home's block to move back", |cx| {
+        home_rect(&home, cx, terminal) == before
+    });
+    assert_eq!(rect_on(&ws, cx, viewer), before);
+}
+
+#[gpui_kit::test]
+fn a_refused_move_goes_back(cx: &mut TestAppContext) {
+    use templum_api::client::{About, Update};
+    let (handle, ws, _dir) = offline(cx);
+    show_remote(handle, &ws, cx);
+    let home = Rect::new(0.0, 0.0, 400.0, 300.0);
+    home_at(handle, &ws, cx, home);
+    let viewer = viewer_of(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.remote.as_mut().unwrap().status = Status::Live
+    });
+    drag_by(&ws, cx, viewer, (100.0, 0.0));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let refused = Update::Refused {
+                about: About::Move("abcde".into()),
+                sentence: "No.".into(),
+            };
+            ws.heard("r1", refused, window, cx);
+        })
+    })
+    .unwrap();
+    assert_eq!(rect_on(&ws, cx, viewer), home);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.remote.as_ref().unwrap().held.is_empty());
+        assert_eq!(ws.said, ["No."]);
+    });
+}
+
+#[gpui_kit::test]
+fn nothing_is_moved_while_not_live(cx: &mut TestAppContext) {
+    let ((_, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    let viewer = viewer_of(&ws, cx);
+    let before = rect_on(&ws, cx, viewer);
+    let steps = home.read_with(cx, |ws, _| ws.space.undo.len());
+    // A step to take back, made while live.
+    drag_by(&ws, cx, viewer, (100.0, 0.0));
+    pump_home(&home, cx, "home's block to move", |cx| {
+        home.read_with(cx, |ws, _| ws.space.undo.len() == steps + 1)
+    });
+    pump_home(&home, cx, "home's state to end the hold", |cx| {
+        ws.read_with(cx, |ws, _| {
+            ws.space.remote.as_ref().unwrap().held.is_empty()
+        })
+    });
+    ws.update(cx, |ws, _| {
+        ws.space.remote.as_mut().unwrap().status = Status::Reconnecting {
+            attempt: 1,
+            next: Duration::from_secs(1),
+            live_at: None,
+        }
+    });
+    let at = ws.read_with(cx, |ws, _| ws.space.canvas.get(viewer).unwrap().rect);
+    ws.update(cx, |ws, _| {
+        let p = gpui_kit::point(gpui_kit::px(10.0), gpui_kit::px(10.0));
+        ws.begin_move(viewer, p);
+        ws.begin_resize(viewer, templum_canvas::Edges::BOTTOM_RIGHT, p);
+        assert!(ws.drag.is_none(), "the pointer starts no drag");
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| assert!(!ws.undo_canvas(false, window, cx)))
+    })
+    .unwrap();
+    // A release that got through anyway sends nothing and the block goes back.
+    drag_by(&ws, cx, viewer, (0.0, 50.0));
+    assert_eq!(rect_on(&ws, cx, viewer), at);
+    for _ in 0..20 {
+        home.update(cx, |ws, cx| {
+            ws.api_tick_once(cx);
+        });
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(home.read_with(cx, |ws, _| ws.space.undo.len()), steps + 1);
+    assert_ne!(home_rect(&home, cx, terminal), before);
+}
+
+// Home's requests in the mirror's inbox.
+
+use super::bus::{call_later, me};
+
+/// Home's terminal asks "Which database?" (Postgres or SQLite): the reply channel of its call.
+fn home_asks(
+    home_handle: AnyWindowHandle,
+    home: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    terminal: BlockId,
+    conn: u64,
+) -> std::sync::mpsc::Receiver<String> {
+    let (id, _) = me(home, cx, terminal);
+    let asked = json!({ "question": "Which database?", "options": ["Postgres", "SQLite"] });
+    call_later(home_handle, home, cx, &id, conn, "ask_user", asked)
+}
+
+/// Pumps until the mirror lists `n` requests.
+fn until_listed(
+    home: &Entity<Workspace>,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    n: usize,
+) {
+    pump_home(home, cx, "the mirror's inbox", |cx| {
+        ws.read_with(cx, |ws, _| ws.inbox().len() == n)
+    });
+}
+
+fn first_key(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> u64 {
+    ws.read_with(cx, |ws, _| ws.inbox()[0].key)
+}
+
+#[gpui_kit::test]
+fn a_question_at_home_is_answered_from_the_mirror(cx: &mut TestAppContext) {
+    let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    let answers = home_asks(home_handle, &home, cx, terminal, 11);
+    until_listed(&home, &ws, cx, 1);
+    let key = first_key(&ws, cx);
+    ws.read_with(cx, |ws, _| {
+        let wait = &ws.inbox()[0];
+        let ask = wait.remote.as_ref().expect("a mirrored request");
+        assert!(ask.request.starts_with('r') && ask.space == "r1" && !ask.sent);
+        let viewer = ws.asker(wait).expect("its block here");
+        assert_eq!(viewer.0, "r1");
+        assert!(ws.space.terminal(viewer.1).unwrap().remote.is_some());
+        assert!(
+            matches!(&wait.what, Waiting::Question { ask, .. } if ask.summary().contains("Which database?"))
+        );
+        assert!(ws.remote_blocked(wait).is_none());
+    });
+    assert!(answers.try_recv().is_err(), "nothing answered at home yet");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.answer_question(key, vec![vec!["Postgres".into()]], "", window, cx)
+        })
+    })
+    .unwrap();
+    // It leaves the inbox at once, and the wait goes when home's state drops it.
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.inbox().is_empty());
+        assert_eq!(ws.waits.len(), 1);
+    });
+    let mut reply = String::new();
+    pump_home(
+        &home,
+        cx,
+        "home's agent to be answered",
+        |_| match answers.try_recv() {
+            Ok(line) => {
+                reply = line;
+                true
+            }
+            Err(_) => false,
+        },
+    );
+    assert!(reply.contains("Postgres"), "{reply}");
+    pump_home(&home, cx, "the mirror's wait to go", |cx| {
+        ws.read_with(cx, |ws, _| ws.waits.is_empty())
+    });
+}
+
+#[gpui_kit::test]
+fn a_request_answered_elsewhere_leaves(cx: &mut TestAppContext) {
+    let ((home_handle, home), (_, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    let _answers = home_asks(home_handle, &home, cx, terminal, 12);
+    until_listed(&home, &ws, cx, 1);
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.inbox()[0].remote.as_ref().unwrap().sent)
+    });
+    // Answered at home, by hand.
+    let key = home.read_with(cx, |ws, _| ws.waits[0].key);
+    home.update(cx, |ws, cx| {
+        ws.answer(key, templum_mcp::Reply::ok("SQLite"), cx)
+    });
+    pump_home(&home, cx, "the mirror's wait to go", |cx| {
+        ws.read_with(cx, |ws, _| ws.waits.is_empty())
+    });
+}
+
+#[gpui_kit::test]
+fn allow_and_plans_cross_too(cx: &mut TestAppContext) {
+    let ((home_handle, home), (handle, ws), (_, note, terminal), _keep) = shown_mirror(cx);
+    let (id, _) = me(&home, cx, terminal);
+    let note_uid = home.read_with(cx, |ws, _| ws.space.uids[&note].clone());
+    let wired = call_later(
+        home_handle,
+        &home,
+        cx,
+        &id,
+        13,
+        "connect",
+        json!({ "block": note_uid }),
+    );
+    until_listed(&home, &ws, cx, 1);
+    let key = first_key(&ws, cx);
+    ws.read_with(cx, |ws, _| {
+        let wait = &ws.inbox()[0];
+        let Waiting::Allow { then } = &wait.what else {
+            panic!("an Allow");
+        };
+        assert!(
+            matches!(then, crate::workspace::Approved::Remote { yes, no, .. } if yes == "Allow" && no == "Deny")
+        );
+        assert!(!wait.summary().is_empty());
+    });
+    ws.update(cx, |ws, cx| ws.answer_allow(key, true, cx));
+    pump_home(&home, cx, "home to wire the two blocks", |cx| {
+        home.read_with(cx, |ws, _| ws.space.wired(terminal, note))
+    });
+    let mut said = String::new();
+    pump_home(&home, cx, "home's agent to hear", |_| {
+        match wired.try_recv() {
+            Ok(line) => {
+                said = line;
+                true
+            }
+            Err(_) => false,
+        }
+    });
+    assert!(said.contains("Connected"), "{said}");
+    pump_home(&home, cx, "the request to go", |cx| {
+        ws.read_with(cx, |ws, _| ws.waits.is_empty())
+    });
+    // A plan: Approve from the mirror approves it at home.
+    let plan = call_later(
+        home_handle,
+        &home,
+        cx,
+        &id,
+        14,
+        "propose_plan",
+        json!({ "plan": "# Do it\n\nTwo steps.", "title": "Ship" }),
+    );
+    until_listed(&home, &ws, cx, 1);
+    let key = first_key(&ws, cx);
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            matches!(&ws.inbox()[0].what, Waiting::Question { ask, .. } if ask.plan.as_ref().is_some_and(|p| p.text.contains("Two steps")))
+        );
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.answer_question(key, vec![vec!["Approve".into()]], "Go", window, cx)
+        })
+    })
+    .unwrap();
+    let mut said = String::new();
+    pump_home(&home, cx, "home's agent to hear the plan", |_| {
+        match plan.try_recv() {
+            Ok(line) => {
+                said = line;
+                true
+            }
+            Err(_) => false,
+        }
+    });
+    assert!(said.contains("pprove"), "{said}");
+}
+
+#[gpui_kit::test]
+fn a_mirrored_request_rings_as_a_local_one(cx: &mut TestAppContext) {
+    use super::terminals::set_active;
+    let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    // Another workspace is shown, in a window in the background.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.switch_to(0, window, cx))
+    })
+    .unwrap();
+    set_active(handle, false, cx);
+    ws.update(cx, |ws, _| ws.config.terminal.notifications = true);
+    assert!(ws.read_with(cx, |ws, _| ws.last_chime.is_none()));
+    let before = notification_count(handle, cx);
+    let _answers = home_asks(home_handle, &home, cx, terminal, 15);
+    pump_home(&home, cx, "the mirror to hear the request", |cx| {
+        ws.read_with(cx, |ws, _| ws.waits.len() == 1)
+    });
+    assert!(
+        ws.read_with(cx, |ws, _| ws.last_chime.is_some()),
+        "the sound"
+    );
+    let (name, computer) = (
+        ws.read_with(cx, |ws, _| space_of(ws).name.clone()),
+        computer(&ws, cx),
+    );
+    assert_eq!(
+        notification_count(handle, cx),
+        before + 1,
+        "a notification, the window being in the background"
+    );
+    let said = ws.read_with(cx, |ws, _| ws.said.clone());
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].starts_with(&format!("{name} on {computer}: Asks you: Which database?")),
+        "{said:?}"
+    );
+    // The mirror's own API and agents never see it.
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.inbox().is_empty(), "r1 isn't shown");
+    });
+}
+
+#[gpui_kit::test]
+fn a_mirrored_request_is_never_a_local_one(cx: &mut TestAppContext) {
+    let ((home_handle, home), (_, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    let _answers = home_asks(home_handle, &home, cx, terminal, 16);
+    until_listed(&home, &ws, cx, 1);
+    ws.update(cx, |ws, cx| {
+        let views = ws.api_state(cx).requests;
+        assert!(
+            views.is_empty(),
+            "the mirror's API lists no request of home's: {views:?}"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn a_request_the_share_cant_answer_is_dim_and_answers_nothing(cx: &mut TestAppContext) {
+    use templum_api::client::{About, Update};
+    let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) =
+        shown_mirror_as(cx, Scope::Control);
+    let _answers = home_asks(home_handle, &home, cx, terminal, 17);
+    until_listed(&home, &ws, cx, 1);
+    let key = first_key(&ws, cx);
+    // A question is a Control one: it goes. A refusal shows it again.
+    ws.update(cx, |ws, cx| {
+        ws.waits[0].remote.as_mut().unwrap().scope = Scope::Full;
+        let wait = &ws.waits[0];
+        assert!(
+            ws.remote_blocked(wait)
+                .is_some_and(|why| why.starts_with("Needs a Full share: share again on "))
+        );
+        ws.answer_allow(key, true, cx);
+        assert!(
+            !ws.waits[0].remote.as_ref().unwrap().sent,
+            "nothing was sent"
+        );
+    });
+    ws.update(cx, |ws, _| {
+        ws.waits[0].remote.as_mut().unwrap().scope = Scope::Control;
+        ws.space.remote.as_mut().unwrap().status = Status::Disconnected;
+        assert_eq!(
+            ws.remote_blocked(&ws.waits[0]).as_deref(),
+            Some("Not connected.")
+        );
+        ws.space.remote.as_mut().unwrap().status = Status::Live;
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.answer_question(key, vec![vec!["SQLite".into()]], "", window, cx);
+            assert!(ws.inbox().is_empty());
+            let request = ws.waits[0].remote.as_ref().unwrap().request.clone();
+            let refused = Update::Refused {
+                about: About::Answer(request),
+                sentence: "Already answered.".into(),
+            };
+            ws.heard("r1", refused, window, cx);
+            assert_eq!(ws.inbox().len(), 1, "it shows again");
+            assert_eq!(
+                ws.said.last().map(String::as_str),
+                Some("Already answered.")
+            );
+        })
+    })
+    .unwrap();
+}
+
+// Edit…, Paste a new code… and the banner's last words.
+
+#[gpui_kit::test]
+fn a_new_code_replaces_the_connection_and_its_key(cx: &mut TestAppContext) {
+    let (home, handle, ws, store, _keep) = live_mirror(cx);
+    let old = ws.read_with(cx, |ws, _| remote_of(ws).entry.entry.clone());
+    assert!(kept(&store, &old));
+    ws.update(cx, |ws, _| {
+        ws.space_by_id_mut("r1")
+            .unwrap()
+            .remote
+            .as_deref_mut()
+            .unwrap()
+            .entry
+            .trust_added_authority = true;
+    });
+    // Home revokes the share and makes another.
+    let token = home.read_with(cx, |ws, _| {
+        ws.api.store.as_ref().unwrap().tokens.last().unwrap().id
+    });
+    home.update(cx, |ws, cx| ws.revoke_token(token, cx));
+    pump_home(&home, cx, "the share to be cut", |cx| {
+        status(&ws, cx) == Status::Cut(Why::Revoked)
+    });
+    let space = home.read_with(cx, |ws, _| ws.space.id.clone());
+    let address = format!("http://127.0.0.1:{}", port(&home, cx));
+    let (_, fresh) = home
+        .update(cx, |ws, cx| {
+            ws.share_workspace(
+                ShareDraft {
+                    workspace: space,
+                    name: "Another computer".into(),
+                    scope: Scope::Full,
+                    expires: None,
+                    way: Way::Public,
+                    address,
+                },
+                cx,
+            )
+        })
+        .expect("shared again");
+    let draft = Connecting {
+        code: code::decode(&fresh).unwrap(),
+        access: None,
+        proxy: None,
+        file: false,
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.replace_code("r1", draft, window, cx))
+    })
+    .unwrap()
+    .expect("replaced");
+    pump_home(&home, cx, "the new code to go live", |cx| {
+        status(&ws, cx) == Status::Live && ws.read_with(cx, |ws, _| remote_of(ws).me.is_some())
+    });
+    let (new, trusted, kept_in) = ws.read_with(cx, |ws, _| {
+        let entry = &remote_of(ws).entry;
+        (entry.entry.clone(), entry.trust_added_authority, entry.key)
+    });
+    assert_ne!(new, old);
+    assert!(!trusted, "a new code starts untrusted");
+    assert_eq!(kept_in, Keeping::Keyring);
+    assert!(kept(&store, &new));
+    pump_until(cx, "the old key to be deleted", |_| !kept(&store, &old));
+    // The index names the new entry.
+    let dir = ws.read_with(cx, |ws, _| ws.data_dir.clone().unwrap());
+    let saved = match session::load_index(&dir) {
+        session::Loaded::Saved(index) => index,
+        other => panic!("{other:?}"),
+    };
+    let entry = saved.workspaces.iter().find(|w| w.id == "r1").unwrap();
+    assert_eq!(entry.remote.as_ref().unwrap().entry, new);
+}
+
+#[gpui_kit::test]
+fn edit_keeps_the_look_and_a_new_code_has_its_own_dialog(cx: &mut TestAppContext) {
+    use crate::space_dialog::Look;
+    let (home, handle, ws, _store, _keep) = live_mirror(cx);
+    // Home's look first, then the person's own, which home's state doesn't overwrite.
+    let mine = Look {
+        icon: crate::space_dialog::icon("rocket"),
+        color: Some("blue".into()),
+        image: None,
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.edit_remote_look("r1", mine.clone(), window, cx)
+        })
+    })
+    .unwrap();
+    home.update(cx, |ws, _| ws.space.name = "Renamed".into());
+    pump_home(&home, cx, "home's new name", |cx| {
+        ws.read_with(cx, |ws, _| space_of(ws).name == "Renamed")
+    });
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(space_of(ws).look, mine, "the person's look stays");
+        assert!(!remote_of(ws).home_look);
+    });
+    // Edit… opens for the remote, and so does Paste a new code….
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            crate::space_dialog::open(ws, "r1", window, cx);
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("space-named-at-home").is_some());
+        assert!(window.try_find("space-connection").is_some());
+        assert!(window.try_find("space-paste-code").is_some());
+        assert!(window.try_find("space-share").is_none(), "no Sharing");
+        assert!(window.try_find("space-folder").is_none(), "no Folder");
+    })
+    .unwrap();
+}
+
+// Review round 1 of plan 1d.
+
+/// A yes or no of home's about its terminal `abcde`.
+fn home_allows(id: &str, kind: &str, since: i64, summary: &str) -> templum_api::model::RequestView {
+    templum_api::model::RequestView {
+        id: id.into(),
+        kind: kind.into(),
+        block: Some("abcde".into()),
+        workspace: Some("w1".into()),
+        since,
+        summary: summary.into(),
+        scope: Scope::Control,
+        ..templum_api::model::RequestView::default()
+    }
+}
+
+/// A shown, live mirror with a mid-way share, home's terminal in it, and home listing `requests`.
+fn offline_asked(
+    cx: &mut TestAppContext,
+    requests: Vec<templum_api::model::RequestView>,
+) -> (AnyWindowHandle, Entity<Workspace>, tempfile::TempDir) {
+    let (handle, ws, dir) = offline(cx);
+    show_remote(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        let remote = ws.space.remote.as_mut().unwrap();
+        remote.status = Status::Live;
+        remote.me = Some(templum_api::model::MeView {
+            scope: Scope::Full,
+            ..Default::default()
+        });
+    });
+    let mut state = terminal_of_home(None);
+    state.requests = requests;
+    apply(handle, &ws, cx, state);
+    (handle, ws, dir)
+}
+
+fn state_asking(requests: Vec<templum_api::model::RequestView>) -> State {
+    let mut state = terminal_of_home(None);
+    state.requests = requests;
+    state
+}
+
+#[gpui_kit::test]
+fn a_request_is_the_one_shown_by_its_id_and_a_new_id_is_a_new_one(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = offline_asked(
+        cx,
+        vec![home_allows("r3", "connect", 100, "connect to a note")],
+    );
+    ws.read_with(cx, |ws, _| assert_eq!(ws.inbox().len(), 1));
+    // The same request, its time read differently (home slept): still the one wait.
+    apply(
+        handle,
+        &ws,
+        cx,
+        state_asking(vec![home_allows(
+            "r3",
+            "connect",
+            9000,
+            "connect to a note",
+        )]),
+    );
+    let key = ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.waits.len(), 1);
+        ws.waits[0].key
+    });
+    apply(
+        handle,
+        &ws,
+        cx,
+        state_asking(vec![home_allows(
+            "r4",
+            "remove_worktree",
+            9000,
+            "delete the worktree X",
+        )]),
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.waits.len(), 1, "the old one was withdrawn");
+        let wait = &ws.waits[0];
+        assert_ne!(wait.key, key);
+        assert_eq!(wait.remote.as_ref().unwrap().request, "r4");
+        assert!(matches!(
+            &wait.what,
+            Waiting::Allow { then: Approved::Remote { line, .. } } if line == "delete the worktree X"
+        ));
+    });
+}
+
+#[gpui_kit::test]
+fn a_restarted_home_does_not_reuse_the_request_ids_it_gave_before(cx: &mut TestAppContext) {
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let (_handle, ws, _dir) = offline_asked(cx, Vec::new());
+    ws.read_with(cx, |ws, _| {
+        // A process before this one began numbering from 0, or from its own start.
+        assert!(ws.next_wait >= started, "{} < {started}", ws.next_wait);
+    });
+}
+
+#[gpui_kit::test]
+fn a_request_home_lists_again_is_not_told_twice(cx: &mut TestAppContext) {
+    let ask = || home_allows("r3", "connect", 100, "connect to a note");
+    let (handle, ws, _dir) = offline_asked(cx, vec![ask()]);
+    assert_eq!(said(&ws, cx).len(), 1);
+    apply(handle, &ws, cx, state_asking(Vec::new()));
+    apply(handle, &ws, cx, state_asking(vec![ask()]));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.waits.len(), 1, "it is there again")
+    });
+    assert_eq!(said(&ws, cx).len(), 1, "{:?}", said(&ws, cx));
+}
+
+#[gpui_kit::test]
+fn a_flood_of_requests_is_a_few_notices_and_one_of_how_many_more(cx: &mut TestAppContext) {
+    let many = (0..20)
+        .map(|n| home_allows(&format!("r{n}"), "connect", 100, "connect to a note"))
+        .collect();
+    let (_handle, ws, _dir) = offline_asked(cx, many);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.waits.len(), 20, "all are in the inbox")
+    });
+    let told = said(&ws, cx);
+    assert_eq!(told.len(), 4, "{told:?}");
+    assert!(told[3].ends_with("17 more requests ask you"), "{told:?}");
+}
+
+#[gpui_kit::test]
+fn a_home_that_makes_a_request_every_state_is_one_more_notice_a_span(cx: &mut TestAppContext) {
+    let asks = |n: usize| -> Vec<_> {
+        (0..=n)
+            .map(|n| home_allows(&format!("r{n}"), "connect", 100, "connect to a note"))
+            .collect()
+    };
+    let (handle, ws, _dir) = offline_asked(cx, asks(0));
+    for n in 1..10 {
+        apply(handle, &ws, cx, state_asking(asks(n)));
+    }
+    ws.read_with(cx, |ws, _| assert_eq!(ws.waits.len(), 10));
+    let told = said(&ws, cx);
+    assert_eq!(told.len(), 4, "{told:?}");
+    assert!(told[3].ends_with("1 more request asks you"), "{told:?}");
+}
+
+#[gpui_kit::test]
+fn a_new_code_withdraws_the_requests_of_the_old_home(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = offline_asked(
+        cx,
+        vec![home_allows("r3", "connect", 100, "connect to a note")],
+    );
+    ws.read_with(cx, |ws, _| assert_eq!(ws.waits.len(), 1));
+    let key = templum_api::code::Key::new("tpl_ANOTHER".into());
+    let draft = Connecting {
+        code: code::decode(&code::encode("http://127.0.0.1:9", &key, None)).unwrap(),
+        access: None,
+        proxy: None,
+        file: false,
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.replace_code("r1", draft, window, cx))
+    })
+    .unwrap()
+    .expect("replaced");
+    ws.read_with(cx, |ws, _| assert!(ws.waits.is_empty()));
+}
+
+#[gpui_kit::test]
+fn home_s_requests_are_capped_and_an_id_must_be_short_and_plain(cx: &mut TestAppContext) {
+    let mut requests: Vec<_> = (0..80)
+        .map(|n| home_allows(&format!("r{n}"), "connect", 100, "connect to a note"))
+        .collect();
+    requests.push(home_allows(&"r".repeat(33), "connect", 100, "long id"));
+    requests.push(home_allows("r\u{1b}1", "connect", 100, "control id"));
+    requests.push(home_allows(
+        "r9999",
+        "approval",
+        100,
+        "not a kind to mirror",
+    ));
+    let (_, ws, _dir) = offline_asked(cx, requests);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.waits.len(), 50);
+        assert!(ws.waits.iter().all(|w| {
+            let id = &w.remote.as_ref().unwrap().request;
+            id.len() <= 4 && id.starts_with('r')
+        }));
+    });
+}
+
+#[gpui_kit::test]
+fn an_answer_lost_with_the_connection_shows_its_request_again(cx: &mut TestAppContext) {
+    use templum_api::client::Update;
+    let (handle, ws, _dir) = offline_asked(
+        cx,
+        vec![home_allows("r3", "connect", 100, "connect to a note")],
+    );
+    let key = first_key(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.answer_allow(key, true, cx);
+            assert!(ws.inbox().is_empty(), "sent");
+            // The connection dropped during the round trip: the client refuses the answer it lost.
+            ws.heard(
+                "r1",
+                Update::Refused {
+                    about: About::Answer("r3".into()),
+                    sentence: "Couldn't reach the other computer.".into(),
+                },
+                window,
+                cx,
+            );
+        })
+    })
+    .unwrap();
+    // Home still lists it: the person can answer again.
+    apply(
+        handle,
+        &ws,
+        cx,
+        state_asking(vec![home_allows("r3", "connect", 100, "connect to a note")]),
+    );
+    ws.read_with(cx, |ws, _| assert_eq!(ws.inbox().len(), 1));
+    // Home did hear it: its next state drops the request.
+    apply(handle, &ws, cx, state_asking(Vec::new()));
+    ws.read_with(cx, |ws, _| assert!(ws.waits.is_empty()));
+}
+
+#[gpui_kit::test]
+fn a_block_grabbed_again_isn_t_taken_back_by_the_old_hold(cx: &mut TestAppContext) {
+    use crate::workspace::remote::HOLD;
+    let (handle, ws, _dir) = offline(cx);
+    show_remote(handle, &ws, cx);
+    let home = Rect::new(0.0, 0.0, 400.0, 300.0);
+    home_at(handle, &ws, cx, home);
+    let viewer = viewer_of(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.remote.as_mut().unwrap().status = Status::Live
+    });
+    drag_by(&ws, cx, viewer, (100.0, 0.0));
+    // Grabbed again before home showed the first move; the hold runs out in the hand.
+    ws.update(cx, |ws, _| {
+        ws.placing(&[viewer]);
+        ws.space.canvas.get_mut(viewer).unwrap().rect.x = 160.0;
+        ws.expire_holds(Instant::now() + HOLD + Duration::from_millis(1));
+        assert_eq!(ws.space.canvas.get(viewer).unwrap().rect.x, 160.0);
+        // Let go: the release holds it again, and the hold ends as usual.
+        ws.end_drag();
+        ws.expire_holds(Instant::now() + HOLD * 2);
+        assert_eq!(ws.space.canvas.get(viewer).unwrap().rect, home);
+    });
+}
+
+#[gpui_kit::test]
+fn saving_edit_with_home_s_look_unchanged_keeps_it_home_s(cx: &mut TestAppContext) {
+    use crate::space_dialog::Look;
+    let (handle, ws, _dir) = offline(cx);
+    let mut state = terminal_of_home(None);
+    state.workspaces[0].icon = Some("rocket".into());
+    state.workspaces[0].color = Some("blue".into());
+    apply(handle, &ws, cx, state);
+    let opened = ws.read_with(cx, |ws, _| {
+        assert!(remote_of(ws).home_look);
+        space_of(ws).look.clone()
+    });
+    assert!(opened.icon.is_some() && opened.color.is_some());
+    // Save without touching the look.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.edit_remote_look("r1", opened.clone(), window, cx)
+        })
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert!(remote_of(ws).home_look));
+    // Home changes its color: it still shows.
+    let mut state = terminal_of_home(None);
+    state.workspaces[0].icon = Some("rocket".into());
+    state.workspaces[0].color = Some("red".into());
+    apply(handle, &ws, cx, state);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(space_of(ws).look.color.as_deref(), Some("red"));
+    });
+    // A color of the person's own is theirs.
+    let mine = Look {
+        color: Some("green".into()),
+        ..ws.read_with(cx, |ws, _| space_of(ws).look.clone())
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.edit_remote_look("r1", mine, window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert!(!remote_of(ws).home_look));
+}
+
+#[gpui_kit::test]
+fn a_code_pasted_twice_before_kept_leaves_no_key_behind(cx: &mut TestAppContext) {
+    use templum_api::client::{Kept, Update};
+    let (handle, ws, _dir) = offline(cx);
+    let first = ws.read_with(cx, |ws, _| remote_of(ws).entry.entry.clone());
+    let paste = |cx: &mut TestAppContext, token: &str| {
+        let key = templum_api::code::Key::new(token.into());
+        let draft = Connecting {
+            code: code::decode(&code::encode("http://127.0.0.1:9", &key, None)).unwrap(),
+            access: None,
+            proxy: None,
+            file: false,
+        };
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.replace_code("r1", draft, window, cx))
+        })
+        .unwrap()
+        .expect("replaced");
+        ws.read_with(cx, |ws, _| remote_of(ws).entry.entry.clone())
+    };
+    let second = paste(cx, "tpl_SECOND");
+    let third = paste(cx, "tpl_THIRD");
+    ws.read_with(cx, |ws, _| {
+        let old: Vec<&str> = remote_of(ws)
+            .old_keys
+            .iter()
+            .map(|(entry, _)| entry.as_str())
+            .collect();
+        assert_eq!(old, [first.as_str(), second.as_str()], "{third}");
+    });
+    // The newest key is kept: every one before it goes.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.heard("r1", Update::Kept(Kept::Keyring), window, cx)
+        });
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert!(remote_of(ws).old_keys.is_empty()));
+}
+
+#[gpui_kit::test]
+fn forgetting_a_remote_drops_the_keys_its_codes_replaced(cx: &mut TestAppContext) {
+    let key = templum_api::code::Key::new("tpl_NOTUSED".into());
+    let code = code::encode("http://127.0.0.1:9", &key, None);
+    let (handle, ws, _dir, store) = with_remote(cx, &code, Keeping::Keyring, true);
+    let first = ws.read_with(cx, |ws, _| remote_of(ws).entry.entry.clone());
+    assert!(kept(&store, &first));
+    let key = templum_api::code::Key::new("tpl_SECOND".into());
+    let draft = Connecting {
+        code: code::decode(&code::encode("http://127.0.0.1:9", &key, None)).unwrap(),
+        access: None,
+        proxy: None,
+        file: false,
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.replace_code("r1", draft, window, cx))
+    })
+    .unwrap()
+    .expect("replaced");
+    // The new key was never reported kept; the person forgets the remote.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.forget_remote("r1", false, window, cx))
+    })
+    .unwrap();
+    pump_until(cx, "the replaced key to be deleted", |_| {
+        !kept(&store, &first)
+    });
+}
+
+#[gpui_kit::test]
+fn codes_pasted_before_any_is_kept_all_read_the_key_that_holds_the_secrets(
+    cx: &mut TestAppContext,
+) {
+    use templum_api::client::{Kept, Update};
+    let key = templum_api::code::Key::new("tpl_NOTUSED".into());
+    let code = code::encode("http://127.0.0.1:9", &key, None);
+    let (handle, ws, _dir, _store) = with_remote(cx, &code, Keeping::Keyring, true);
+    let first = ws.read_with(cx, |ws, _| remote_of(ws).entry.entry.clone());
+    let paste = |cx: &mut TestAppContext, token: &str| {
+        let key = templum_api::code::Key::new(token.into());
+        let draft = Connecting {
+            code: code::decode(&code::encode("http://127.0.0.1:9", &key, None)).unwrap(),
+            access: None,
+            proxy: None,
+            file: false,
+        };
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.replace_code("r1", draft, window, cx))
+        })
+        .unwrap()
+        .expect("replaced");
+        ws.read_with(cx, |ws, _| remote_of(ws).inherits.clone())
+    };
+    // The second and third codes were never written (a Save that stopped, or still running): each
+    // reads the first, the one kept.
+    assert_eq!(paste(cx, "tpl_SECOND"), Some((first.clone(), false)));
+    assert_eq!(paste(cx, "tpl_THIRD"), Some((first.clone(), false)));
+    assert_eq!(paste(cx, "tpl_FOURTH"), Some((first, false)));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.heard("r1", Update::Kept(Kept::Keyring), window, cx)
+        });
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert!(remote_of(ws).inherits.is_none()));
 }

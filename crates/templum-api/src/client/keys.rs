@@ -7,9 +7,10 @@ use crate::code::{Key, Trust};
 use crate::store::{private_write, random_text};
 use keyring_core::CredentialStore;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// The keyring service Templum's entries live under.
 pub const SERVICE: &str = "Templum";
@@ -130,6 +131,10 @@ struct Inner {
     /// The keyring, made at its first use; None: there is none.
     store: OnceLock<Option<Arc<CredentialStore>>>,
     system: bool,
+    /// The entries deleted this run, held while any is saved or deleted: a save still running
+    /// when its entry is deleted (its connection was replaced) must not write it after. (One
+    /// lock for all keys; a keyring that waits for the person holds the others' saves too.)
+    gone: Mutex<HashSet<String>>,
 }
 
 impl Keys {
@@ -159,6 +164,7 @@ impl Keys {
             data: data.map(Path::to_path_buf),
             store,
             system,
+            gone: Mutex::default(),
         }))
     }
 
@@ -187,6 +193,10 @@ impl Keys {
     /// keyring, or one that refuses, they are `Kept::Memory` (not an error: the connection
     /// lasts until Templum quits). An error only for a file that couldn't be written.
     pub fn save(&self, entry: &str, secrets: &Secrets, file: bool) -> Result<Kept, String> {
+        let gone = self.0.gone.lock().unwrap_or_else(|e| e.into_inner());
+        if gone.contains(entry) {
+            return Err("This connection was replaced or forgotten.".into());
+        }
         let json = secrets.to_json();
         if file {
             let path = self
@@ -227,6 +237,11 @@ impl Keys {
 
     /// Removes `entry` from both places; what is not there, or refuses, is ignored.
     pub fn delete(&self, entry: &str, _file: bool) {
+        self.0
+            .gone
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(entry.to_string());
         if let Some(path) = self.path(entry) {
             let _ = std::fs::remove_file(path);
         }
@@ -322,6 +337,19 @@ mod tests {
             Keys::with_store(store.clone(), SERVICE_DEV, Some(dir)),
             store,
         )
+    }
+
+    #[test]
+    fn a_save_that_ran_late_does_not_bring_back_a_deleted_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let (keys, _) = mock_in(dir.path());
+        // A connection replaced while its save was still waiting for the keyring.
+        keys.delete("remote-ab12cd34", false);
+        assert!(keys.save("remote-ab12cd34", &secrets(), false).is_err());
+        assert!(keys.save("remote-ab12cd34", &secrets(), true).is_err());
+        assert!(keys.load("remote-ab12cd34", false).is_err());
+        // Another entry is not affected.
+        assert_eq!(keys.save("remote-ee", &secrets(), false), Ok(Kept::Keyring));
     }
 
     #[test]

@@ -204,7 +204,9 @@ They can't make a workspace, and save automations only for their own workspaces.
 | `GET /v1/events` | The event stream |
 
 Ids are Templum's own: block ids (`b7k2m`), workspace ids (`w3`), board, card, column, item and comment numbers,
-automation numbers; a request is `r<n>` (the inbox's) or `a<n>` (the Templum Agent's approvals). Times are Unix seconds.
+automation numbers; a request is `r<n>` (the inbox's; `n` starts at the Unix time in milliseconds when Templum starts, so
+a restarted Templum never reuses a request id a mirror may still hold) or `a<n>` (the Templum Agent's approvals). Times
+are Unix seconds.
 
 ### Tools and aliases
 
@@ -446,3 +448,123 @@ token that works. Each token's last use (time and address) is in Settings.
 `/v1` grows only by additions: new tools, resources, fields, event names and error codes. Clients ignore what they don't
 know. A change that would break a client is `/v2`, served beside `/v1` for at least one release. `app.api` in the state
 says the newest version served. The whole schema is `GET /v1/openapi.json`.
+
+## Templum to Templum
+
+Another computer's Templum can mirror one of your workspaces, live: its blocks where you have them, your terminals
+showing what they show, your agents' dots and requests, and from there the person types into your terminals, moves your
+blocks and answers your agents' questions. **Your computer is the truth.** Nothing runs on the mirror: it draws what the
+API above says and sends your keys, moves and answers back through it. Design:
+[specs/templum-to-templum.md](specs/templum-to-templum.md).
+
+*How this was checked:* the tests run both ends in one process over loopback (a Templum that mirrors itself), including
+typing into a shell, moving a block and answering a question; the screens (the Share… and Connect dialogs, the banner,
+Edit…) were checked headlessly, and **not** with two `--dev` instances on a display. Try the steps below with two
+`--dev` builds before you rely on them.
+
+### 1. Share a workspace (home)
+
+On the computer that has the workspace: right-click its tile ▸ **Edit…** ▸ **Share…** (or the tool `share_workspace`).
+
+- **Name:** what the share is called on this computer ("Another computer").
+- **Can:** **Full** watches, moves blocks, answers requests and types into terminals (anyone holding the code can run
+  commands on this computer); **Control** watches, moves blocks and answers requests, and does not type.
+- **Expires:** 30 days by default; shorter is safer. Three days before, the mirror's banner says so.
+- **The other computer reaches this one:** *Through a tunnel or proxy* (a public `https://` address, for
+  [cloudflared](#2-cloudflared) and the like; the API stays on this computer only) or *Directly* (`host:port` of this
+  computer, which pins Templum's certificate; the API must listen on every network with Templum's certificate,
+  Settings ▸ API ▸ HTTPS). Make code says what to fix when the API doesn't fit.
+- **Make code** shows the connection code once (Copy). Templum keeps only a fingerprint, so a lost code means a new
+  share. The sidebar tile of a shared workspace gets a small cast mark while another computer mirrors it.
+- **Revoke** is in the same Edit… dialog (and in Settings ▸ API); the mirror is cut at once.
+  `share_workspace` and `revoke_share` do the same for scripts, see [Shares](#shares-templum-to-templum).
+
+Only one computer can use a code at a time: a second one that connects with it stops the first ("Another computer
+connected with this share's code"). Give each computer its own share.
+
+### 2. cloudflared
+
+To reach home from outside, without opening a port, run a tunnel to the API on home:
+
+```sh
+cloudflared tunnel --url http://127.0.0.1:7411
+```
+
+(or a named tunnel to the API's port). Share *Through a tunnel or proxy* with the tunnel's `https://` address. If the
+tunnel sits behind **Cloudflare Access**, make a **service token** and allow it in the Access policy (recommended: the
+tunnel then refuses everyone but the mirror); the mirror takes the token's Client ID and Secret in *Connect ▸ More…*.
+The tunnel's provider sees the traffic (HTTPS ends at its edge), including what is typed.
+
+### 3. Connect (the mirror)
+
+Sidebar ▸ **Connect to a Templum…**, paste the code. The line under the field says where it goes and how it checks
+(`templum.example.com · checks its public certificate`, or `· pins Templum's certificate AB:CD:…`). **More…** takes the
+Cloudflare Access Client ID and Secret, and a proxy. The key is kept in this computer's keyring (the Keychain, the
+Credential Manager or the Secret Service); with no keyring you may keep it in a file only you can read (a copy of the
+data folder would carry it) or let it last until Templum quits. Connect tries it; on success the dialog closes, the
+remote workspace opens and the code leaves the clipboard if it still holds it. A failure stays in the dialog in words.
+
+The remote workspace is a tile in the sidebar like any other (with a mark), in Ctrl+Tab and Ctrl+1–9. Right-click it:
+**Open**, **Edit…**, **Disconnect** (or **Connect**), **Forget…** (which can revoke the share on home too).
+**Edit…** shows the connection (address, way in, whether it trusts an authority this computer added, the Access Client
+ID, the proxy, what the share can do, when it ends, the round trip), your own icon and color (none: home's), and
+**Paste a new code…** for when the share expired or was revoked. Its **More…** opens with the Access Client ID and the
+proxy address this connection has; leave the Client Secret (or the proxy's login) empty and the old one stays, so you
+don't need to copy it again, for the same Client ID and address (a new code for another address needs the Client
+Secret typed again). The name is home's.
+
+### 4. What each way in checks
+
+- **Pinned** (*Directly*): the certificate's SHA-256 must be the one in the code. After *New certificate* on home, share
+  again and paste the new code.
+- **Public** (*Through a tunnel or proxy*): the certificate must be valid for the name, signed by an authority the
+  system trusts (then Mozilla's list). A company proxy that reads HTTPS shows its own authority: Templum refuses it
+  unless you accept it for that remote ("Connect anyway"), because it could read your key and what you type.
+- **Loopback** (`http://127.0.0.1…`): plain HTTP to this computer, for an `ssh -L` forward. No proxy is ever
+  used for it.
+
+### 5. A proxy
+
+Type it in *Connect ▸ More…* (`http://proxy.corp:8080`, optionally with `user:password@`), or let Templum read
+`HTTPS_PROXY`, `https_proxy` or `ALL_PROXY` (not for a host `NO_PROXY` names). Templum opens an HTTP `CONNECT` through
+it, then TLS inside, end to end. Basic credentials only: NTLM, Kerberos, PAC files and the system's proxy settings are
+not supported, and a proxy that wants them answers 407 ("The proxy … refused the connection").
+
+### 6. When it isn't live
+
+The tile dims, the canvas keeps its last blocks under a veil, agents' dots go grey, typing says "Not connected: what you
+type isn't sent." (keys are dropped, never sent late), and moving and answering are disabled.
+
+What the banner says, what it means, and whether it tries again by itself:
+
+- **Reconnecting to winx-desktop… try 3, next in 8 s:** home doesn't answer (off, asleep, no route, the tunnel's 502
+  or 503). Retries, waiting longer each time; **Try now** tries at once.
+- **This share of API expired**, **winx-desktop revoked this share:** the token is no longer good. No retry: **Paste a
+  new code…** after sharing again, or **Forget**.
+- **API was deleted on winx-desktop:** its workspace is gone. **Forget**.
+- **API is stopped on winx-desktop:** not dimmed; **Start it** starts it on home and shows it there.
+- **Another computer connected with this share's code:** two computers used one code. **Connect here again** (the
+  other will stop), or **Forget**.
+- **winx-desktop's certificate changed:** the pin differs, after a *New certificate* on home, or someone is between
+  the two computers. Paste a new code only if you made the change.
+- **…'s certificate isn't valid:** expired, for another name, or signed by an unknown authority. Fix it where the
+  tunnel or proxy runs, then **Try again**.
+- **Cloudflare Access stands in front of …:** add the service token in Paste a new code… ▸ More…, and allow it in the policy.
+- **… didn't answer as a Templum:** wrong address or port. **Try again**.
+
+### 7. What a mirror can't do yet
+
+Not mirrored: a note's, checklist's, editor's and board's content (a card names each), ink and shapes, scrolling back in
+a terminal, the mouse in a terminal. Not on a mirrored workspace: adding, closing and wiring blocks, drawing, grid mode,
+Move to workspace, Copy and Paste of blocks, Stop, the Git popup, the right-click menus. The banner's ⓘ lists them. A
+selection of several blocks moved on the mirror is one Ctrl+Z step per block on home.
+
+### 8. Safety
+
+- **A Full code runs commands on home.** Treat it like a password: short expiries, Revoke when done, and never put it
+  where an agent reads it.
+- **Keep agents you don't trust away from a computer that holds a Full code** (its keyring, or the key file if you
+  chose one): whoever reads the key can run commands on home.
+- The mirror never relays: no tool, API call or agent of the mirror reaches home's blocks, and what home sends is drawn,
+  never run (control characters are dropped, sizes and counts are capped).
+- The tunnel's provider sees the traffic; a *Directly* share pins Templum's own certificate instead.

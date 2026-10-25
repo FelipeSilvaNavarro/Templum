@@ -6,6 +6,7 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, ClickEvent, Context, Div, ElementId, FontWeight, Hsla, ScrollWheelEvent,
@@ -58,14 +59,35 @@ pub(crate) fn request(
     h: f32,
     cx: &mut Context<Workspace>,
 ) -> Option<Parts> {
-    Some(match &wait.what {
+    let mut parts = match &wait.what {
         Waiting::Question {
             ask, form, scroll, ..
         } if ask.plan.is_some() => plan(ws, wait, ask, form, scroll, n, w, h, Z, cx),
         Waiting::Question { ask, form, .. } => question(ws, wait, ask, form, n, w, Z, cx),
         Waiting::Allow { then } => allow(ws, wait, then.buttons(), n, Z, cx),
         Waiting::Turn { .. } | Waiting::Event { .. } => return None,
-    })
+    };
+    // Another computer's request that can't be answered from here now: its buttons are dim, and
+    // say why.
+    if let Some(why) = ws.remote_blocked(wait) {
+        parts.foot = blocked(parts.foot, part(n, "blocked"), why);
+    }
+    Some(parts)
+}
+
+/// `foot` dimmed and covered, so no press reaches its buttons; hovering it says `why`.
+fn blocked(foot: Div, id: ElementId, why: String) -> Div {
+    div().relative().w_full().child(foot.opacity(0.45)).child(
+        div()
+            .id(id)
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .occlude()
+            .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+            .test_support(),
+    )
 }
 
 /// Said under the header of a question whose client gave up on the call, where it stays in
@@ -870,7 +892,7 @@ fn mark(multi: bool, picked: bool, ui: Ui, z: f32) -> Div {
 fn allow(
     ws: &Workspace,
     wait: &Wait,
-    (yes, no): (&'static str, &'static str),
+    (yes, no): (String, String),
     n: usize,
     z: f32,
     cx: &mut Context<Workspace>,

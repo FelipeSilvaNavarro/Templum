@@ -429,7 +429,9 @@ impl Items {
                     })
                     .disabled(!selection),
                 )
-                .item(item(ws, "Paste", None, |ws, _, cx| ws.paste_clipboard(cx))),
+                .item(item(ws, "Paste", None, |ws, window, cx| {
+                    ws.paste_clipboard(window, cx)
+                })),
             Items::Kanban { block, board } => {
                 let menu = menu.item(item(
                     ws,
@@ -1315,7 +1317,8 @@ impl Items {
                     },
                 )),
             Items::Remote { id, active, live } => {
-                let (open_id, toggle_id, forget_id) = (id.clone(), id.clone(), id);
+                let (open_id, edit_id, toggle_id, forget_id) =
+                    (id.clone(), id.clone(), id.clone(), id);
                 menu.item(
                     item(ws, "Open", None, move |ws, window, cx| {
                         if let Some(at) = ws.order().iter().position(|s| s.id == open_id) {
@@ -1324,6 +1327,12 @@ impl Items {
                     })
                     .disabled(active),
                 )
+                .item(item(
+                    ws,
+                    "Edit…",
+                    Some(IconName::Pencil),
+                    move |ws, window, cx| crate::space_dialog::open(ws, &edit_id, window, cx),
+                ))
                 .item(item(
                     ws,
                     if live { "Disconnect" } else { "Connect" },

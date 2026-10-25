@@ -112,14 +112,29 @@ impl Remote {
 pub enum KeySource {
     /// Load them: `Keys::load(entry, file)`.
     Kept { entry: String, file: bool },
-    /// Save them first (then `Update::Kept` says where), then use them.
+    /// Save them first (then `Update::Kept` says where), then use them. `from`: a connection
+    /// this one replaces, whose secrets the new ones lack are taken from it here, so they never
+    /// pass through the UI.
     Save {
         entry: String,
         secrets: Secrets,
         file: bool,
+        from: Option<Inherit>,
     },
     /// Use them as given: kept nowhere.
     Memory(Secrets),
+}
+
+/// What a new code for a connection keeps of the secrets the old one was kept with.
+#[derive(Clone, Debug)]
+pub struct Inherit {
+    /// Where the old secrets were kept: `Keys::load(entry, file)`.
+    pub entry: String,
+    pub file: bool,
+    /// The Cloudflare Access Client Secret.
+    pub access: bool,
+    /// The proxy's login.
+    pub login: bool,
 }
 
 /// How a remote is doing.
@@ -394,6 +409,7 @@ enum Order {
     },
     Send(String, Msg),
     Forget(String, bool),
+    DropKey(String, bool),
     Probe,
 }
 
@@ -460,6 +476,12 @@ impl Mirror {
             inner.weights.remove(id);
         }
         let _ = self.orders.send(Order::Forget(id.into(), revoke));
+    }
+
+    /// Deletes the key kept under `entry` (`file`: in a file), and nothing else: a connection that
+    /// a new code replaced no longer needs its old key.
+    pub fn drop_key(&self, entry: &str, file: bool) {
+        let _ = self.orders.send(Order::DropKey(entry.into(), file));
     }
 
     /// Asks whether the system's keyring answers: the answer comes as `("", Update::Keyring)`.
@@ -648,6 +670,7 @@ mod tests {
                 entry: "remote-ab12cd34".into(),
                 secrets: secrets.clone(),
                 file: true,
+                from: None,
             },
         };
         let shown = format!(
