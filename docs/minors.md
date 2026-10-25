@@ -2248,9 +2248,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **A certificate or key edited on disk is read at the next start of the server only.** Settings ▸ API ▸ My
   certificate reads the files when the server starts; replacing them (a renewal) needs a toggle of the switch. Fix: a
   *Reload* button, or a look at their modified times.
-- [ ] **Terminal input takes `send_keys`' names only.** `terminal_input` (`crates/templum-api/src/registry.rs`,
-  `crates/templum/src/workspace/api.rs`) presses the keys `named_key` knows: a mirror on a phone can't send F-keys,
-  Alt+key or Ctrl+arrows. Fix: more names in `named_key` (`templum-terminal`'s `input.rs`), shared with `send_keys`.
 - [ ] **No mouse input through the API.** A mirror can't click in a program that asked for the mouse. Fix: a `mouse`
   argument on `terminal_input`, through `Terminal::mouse`.
 - [ ] **Under nonstop output a terminal stream may skip many looks in a row.** The reader (`terminals.rs`, `look`) reads
@@ -2259,3 +2256,21 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   blocking thread.
 - [ ] **Settings ▸ API says "listening to events" for a connection that streams a terminal.** (`settings/api.rs`, the
   client row's `streaming`.) Fix: "streaming" or the stream's kind.
+
+## Templum to Templum
+
+- [ ] **`revoke_share` lists as "full, or the share itself" while its registry scope is read.**
+  (`crates/templum-api/src/registry.rs`, `scope`, `nominal`; `workspace/api.rs`, `Own::RevokeShare`.) A Read or
+  Control share token passes the server's scope check and the glue refuses it when it names another share. Likewise
+  `GET /v1/tools` lists `share_workspace` as "full" while a Full token limited to some workspaces is refused (the glue
+  asks for all workspaces). Fix: a scope that depends on the caller, in `registry::scope`.
+- [ ] **A shifted symbol with Ctrl or Alt reaches the kitty protocol with the symbol as its key.**
+  (`crates/templum-terminal/src/input.rs`, `named_key`.) `ctrl+shift+;` is key `;` with Shift, not the unshifted key
+  under it (the spec's known limit). Fix: names carry the unshifted key too.
+- [ ] **The cast mark and the news dot share a corner of a sidebar tile.** (`sidebar.rs`, `tile`.) A mirrored workspace
+  with news shows the 7 px dot over the 12 px mark. Fix: the dot moves to the top-left when both show.
+- [ ] **The Share… dialog was checked headlessly only.** (`share_dialog.rs`.) Its layout (field spacing, the code's
+  wrapping by characters in a 520 px dialog, a long Directly address) was not looked at on a display. Fix: look at it
+  with `--dev` once.
+- [ ] **A pinned share's address is not tried against the machine.** (`workspace/api.rs`, `share_workspace`.) A typo in
+  the host or port makes a code that never connects. Fix: the dialog connects to it once before it shows the code.

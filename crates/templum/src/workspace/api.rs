@@ -9,7 +9,7 @@ use gpui_kit::{AppContext as _, Context, Window};
 use serde_json::{Value, json};
 use templum_agent::Target;
 use templum_api::registry::{self, Answer as Picked, Input, Own};
-use templum_api::store::{self, Scope, Settings, Tls};
+use templum_api::store::{self, Scope, Settings, Share, Tls, Way};
 use templum_api::{Caller, Notice, Server, Store, TerminalRef, codes};
 use templum_mcp::control;
 use templum_mcp::{Hello, Incoming, Replier, Reply, rpc, tools};
@@ -93,6 +93,18 @@ fn not_found(word: &str, id: &str) -> Refusal {
 
 fn params(why: impl Into<String>) -> Refusal {
     (rpc::PARAMS, why.into())
+}
+
+/// What the Share… dialog and `share_workspace` ask of `Workspace::share_workspace`.
+pub(crate) struct ShareDraft {
+    /// A local workspace, by its id or name.
+    pub workspace: String,
+    pub name: String,
+    pub scope: Scope,
+    /// Unix seconds; None: never.
+    pub expires: Option<u64>,
+    pub way: Way,
+    pub address: String,
 }
 
 /// A `tools/call` answer for the API: the text, and what it touched.
@@ -267,6 +279,49 @@ impl Workspace {
                 )
             {
                 return Err((codes::SCOPE, format!("{name} needs a Full token.")));
+            }
+            // Sharing hands over the connection code, which only its answer carries.
+            if let Own::ShareWorkspace {
+                workspace,
+                name,
+                scope,
+                expires,
+                way,
+                address,
+            } = own
+            {
+                if caller.workspaces.is_some() {
+                    return Err((
+                        codes::SCOPE,
+                        "share_workspace needs a Full token for all workspaces.".into(),
+                    ));
+                }
+                let Ok(space) = self.space_of(&workspace, true) else {
+                    return Err(not_found("workspace", &workspace));
+                };
+                let draft = ShareDraft {
+                    workspace: space.clone(),
+                    name,
+                    scope,
+                    expires,
+                    way,
+                    address,
+                };
+                let line = match self.share_workspace(draft, cx) {
+                    Ok((share, code)) => {
+                        let workspace = self
+                            .space_named(&space)
+                            .map_or(space.clone(), |s| s.name.clone());
+                        let mut result = json!({
+                            "content": [{ "type": "text", "text": format!("Shared {workspace} as {share}.") }],
+                            "target": { "workspace": space, "block": null },
+                        });
+                        result["code"] = json!(code);
+                        rpc::result(id, result)
+                    }
+                    Err(why) => answer_line(id, &Reply::err(why), None),
+                };
+                return Ok(Some(line));
             }
             // The person's keyboard, not an agent's: no task check, no screen read back.
             if let Own::TerminalInput { block, input } = own {
@@ -771,7 +826,158 @@ impl Workspace {
             Own::TerminalInput { block, .. } => Reply::err(format!(
                 "terminal_input to {block} must go through api_input."
             )),
+            // Answered with its code by `api_call`, which takes it first.
+            Own::ShareWorkspace { workspace, .. } => Reply::err(format!(
+                "share_workspace of {workspace} must go through api_call."
+            )),
+            Own::RevokeShare { share } => {
+                let own = format!("s{}", caller.token);
+                let shares = || self.api.store.iter().flat_map(|s| s.tokens.iter());
+                let share = match share {
+                    None => shares()
+                        .find(|t| t.id == caller.token && t.share.is_some())
+                        .and_then(|t| t.share_id())
+                        .ok_or_else(|| {
+                            params("revoke_share needs \"share\": this token isn't a share.")
+                        })?,
+                    Some(share) => share,
+                };
+                // Any share may revoke itself; revoking another takes a Full token for everything.
+                if share != own && (caller.scope < Scope::Full || caller.workspaces.is_some()) {
+                    return Err((
+                        codes::SCOPE,
+                        "revoke_share needs a Full token for all workspaces.".into(),
+                    ));
+                }
+                let id = shares()
+                    .find(|t| t.share_id().as_deref() == Some(share.as_str()))
+                    .map(|t| t.id)
+                    .ok_or_else(|| not_found("share", &share))?;
+                self.revoke_token(id, cx);
+                Reply::ok(format!("Revoked {share}."))
+            }
         })
+    }
+
+    /// The shares of the workspace `space`, oldest first: the Edit… dialog's rows.
+    pub(crate) fn share_rows(&self, space: &str) -> Vec<templum_api::model::ShareView> {
+        let tokens = self.api.store.iter().flat_map(|s| s.tokens.iter());
+        let ours: Vec<String> = tokens
+            .filter(|t| t.shares(space))
+            .filter_map(|t| t.share_id())
+            .collect();
+        let mut rows: Vec<_> = self
+            .share_views()
+            .into_iter()
+            .filter(|share| ours.contains(&share.id))
+            .collect();
+        rows.sort_by_key(|share| (share.created, share.id[1..].parse::<u64>().unwrap_or(0)));
+        rows
+    }
+
+    /// The names and addresses of the shares of the workspace `space` that are mirrored now: an
+    /// event stream of their token is open. Asked of the server, no state built, for the places
+    /// that draw every frame (the sidebar's tiles).
+    pub(crate) fn mirrored_now(&self, space: &str) -> Vec<(String, String)> {
+        let (Some(store), Some(server)) = (self.api.store.as_ref(), self.api.server.as_ref())
+        else {
+            return Vec::new();
+        };
+        let open = server.mirrored();
+        store
+            .tokens
+            .iter()
+            .filter(|t| t.shares(space))
+            .filter_map(|t| {
+                let (_, addr) = open.iter().find(|(id, _)| *id == t.id)?;
+                Some((t.name.clone(), addr.clone()))
+            })
+            .collect()
+    }
+
+    /// The address of the event stream of the share `share` (`s<id>`), when it is mirrored now.
+    pub(crate) fn mirrored_from(&self, share: &str) -> Option<String> {
+        let server = self.api.server.as_ref()?;
+        server
+            .mirrored()
+            .into_iter()
+            .find(|(id, _)| format!("s{id}") == share)
+            .map(|(_, addr)| addr)
+    }
+
+    /// The Share… dialog's one button: the API on, and for a direct share on every network with
+    /// Templum's certificate.
+    pub(crate) fn fit_api(&mut self, way: Way, cx: &mut Context<Self>) {
+        self.api_edit(
+            |settings| {
+                settings.enabled = true;
+                if way == Way::Pinned {
+                    settings.listen = store::Listen::All;
+                    settings.tls = Tls::Own;
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Shares a workspace with another Templum: a token limited to it, kept with the share's
+    /// details, and its connection code, which is made from the token's text here and kept
+    /// nowhere. Ok: the share's id and its code. Err: the sentence that says what to fix.
+    pub(crate) fn share_workspace(
+        &mut self,
+        draft: ShareDraft,
+        cx: &mut Context<Self>,
+    ) -> Result<(String, String), String> {
+        use templum_api::code::{self, Key};
+        let ShareDraft {
+            workspace,
+            name,
+            scope,
+            expires,
+            way,
+            address,
+        } = draft;
+        let space = self
+            .space_of(&workspace, true)
+            .map_err(|_| registry::no("workspace", &workspace))?;
+        let (Some(store), Some(data)) = (self.api.store.as_ref(), self.data_dir.clone()) else {
+            return Err("There is no data folder.".into());
+        };
+        if let Some(problem) = store::share_problem(&store.settings, way, &address) {
+            return Err(problem.into());
+        }
+        let (url, pin) = match way {
+            Way::Public => (address.trim().trim_end_matches('/').to_string(), None),
+            Way::Pinned => {
+                let host = address.trim();
+                if host.is_empty() || host.contains("://") {
+                    return Err("Give Directly's address as host:port.".into());
+                }
+                let cert = templum_api::tls::own(&data)?;
+                (
+                    format!("https://{host}"),
+                    Some(templum_api::tls::pin(&cert.chain[0])),
+                )
+            }
+        };
+        // A code the other Templum could not read is not made: tried before the token is.
+        code::decode(&code::encode(
+            &url,
+            &Key::new("tpl_".into()),
+            pin.as_deref(),
+        ))
+        // Whatever is wrong is this address's: the mirror's sentences are for a code pasted there.
+        .map_err(|_| "Templum can't make a code for this address.".to_string())?;
+        let store = self.api.store.as_mut().ok_or("There is no data folder.")?;
+        let share = Share {
+            workspace: space,
+            way,
+            address: address.trim().to_string(),
+        };
+        let (token, text) = store.mint_share(share, &name, scope, expires, now_secs())?;
+        let code = code::encode(&url, &Key::new(text), pin.as_deref());
+        self.tokens_changed(cx);
+        Ok((format!("s{token}"), code))
     }
 
     /// `answer_request`: a request answered as the inbox's buttons answer it, if `caller` sees it
@@ -1202,10 +1408,9 @@ impl Workspace {
     /// A client connected or left: the pill counts them, and Settings lists them, at the next draw.
     fn api_clients(&mut self, cx: &mut Context<Self>) {
         let count = self.api.server.as_ref().map_or(0, |s| s.client_count());
-        if count != self.api.clients {
-            self.api.clients = count;
-            cx.notify();
-        }
+        self.api.clients = count;
+        // Also when only a stream opened or ended: who mirrors a workspace is drawn from the server.
+        cx.notify();
     }
 
     /// One round of the tick: hands the event streams the state, and the terminal streams the
@@ -1215,6 +1420,8 @@ impl Workspace {
             (s.streams() > 0, s.terminal_streams() > 0)
         });
         if events {
+            // A share's last use is in its state.
+            self.drain_api_uses();
             let state = self.api_state(cx);
             if let Some(server) = &self.api.server {
                 server.publish(state);

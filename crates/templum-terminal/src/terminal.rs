@@ -260,6 +260,17 @@ pub struct Modes {
     pub typing: bool,
 }
 
+impl Modes {
+    pub(crate) fn of(mode: TermMode) -> Modes {
+        Modes {
+            mouse: mode.intersects(TermMode::MOUSE_MODE),
+            kitty_keys: mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL),
+            full_screen: mode.contains(TermMode::ALT_SCREEN),
+            typing: mode.contains(TermMode::BRACKETED_PASTE | TermMode::SHOW_CURSOR),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionKind {
     /// Drag.
@@ -280,13 +291,7 @@ impl SharedTerm {
     }
 
     pub fn modes(&self) -> Modes {
-        let mode = *self.0.lock_unfair().mode();
-        Modes {
-            mouse: mode.intersects(TermMode::MOUSE_MODE),
-            kitty_keys: mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL),
-            full_screen: mode.contains(TermMode::ALT_SCREEN),
-            typing: mode.contains(TermMode::BRACKETED_PASTE | TermMode::SHOW_CURSOR),
-        }
+        Modes::of(*self.0.lock_unfair().mode())
     }
 
     /// Starts a selection at a viewport cell (row 0 = top visible line).

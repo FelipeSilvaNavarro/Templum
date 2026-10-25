@@ -45,6 +45,11 @@ const NOISE: [&str; 5] = [
     "slow_down",
 ];
 
+/// What a mirror does all day: one line per token, call and window like the noise, with `more`
+/// counting the rest, written to the calls' log. A morning of typing must not rotate the other
+/// calls out of it; every other call keeps its own line.
+const CHATTER: [&str; 2] = ["terminal_input", "/v1/me"];
+
 #[derive(Clone)]
 struct Line {
     at: u64,
@@ -54,14 +59,15 @@ struct Line {
     status: u16,
     /// Further times the same happened within the window.
     more: u64,
-    /// One of [`NOISE`]: it counts against the room the channel keeps for it.
+    /// One of [`NOISE`] or [`CHATTER`]: it is counted, and counts against the room the channel
+    /// keeps for it.
     noise: bool,
 }
 
 /// (address's limiter key, what, token's name) → when it was first written in this window, and the
 /// line with its count of further times. The token is in the key: a `slow_down` is noise that
 /// carries one, and another token's must not be added to the first one's line.
-type Counting = HashMap<(String, String, Option<String>), (Instant, Line)>;
+type Counting = HashMap<(String, String, Option<String>, u16), (Instant, Line)>;
 
 pub(crate) struct Audit {
     /// None once dropped: the writer then drains the channel and ends.
@@ -166,7 +172,7 @@ impl Audit {
             at,
             addr: addr.to_string(),
             token: token.map(String::from),
-            noise: NOISE.contains(&what.as_str()),
+            noise: NOISE.contains(&what.as_str()) || CHATTER.contains(&what.as_str()),
             what,
             status,
             more: 0,
@@ -182,6 +188,7 @@ impl Audit {
             crate::server::limiter_key(&line.addr),
             line.what.clone(),
             line.token.clone(),
+            line.status,
         );
         let mut first = line;
         if !counting.contains_key(&key) && counting.len() >= COUNTED {
@@ -191,19 +198,28 @@ impl Audit {
         }
         match counting.get_mut(&key) {
             Some((_, counted)) => counted.more += 1,
-            // The other half of the channel is the calls'.
-            None if self.queued_noise.load(Ordering::Relaxed) >= QUEUE / 2 => {}
+            // The other half of the channel is the calls'. A line given up is a call lost when
+            // it has a token (a mirror's chatter), and nobody's when it has none (noise).
+            None if self.queued_noise.load(Ordering::Relaxed) >= QUEUE / 2 => {
+                if first.token.is_some() {
+                    self.lost.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             None => {
                 let counted = Line {
                     more: 0,
                     ..first.clone()
                 };
+                let called = first.token.is_some();
                 self.queued_noise.fetch_add(1, Ordering::Relaxed);
                 // Counted only once its first line is on its way.
                 if tx.try_send(first).is_ok() {
                     counting.insert(key, (Instant::now(), counted));
                 } else {
                     self.queued_noise.fetch_sub(1, Ordering::Relaxed);
+                    if called {
+                        self.lost.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -520,6 +536,64 @@ mod tests {
     }
 
     #[test]
+    fn typing_is_one_audit_line_a_minute() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = Audit::with_caps(dir.path(), AUDIT_CAP, NOISE_CAP, Duration::from_millis(100));
+        for _ in 0..50 {
+            audit.write("1.2.3.4", Some("laptop"), "terminal_input", 200);
+        }
+        for _ in 0..5 {
+            audit.write("1.2.3.4", Some("laptop"), "/v1/me", 200);
+        }
+        audit.write("1.2.3.4", Some("laptop"), "move_block", 200);
+        let of = |what: &str| -> Vec<Value> {
+            lines(dir.path(), "audit.log")
+                .into_iter()
+                .filter(|l| l["what"] == what)
+                .collect()
+        };
+        // The window ends by itself: the counts come without anything more being sent.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while of("terminal_input").len() < 2 || of("/v1/me").len() < 2 {
+            assert!(Instant::now() < deadline, "the counts never came");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let (typing, me) = (of("terminal_input"), of("/v1/me"));
+        assert_eq!((typing.len(), typing[1]["more"].as_u64()), (2, Some(49)));
+        assert_eq!((me.len(), me[1]["more"].as_u64()), (2, Some(4)));
+        assert!(typing[0].get("more").is_none());
+        assert_eq!(
+            of("move_block").len(),
+            1,
+            "every other call has its own line"
+        );
+        assert!(lines(dir.path(), "noise.log").is_empty());
+    }
+
+    #[test]
+    fn a_refused_call_is_not_counted_into_the_ones_that_passed() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = Audit::with_caps(dir.path(), AUDIT_CAP, NOISE_CAP, Duration::from_millis(100));
+        audit.write("1.2.3.4", Some("laptop"), "terminal_input", 200);
+        for _ in 0..3 {
+            audit.write("1.2.3.4", Some("laptop"), "terminal_input", 403);
+        }
+        drop(audit);
+        let typing: Vec<Value> = lines(dir.path(), "audit.log")
+            .into_iter()
+            .filter(|l| l["what"] == "terminal_input")
+            .collect();
+        let statuses: Vec<u64> = typing
+            .iter()
+            .map(|l| l["status"].as_u64().unwrap())
+            .collect();
+        // Each status has its own first line; only the 403s are counted, on the second 403 line.
+        assert_eq!(statuses, [200, 403, 403], "{typing:?}");
+        assert!(typing[0].get("more").is_none() && typing[1].get("more").is_none());
+        assert_eq!(typing[2]["more"].as_u64(), Some(2));
+    }
+
+    #[test]
     fn a_long_name_is_cut_in_the_log() {
         let dir = tempfile::tempdir().unwrap();
         let audit = Audit::new(dir.path(), AUDIT_CAP);
@@ -627,6 +701,21 @@ mod tests {
             "past the queue, counted"
         );
         assert!(audit.queued_noise.load(Ordering::Relaxed) <= QUEUE / 2);
+        let _ = open.send(());
+    }
+
+    #[test]
+    fn a_mirrors_chatter_given_up_is_counted_lost_and_noise_is_not() {
+        let (open, gate) = std::sync::mpsc::channel();
+        let audit = Audit::with_writer(Duration::from_millis(50), stuck(gate));
+        // The noise half is full.
+        for n in 0..QUEUE as u32 {
+            audit.write(&format!("10.0.{}.{}", n / 256, n % 256), None, "connect", 0);
+        }
+        assert_eq!(audit.lost.load(Ordering::Relaxed), 0, "noise is nobody's");
+        audit.write("1.2.3.4", Some("phone"), "terminal_input", 200);
+        audit.write("1.2.3.4", Some("laptop"), "/v1/me", 200);
+        assert_eq!(audit.lost.load(Ordering::Relaxed), 2);
         let _ = open.send(());
     }
 

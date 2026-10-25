@@ -2,7 +2,7 @@
 //! rules for what a workspace-limited token sees of it, and the comparison that finds what changed
 //! between two of them. Plain data: `crates/templum` builds it from the workspaces.
 
-use crate::store::{Scope, Token};
+use crate::store::{Scope, Token, Way};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -18,6 +18,10 @@ pub struct State {
     pub boards: Vec<BoardView>,
     pub cards: Vec<CardView>,
     pub automations: Vec<AutomationView>,
+    /// The shares of workspaces: a token for all workspaces sees every one, a limited token only
+    /// the share it is. Left out by homes older than shares.
+    #[serde(default)]
+    pub shares: Vec<ShareView>,
     pub usage: Option<UsageView>,
     /// What the shown workspace's canvas shows; None before its first paint.
     pub view: Option<ViewView>,
@@ -52,6 +56,66 @@ pub struct WorkspaceView {
     pub color: Option<String>,
     pub shown: bool,
     pub stopped: bool,
+    /// Its Lucide icon name, or None for its initials.
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+/// A workspace shared with another Templum (docs/specs/templum-to-templum.md): an API token
+/// limited to it, with how its other computer reaches this one. Never the token's text.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ShareView {
+    /// `s<token id>`.
+    pub id: String,
+    /// The shared workspace's id, even when that workspace is gone.
+    pub workspace: String,
+    pub name: String,
+    pub scope: Scope,
+    pub created: u64,
+    pub expires: Option<u64>,
+    pub way: Way,
+    pub address: String,
+    pub last: Option<LastView>,
+    /// An event stream of its token is open now.
+    pub mirrored: bool,
+}
+
+/// A token's newest use.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LastView {
+    pub at: u64,
+    pub addr: String,
+}
+
+/// Who a token is, as `GET /v1/me` answers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MeView {
+    pub name: String,
+    pub scope: Scope,
+    /// The workspaces it sees; None: all of them. Empty: the one it was made for is gone.
+    pub workspaces: Option<Vec<String>>,
+    pub expires: Option<u64>,
+    /// Its share's id; None for a token Settings made.
+    pub share: Option<String>,
+    /// This computer's name.
+    pub computer: String,
+    pub version: String,
+    pub api: u32,
+}
+
+impl MeView {
+    pub fn of(token: &Token, computer: &str) -> MeView {
+        MeView {
+            name: token.name.clone(),
+            scope: token.scope,
+            workspaces: token.workspaces.clone(),
+            expires: token.expires,
+            share: token.share_id(),
+            computer: computer.into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            api: 1,
+        }
+    }
 }
 
 /// A terminal's screen, as a terminal stream's `frame` event carries it (docs/specs/api.md,
@@ -66,6 +130,21 @@ pub struct FrameView {
     /// Every row is here; otherwise only the rows that changed.
     pub whole: bool,
     pub rows: Vec<RowView>,
+    /// What the program took of the keyboard and mouse; every frame carries it, and a change of
+    /// it alone is a frame with no rows. Left out by homes older than this field.
+    #[serde(default)]
+    pub modes: ModesView,
+}
+
+/// What a program took at home, each present only when true.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModesView {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub full_screen: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mouse: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub kitty_keys: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -144,6 +223,9 @@ pub struct BlockView {
     /// The board a kanban block shows.
     pub board: Option<u64>,
     pub agent: Option<AgentView>,
+    /// A terminal that takes no input (a subagent's transcript); left out otherwise.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -446,6 +528,12 @@ impl State {
                 .filter(|automation| caller.sees(automation.workspace.as_deref()))
                 .cloned()
                 .collect(),
+            shares: self
+                .shares
+                .iter()
+                .filter(|share| share.id == format!("s{}", caller.token))
+                .cloned()
+                .collect(),
             usage: None,
             view: self
                 .view
@@ -465,7 +553,7 @@ pub struct Delta {
 }
 
 /// What differs between two states, per collection (workspace, block, wire, request, board, card,
-/// automation, usage): the deletes, then the puts.
+/// automation, share, usage): the deletes, then the puts.
 pub fn diff(old: &State, new: &State) -> Vec<Delta> {
     let mut out = Vec::new();
     compare(
@@ -509,6 +597,13 @@ pub fn diff(old: &State, new: &State) -> Vec<Delta> {
         &old.automations,
         &new.automations,
         |a| a.id.to_string(),
+        &mut out,
+    );
+    compare(
+        "share",
+        &old.shares,
+        &new.shares,
+        |s| s.id.clone(),
         &mut out,
     );
     compare(
@@ -640,6 +735,7 @@ mod tests {
                 automation(2, Some("w4")),
                 automation(3, None),
             ],
+            shares: vec![],
             usage: Some(UsageView::default()),
             view: Some(ViewView {
                 workspace: "w3".into(),
@@ -839,6 +935,97 @@ mod tests {
         let deltas = diff(&old.visible(&everyone), &new.visible(&everyone));
         assert_eq!(said(&deltas), [("block", "b1", true)]);
         assert_eq!(deltas[0].value.as_ref().unwrap()["workspace"], "w4");
+    }
+
+    fn share(id: &str) -> ShareView {
+        ShareView {
+            id: id.into(),
+            workspace: "w3".into(),
+            name: "Another computer".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_limited_caller_sees_only_its_own_share() {
+        let mut state = two_workspaces();
+        state.shares = vec![share("s1"), share("s2")];
+        let ids = |caller: &Caller| -> Vec<String> {
+            state
+                .visible(caller)
+                .shares
+                .into_iter()
+                .map(|s| s.id)
+                .collect()
+        };
+        assert_eq!(
+            ids(&Caller {
+                token: 2,
+                ..caller(&["w3"])
+            }),
+            ["s2"]
+        );
+        assert!(
+            ids(&Caller {
+                token: 7,
+                ..caller(&["w3"])
+            })
+            .is_empty()
+        );
+        let all = Caller {
+            workspaces: None,
+            ..caller(&[])
+        };
+        assert_eq!(ids(&all), ["s1", "s2"]);
+    }
+
+    #[test]
+    fn shares_are_on_the_stream_as_share_events() {
+        let old = two_workspaces();
+        let mut new = old.clone();
+        new.shares = vec![share("s1")];
+        assert_eq!(said(&diff(&old, &new)), [("share", "s1", true)]);
+        let mut added = new.clone();
+        added.shares[0].mirrored = true;
+        added.shares.push(share("s2"));
+        assert_eq!(
+            said(&diff(&new, &added)),
+            [("share", "s1", true), ("share", "s2", true)]
+        );
+        assert_eq!(
+            said(&diff(&added, &old)),
+            [("share", "s1", false), ("share", "s2", false)]
+        );
+    }
+
+    #[test]
+    fn new_fields_serialize_only_when_they_say_something() {
+        let mut b = block("b1", "w3", "terminal");
+        assert!(serde_json::to_value(&b).unwrap().get("read_only").is_none());
+        b.read_only = true;
+        assert_eq!(serde_json::to_value(&b).unwrap()["read_only"], true);
+        let w = WorkspaceView::default();
+        assert_eq!(serde_json::to_value(&w).unwrap()["icon"], Value::Null);
+        // A state from a home older than shares.
+        let mut value = serde_json::to_value(two_workspaces()).unwrap();
+        value.as_object_mut().unwrap().remove("shares");
+        let old: State = serde_json::from_value(value).unwrap();
+        assert!(old.shares.is_empty());
+    }
+
+    #[test]
+    fn me_is_the_token_without_its_hash() {
+        let mut store = crate::store::Store::default();
+        store
+            .mint("phone", Scope::Read, Some(9), Some(vec!["w3".into()]), 1)
+            .unwrap();
+        let me = MeView::of(&store.tokens[0], "winx-desktop");
+        assert_eq!(
+            serde_json::to_value(&me).unwrap(),
+            json!({"name": "phone", "scope": "read", "workspaces": ["w3"], "expires": 9,
+                "share": null, "computer": "winx-desktop",
+                "version": env!("CARGO_PKG_VERSION"), "api": 1})
+        );
     }
 
     #[test]

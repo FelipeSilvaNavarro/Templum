@@ -2,20 +2,25 @@
 //! scope, the route table that names a tool or a resource, and how a request's path, query and
 //! body become a tool's arguments. The OpenAPI document is written from it (`openapi`).
 
-use crate::store::Scope;
+use crate::store::{Scope, Way};
 use serde_json::{Map, Value, json};
 use templum_mcp::control::{self, Rule};
-use templum_mcp::tools::{MAX_KEYS, MAX_TEXT};
+use templum_mcp::tools::MAX_TEXT;
 use templum_terminal::{KEY_NAMES, named_key};
 
+/// The keys one `terminal_input` call presses (`send_keys` keeps its own, fewer: `MAX_KEYS`).
+pub const INPUT_KEYS: usize = 256;
+
 /// The tools only the API serves: automations are the person's, not an agent's.
-const OWN: [&str; 6] = [
+const OWN: [&str; 8] = [
     "answer_request",
     "save_automation",
     "set_automation",
     "run_automation",
     "delete_automation",
     "terminal_input",
+    "share_workspace",
+    "revoke_share",
 ];
 
 /// The arguments that name something a workspace-limited token must see: a block, a workspace, a
@@ -38,6 +43,7 @@ pub const TARGETS: [&str; 11] = [
 /// Every other argument name the tools have today: they name nothing a token could be kept from.
 pub const NOT_TARGETS: &[&str] = &[
     "add_items",
+    "address",
     "agent",
     "allow",
     "answers",
@@ -52,6 +58,7 @@ pub const NOT_TARGETS: &[&str] = &[
     "effort",
     "enter",
     "event",
+    "expires",
     "folder",
     "h",
     "id",
@@ -68,6 +75,8 @@ pub const NOT_TARGETS: &[&str] = &[
     "priority",
     "prompt",
     "reason",
+    "scope",
+    "share",
     "task",
     "text",
     "timeout",
@@ -75,6 +84,7 @@ pub const NOT_TARGETS: &[&str] = &[
     "uncheck",
     "w",
     "wait",
+    "way",
     "worktree",
     "x",
     "y",
@@ -150,8 +160,9 @@ pub fn tools() -> Vec<Value> {
         tool(
             "terminal_input",
             "Types into a terminal as the person's keyboard does: text as a paste (bracketed when \
-             its program asked), or keys by send_keys' names (a character is a key; at most 16, \
-             50 ms apart). Answers once they are in.",
+             its program asked), or keys by send_keys' names (a character is a key; 1 to 256, \
+             back to back, 50 ms after an escape that another key follows). Answers once they \
+             are in.",
             json!({
                 "block": { "type": "string", "description": "A terminal block's id, as the state shows it." },
                 "text": { "type": "string", "description": "Pasted whole; at most 256 KiB. Give text or keys." },
@@ -159,11 +170,33 @@ pub fn tools() -> Vec<Value> {
                     "type": "array",
                     "items": { "type": "string" },
                     "minItems": 1,
-                    "maxItems": MAX_KEYS,
-                    "description": "Key names (enter, escape, ctrl+c, a character…), 1 to 16.",
+                    "maxItems": INPUT_KEYS,
+                    "description": "Key names (enter, escape, ctrl+c, ctrl+shift+p, f5, a character…), 1 to 256.",
                 },
             }),
             &["block"],
+        ),
+        tool(
+            "share_workspace",
+            "Shares a workspace with another Templum, as its Edit… dialog does: a token limited to it \
+             and the connection code, given once in the answer's code field.",
+            json!({
+                "workspace": { "type": "string", "description": "The workspace's id or name." },
+                "name": { "type": "string", "description": "What the share is called (at most 60 characters), like \"Another computer\"." },
+                "scope": { "type": "string", "enum": ["control", "full"], "description": "Control watches, moves blocks and answers requests; full also types into terminals." },
+                "expires": { "type": ["integer", "null"], "description": "Unix seconds; null or left out: never." },
+                "way": { "type": "string", "enum": ["public", "pinned"], "description": "public: through a tunnel or proxy with a public certificate; pinned: directly, pinning Templum's certificate." },
+                "address": { "type": "string", "description": "public: the https:// address; pinned: host:port." },
+            }),
+            &["workspace", "name", "scope", "way", "address"],
+        ),
+        tool(
+            "revoke_share",
+            "Revokes a share: its mirror is cut at once.",
+            json!({
+                "share": { "type": "string", "description": "A share's id, as the state shows it (s4). Left out: the calling token's own." },
+            }),
+            &[],
         ),
     ]);
     all
@@ -194,6 +227,7 @@ pub fn no(word: &str, id: &str) -> String {
         "board" => "/v1/boards",
         "request" => "/v1/requests",
         "automation" => "/v1/automations",
+        "share" => "/v1/shares",
         _ => "/v1/state",
     };
     format!("There's no {word} {id}: GET {path} lists them.")
@@ -211,7 +245,9 @@ pub fn scope(name: &str, args: &Value) -> Result<Scope, String> {
     if own(name) {
         return Ok(match name {
             "save_automation" if args["automation"]["do"].get("command").is_some() => Scope::Full,
-            "delete_automation" | "terminal_input" => Scope::Full,
+            "delete_automation" | "terminal_input" | "share_workspace" => Scope::Full,
+            // Any share may revoke itself; the glue asks Full of one revoking another.
+            "revoke_share" => Scope::Read,
             _ => Scope::Control,
         });
     }
@@ -230,6 +266,9 @@ pub fn scope(name: &str, args: &Value) -> Result<Scope, String> {
 pub fn nominal(name: &str) -> &'static str {
     if matches!(name, "answer_request" | "save_automation") {
         return "control or full";
+    }
+    if name == "revoke_share" {
+        return "full, or the share itself";
     }
     let Some(tool) = tools().into_iter().find(|tool| tool["name"] == name) else {
         return "control";
@@ -275,6 +314,8 @@ pub enum Does {
     Ticket,
     Tools,
     OpenApi,
+    /// Who the token is (`GET /v1/me`): answered from the token alone, without the UI thread.
+    Me,
 }
 
 /// A resource a GET reads from the state.
@@ -293,6 +334,7 @@ pub enum Resource {
     Card,
     Automations,
     Automation,
+    Shares,
     Usage,
 }
 
@@ -307,7 +349,7 @@ const fn route(method: &'static str, path: &'static str, does: Does) -> Route {
     Route { method, path, does }
 }
 
-use Does::{Events, Frames, OpenApi, Read, Ticket, Tool, Tools};
+use Does::{Events, Frames, Me, OpenApi, Read, Ticket, Tool, Tools};
 use Resource as R;
 
 /// Every route (docs/specs/api.md, Resources and REST aliases). A path parameter is a tool's
@@ -329,6 +371,8 @@ pub const ROUTES: &[Route] = &[
     route("GET", "/v1/cards/{card}", Read(R::Card)),
     route("GET", "/v1/automations", Read(R::Automations)),
     route("GET", "/v1/automations/{automation}", Read(R::Automation)),
+    route("GET", "/v1/shares", Read(R::Shares)),
+    route("GET", "/v1/me", Me),
     route("GET", "/v1/usage", Read(R::Usage)),
     route("GET", "/v1/tools", Tools),
     route("GET", "/v1/openapi.json", OpenApi),
@@ -388,6 +432,12 @@ pub const ROUTES: &[Route] = &[
         "/v1/automations/{automation}",
         Tool("delete_automation"),
     ),
+    route(
+        "POST",
+        "/v1/workspaces/{workspace}/shares",
+        Tool("share_workspace"),
+    ),
+    route("DELETE", "/v1/shares/{share}", Tool("revoke_share")),
 ];
 
 /// The route for `method` and `path`, with its path parameters (percent-decoded). None for
@@ -535,6 +585,17 @@ pub enum Own {
         block: String,
         input: Input,
     },
+    ShareWorkspace {
+        workspace: String,
+        name: String,
+        scope: Scope,
+        expires: Option<u64>,
+        way: Way,
+        address: String,
+    },
+    RevokeShare {
+        share: Option<String>,
+    },
 }
 
 /// What `terminal_input` types.
@@ -657,8 +718,8 @@ pub fn parse_own(name: &str, args: &Value) -> Result<Own, String> {
             }
             let input = if text.is_null() {
                 let keys = keys.as_array().ok_or("\"keys\" is a list of key names.")?;
-                if !(1..=MAX_KEYS).contains(&keys.len()) {
-                    return Err(format!("\"keys\" holds 1 to {MAX_KEYS} keys."));
+                if !(1..=INPUT_KEYS).contains(&keys.len()) {
+                    return Err(format!("\"keys\" holds 1 to {INPUT_KEYS} keys."));
                 }
                 let keys = keys
                     .iter()
@@ -681,6 +742,44 @@ pub fn parse_own(name: &str, args: &Value) -> Result<Own, String> {
             };
             Own::TerminalInput { block, input }
         }
+        "share_workspace" => {
+            let text = |key: &str| {
+                args[key]
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("{name} needs \"{key}\", a string"))
+            };
+            Own::ShareWorkspace {
+                workspace: text("workspace")?,
+                name: text("name")?,
+                scope: match args["scope"].as_str() {
+                    Some("control") => Scope::Control,
+                    Some("full") => Scope::Full,
+                    _ => return Err("\"scope\" is control or full.".into()),
+                },
+                expires: match &args["expires"] {
+                    Value::Null => None,
+                    expires => Some(
+                        expires
+                            .as_u64()
+                            .ok_or("\"expires\" is a whole number or null.")?,
+                    ),
+                },
+                way: match args["way"].as_str() {
+                    Some("public") => Way::Public,
+                    Some("pinned") => Way::Pinned,
+                    _ => return Err("\"way\" is public or pinned.".into()),
+                },
+                address: text("address")?,
+            }
+        }
+        "revoke_share" => Own::RevokeShare {
+            share: match &args["share"] {
+                Value::Null => None,
+                Value::String(share) => Some(share.clone()),
+                _ => return Err("\"share\" is a string".into()),
+            },
+        },
         _ => return Err(format!("Unknown tool: {name}")),
     })
 }
@@ -797,6 +896,81 @@ mod tests {
         let listed = listed();
         assert_eq!(listed.len(), tools().len());
         assert!(listed.iter().all(|t| t["scope"].is_string()));
+    }
+
+    #[test]
+    fn the_share_tools_parse_and_route() {
+        let share = json!({"workspace": "w3", "name": "x", "scope": "full", "expires": null,
+            "way": "public", "address": "https://t"});
+        assert_eq!(
+            parse_own("share_workspace", &share),
+            Ok(Own::ShareWorkspace {
+                workspace: "w3".into(),
+                name: "x".into(),
+                scope: Scope::Full,
+                expires: None,
+                way: Way::Public,
+                address: "https://t".into()
+            })
+        );
+        let with = |key: &str, value: Value| {
+            let mut args = share.clone();
+            args[key] = value;
+            parse_own("share_workspace", &args)
+        };
+        assert_eq!(
+            with("scope", json!("read")),
+            Err("\"scope\" is control or full.".into())
+        );
+        assert_eq!(
+            with("way", json!("lan")),
+            Err("\"way\" is public or pinned.".into())
+        );
+        assert_eq!(
+            with("expires", json!("soon")),
+            Err("\"expires\" is a whole number or null.".into())
+        );
+        assert!(matches!(
+            with("expires", json!(99)),
+            Ok(Own::ShareWorkspace {
+                expires: Some(99),
+                ..
+            })
+        ));
+        assert_eq!(
+            parse_own("revoke_share", &json!({})),
+            Ok(Own::RevokeShare { share: None })
+        );
+        assert_eq!(
+            parse_own("revoke_share", &json!({"share": "s4"})),
+            Ok(Own::RevokeShare {
+                share: Some("s4".into())
+            })
+        );
+        let (route, params) = find("POST", "/v1/workspaces/w3/shares").unwrap();
+        assert_eq!(
+            (route.does, params),
+            (
+                Does::Tool("share_workspace"),
+                vec![("workspace", "w3".to_string())]
+            )
+        );
+        let (route, params) = find("DELETE", "/v1/shares/s4").unwrap();
+        assert_eq!(
+            (route.does, params),
+            (
+                Does::Tool("revoke_share"),
+                vec![("share", "s4".to_string())]
+            )
+        );
+        assert_eq!(scope("share_workspace", &share), Ok(Scope::Full));
+        assert_eq!(scope("revoke_share", &json!({})), Ok(Scope::Read));
+        assert_eq!(nominal("share_workspace"), "full");
+        assert_eq!(nominal("revoke_share"), "full, or the share itself");
+        assert_eq!(
+            no("share", "s999"),
+            "There's no share s999: GET /v1/shares lists them."
+        );
     }
 
     #[test]
@@ -1030,16 +1204,30 @@ mod tests {
         assert_eq!(err(json!({"block": "b"})), one);
         assert_eq!(err(json!({"block": "b", "text": "x", "keys": ["y"]})), one);
         assert_eq!(
-            err(json!({"block": "b", "keys": vec!["y"; MAX_KEYS + 1]})),
-            "\"keys\" holds 1 to 16 keys."
+            err(json!({"block": "b", "keys": vec!["y"; INPUT_KEYS + 1]})),
+            "\"keys\" holds 1 to 256 keys."
+        );
+        assert!(
+            parse_own(
+                "terminal_input",
+                &json!({"block": "b", "keys": vec!["y"; INPUT_KEYS]})
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_own(
+                "terminal_input",
+                &json!({"block": "b", "keys": ["ctrl+shift+f5"]})
+            )
+            .is_ok()
         );
         assert_eq!(
             err(json!({"block": "b", "keys": []})),
-            "\"keys\" holds 1 to 16 keys."
+            "\"keys\" holds 1 to 256 keys."
         );
         assert!(
-            err(json!({"block": "b", "keys": ["F13"]}))
-                .starts_with("keys[0] isn't a key Templum knows. Keys: enter")
+            err(json!({"block": "b", "keys": ["f13"]}))
+                .starts_with("keys[0] isn't a key Templum knows. Keys: [ctrl+]")
         );
         // The position is named, never the key: it may be a password.
         let refused = err(json!({"block": "b", "keys": ["enter", "hunter2"]}));

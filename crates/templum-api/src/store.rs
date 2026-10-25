@@ -97,6 +97,26 @@ pub struct Use {
     pub addr: String,
 }
 
+/// How a share's other computer reaches this one (docs/specs/templum-to-templum.md).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Way {
+    /// Through a tunnel or proxy with a public certificate.
+    #[default]
+    Public,
+    /// Directly, pinning Templum's certificate.
+    Pinned,
+}
+
+/// What makes a token a share of one workspace.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Share {
+    pub workspace: String,
+    pub way: Way,
+    /// As the person typed it: `https://templum.example.com` or `192.168.1.5:7411`.
+    pub address: String,
+}
+
 /// A key the person made. It holds the hash of its text, never the text.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Token {
@@ -109,12 +129,30 @@ pub struct Token {
     pub created: u64,
     pub expires: Option<u64>,
     pub last: Option<Use>,
+    /// Set for a token made by sharing a workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share: Option<Share>,
 }
 
 impl Token {
     /// Not expired at `now` (Unix seconds).
     pub fn live(&self, now: u64) -> bool {
         self.expires.is_none_or(|end| now < end)
+    }
+
+    /// Whether this is a share that reaches the workspace `space` now. The token's own list is the
+    /// truth: `share.workspace` is the workspace it was made for, and an id can be made again.
+    pub fn shares(&self, space: &str) -> bool {
+        self.share.is_some()
+            && self
+                .workspaces
+                .as_ref()
+                .is_some_and(|list| list.iter().any(|w| w == space))
+    }
+
+    /// A share's id, `s<token id>`; None for a token Settings made.
+    pub fn share_id(&self) -> Option<String> {
+        self.share.as_ref().map(|_| format!("s{}", self.id))
     }
 }
 
@@ -132,6 +170,9 @@ pub struct Store {
     /// The token (its id) that saved each automation made through the API, by number: when the
     /// token is revoked or expires, its automations are turned off.
     pub saved_by: std::collections::BTreeMap<u64, u64>,
+    /// The last tunnel address a share used: the Share… dialog's default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tunnel: Option<String>,
 }
 
 impl Default for Store {
@@ -143,6 +184,7 @@ impl Default for Store {
             tokens: Vec::new(),
             confined: Default::default(),
             saved_by: Default::default(),
+            tunnel: None,
         }
     }
 }
@@ -174,6 +216,9 @@ impl Store {
         if name.chars().count() > NAME_MOST {
             return Err(format!("A token's name is at most {NAME_MOST} characters."));
         }
+        if expires.is_some_and(|at| at <= now) {
+            return Err("The expiry is already past: choose a later time.".into());
+        }
         let text = random_text(TOKEN_PREFIX, 32);
         self.tokens.push(Token {
             id: self.next_id,
@@ -184,9 +229,39 @@ impl Store {
             created: now,
             expires,
             last: None,
+            share: None,
         });
         self.next_id += 1;
         Ok(text)
+    }
+
+    /// Makes a token limited to `share.workspace`, kept with the share's details, and says its id
+    /// and its text (which exists nowhere else). A public share's address is remembered as the
+    /// next one's default.
+    pub fn mint_share(
+        &mut self,
+        share: Share,
+        name: &str,
+        scope: Scope,
+        expires: Option<u64>,
+        now: u64,
+    ) -> Result<(u64, String), String> {
+        if !matches!(scope, Scope::Control | Scope::Full) {
+            return Err("A share is Control or Full.".into());
+        }
+        let text = self.mint(
+            name,
+            scope,
+            expires,
+            Some(vec![share.workspace.clone()]),
+            now,
+        )?;
+        if share.way == Way::Public {
+            self.tunnel = Some(share.address.clone());
+        }
+        let token = self.tokens.last_mut().expect("the token just made");
+        token.share = Some(share);
+        Ok((token.id, text))
     }
 
     /// Takes a token away; false when there is none with that id.
@@ -198,6 +273,39 @@ impl Store {
 
     pub fn revoke_all(&mut self) {
         self.tokens.clear();
+    }
+}
+
+/// What keeps a share of this `way` and `address` from working when its code is pasted on the
+/// other computer, given the API's `settings`; None when it fits.
+pub fn share_problem(settings: &Settings, way: Way, address: &str) -> Option<&'static str> {
+    match way {
+        Way::Pinned if settings.tls != Tls::Own => {
+            Some("A pinned share needs HTTPS with Templum's certificate: Settings ▸ API ▸ HTTPS.")
+        }
+        Way::Pinned if settings.listen == Listen::Loopback => {
+            Some("Directly needs the API on every network with Templum's certificate.")
+        }
+        Way::Pinned => None,
+        Way::Public => {
+            let address = address.trim();
+            let loopback = address.strip_prefix("http://").is_some_and(|rest| {
+                ["127.0.0.1", "[::1]", "localhost"].iter().any(|host| {
+                    rest.strip_prefix(host)
+                        .is_some_and(|tail| tail.is_empty() || tail.starts_with([':', '/']))
+                })
+            });
+            let authority = address.split("://").nth(1).unwrap_or_default();
+            let authority = authority.split('/').next().unwrap_or_default();
+            if !address.starts_with("https://") && !loopback {
+                Some("The address must start with https://.")
+            } else if authority.contains('@') || address.contains(['?', '#']) {
+                // A login would read as the host and be another.
+                Some("The address is a host alone: no login, query or fragment.")
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -395,6 +503,139 @@ mod tests {
             .unwrap();
         store.mint(" phone ", Scope::Read, None, None, 0).unwrap();
         assert_eq!(store.tokens[1].name, "phone");
+    }
+
+    #[test]
+    fn a_share_is_kept_with_its_token() {
+        let mut store = Store::default();
+        let share = Share {
+            workspace: "w3".into(),
+            way: Way::Pinned,
+            address: "192.168.1.5:7411".into(),
+        };
+        let (id, text) = store
+            .mint_share(share.clone(), "Another computer", Scope::Full, Some(100), 1)
+            .unwrap();
+        let token = &store.tokens[0];
+        assert_eq!(id, 1);
+        assert_eq!(token.workspaces, Some(vec!["w3".to_string()]));
+        assert_eq!(token.share, Some(share));
+        assert_eq!(token.share_id().as_deref(), Some("s1"));
+        assert!(text.starts_with("tpl_") && verify(&store.tokens, &text, 2).is_some());
+        assert_eq!(store.tunnel, None, "a pinned address isn't a tunnel's");
+        let dir = tempfile::tempdir().unwrap();
+        save(dir.path(), &store).unwrap();
+        assert_eq!(load(dir.path()), Ok(store.clone()));
+        // A file written before has neither a share nor a tunnel.
+        std::fs::write(
+            folder(dir.path()).join("api.json"),
+            r#"{"tokens":[{"id":1,"name":"a","hash":"h","scope":"read","workspaces":null,
+                "created":1,"expires":null,"last":null}]}"#,
+        )
+        .unwrap();
+        let old = load(dir.path()).unwrap();
+        assert_eq!(
+            (old.tokens[0].share.clone(), old.tunnel.clone()),
+            (None, None)
+        );
+        assert_eq!(old.tokens[0].share_id(), None);
+        let mine = Share {
+            workspace: "w3".into(),
+            way: Way::Public,
+            address: "https://t.example.com".into(),
+        };
+        assert_eq!(
+            store.mint_share(mine.clone(), "x", Scope::Read, None, 1),
+            Err("A share is Control or Full.".into())
+        );
+        store
+            .mint_share(mine, "x", Scope::Control, None, 1)
+            .unwrap();
+        assert_eq!(store.tunnel.as_deref(), Some("https://t.example.com"));
+    }
+
+    #[test]
+    fn a_share_must_fit_the_api() {
+        let settings = |listen, tls| Settings {
+            listen,
+            tls,
+            ..Settings::default()
+        };
+        let https =
+            "A pinned share needs HTTPS with Templum's certificate: Settings ▸ API ▸ HTTPS.";
+        let directly = "Directly needs the API on every network with Templum's certificate.";
+        assert_eq!(
+            share_problem(&settings(Listen::Loopback, Tls::Off), Way::Pinned, "x"),
+            Some(https)
+        );
+        assert_eq!(
+            share_problem(&settings(Listen::All, Tls::Off), Way::Pinned, "x"),
+            Some(https)
+        );
+        assert_eq!(
+            share_problem(&settings(Listen::Loopback, Tls::Own), Way::Pinned, "x"),
+            Some(directly)
+        );
+        assert_eq!(
+            share_problem(&settings(Listen::All, Tls::Own), Way::Pinned, "x"),
+            None
+        );
+        let public = |address| share_problem(&Settings::default(), Way::Public, address);
+        for fits in [
+            "https://t.example.com/p",
+            "http://127.0.0.1:9000",
+            "http://localhost",
+            "http://[::1]:1",
+            "  https://t.example.com ",
+        ] {
+            assert_eq!(public(fits), None, "{fits}");
+        }
+        for bad in [
+            "http://10.0.0.2:7411",
+            "templum.example.com",
+            "http://localhost.evil.com",
+            "",
+        ] {
+            assert_eq!(
+                public(bad),
+                Some("The address must start with https://."),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_share_address_is_a_host_alone() {
+        let public = |address| share_problem(&Settings::default(), Way::Public, address);
+        for bad in [
+            "https://templum.example.com@evil.com",
+            "https://user:pw@t.example.com",
+            "https://t.example.com/p?x=1",
+            "https://t.example.com/#top",
+        ] {
+            assert_eq!(
+                public(bad),
+                Some("The address is a host alone: no login, query or fragment."),
+                "{bad}"
+            );
+        }
+        // An @ further down the path is no login.
+        assert_eq!(public("https://t.example.com/@me"), None);
+    }
+
+    #[test]
+    fn a_token_cannot_expire_in_the_past() {
+        let mut store = Store::default();
+        for at in [0, 99, 100] {
+            assert_eq!(
+                store.mint("x", Scope::Read, Some(at), None, 100),
+                Err("The expiry is already past: choose a later time.".into()),
+                "{at}"
+            );
+        }
+        assert!(store.tokens.is_empty());
+        assert!(store.mint("x", Scope::Read, Some(101), None, 100).is_ok());
+        assert!(store.mint("x", Scope::Read, None, None, 100).is_ok());
     }
 
     #[test]

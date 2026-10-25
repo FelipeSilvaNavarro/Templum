@@ -172,7 +172,7 @@ the only key a URL may carry, and only on those two routes. Revoking a token voi
 |---|---|
 | **read** | Every GET, the event stream, and the tools that only read (`overview`, `list_agents`, `read_terminal`, `list_cards`, `read_note`, `read_checklist`, `wait_for`) |
 | **control** | Also every other tool that doesn't type for you: opening agents, handing and interrupting tasks, blocks, wires, cards, notes, checklists, showing; answering questions, plans and requests to connect; running, switching and saving automations that run no command |
-| **full** | Also `send_to_terminal`, `send_keys`, `terminal_input`, saving an automation that runs a command, deleting an automation, answering a request to delete or merge a worktree, and answering the Templum Agent's approvals |
+| **full** | Also `send_to_terminal`, `send_keys`, `terminal_input`, `share_workspace`, saving an automation that runs a command, deleting an automation, answering a request to delete or merge a worktree, and answering the Templum Agent's approvals |
 
 Too low a scope: `403` `{"error":{"code":"scope","message":"send_to_terminal needs a Full token."}}`. A call through the
 API never shows the Templum Agent's approval: the token is your own hand, and its scope says how far it reaches.
@@ -186,7 +186,7 @@ They can't make a workspace, and save automations only for their own workspaces.
 
 | Path | Answers |
 |---|---|
-| `GET /v1/state` | The whole state: `app`, `workspaces`, `blocks`, `wires`, `requests`, `boards`, `cards`, `automations`, `usage`, `view` |
+| `GET /v1/state` | The whole state: `app`, `workspaces`, `blocks`, `wires`, `requests`, `boards`, `cards`, `automations`, `shares`, `usage`, `view` |
 | `GET /v1/workspaces`, `/{workspace}` | Workspaces in the sidebar's order |
 | `GET /v1/blocks`, `/{block}` | Blocks, back to front; `?workspace=w3` filters |
 | `GET /v1/agents` | The blocks running an agent, with its state |
@@ -196,6 +196,8 @@ They can't make a workspace, and save automations only for their own workspaces.
 | `GET /v1/requests`, `/{request}` | What waits for you: questions, plans, requests to connect or delete a worktree, approvals |
 | `GET /v1/boards`, `/{board}`, `/v1/cards/{card}` | Boards with their columns' card ids; a card whole |
 | `GET /v1/automations`, `/{automation}` | Your automations, with their next and last runs |
+| `GET /v1/me` | Who the token is: its name, scope, workspaces, expiry and share, and this computer's name ([Shares](#shares-templum-to-templum)) |
+| `GET /v1/shares` | The workspaces shared with another Templum, as the token sees them |
 | `GET /v1/usage` | The agents' plan limits |
 | `GET /v1/tools` | The registry: every tool's name, description, input schema and scope |
 | `GET /v1/openapi.json` | The OpenAPI 3.1 document, generated from the registry |
@@ -209,7 +211,7 @@ automation numbers; a request is `r<n>` (the inbox's) or `a<n>` (the Templum Age
 `POST /v1/tools/{name}` runs any tool with its arguments as the JSON body; the answer is
 `{"text":"Created card 40.","workspace":"w3","block":"b7k2m"}` (the tool's words, and what it touched when known). The
 tool refusing is `422` `refused` with its sentence; a malformed argument is `400` `invalid`. `GET /v1/tools` lists them,
-with the six only the API has:
+with the eight only the API has:
 
 | Tool | Arguments | Scope |
 |---|---|---|
@@ -218,7 +220,9 @@ with the six only the API has:
 | `set_automation` | `automation` (its number), `on` | control |
 | `run_automation` | `automation` | control |
 | `delete_automation` | `automation` | full |
-| `terminal_input` | `block`, then `text` (a paste) or `keys` (1 to 16, `send_keys`' names) | full |
+| `terminal_input` | `block`, then `text` (a paste) or `keys` (1 to 256, [a key's name](#a-keys-name)) | full |
+| `share_workspace` | `workspace`, `name`, `scope` (`control` or `full`), `expires` (Unix seconds, or null), `way`, `address` | full, a token for all workspaces |
+| `revoke_share` | `share` (left out: the calling token's own) | full, or the share itself |
 
 REST aliases name the common calls; path parameters and the body become the tool's arguments, and the path wins:
 
@@ -234,6 +238,7 @@ REST aliases name the common calls; path parameters and the body become the tool
 | `POST /v1/boards/{board}/cards`, `PATCH /v1/cards/{card}`, `POST /v1/cards/{card}/move`, `/comments` | `create_card`, `edit_card`, `move_card`, `comment_card` |
 | `POST /v1/automations`, `PUT /v1/automations/{automation}` | `save_automation` (the body is the automation) |
 | `PATCH /v1/automations/{automation}`, `POST …/run`, `DELETE …` | `set_automation`, `run_automation`, `delete_automation` |
+| `POST /v1/workspaces/{workspace}/shares`, `DELETE /v1/shares/{share}` | `share_workspace`, `revoke_share` |
 
 **Who acts.** A call acts as you: no approval, comments by `you`. Tasks it hands (`delegate`, `open_agent`'s prompt) are
 typed as `[from API · <token name>, task t7]`, and their end, a `wait_for` with `wait: false` and every other notice
@@ -245,7 +250,7 @@ response that sends nothing for 100 seconds:** through it, hand the task without
 
 `GET /v1/events` is Server-Sent Events (`text/event-stream`). It opens with `event: snapshot` (the state, as the token
 sees it), then one event per change, named for the collection, singular (`workspace`, `block`, `wire` with the id `a-b`
-(its two block ids sorted), `request`, `board`, `card`, `automation`, `usage` with the id `usage`):
+(its two block ids sorted), `request`, `board`, `card`, `automation`, `share` (`s4`), `usage` with the id `usage`):
 
 ```
 id: 8f3a1c20-1042
@@ -275,6 +280,11 @@ state has the same `view` (null before the first paint, and in grid mode, where 
   when it catches up.
 - **Cut:** revoking the token, its expiry (checked at each heartbeat), *Disconnect*, turning the API off and
   quitting end its streams. Eight streams per token.
+- **Replaced:** a share's token (not one Settings made) that opens `GET /v1/events` with a `Templum-Mirror` header,
+  a session of at most 64 characters, other than the one its earlier connections carry, first sends those
+  connections' streams `event: replaced` (`data` is `{}`) and ends them, ends its terminal streams on them and cuts
+  its other idle connections: a computer that slept leaves its connections open, and they would hold the token's 16.
+  A mirror that gets `replaced` while its own connections are live stops: another computer connected with its code.
 
 ### Terminals, live
 
@@ -299,6 +309,10 @@ data: {"size":{"cols":120,"rows":40},"cursor":{"row":3,"col":10,"shape":"block",
   that changed (each with its `y`), and is sent when anything changed: a frame with no rows is the cursor or the title
   moving. Size, `cursor` and `title` are in every frame; `cursor` is `null` while the program hides it, `shape` is
   `block`, `underline` or `beam`, `title` is the program's own (OSC 0/2) or `null` (the block's title is in the state).
+- **Modes.** Every frame has `modes`, what the program took of the keyboard and the mouse at home:
+  `{"full_screen":true,"mouse":true,"kitty_keys":true}`, each present only when true (`{}` when none). A frame
+  whose only change is a mode has no rows. A client that sends keys yields the shortcuts a program would take, and a
+  later one can send the mouse; a home older than this field sends none.
 - **The live screen.** The frame is what the program drew, never the scrollback the person scrolled to or their
   selection: `read_terminal` reads the scrollback.
 - **At most 20 frames a second** per terminal. Each stream queues 20 frames or 8 MiB; a client that falls further behind loses
@@ -333,12 +347,58 @@ source.addEventListener('frame', e => {
 
 **Input.** `POST /v1/terminals/{block}/input` (the tool `terminal_input`, full scope) types as your keyboard does:
 `{"text":"ls\n"}` pastes (at most 256 KiB; bracketed when the program asked for it), `{"keys":["escape","j"]}` presses
-`send_keys`' names, 1 to 16, 50 ms apart (an Esc and the key after it in one burst would read as Alt+key). The answer
+[a key's name](#a-keys-name), 1 to 256 a call, pressed back to back, with 50 ms after an Esc (or Ctrl+[, Ctrl+3) that another key
+follows (so a program still reads Esc alone where the person paused, now that a network bunches keys). The answer
 (`Pasted into b7k2m.`, `Pressed 2 keys in b7k2m.`) comes once they are in, so send the next input after it and they keep
 their order. Type with `keys`: a character is a key, and a dialog that ignores pastes takes keys. Paste with `text`
 for long text. The block shows "answered by API · <token name>". A block that isn't a terminal, a subagent's transcript
 (read-only) and a shell that has ended ("b7k2m's shell has ended: nothing typed reaches it.") are `422`; a block the
 token doesn't see is `404`. The audit log names the call, never what was typed. No resize, and no mouse.
+
+#### A key's name
+
+`terminal_input`'s `keys` and `send_keys` name a key as `[ctrl+][alt+][shift+]<key>`, the modifiers in any order, each
+once. `<key>` is `enter`, `escape`, `tab`, `backspace`, `delete`, `insert`, `up`, `down`, `left`, `right`, `home`,
+`end`, `page_up`, `page_down`, `space`, `f1`–`f12`, or one character as typed, after Shift and the layout (`A`, `@`,
+`ç`, `á`). Examples: `ctrl+shift+p`, `alt+left`, `shift+f5`, `ctrl+alt+delete`, `shift+enter`. For a letter home takes
+its lowercase as the key and the letter as its text, as a keyboard reports one; the bytes are made at home, in the
+modes the program has at that moment, as a key pressed there. A known limit: a shifted symbol with Ctrl or Alt reaches
+the kitty keyboard protocol with the symbol as its key, not the one under it.
+
+### Shares (Templum to Templum)
+
+A **share** lets another Templum mirror one workspace. It is an API token limited to that workspace, Control or Full,
+made by *Edit… ▸ Share…* (or `share_workspace`), kept with the share's details in `api.json`; its id is `s<token id>`,
+and revoking the token revokes the share. The answer of `share_workspace` holds the **connection code** once, in
+`code`: `tplc1_` and the base64url of `{"url":…,"token":"tpl_…","pin":…}` (`pin`, the SHA-256 of Templum's
+certificate, only for a share made *Directly*). Templum keeps only the token's fingerprint, so the code cannot be
+shown again. `way` is `pinned` (the other computer pins Templum's certificate: `address` is `host:port` and the API
+must listen on every network with Templum's certificate) or `public` (a tunnel or proxy with a public certificate:
+`address` is `https://…`, or `http://` to this computer for an `ssh -L` forward). Refusals say what to fix: "A pinned
+share needs HTTPS with Templum's certificate: Settings ▸ API ▸ HTTPS.", "The address must start with https://.".
+
+`GET /v1/me` says who the token is, without asking the UI thread:
+
+```json
+{ "name": "Another computer", "scope": "full", "workspaces": ["w3"], "expires": 1764150000, "share": "s4",
+  "computer": "winx-desktop", "version": "0.1.6", "api": 1 }
+```
+
+`share` is null for a token Settings made; `workspaces` is empty for a share whose workspace was deleted at home (the
+share stays, saying "share of a deleted workspace" in Settings, until it is revoked). The state's `shares`, and the
+`share` events, are:
+
+```json
+{ "id": "s4", "workspace": "w3", "name": "Another computer", "scope": "full", "created": 1761560000,
+  "expires": 1764150000, "way": "public", "address": "https://templum.example.com",
+  "last": { "at": 1761561000, "addr": "203.0.113.7" }, "mirrored": true }
+```
+
+`mirrored` is true while an event stream of its token is open. A token for all workspaces sees every share; a limited
+token sees only the share it is. The state also gains a block's `read_only` (true for a terminal that takes no input,
+a subagent's transcript; left out otherwise) and a workspace's `icon` (its Lucide name, or null). `revoke_share` with
+no `share` revokes the calling token's own; a share may revoke itself, and revoking another takes a Full token for all
+workspaces.
 
 ### Errors and limits
 
@@ -368,13 +428,17 @@ without a token.
 
 ### The audit log and what is kept
 
-`<data>/api/audit.log` has one JSON line per call: time (`at`, Unix seconds), address, token name, what (a tool's name,
-a resource's path; cut at 200 characters) and its status. If calls were ever given up because the disk could not keep up, one line `lost`
-says how many (`more`). What anyone can make without a token (connections, refused or failed authentications and
-handshakes) is in `<data>/api/noise.log`, one line per address and minute with `more` counting the rest, so a flood of
-strangers can't fill a log or push the calls out of `audit.log`. Never a token, a ticket, a body or typed text. At 1 MiB
-each becomes `audit.log.1` and `noise.log.1`. `<data>/api/api.json` holds the settings and the tokens' hashes (`0600`, in a `0700` folder on
-Unix); a copy of the data folder carries no token that works. Each token's last use (time and address) is in Settings.
+`<data>/api/audit.log` has one JSON line per call: time (`at`, Unix seconds), address, token name, what (a tool's
+name, a resource's path; cut at 200 characters) and its status. If calls were ever given up because the disk could not
+keep up, one line `lost` says how many (`more`). What anyone can make without a token (connections, refused or failed
+authentications and handshakes) is in `<data>/api/noise.log`, one line per address and minute with `more` counting the
+rest, so a flood of strangers can't fill a log or push the calls out of `audit.log`. A mirror's chatter is grouped the
+same way, in `audit.log`: `terminal_input` and `GET /v1/me` calls are one line per token, call, status and minute,
+with `more` counting the rest, so a morning of typing can't rotate the other calls out; every other call keeps its own
+line. A mirror that replaces another's session (see `Templum-Mirror`) writes one `mirror_replaced` line. Never a
+token, a ticket, a body or typed text. At 1 MiB each becomes `audit.log.1` and `noise.log.1`. `<data>/api/api.json`
+holds the settings and the tokens' hashes (`0600`, in a `0700` folder on Unix); a copy of the data folder carries no
+token that works. Each token's last use (time and address) is in Settings.
 
 ### Versioning
 

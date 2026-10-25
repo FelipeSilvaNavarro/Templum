@@ -4,6 +4,8 @@ mod common;
 
 use common::*;
 use serde_json::json;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use templum_api::Notice;
 use templum_api::model::State;
@@ -416,4 +418,376 @@ fn a_stream_with_view_hears_the_camera() {
     assert_eq!(bad.status, 400);
     assert_eq!(bad.code(), "invalid");
     assert_eq!(bad.message(), "\"view\" is true or false.");
+}
+
+#[test]
+fn mirrored_says_which_tokens_hold_an_event_stream() {
+    let (text, mut token) = token(Scope::Read, None);
+    token.id = 41;
+    // The heartbeat is what finds the test's reader gone, and closes its connection.
+    let fake = fake(vec![token], |options| {
+        options.heartbeat = Duration::from_millis(100)
+    });
+    assert_eq!(fake.server.mirrored(), []);
+    let clients = |fake: &Fake| fake.notifications(templum_api::CLIENTS).len();
+    let before = clients(&fake);
+    let stream = open(&fake, "/v1/events", Auth::Bearer(&text), None);
+    assert_eq!(stream.event().event, "snapshot");
+    wait_for("the stream is mirrored", || {
+        fake.server.mirrored() == [(41, "127.0.0.1".to_string())]
+    });
+    assert!(
+        clients(&fake) > before,
+        "the UI thread heard the stream open"
+    );
+    let opened = clients(&fake);
+    drop(stream);
+    wait_for("the stream is gone", || fake.server.mirrored().is_empty());
+    wait_for("the UI thread hears it end", || clients(&fake) > opened);
+}
+
+#[test]
+fn a_stream_opening_on_a_known_connection_tells_the_ui() {
+    let (text, token) = shared_token(false);
+    let fake = fake(vec![token], |options| {
+        options.heartbeat = Duration::from_millis(100)
+    });
+    // The connection showed its token at /v1/me: opening the stream is not what joins it.
+    let mut raw = idle(&fake, &text, "one");
+    // The join's notification reaches the fake on its own thread: wait for it, so the stream
+    // opening is the only thing that can raise the count past `known`.
+    wait_for("the UI thread hears the join", || {
+        !fake.notifications(templum_api::CLIENTS).is_empty()
+    });
+    let known = fake.notifications(templum_api::CLIENTS).len();
+    write!(
+        raw,
+        "GET /v1/events HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {text}\r\n{MIRROR}: one\r\n\r\n"
+    )
+    .unwrap();
+    wait_for("the stream is mirrored", || {
+        !fake.server.mirrored().is_empty()
+    });
+    wait_for("the UI thread hears the stream open", || {
+        fake.notifications(templum_api::CLIENTS).len() > known
+    });
+}
+
+#[test]
+fn a_stream_still_opening_when_its_token_is_revoked_never_opens() {
+    let (text, token) = self::token(Scope::Read, None);
+    let fake = fake(vec![token], |options| {
+        options.heartbeat = Duration::from_millis(100)
+    });
+    fake.hold_state
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut raw = TcpStream::connect(fake.server.addr()).unwrap();
+    raw.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write!(
+        raw,
+        "GET /v1/events HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {text}\r\n\r\n"
+    )
+    .unwrap();
+    wait_for("the state to be asked", || !fake.asked().is_empty());
+    fake.server.set_tokens(vec![]);
+    fake.release_state();
+    let mut heard = Vec::new();
+    let _ = raw.read_to_end(&mut heard);
+    let heard = String::from_utf8_lossy(&heard);
+    assert!(!heard.contains("snapshot"), "{heard}");
+    assert_eq!(fake.server.streams(), 0);
+}
+
+#[test]
+fn a_stream_still_opening_when_its_workspaces_change_is_told_to_open_again() {
+    let (text, token) = self::token(Scope::Read, Some(vec!["w3"]));
+    let fake = fake(vec![token.clone()], |options| {
+        options.heartbeat = Duration::from_millis(100)
+    });
+    fake.hold_state
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut raw = TcpStream::connect(fake.server.addr()).unwrap();
+    raw.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write!(
+        raw,
+        "GET /v1/events HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {text}\r\n\r\n"
+    )
+    .unwrap();
+    wait_for("the state to be asked", || !fake.asked().is_empty());
+    // The same token, another list: the person deleted the shared workspace.
+    fake.server.set_tokens(vec![templum_api::Token {
+        workspaces: Some(vec![]),
+        ..token
+    }]);
+    fake.release_state();
+    let mut heard = Vec::new();
+    let _ = raw.read_to_end(&mut heard);
+    let heard = String::from_utf8_lossy(&heard).to_lowercase();
+    assert!(heard.starts_with("http/1.1 429"), "not a 401: {heard}");
+    assert!(heard.contains("retry-after"), "{heard}");
+    assert!(!heard.contains("snapshot"), "{heard}");
+    assert_eq!(fake.server.streams(), 0);
+}
+
+fn shared_token(share: bool) -> (String, templum_api::Token) {
+    let (text, mut token) = token(Scope::Full, Some(vec!["w3"]));
+    if share {
+        token.share = Some(templum_api::store::Share {
+            workspace: "w3".into(),
+            way: templum_api::store::Way::Public,
+            address: "https://t.example.com".into(),
+        });
+    }
+    (text, token)
+}
+
+const MIRROR: &str = "Templum-Mirror";
+
+#[test]
+fn a_new_mirror_session_replaces_the_old_one() {
+    let (text, token) = shared_token(true);
+    let fake = fake(vec![token], |options| {
+        options.heartbeat = Duration::from_millis(100)
+    });
+    let a = open_with(
+        &fake,
+        "/v1/events",
+        Auth::Bearer(&text),
+        None,
+        &[(MIRROR, "one")],
+    );
+    assert_eq!(a.event().event, "snapshot");
+    let b = open_with(
+        &fake,
+        "/v1/events",
+        Auth::Bearer(&text),
+        None,
+        &[(MIRROR, "two")],
+    );
+    assert_eq!((b.status, b.event().event.as_str()), (200, "snapshot"));
+    let replaced = a.event();
+    assert_eq!(
+        (replaced.event.as_str(), replaced.data),
+        ("replaced", json!({}))
+    );
+    assert!(a.next().is_none(), "and then it ended");
+    // B stays: a publish reaches it.
+    let mut moved = sample();
+    moved.blocks[0].title = "moved".into();
+    fake.server.publish(moved);
+    assert_eq!(b.event().event, "block");
+    assert_eq!(fake.server.mirrored().len(), 1);
+    // A call with the old session is a new call, not a stream: it is served.
+    let state = fake.call(req("GET", "/v1/state").token(&text).header(MIRROR, "one"));
+    assert_eq!(state.status, 200);
+    // The same session opening again replaces nothing.
+    let c = open_with(
+        &fake,
+        "/v1/events",
+        Auth::Bearer(&text),
+        None,
+        &[(MIRROR, "one")],
+    );
+    assert_eq!(c.event().event, "snapshot");
+    let again = b.event();
+    assert_eq!(again.event, "replaced", "two was another session than one");
+}
+
+#[test]
+fn a_settings_token_keeps_its_streams() {
+    let (text, token) = shared_token(false);
+    let fake = fake(vec![token], |options| {
+        options.heartbeat = Duration::from_millis(100)
+    });
+    let a = open_with(
+        &fake,
+        "/v1/events",
+        Auth::Bearer(&text),
+        None,
+        &[(MIRROR, "one")],
+    );
+    assert_eq!(a.event().event, "snapshot");
+    let b = open_with(
+        &fake,
+        "/v1/events",
+        Auth::Bearer(&text),
+        None,
+        &[(MIRROR, "two")],
+    );
+    assert_eq!(b.event().event, "snapshot");
+    let mut moved = sample();
+    moved.blocks[0].title = "moved".into();
+    fake.server.publish(moved);
+    // Both hear the change, and neither was told anything else.
+    assert_eq!(a.event().event, "block");
+    assert_eq!(b.event().event, "block");
+    assert!(a.ping() && b.ping(), "still open");
+}
+
+/// A connection that made one call in `session` and stays open, idle.
+fn idle(fake: &Fake, text: &str, session: &str) -> TcpStream {
+    let mut stream = TcpStream::connect(fake.server.addr()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /v1/me HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {text}\r\n{MIRROR}: {session}\r\n\r\n"
+    )
+    .unwrap();
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut byte = [0u8];
+        stream.read_exact(&mut byte).unwrap();
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8(head).unwrap().to_lowercase();
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    let length: usize = head
+        .lines()
+        .find_map(|l| l.strip_prefix("content-length: "))
+        .unwrap()
+        .parse()
+        .unwrap();
+    stream.read_exact(&mut vec![0; length]).unwrap();
+    stream
+}
+
+/// Whether the server has closed `stream`.
+fn closed(stream: &mut TcpStream) -> bool {
+    match stream.read(&mut [0u8]) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => !matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+    }
+}
+
+fn mirror_fake(text_token: templum_api::Token) -> Fake {
+    fake(vec![text_token], |options| {
+        options.heartbeat = Duration::from_millis(100)
+    })
+}
+
+#[test]
+fn a_new_session_aborts_the_old_ones_idle_connections_and_says_so() {
+    let (text, token) = shared_token(true);
+    let fake = mirror_fake(token);
+    let mut old = idle(&fake, &text, "one");
+    let b = open_with(
+        &fake,
+        "/v1/events",
+        Auth::Bearer(&text),
+        None,
+        &[(MIRROR, "two")],
+    );
+    assert_eq!(b.event().event, "snapshot");
+    assert!(
+        closed(&mut old),
+        "the idle connection of session one is cut"
+    );
+    wait_for("the audit line", || {
+        logs(fake.dir.path()).contains("mirror_replaced")
+    });
+}
+
+#[test]
+fn stale_connections_do_not_keep_a_new_session_out() {
+    let (text, token) = shared_token(true);
+    let fake = mirror_fake(token);
+    // The token's 16, all held by a laptop that slept.
+    let mut stale: Vec<TcpStream> = (0..16).map(|_| idle(&fake, &text, "one")).collect();
+    let b = open_with(
+        &fake,
+        "/v1/events",
+        Auth::Bearer(&text),
+        None,
+        &[(MIRROR, "two")],
+    );
+    assert_eq!((b.status, b.event().event.as_str()), (200, "snapshot"));
+    assert!(stale.iter_mut().all(closed));
+}
+
+#[test]
+fn a_share_token_without_a_mirror_header_replaces_nothing() {
+    let (text, token) = shared_token(true);
+    let fake = mirror_fake(token);
+    let a = open_with(
+        &fake,
+        "/v1/events",
+        Auth::Bearer(&text),
+        None,
+        &[(MIRROR, "one")],
+    );
+    assert_eq!(a.event().event, "snapshot");
+    let b = open(&fake, "/v1/events", Auth::Bearer(&text), None);
+    assert_eq!(b.event().event, "snapshot");
+    assert!(a.ping() && b.ping(), "both still open");
+    assert!(!logs(fake.dir.path()).contains("mirror_replaced"));
+}
+
+#[test]
+fn a_new_session_ends_the_old_ones_terminal_streams() {
+    let (text, token) = shared_token(true);
+    let fake = mirror_fake(token);
+    let v = viewer(20, 3);
+    lend(&fake, "b7k2m", "w3", &v);
+    let a = open_with(
+        &fake,
+        "/v1/terminals/b7k2m/stream",
+        Auth::Bearer(&text),
+        None,
+        &[(MIRROR, "one")],
+    );
+    assert_eq!(a.event().event, "frame");
+    let b = open_with(
+        &fake,
+        "/v1/events",
+        Auth::Bearer(&text),
+        None,
+        &[(MIRROR, "two")],
+    );
+    assert_eq!(b.event().event, "snapshot");
+    assert!(
+        a.next().is_none(),
+        "the terminal stream of session one ended"
+    );
+}
+
+#[test]
+fn a_replaced_stream_whose_client_never_reads_is_cut_after_the_grace() {
+    let (text, token) = shared_token(true);
+    let fake = fake(vec![token], |options| {
+        options.heartbeat = Duration::from_millis(100);
+        options.replaced_grace = Duration::from_millis(100);
+    });
+    // A client that opens a stream and never reads it.
+    let mut stuck = TcpStream::connect(fake.server.addr()).unwrap();
+    write!(
+        stuck,
+        "GET /v1/events HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {text}\r\n{MIRROR}: one\r\n\r\n"
+    )
+    .unwrap();
+    wait_for("the stream", || fake.server.streams() == 1);
+    // More than any socket buffer holds: the server's write to it blocks.
+    for n in 0..200 {
+        let mut state = sample();
+        state.blocks[0].title = format!("{}{}", n % 10, "x".repeat(128 * 1024));
+        fake.server.publish(state);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let b = open_with(
+        &fake,
+        "/v1/events",
+        Auth::Bearer(&text),
+        None,
+        &[(MIRROR, "two")],
+    );
+    assert_eq!(b.status, 200);
+    wait_for("the stuck connection to be cut", || {
+        fake.server.clients().len() == 1
+    });
+    drop(stuck);
 }

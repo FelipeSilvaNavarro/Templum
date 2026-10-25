@@ -558,6 +558,13 @@ fn card(
                     div()
                         .flex()
                         .gap(px(4.0))
+                        .items_center()
+                        .children(crate::share_dialog::mirror_mark(
+                            ws,
+                            &space.id,
+                            "space-card-mirrored",
+                            12.0,
+                        ))
                         .when(agent, |el| {
                             el.child(dot(hsla(ws.theme.palette.ansi[2], 1.0)))
                         })

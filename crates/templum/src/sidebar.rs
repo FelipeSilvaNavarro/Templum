@@ -212,6 +212,12 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
                     .bg(hsla(ws.theme.palette.ansi[2], 1.0)),
             )
         })
+        // Another Templum mirrors it now (docs/specs/templum-to-templum.md); the news dot, if any,
+        // is drawn over it.
+        .children(
+            crate::share_dialog::mirror_mark(ws, &space.id, "workspace-mirrored", 12.0)
+                .map(|mark| mark.absolute().bottom(px(2.0)).right(px(2.0))),
+        )
         // A terminal there has news (see alert.rs).
         .when(space.terminals().any(|(_, p)| p.alert.is_some()), |el| {
             el.child(

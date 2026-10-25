@@ -111,6 +111,11 @@ pub fn fingerprint(cert: &CertificateDer) -> String {
     pairs.join(":")
 }
 
+/// What a connection code pins: the fingerprint as 64 lowercase hex characters, no colons.
+pub fn pin(cert: &CertificateDer) -> String {
+    fingerprint(cert).replace(':', "").to_lowercase()
+}
+
 /// The server's TLS settings: safe protocol versions (1.2 and 1.3), no client certificate, HTTP/1.1.
 pub fn server_config(cert: Certificate) -> Result<Arc<rustls::ServerConfig>, String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -163,6 +168,19 @@ mod tests {
         assert!(
             got.chars()
                 .all(|c| c == ':' || c.is_ascii_digit() || ('A'..='F').contains(&c))
+        );
+    }
+
+    #[test]
+    fn the_pin_is_the_fingerprint_in_lowercase_hex() {
+        let der = CertificateDer::from(b"templum".to_vec());
+        let pinned = pin(&der);
+        assert_eq!(pinned, fingerprint(&der).replace(':', "").to_lowercase());
+        assert!(
+            pinned.len() == 64
+                && pinned
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         );
     }
 

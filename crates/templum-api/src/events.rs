@@ -190,6 +190,17 @@ impl Cell {
         });
     }
 
+    /// The stream is over after `last`: its queue is replaced by that one frame, which is sent
+    /// before the body finishes.
+    pub fn end_with(&self, last: Bytes) {
+        self.with(|c| {
+            if !c.ended {
+                c.queue.resync(last);
+                c.ended = true;
+            }
+        });
+    }
+
     pub fn behind(&self) -> bool {
         self.0
             .lock()
@@ -374,6 +385,28 @@ impl Hub {
         }
     }
 
+    /// Ends the streams of `token` that are on one of `conns`, each with the frame `replaced`:
+    /// another computer connected with the same share.
+    pub fn replace(&mut self, token: u64, conns: &[u64], ids: &Ids) {
+        let replaced = frame(&ids.next().1, crate::REPLACED, &json!({}));
+        let gone: Vec<u64> = self
+            .streams
+            .iter()
+            .filter(|(_, e)| e.token == token && conns.contains(&e.conn))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in gone {
+            if let Some(entry) = self.streams.remove(&id) {
+                entry.cell.end_with(replaced.clone());
+            }
+        }
+    }
+
+    /// Each open stream's token and connection.
+    pub fn streams_by_conn(&self) -> Vec<(u64, u64)> {
+        self.streams.values().map(|e| (e.token, e.conn)).collect()
+    }
+
     /// The streams on connection `conn`.
     pub fn on_conn(&self, conn: u64) -> bool {
         self.streams.values().any(|e| e.conn == conn)
@@ -485,18 +518,22 @@ pub(crate) fn publish(hub: &Mutex<Hub>, ids: &Ids, state: &State) {
             )
         })
         .collect();
-    type Key = Option<Vec<String>>;
+    // A limited caller's view holds its own share, so tokens with the same workspaces differ.
+    type Key = (Option<Vec<String>>, Option<u64>);
     enum Out {
         Snapshot(Bytes),
         Deltas(Vec<Bytes>),
     }
     let mut views: HashMap<Key, Arc<State>> = HashMap::new();
     let mut snapshots: HashMap<Key, Bytes> = HashMap::new();
-    let mut view_frames: HashMap<Key, Bytes> = HashMap::new();
+    let mut view_frames: HashMap<Option<Vec<String>>, Bytes> = HashMap::new();
     let mut diffs: Vec<(Key, Arc<State>, Vec<Bytes>)> = Vec::new();
     let mut done: Vec<(u64, Arc<State>, Out)> = Vec::new();
     for (id, caller, last, behind, follows) in work {
-        let key = caller.workspaces.clone();
+        let key = (
+            caller.workspaces.clone(),
+            caller.workspaces.is_some().then_some(caller.token),
+        );
         let view = views
             .entry(key.clone())
             .or_insert_with(|| Arc::new(state.visible(&caller)))
@@ -736,6 +773,52 @@ mod tests {
         );
         hub.cut(|caller| caller.token == 1);
         assert_eq!((hub.len(), hub.of_token(1)), (1, 0));
+    }
+
+    #[test]
+    fn two_limited_tokens_of_one_workspace_each_hear_only_their_own_share() {
+        use crate::model::ShareView;
+        let (ids, hub) = (Ids::new(), Mutex::new(Hub::default()));
+        let old = State::default();
+        let (a, b) = {
+            let mut h = hub.lock().unwrap();
+            let now = Instant::now();
+            let mut open = |token, conn| {
+                h.open(
+                    caller(token, Some(&["w3"])),
+                    old.clone(),
+                    conn,
+                    Bytes::new(),
+                    None,
+                    now,
+                    false,
+                )
+                .unwrap()
+            };
+            (open(1, 1), open(2, 2))
+        };
+        // Their snapshots, not what this is about.
+        let _ = (
+            a.cell.0.lock().unwrap().queue.take(),
+            b.cell.0.lock().unwrap().queue.take(),
+        );
+        let mut new = old.clone();
+        new.shares = ["s1", "s2"]
+            .map(|id| ShareView {
+                id: id.into(),
+                workspace: "w3".into(),
+                ..Default::default()
+            })
+            .into();
+        publish(&hub, &ids, &new);
+        for (stream, id) in [(&a, "s1"), (&b, "s2")] {
+            assert_eq!(stream.cell.queued(), 1, "{id}");
+            let frame = text(stream.cell.0.lock().unwrap().queue.take().unwrap());
+            assert!(
+                frame.contains("event: share") && frame.contains(id),
+                "{frame}"
+            );
+        }
     }
 
     #[test]

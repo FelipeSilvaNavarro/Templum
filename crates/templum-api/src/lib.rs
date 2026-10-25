@@ -2,6 +2,7 @@
 //! stream. No UI: `crates/templum` holds the glue.
 
 mod audit;
+pub mod code;
 mod events;
 pub mod model;
 pub mod openapi;
@@ -30,6 +31,14 @@ pub const WATCH: &str = "templum/watch";
 pub const TERMINAL: &str = "templum/terminal";
 /// The method of the notification that says a client connected or left: the pill counts them.
 pub const CLIENTS: &str = "templum/clients";
+
+/// The header a mirror's every request carries: a random value new at each connect or reconnect.
+/// A share's token opening an event stream with a new one ends the streams and connections of the
+/// old (docs/specs/templum-to-templum.md, The client).
+pub const MIRROR_HEADER: &str = "templum-mirror";
+/// The name of the event a stream gets (its data is `{}`) just before it ends because another
+/// computer connected with the same share.
+pub const REPLACED: &str = "replaced";
 
 /// JSON-RPC errors the glue answers, mapped to 403, 401 and 404.
 pub mod codes {

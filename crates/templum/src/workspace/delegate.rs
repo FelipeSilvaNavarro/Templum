@@ -46,6 +46,13 @@ pub(super) const TYPING: Duration = Duration::from_secs(3);
 /// Between two keys `send_keys` presses: an Esc and the key after it in one burst read as
 /// Alt+key.
 pub(super) const KEY_GAP: Duration = Duration::from_millis(50);
+
+/// Whether a key waits KEY_GAP after `previous`: every key of an agent's `send_keys`; of the
+/// person's `terminal_input`, only the one after a key that sends a lone ESC (`escape`, Ctrl+[,
+/// Ctrl+3), or the program would read ESC and the key as Alt+key.
+fn gap_before(previous: &str, person: bool) -> bool {
+    !person || named_key(previous).is_some_and(|k| k.sends_lone_esc())
+}
 /// How long after its last key `send_keys` reads the screen it answers with.
 const KEYS_SETTLE: Duration = Duration::from_millis(300);
 /// The last lines of a screen Templum answers with (`send_keys`, a task not taken).
@@ -794,8 +801,9 @@ impl Workspace {
         ))
     }
 
-    /// Presses `keys` in the terminal `worker`, KEY_GAP apart, as keys `by` pressed (the person's,
-    /// for the screen's looks). `person`: they come from the person's own device (the API's
+    /// Presses `keys` in the terminal `worker`, KEY_GAP apart (the person's: only after an Esc, so
+    /// a program still reads it alone), as keys `by` pressed (the person's, for the screen's
+    /// looks). `person`: they come from the person's own device (the API's
     /// `terminal_input`), so they count as typing as local keys do (`person_keyed`,
     /// `person_wrote`); an agent's (`send_keys`) don't. The terminal is found again before each
     /// key: one closed meanwhile ends it there, and the answer is false.
@@ -809,13 +817,14 @@ impl Workspace {
     ) -> Task<bool> {
         cx.spawn(async move |ws, cx| {
             for (i, key) in keys.iter().enumerate() {
-                if i > 0 {
+                if i > 0 && gap_before(&keys[i - 1], person) {
                     cx.background_executor().timer(KEY_GAP).await;
                 }
                 let pressed = ws.update(cx, |ws, cx| {
                     let (Some(pane), Some(key)) = (ws.pane_mut(&worker), named_key(key)) else {
                         return false;
                     };
+                    let key = key.input();
                     // The person's keys, for the screen's looks: a dialog they answer ends.
                     pane.typed.set(true);
                     pane.keys_from = Some((by.clone(), Instant::now()));
@@ -1847,6 +1856,17 @@ mod tests {
 
     fn wait() -> EnterWait {
         EnterWait::new("› ".into(), SIZE)
+    }
+
+    #[test]
+    fn the_persons_keys_wait_only_after_a_lone_esc() {
+        for previous in ["escape", "ctrl+[", "ctrl+3"] {
+            assert!(gap_before(previous, true), "{previous}");
+        }
+        for previous in ["alt+escape", "alt+[", "j", "enter", "ctrl+c"] {
+            assert!(!gap_before(previous, true), "{previous}");
+        }
+        assert!(gap_before("j", false), "an agent's keys always wait");
     }
 
     /// The bare prompt of each agent family is an empty input; text after it, or a screen with no

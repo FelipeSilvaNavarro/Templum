@@ -7,9 +7,9 @@ use std::time::{Instant, SystemTime};
 use gpui_kit::App;
 use templum_api::model::{
     AgentView, App as AppView, Assignee, AttachmentView, AutomationView, BlockView, BoardView,
-    CardRef, CardView, ColumnView, CommentView, ItemView, LimitsView, OptionView, PlanView,
-    QuestionView, Rect, RequestView, SessionView, State, UsageView, ViewView, Why, WindowView,
-    WireView, WorkspaceView,
+    CardRef, CardView, ColumnView, CommentView, ItemView, LastView, LimitsView, OptionView,
+    PlanView, QuestionView, Rect, RequestView, SessionView, ShareView, State, UsageView, ViewView,
+    Why, WindowView, WireView, WorkspaceView,
 };
 use templum_api::store::Scope;
 
@@ -49,6 +49,10 @@ impl Workspace {
                     color: space.look.color.clone(),
                     shown: space.id == self.space.id,
                     stopped: space.stopped,
+                    icon: space
+                        .look
+                        .icon
+                        .map(|icon| crate::space_dialog::icon_name(icon).to_string()),
                 })
                 .collect(),
             blocks: spaces
@@ -88,6 +92,7 @@ impl Workspace {
                 })
                 .collect(),
             automations: self.automation_views(cx),
+            shares: self.share_views(),
             view: self.view_of_shown(),
             usage: (!self.limits.is_empty()).then(|| UsageView {
                 limits: self
@@ -110,6 +115,43 @@ impl Workspace {
                     .collect(),
             }),
         }
+    }
+
+    /// The shares: the tokens that were made by sharing a workspace, oldest first, with whether an
+    /// event stream of each is open now (asked of the server, no state built). A share of a
+    /// workspace that is gone is still here, naming it.
+    pub(crate) fn share_views(&self) -> Vec<ShareView> {
+        let Some(store) = self.api.store.as_ref() else {
+            return Vec::new();
+        };
+        let mirrored = self
+            .api
+            .server
+            .as_ref()
+            .map(|server| server.mirrored())
+            .unwrap_or_default();
+        store
+            .tokens
+            .iter()
+            .filter_map(|token| {
+                let share = token.share.as_ref()?;
+                Some(ShareView {
+                    id: token.share_id()?,
+                    workspace: share.workspace.clone(),
+                    name: token.name.clone(),
+                    scope: token.scope,
+                    created: token.created,
+                    expires: token.expires,
+                    way: share.way,
+                    address: share.address.clone(),
+                    last: token.last.as_ref().map(|used| LastView {
+                        at: used.at,
+                        addr: used.addr.clone(),
+                    }),
+                    mirrored: mirrored.iter().any(|(id, _)| *id == token.id),
+                })
+            })
+            .collect()
     }
 
     /// What the shown workspace's canvas shows: the world rectangle at its camera and the canvas's
@@ -157,6 +199,7 @@ impl Workspace {
                     z,
                     opened_by: pane.and_then(|p| p.opened_by.clone()),
                     board: space.kanban(block.id).and_then(|k| k.board),
+                    read_only: pane.is_some_and(|p| p.follows.is_some()),
                     agent: pane
                         .filter(|p| p.agent().is_some() && p.follows.is_none())
                         .and_then(|p| self.agent_view(p, now, wall)),

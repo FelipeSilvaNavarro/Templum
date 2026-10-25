@@ -6,7 +6,7 @@
 use futures::StreamExt;
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -105,6 +105,15 @@ pub fn sample() -> State {
             workspace: Some("w3".into()),
             ..Default::default()
         }],
+        shares: ["s1", "s2"]
+            .map(|id| ShareView {
+                id: id.into(),
+                workspace: "w3".into(),
+                name: "Another computer".into(),
+                scope: Scope::Full,
+                ..Default::default()
+            })
+            .into(),
         usage: Some(UsageView::default()),
         view: Some(ViewView {
             workspace: "w3".into(),
@@ -128,12 +137,18 @@ pub struct Seen {
     pub notification: bool,
 }
 
+/// A request the fake UI thread holds unanswered: its id and where its answer goes.
+type Parked = (Value, std::sync::mpsc::Sender<String>);
+
 pub struct Fake {
     pub server: Arc<Server>,
     pub base: String,
     pub seen: Arc<Mutex<Vec<Seen>>>,
     /// The terminals the fake UI thread lends when a terminal stream opens.
     pub terminals: Arc<Mutex<Vec<TerminalRef>>>,
+    /// While set, the fake UI thread keeps the state requests it gets unanswered (`release_state`).
+    pub hold_state: Arc<AtomicBool>,
+    parked: Arc<Mutex<Vec<Parked>>>,
     pub dir: tempfile::TempDir,
 }
 
@@ -168,6 +183,14 @@ impl Fake {
     pub fn call(&self, request: Req) -> Answer {
         request.send(&self.base)
     }
+
+    /// Answers the state requests held, and stops holding.
+    pub fn release_state(&self) {
+        self.hold_state.store(false, Ordering::SeqCst);
+        for (id, reply) in self.parked.lock().unwrap().drain(..) {
+            let _ = reply.send(rpc::result(&id, serde_json::to_value(sample()).unwrap()));
+        }
+    }
 }
 
 /// A server on `127.0.0.1:0`, plain, with a temporary data folder; `tweak` changes its options.
@@ -198,6 +221,10 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
     let record = seen.clone();
     let terminals: Arc<Mutex<Vec<TerminalRef>>> = Arc::default();
     let lent = terminals.clone();
+    let hold_state = Arc::new(AtomicBool::new(false));
+    let holding = hold_state.clone();
+    let parked: Arc<Mutex<Vec<Parked>>> = Arc::default();
+    let park = parked.clone();
     // A weak hold, so that dropping the fake still drops the server.
     let lender = Arc::downgrade(&server);
     std::thread::spawn(move || {
@@ -222,6 +249,10 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
             let Some(id) = id else { continue };
             let name = params["name"].as_str().unwrap_or_default();
             let line = match method.as_str() {
+                templum_api::STATE if holding.load(Ordering::SeqCst) => {
+                    park.lock().unwrap().push((id, message.reply));
+                    continue;
+                }
                 templum_api::STATE => rpc::result(&id, serde_json::to_value(sample()).unwrap()),
                 templum_api::TERMINAL => {
                     let block = params["block"].as_str().unwrap_or_default();
@@ -244,6 +275,20 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
                     held.push(message.reply);
                     continue;
                 }
+                // The UI thread drops the share's token before it answers, as the real one does.
+                "tools/call" if name == "revoke_share" => {
+                    if let Some(server) = lender.upgrade() {
+                        server.set_tokens(Vec::new());
+                    }
+                    tools::tool_result(&id, &Reply::ok("Revoked s4."))
+                }
+                "tools/call" if name == "share_workspace" => rpc::result(
+                    &id,
+                    serde_json::json!({
+                        "content": [{ "type": "text", "text": "Shared API as s4." }],
+                        "code": "tplc1_x",
+                    }),
+                ),
                 "tools/call" if name == "read_note" => {
                     tools::tool_result(&id, &Reply::ok("did read_note"))
                 }
@@ -257,6 +302,8 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
         base,
         seen,
         terminals,
+        hold_state,
+        parked,
         dir,
     }
 }
@@ -312,6 +359,17 @@ pub struct Event {
 
 /// `GET path` (with its query, if any) as a stream.
 pub fn open(fake: &Fake, path: &str, auth: Auth, last_event_id: Option<&str>) -> Stream {
+    open_with(fake, path, auth, last_event_id, &[])
+}
+
+/// `open` with more headers.
+pub fn open_with(
+    fake: &Fake,
+    path: &str,
+    auth: Auth,
+    last_event_id: Option<&str>,
+    headers: &[(&str, &str)],
+) -> Stream {
     let request = match auth {
         Auth::Bearer(token) => req("GET", path).token(token),
         Auth::Ticket(ticket) => {
@@ -323,6 +381,9 @@ pub fn open(fake: &Fake, path: &str, auth: Auth, last_event_id: Option<&str>) ->
         Some(id) => request.header("Last-Event-ID", id),
         None => request,
     };
+    let request = headers.iter().fold(request, |request, (name, value)| {
+        request.header(name, value)
+    });
     let built = request.build(&fake.base);
     let (lines, receiver) = channel();
     let (head, heads) = channel();

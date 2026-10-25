@@ -58,6 +58,7 @@ fn schemas() -> Value {
             ("boards", array(r("BoardView"))),
             ("cards", array(r("CardView"))),
             ("automations", array(r("AutomationView"))),
+            ("shares", array(r("Share"))),
             ("view", nullable(r("View"))),
             ("usage", nullable(r("UsageView"))),
         ]),
@@ -73,6 +74,7 @@ fn schemas() -> Value {
             ("color", maybe("string")),
             ("shown", b()),
             ("stopped", b()),
+            ("icon", maybe("string")),
         ]),
         "Rect": view(&[("x", n()), ("y", n()), ("w", n()), ("h", n())]),
         "BlockView": view(&[
@@ -198,8 +200,8 @@ fn schemas() -> Value {
         )]),
         "ToolResult": json!({
             "type": "object",
-            "description": "The tool's text, and what it touched when Templum knows it.",
-            "properties": { "text": s(), "workspace": s(), "block": s() },
+            "description": "The tool's text, and what it touched when Templum knows it; share_workspace adds its connection code.",
+            "properties": { "text": s(), "workspace": s(), "block": s(), "code": s() },
             "required": ["text"],
         }),
     })
@@ -214,6 +216,30 @@ fn view_schemas() -> Value {
         || kind("number"),
         || kind("boolean"),
     );
+    // `modes` is optional: a home older than the field sends frames without it.
+    let mut frame = view(&[
+        ("size", view(&[("cols", i()), ("rows", i())])),
+        (
+            "cursor",
+            nullable(view(&[
+                ("row", i()),
+                ("col", i()),
+                (
+                    "shape",
+                    json!({ "type": "string", "enum": ["block", "underline", "beam"] }),
+                ),
+                ("blinking", b()),
+            ])),
+        ),
+        ("title", maybe("string")),
+        ("whole", b()),
+        ("rows", array(r("FrameRow"))),
+    ]);
+    frame["properties"]["modes"] = json!({
+        "type": "object",
+        "description": "What the program took at home; a flag is present only when true. Every frame carries it, and a frame whose only change is the modes has no rows.",
+        "properties": { "full_screen": b(), "mouse": b(), "kitty_keys": b() },
+    });
     json!({
         "View": view(&[
             ("workspace", s()),
@@ -223,18 +249,7 @@ fn view_schemas() -> Value {
             ("h", n()),
             ("zoom", n()),
         ]),
-        "Frame": view(&[
-            ("size", view(&[("cols", i()), ("rows", i())])),
-            ("cursor", nullable(view(&[
-                ("row", i()),
-                ("col", i()),
-                ("shape", json!({ "type": "string", "enum": ["block", "underline", "beam"] })),
-                ("blinking", b()),
-            ]))),
-            ("title", maybe("string")),
-            ("whole", b()),
-            ("rows", array(r("FrameRow"))),
-        ]),
+        "Frame": frame,
         "FrameRow": view(&[("y", i()), ("runs", array(r("FrameRun")))]),
         "FrameRun": json!({
             "type": "object",
@@ -325,6 +340,7 @@ fn resource(resource: Resource) -> Value {
         Resource::Card => r("CardView"),
         Resource::Automations => array(r("AutomationView")),
         Resource::Automation => r("AutomationView"),
+        Resource::Shares => array(r("Share")),
         Resource::Usage => r("UsageView"),
     }
 }
@@ -366,13 +382,21 @@ fn operation(route: &registry::Route) -> Value {
         Does::Events => {
             op["description"] = json!(
                 "Server-Sent Events: a `snapshot` of the state, then a `put` or `delete` per change of a \
-                 collection (workspace, block, wire, request, board, card, automation, usage) and `notice` \
+                 collection (workspace, block, wire, request, board, card, automation, share, usage) and `notice` \
                  happenings; `: ping` comments keep it alive. With `view=true`, a `view` event (the \
                  shown workspace's camera, or null) each time it changes. Resumes with Last-Event-ID. \
+                 A share's token opening it with a new `Templum-Mirror` session first sends the streams of \
+                 its earlier session `event: replaced` (data `{}`) and ends them. \
                  A browser's EventSource can't set headers: it opens with a ticket from POST \
                  /v1/tickets."
             );
             op["security"] = json!([{ "bearer": [] }, { "ticket": [] }]);
+            parameters.push(json!({
+                "name": "Templum-Mirror",
+                "in": "header",
+                "schema": { "type": "string", "maxLength": 64 },
+                "description": "A mirror's session, new at each connect: a share's token opening this stream with another session than its earlier connections carry replaces them."
+            }));
             parameters.push(json!({
                 "name": "view",
                 "in": "query",
@@ -401,6 +425,11 @@ fn operation(route: &registry::Route) -> Value {
                 json!({ "description": "An event stream.", "content": { "text/event-stream": { "schema": kind("string") } } }),
             )
         }
+        Does::Me => (
+            "Who the token is: its name, scope, workspaces, expiry and share, and this computer's name and Templum's version.".to_string(),
+            "read".to_string(),
+            json_ok(r("Me")),
+        ),
         Does::Ticket => (
             "Makes a ticket: a key for one GET /v1/events or GET /v1/terminals/{block}/stream, 30 seconds, once.".to_string(),
             "read".to_string(),
@@ -473,12 +502,47 @@ fn operation(route: &registry::Route) -> Value {
     op
 }
 
-/// Every schema: the state's and the errors', then the camera's and the frames'.
+/// Every schema: the state's and the errors', then the camera's and the frames', then the shares'.
 fn schemas_with_views() -> Value {
     let mut all = schemas();
     if let (Some(all), Value::Object(more)) = (all.as_object_mut(), view_schemas()) {
         all.extend(more);
     }
+    let (s, i, b) = (|| kind("string"), || kind("integer"), || kind("boolean"));
+    let scope = json!({ "type": "string", "enum": ["read", "control", "full"] });
+    // A flag left out when false is optional, so it is added beside the always-present ones.
+    all["BlockView"]["properties"]["read_only"] = json!({
+        "type": "boolean",
+        "description": "A terminal that takes no input (a subagent's transcript); left out otherwise.",
+    });
+    all["Share"] = view(&[
+        ("id", s()),
+        ("workspace", s()),
+        ("name", s()),
+        ("scope", scope.clone()),
+        ("created", i()),
+        ("expires", maybe("integer")),
+        (
+            "way",
+            json!({ "type": "string", "enum": ["public", "pinned"] }),
+        ),
+        ("address", s()),
+        ("last", nullable(view(&[("at", i()), ("addr", s())]))),
+        ("mirrored", b()),
+    ]);
+    all["Me"] = view(&[
+        ("name", s()),
+        ("scope", scope),
+        (
+            "workspaces",
+            json!({ "type": ["array", "null"], "items": s() }),
+        ),
+        ("expires", maybe("integer")),
+        ("share", maybe("string")),
+        ("computer", s()),
+        ("version", s()),
+        ("api", i()),
+    ]);
     all
 }
 
@@ -564,6 +628,21 @@ mod tests {
             "full"
         );
         assert_eq!(doc["paths"]["/v1/state"]["get"]["x-templum-scope"], "read");
+        // The mirror's header and the `replaced` event are told where a mirror opens its stream.
+        let events = &doc["paths"]["/v1/events"]["get"];
+        assert!(
+            events["description"]
+                .as_str()
+                .unwrap()
+                .contains("event: replaced")
+        );
+        assert!(
+            events["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["name"] == "Templum-Mirror" && p["in"] == "header")
+        );
         assert_eq!(doc["security"], json!([{ "bearer": [] }]));
         assert_eq!(
             doc["paths"]["/v1/events"]["get"]["security"][1],
@@ -686,6 +765,7 @@ mod tests {
                 color: Some("blue".into()),
                 shown: true,
                 stopped: false,
+                icon: Some("rocket".into()),
             }],
             blocks: vec![BlockView {
                 id: "b7k2m".into(),
@@ -716,6 +796,7 @@ mod tests {
                         cost_usd: Some(1.5),
                     }),
                 }),
+                read_only: true,
             }],
             wires: vec![WireView {
                 a: "a".into(),
@@ -812,6 +893,21 @@ mod tests {
                 next: Some(10),
                 sentence: "Every day".into(),
             }],
+            shares: vec![ShareView {
+                id: "s4".into(),
+                workspace: "w3".into(),
+                name: "Another computer".into(),
+                scope: crate::store::Scope::Full,
+                created: 1,
+                expires: Some(2),
+                way: crate::store::Way::Pinned,
+                address: "192.168.1.5:7411".into(),
+                last: Some(LastView {
+                    at: 3,
+                    addr: "203.0.113.7".into(),
+                }),
+                mirrored: true,
+            }],
             view: Some(ViewView {
                 workspace: "w3".into(),
                 x: 1.0,
@@ -852,6 +948,27 @@ mod tests {
             serde_json::to_value(crate::terminals::whole(&v.shared().screen().unwrap())).unwrap();
         assert_eq!(frame["title"], "vim");
         check(&r("Frame"), &frame, &doc, "frame").unwrap();
+        assert_eq!(
+            frame["modes"],
+            json!({}),
+            "a frame with no mode has an empty one"
+        );
+        v.feed(b"\x1b[?1049h");
+        let modal =
+            serde_json::to_value(crate::terminals::whole(&v.shared().screen().unwrap())).unwrap();
+        assert_eq!(modal["modes"], json!({"full_screen": true}));
+        check(&r("Frame"), &modal, &doc, "frame").unwrap();
+        // A home older than the field sends none.
+        let mut older = frame.clone();
+        older.as_object_mut().unwrap().remove("modes");
+        check(&r("Frame"), &older, &doc, "frame").unwrap();
+        let mut odd = frame.clone();
+        odd["modes"]["blink"] = json!(true);
+        assert!(
+            check(&r("Frame"), &odd, &doc, "frame")
+                .unwrap_err()
+                .contains("blink")
+        );
         let mut bare = frame.clone();
         bare["cursor"] = Value::Null;
         bare["title"] = Value::Null;
@@ -870,6 +987,20 @@ mod tests {
         let doc = document();
         let state = serde_json::to_value(full_state()).unwrap();
         check(&r("State"), &state, &doc, "state").unwrap();
+        assert_eq!(state["blocks"][0]["read_only"], true);
+        assert_eq!(state["workspaces"][0]["icon"], "rocket");
+        let mut quiet = state.clone();
+        quiet["blocks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("read_only");
+        check(&r("State"), &quiet, &doc, "state").unwrap();
+        let mut store = crate::store::Store::default();
+        store
+            .mint("phone", crate::store::Scope::Read, None, None, 1)
+            .unwrap();
+        let me = serde_json::to_value(MeView::of(&store.tokens[0], "winx-desktop")).unwrap();
+        check(&r("Me"), &me, &doc, "me").unwrap();
         // The checker itself: a key the schema lacks, a key missing, a wrong type.
         let mut extra = state.clone();
         extra["blocks"][0]["surprise"] = json!(1);

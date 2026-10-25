@@ -6973,6 +6973,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "sysinfo",
  "tempfile",
  "templum-mcp",
  "templum-terminal",

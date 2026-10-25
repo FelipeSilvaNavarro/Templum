@@ -314,15 +314,17 @@ fn the_audit_log_never_holds_what_was_typed() {
             .json(&json!({"keys": ["q", "z"]})),
     );
     assert_eq!((text.status, keys.status), (200, 200));
-    wait_for("both calls in the log", || {
-        logs(fake.dir.path()).matches("terminal_input").count() >= 2
+    wait_for("the first call in the log", || {
+        logs(fake.dir.path()).contains("terminal_input")
     });
     let log = logs(fake.dir.path());
     let lines: Vec<&str> = log
         .lines()
         .filter(|l| l.contains("terminal_input"))
         .collect();
-    assert_eq!(lines.len(), 2, "{log}");
+    // Typing is one line per token and minute: the second call is counted, to be written with the
+    // window's end.
+    assert_eq!(lines.len(), 1, "{log}");
     assert!(lines.iter().all(|l| l.contains("\"status\":200")));
     for secret in ["s3cr3t", "\"q\"", "\"z\""] {
         assert!(!log.contains(secret), "{secret} in\n{log}");

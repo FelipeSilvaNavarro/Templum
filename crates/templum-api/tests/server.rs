@@ -662,6 +662,28 @@ fn a_call_whose_client_left_is_closed() {
 }
 
 #[test]
+fn a_revoked_tokens_waiting_call_is_closed() {
+    let (fake, text) = control_fake();
+    let request = req("POST", "/v1/agents/b7k2m/task")
+        .token(&text)
+        .json(&json!({"task": "t", "wait": true}))
+        .build(&fake.base);
+    let client = std::thread::spawn(move || {
+        let config = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(Duration::from_secs(20)))
+            .build();
+        ureq::Agent::from(config).run(request).is_err()
+    });
+    wait_for("the call to reach the UI", || !fake.calls().is_empty());
+    fake.server.set_tokens(vec![]);
+    wait_for("the close", || {
+        !fake.notifications(templum_mcp::bus::CLOSED).is_empty()
+    });
+    assert!(client.join().unwrap(), "the revoked call got no answer");
+}
+
+#[test]
 fn clients_uses_and_disconnect() {
     let (text, token) = token(Scope::Read, None);
     let id = token.id;
@@ -883,4 +905,154 @@ fn dropping_the_server_closes_its_listener() {
     wait_for("the port to close", || {
         TcpStream::connect(("127.0.0.1", port)).is_err()
     });
+}
+
+fn later() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600
+}
+
+#[test]
+fn me_says_who_the_token_is_without_asking_the_ui() {
+    let (text, mut phone) = token(Scope::Read, Some(vec!["w3"]));
+    let end = later();
+    phone.expires = Some(end);
+    let fake = fake(vec![phone], |options| {
+        options.computer = "winx-desktop".into()
+    });
+    let me = fake.call(req("GET", "/v1/me").token(&text));
+    assert_eq!(me.status, 200);
+    assert_eq!(
+        me.json,
+        json!({"name": "phone", "scope": "read", "workspaces": ["w3"], "expires": end,
+            "share": null, "computer": "winx-desktop", "version": env!("CARGO_PKG_VERSION"),
+            "api": 1})
+    );
+    assert!(
+        fake.asked().iter().all(|s| s.method != templum_api::STATE),
+        "the UI thread wasn't asked: {:?}",
+        fake.asked()
+    );
+    // A share is its token's `s<id>`; a token for every workspace has no list.
+    let (text, mut shared) = token(Scope::Full, None);
+    shared.id = 4;
+    shared.share = Some(templum_api::store::Share {
+        workspace: "w3".into(),
+        way: templum_api::store::Way::Public,
+        address: "https://t.example.com".into(),
+    });
+    let fake = fake_with_one(shared);
+    let me = fake.call(req("GET", "/v1/me").token(&text));
+    assert_eq!(
+        (me.json["share"].as_str(), me.json["workspaces"].is_null()),
+        (Some("s4"), true)
+    );
+}
+
+fn fake_with_one(token: templum_api::Token) -> Fake {
+    fake(vec![token], |_| {})
+}
+
+#[test]
+fn me_says_a_deleted_workspace_as_none() {
+    let (text, own) = token(Scope::Full, Some(vec!["w3"]));
+    let fake = fake(vec![own.clone()], |_| {});
+    let mut gone = own;
+    gone.workspaces = Some(vec![]);
+    fake.server.set_tokens(vec![gone]);
+    let me = fake.call(req("GET", "/v1/me").token(&text));
+    assert_eq!(me.status, 200);
+    assert_eq!(me.json["workspaces"], json!([]));
+}
+
+#[test]
+fn shares_are_a_resource() {
+    let (all, mut everyone) = token(Scope::Read, None);
+    let (limited, mut one) = token(Scope::Read, Some(vec!["w3"]));
+    (everyone.id, one.id) = (9001, 2);
+    let fake = fake(vec![everyone, one], |_| {});
+    let ids = |text: &str| -> Vec<String> {
+        let list = fake.call(req("GET", "/v1/shares").token(text));
+        assert_eq!(list.status, 200, "{}", list.text);
+        list.json
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(ids(&all), ["s1", "s2"]);
+    assert_eq!(ids(&limited), ["s2"]);
+    let doc = fake.call(req("GET", "/v1/openapi.json").token(&all));
+    for path in ["/v1/me", "/v1/shares"] {
+        assert_eq!(
+            doc.json["paths"][path]["get"]["x-templum-scope"], "read",
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn a_share_that_revokes_itself_gets_its_answer() {
+    let (text, mut token) = token(Scope::Full, Some(vec!["w3"]));
+    token.share = Some(templum_api::store::Share {
+        workspace: "w3".into(),
+        way: templum_api::store::Way::Public,
+        address: "https://t.example.com".into(),
+    });
+    let fake = fake(vec![token], |_| {});
+    // One agent: the next call rides the connection the share was revoked on.
+    let agent = http();
+    let gone = fake.call(
+        req("DELETE", "/v1/shares/s4")
+            .token(&text)
+            .agent(agent.clone()),
+    );
+    assert_eq!(
+        (gone.status, &gone.json["text"]),
+        (200, &json!("Revoked s4."))
+    );
+    let next = fake.call(req("GET", "/v1/me").token(&text).agent(agent));
+    assert_eq!(next.status, 401);
+}
+
+#[test]
+fn a_tools_code_reaches_the_answer() {
+    let (text, token) = token(Scope::Full, None);
+    let fake = fake(vec![token], |_| {});
+    let body = json!({"name": "Another computer", "scope": "full", "way": "public",
+        "address": "https://t.example.com"});
+    let answer = fake.call(
+        req("POST", "/v1/workspaces/w3/shares")
+            .token(&text)
+            .json(&body),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert_eq!(
+        answer.json,
+        json!({"text": "Shared API as s4.", "code": "tplc1_x"})
+    );
+    let call = &fake.calls()[0];
+    assert_eq!(call.params["arguments"]["workspace"], "w3");
+    // The audit log says which tool was called, never the code that came back.
+    wait_for("the call is logged", || {
+        logs(fake.dir.path()).contains("share_workspace")
+    });
+    assert!(!logs(fake.dir.path()).contains("tplc1_x"));
+    // A Control token can't share.
+    let (weak, token) = token_of(Scope::Control);
+    fake.server.set_tokens(vec![token]);
+    let refused = fake.call(
+        req("POST", "/v1/workspaces/w3/shares")
+            .token(&weak)
+            .json(&body),
+    );
+    assert_eq!((refused.status, refused.code()), (403, "scope"));
+}
+
+fn token_of(scope: Scope) -> (String, templum_api::Token) {
+    token(scope, None)
 }

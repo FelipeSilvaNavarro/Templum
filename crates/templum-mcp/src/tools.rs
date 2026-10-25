@@ -966,9 +966,10 @@ pub fn list() -> Value {
             "name": "send_keys",
             "description": "Presses keys in a terminal connected to you, one at a time, as a keyboard does (never \
                             as a paste): to answer an agent's dialog (a permission, a trust question) or drive a \
-                            program. Keys: enter, escape, tab, shift+tab, backspace, delete, up, down, left, right, \
-                            home, end, page_up, page_down, space, ctrl+<letter>, or one character (2, y). Returns \
-                            the last 20 lines of its screen after them. Not your own block, nor an agent on another \
+                            program. Keys: [ctrl+][alt+][shift+] and enter, escape, tab, backspace, delete, insert, \
+                            up, down, left, right, home, end, page_up, page_down, space, f1–f12, or one \
+                            character (2, y, A, ç), as ctrl+c, alt+left, shift+tab. Returns the last 20 lines of \
+                            its screen after them. Not your own block, nor an agent on another \
                             agent's task unless it waits for its person.",
             "inputSchema": {
                 "type": "object",
@@ -1502,6 +1503,22 @@ pub fn tail(text: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_keys_lists_the_names_it_takes() {
+        let listed = list();
+        let tool = listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "send_keys")
+            .unwrap();
+        let text = tool["description"].as_str().unwrap();
+        for name in ["[ctrl+][alt+][shift+]", "insert", "f1–f12", "alt+left"] {
+            assert!(text.contains(name), "{name}");
+        }
+        assert!(!text.contains("ctrl+<letter>"));
+    }
 
     #[test]
     fn every_tool_listed_parses_its_example() {

@@ -37,6 +37,9 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
   - The active tile has the `hover` fill, a hairline border and a 3 px accent bar on its left.
   - Hovering any tile fills it with `hover`, and shows its full name in a tooltip.
   - A tile gets a small accent dot when the last snapshot of its workspace found Claude Code or Codex running.
+  - A tile of a workspace another Templum mirrors now (a share's event stream is open) wears a small Lucide `cast`
+    mark at its bottom-right, in the accent; its tooltip says "Mirrored now on Another computer (203.0.113.7)", a
+    line per mirror ([templum-to-templum.md](templum-to-templum.md)).
 - **+** at the bottom creates a workspace and switches to it.
 - **Right-click a tile:** a menu with **Rename…** and **Delete…**.
   - Rename opens a dialog with a text field. Enter or **Rename** applies it, Esc cancels.

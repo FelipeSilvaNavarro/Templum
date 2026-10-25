@@ -5,7 +5,7 @@
 
 use crate::audit::{AUDIT_CAP, Audit};
 use crate::events::{self, Hub, Ids, StreamBody};
-use crate::model::{Caller, Notice, State};
+use crate::model::{Caller, MeView, Notice, State};
 use crate::registry::{self, Does, Resource};
 use crate::store::{Listen, Settings, Tls, Token, Use, folder, hash, random_text, verify};
 use crate::terminals::{self, FRAME_EVERY, Screens, TerminalRef};
@@ -77,6 +77,10 @@ pub struct Options {
     pub data: PathBuf,
     pub heartbeat: Duration,
     pub ticket_life: Duration,
+    /// How long a replaced mirror's streams have to flush `replaced` before they are cut.
+    pub replaced_grace: Duration,
+    /// This computer's name: what `GET /v1/me` says.
+    pub computer: String,
 }
 
 const HTTPS_NEEDED: &str = "Off this computer, the API needs HTTPS.";
@@ -113,6 +117,8 @@ impl Options {
             data: data.to_path_buf(),
             heartbeat: HEARTBEAT,
             ticket_life: TICKET_LIFE,
+            replaced_grace: REPLACED_GRACE,
+            computer: sysinfo::System::host_name().unwrap_or_default(),
         })
     }
 }
@@ -135,6 +141,13 @@ struct Conn {
     token: Option<(u64, String)>,
     since: u64,
     streaming: bool,
+    /// The `Templum-Mirror` value of its newest authenticated request.
+    session: Option<String>,
+    /// A share's `revoke_share` is being answered on it: a sweep leaves it to answer (its next
+    /// request is refused, and its streams end through the hub).
+    in_flight: bool,
+    /// Another mirror session took its token's place: it no longer counts against the token's 16.
+    replaced: bool,
 }
 
 #[derive(Default)]
@@ -181,6 +194,35 @@ impl Inner {
             self.close_oldest_stranger(heaviest.as_deref());
         }
         self.conns.len() < CONNECTIONS
+    }
+
+    /// How many connections `token` holds. The replaced ones are on their way out: they don't count.
+    fn holds(&self, token: u64) -> usize {
+        self.conns
+            .values()
+            .filter(|c| !c.replaced && c.token.as_ref().is_some_and(|(t, _)| *t == token))
+            .count()
+    }
+
+    /// Aborts the oldest connections of `token` that were replaced and are still alive (a stream is
+    /// let flush its last frame), down to [`CONNS_PER_TOKEN`]: a mirror in a reconnect loop, a new
+    /// session each time, would hold the global table with them.
+    fn trim_replaced(&mut self, token: u64) {
+        let mut old: Vec<u64> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| c.replaced && c.token.as_ref().is_some_and(|(t, _)| *t == token))
+            .map(|(id, _)| *id)
+            .collect();
+        old.sort_unstable();
+        let excess = old.len().saturating_sub(CONNS_PER_TOKEN);
+        for id in old.into_iter().take(excess) {
+            if let Some(conn) = self.conns.remove(&id)
+                && let Some(abort) = conn.abort
+            {
+                abort.abort();
+            }
+        }
     }
 
     /// The strangers (id, connection) whose address counts under `key`.
@@ -241,6 +283,24 @@ impl Shared {
         self.screens.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Whether `token` is still among the tokens and alive, whatever workspaces it shows now.
+    fn live(&self, token: &Token) -> bool {
+        let now = unix();
+        self.inner()
+            .tokens
+            .iter()
+            .any(|t| t.id == token.id && t.live(now))
+    }
+
+    /// Whether `token` is live and still shows the workspaces it showed.
+    fn current(&self, token: &Token) -> bool {
+        let now = unix();
+        self.inner()
+            .tokens
+            .iter()
+            .any(|t| t.id == token.id && t.live(now) && t.workspaces == token.workspaces)
+    }
+
     /// Whether a connection streams anything, events or a terminal.
     fn streams_on(&self, conn: u64) -> bool {
         let events = self.hub().on_conn(conn);
@@ -264,10 +324,11 @@ impl Shared {
             inner.buckets.retain(|id, _| live.contains(id));
             inner.tickets.retain(|_, (id, _)| live.contains(id));
             for conn in inner.conns.values() {
-                if conn
-                    .token
-                    .as_ref()
-                    .is_some_and(|(id, _)| !live.contains(id))
+                if !conn.in_flight
+                    && conn
+                        .token
+                        .as_ref()
+                        .is_some_and(|(id, _)| !live.contains(id))
                     && let Some(abort) = &conn.abort
                 {
                     abort.abort();
@@ -455,6 +516,28 @@ impl Server {
             .notice(&self.shared.ids, notice, Instant::now());
     }
 
+    /// Each token that holds an open event stream now, with the address of that stream's
+    /// connection, by token id: who mirrors a shared workspace. (A token with several streams is
+    /// there once, with its oldest connection's address.)
+    pub fn mirrored(&self) -> Vec<(u64, String)> {
+        let open = self.shared.hub().streams_by_conn();
+        let inner = self.shared.inner();
+        let mut by: Vec<(u64, u64)> = Vec::new();
+        for (token, conn) in open {
+            match by.iter_mut().find(|(t, _)| *t == token) {
+                Some(found) => found.1 = found.1.min(conn),
+                None => by.push((token, conn)),
+            }
+        }
+        by.sort();
+        by.into_iter()
+            .map(|(token, conn)| {
+                let addr = inner.conns.get(&conn).map(|c| c.addr.clone());
+                (token, addr.unwrap_or_default())
+            })
+            .collect()
+    }
+
     /// How many event streams are open.
     pub fn streams(&self) -> usize {
         self.shared.hub().len()
@@ -562,6 +645,9 @@ async fn accept(listener: TcpListener, shared: Arc<Shared>) {
                     token: None,
                     since: 0,
                     streaming: false,
+                    session: None,
+                    in_flight: false,
+                    replaced: false,
                 };
                 inner.conns.insert(id, conn);
                 Admit::Yes
@@ -731,6 +817,8 @@ fn client_addr(peer: SocketAddr, headers: &HeaderMap) -> String {
 
 /// The addresses the limiter tells apart; past it the rest share one entry.
 const CONNS_PER_TOKEN: usize = 16;
+/// How long a replaced mirror's streams have to flush `replaced` before they are cut.
+const REPLACED_GRACE: Duration = Duration::from_secs(2);
 const LIMITER_MOST: usize = 4096;
 /// The entry the addresses past [`LIMITER_MOST`] share.
 const OVERFLOW: &str = "overflow";
@@ -1058,6 +1146,78 @@ fn authenticate(
     }
 }
 
+/// The `Templum-Mirror` header: a mirror's session, at most 64 characters (a longer one is none).
+fn mirror_session(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(crate::MIRROR_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty() && v.chars().count() <= 64)
+        .map(str::to_string)
+}
+
+/// `conn` of `token` opens its event stream in `session`: every other connection of the token
+/// that carries another session is cut. Its event streams are sent `replaced` and end (the
+/// connection closes with the body, once the frame is written), so are its terminal streams, and
+/// the connections with nothing streaming are aborted. The connections cut. The caller holds
+/// `inner`.
+fn replace_session(
+    shared: &Arc<Shared>,
+    inner: &mut Inner,
+    token: &Token,
+    conn: u64,
+    session: &str,
+) -> Vec<u64> {
+    if let Some(mine) = inner.conns.get_mut(&conn) {
+        mine.session = Some(session.to_string());
+    }
+    let old: Vec<u64> = inner
+        .conns
+        .iter()
+        .filter(|(id, c)| {
+            **id != conn
+                && c.token.as_ref().is_some_and(|(t, _)| *t == token.id)
+                && c.session.as_deref() != Some(session)
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    if old.is_empty() {
+        return old;
+    }
+    let streaming: Vec<u64> = old
+        .iter()
+        .copied()
+        .filter(|id| shared.streams_on(*id))
+        .collect();
+    shared.hub().replace(token.id, &old, &shared.ids);
+    shared.screens().end_on(token.id, &old);
+    for id in &old {
+        let Some(conn) = inner.conns.get_mut(id) else {
+            continue;
+        };
+        conn.replaced = true;
+        if !streaming.contains(id)
+            && let Some(abort) = &conn.abort
+        {
+            abort.abort();
+        }
+    }
+    inner.trim_replaced(token.id);
+    // A streaming one is let flush its last frame, and then cut: a dead peer's full send buffer
+    // would hold it for minutes.
+    if !streaming.is_empty() {
+        let shared = shared.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(shared.options.replaced_grace).await;
+            for id in streaming {
+                if let Some(abort) = shared.inner().conns.get(&id).and_then(|c| c.abort.clone()) {
+                    abort.abort();
+                }
+            }
+        });
+    }
+    old
+}
+
 /// What the audit log says a request was.
 fn what_of(route: &registry::Route, params: &[(&'static str, String)], path: &str) -> String {
     match route.does {
@@ -1081,6 +1241,10 @@ async fn route(shared: &Arc<Shared>, peer: Peer, request: Request<RequestBody>) 
         .unwrap_or_default();
     let credentials = credentials(&request, &query);
     let shown = !matches!(credentials, Credentials::None);
+    let session = mirror_session(request.headers());
+    let opens_events = request.method() == hyper::Method::GET
+        && registry::find("GET", request.uri().path())
+            .is_some_and(|(found, _)| matches!(found.does, Does::Events));
     // Good credentials always pass; the limiter slows only the failures, so a stranger who forges
     // an address can't lock the person out. A connection that fails isn't kept: it would hold one
     // of the 64 for nothing.
@@ -1106,18 +1270,25 @@ async fn route(shared: &Arc<Shared>, peer: Peer, request: Request<RequestBody>) 
             }));
         };
         inner.limiter.passed(&addr);
-        let holds = |inner: &Inner, id: u64| {
-            inner
-                .conns
-                .values()
-                .filter(|c| c.token.as_ref().is_some_and(|(t, _)| *t == id))
-                .count()
+        // A share's token opening its event stream from a new session ends the old session's
+        // connections first: a laptop that slept leaves them open, and they would hold the
+        // token's 16.
+        let replaced = match &session {
+            Some(session) if token.share.is_some() && opens_events => {
+                replace_session(shared, &mut inner, &token, peer.conn, session)
+            }
+            _ => Vec::new(),
         };
+        if !replaced.is_empty() {
+            shared
+                .audit
+                .write(&addr, Some(&token.name), "mirror_replaced", 200);
+        }
         let mine = inner
             .conns
             .get(&peer.conn)
             .is_some_and(|c| c.token.as_ref().is_some_and(|(t, _)| *t == token.id));
-        if !mine && holds(&inner, token.id) >= CONNS_PER_TOKEN {
+        if !mine && inner.holds(token.id) >= CONNS_PER_TOKEN {
             shared
                 .audit
                 .write(&addr, Some(&token.name), "slow_down", 429);
@@ -1141,6 +1312,7 @@ async fn route(shared: &Arc<Shared>, peer: Peer, request: Request<RequestBody>) 
                 conn.since = now;
             }
             conn.addr = addr.clone();
+            conn.session = session.clone();
         }
         let wait = inner
             .buckets
@@ -1181,7 +1353,25 @@ async fn route(shared: &Arc<Shared>, peer: Peer, request: Request<RequestBody>) 
         );
     };
     let what = what_of(found, &params, &path);
+    // While a share's revoke is answered a sweep must not cut its connection: the share gets its
+    // answer. Every other call of a token that goes is cut with it, a waiting one included.
+    struct InFlight<'a>(&'a Shared, u64);
+    impl InFlight<'_> {
+        fn set(&self, on: bool) {
+            if let Some(conn) = self.0.inner().conns.get_mut(&self.1) {
+                conn.in_flight = on;
+            }
+        }
+    }
+    impl Drop for InFlight<'_> {
+        fn drop(&mut self) {
+            self.set(false);
+        }
+    }
+    let flight = InFlight(shared, peer.conn);
+    flight.set(what == "revoke_share");
     let response = dispatch(shared, peer, &token, found, params, query, request).await;
+    drop(flight);
     shared
         .audit
         .write(&addr, Some(&token.name), &what, response.status().as_u16());
@@ -1284,6 +1474,7 @@ async fn dispatch(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
         return match route.does {
+            Does::Me => json_response(200, &val(&MeView::of(token, &shared.options.computer))),
             Does::Tools => json_response(200, &json!(registry::listed())),
             Does::OpenApi => json_response(200, &openapi::document()),
             Does::Events => {
@@ -1479,6 +1670,10 @@ fn tool_answer(answer: &Value) -> Response<Body> {
         return error(422, "refused", text);
     }
     let mut out = json!({ "text": text });
+    // A share's connection code: given once, in the answer.
+    if let Some(code) = result["code"].as_str() {
+        out["code"] = json!(code);
+    }
     for key in ["workspace", "block"] {
         if let Some(value) = result["target"][key].as_str() {
             out[key] = json!(value);
@@ -1640,6 +1835,7 @@ async fn read(
             "automation",
             "automation",
         ),
+        Resource::Shares => json_response(200, &val(&state.shares)),
         Resource::Usage => json_response(200, &val(&state.usage.unwrap_or_default())),
     }
 }
@@ -1680,9 +1876,25 @@ async fn stream(
             "This token holds as many streams as it may.",
         );
     };
+    // The token may have been revoked, or given other workspaces, while the state was asked for:
+    // a sweep that ran before the stream was in the hub didn't cut it. A revoked token is a 401;
+    // a changed list is retryable, and the client opens again and sees the new list.
+    if !shared.live(token) {
+        shared.hub().close(opened.id);
+        return unauthorized();
+    }
+    if !shared.current(token) {
+        shared.hub().close(opened.id);
+        return slow_down(
+            Duration::from_secs(1),
+            "This token's workspaces changed; open the stream again.",
+        );
+    }
     if let Some(conn) = shared.inner().conns.get_mut(&peer.conn) {
         conn.streaming = true;
     }
+    // The sidebar's marks and the Edit… dialog's rows show who mirrors now.
+    tell_ui(shared, CLIENTS);
     if opened.first {
         let hello = Hello {
             terminal: token.id.to_string(),
@@ -1709,6 +1921,7 @@ async fn stream(
         if let Some(conn) = ended.inner().conns.get_mut(&conn) {
             conn.streaming = more;
         }
+        tell_ui(&ended, CLIENTS);
     });
     event_stream(body)
 }
@@ -1838,7 +2051,42 @@ mod tests {
             token: None,
             since: 0,
             streaming: false,
+            session: None,
+            in_flight: false,
+            replaced: false,
         }
+    }
+
+    #[test]
+    fn replaced_connections_do_not_count_against_the_tokens_sixteen() {
+        let mut inner = Inner::default();
+        for n in 0..20u64 {
+            let mut conn = stranger("203.0.113.9");
+            conn.token = Some((7, "phone".into()));
+            // A mirror that slept: streaming, replaced, and not yet closed.
+            conn.streaming = true;
+            conn.replaced = n < 15;
+            inner.conns.insert(n, conn);
+        }
+        inner.conns.insert(99, stranger("203.0.113.9"));
+        assert_eq!(inner.holds(7), 5);
+        assert_eq!(inner.holds(8), 0);
+    }
+
+    #[test]
+    fn a_tokens_replaced_connections_are_trimmed_to_sixteen_oldest_first() {
+        let mut inner = Inner::default();
+        for n in 0..40u64 {
+            let mut conn = stranger("203.0.113.9");
+            // Token 7's: 0..38 replaced, 38 live; token 8's: 39, replaced.
+            conn.token = Some((if n < 39 { 7 } else { 8 }, "phone".into()));
+            conn.replaced = n < 38 || n == 39;
+            inner.conns.insert(n, conn);
+        }
+        inner.trim_replaced(7);
+        let kept: Vec<u64> = (0..40).filter(|n| inner.conns.contains_key(n)).collect();
+        // 38 replaced of token 7 (0..38): the oldest 22 go; 22..38, the live 38 and token 8's stay.
+        assert_eq!(kept, (22..40).collect::<Vec<_>>());
     }
 
     #[test]

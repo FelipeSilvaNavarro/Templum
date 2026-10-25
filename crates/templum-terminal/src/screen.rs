@@ -9,6 +9,7 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
 
 use crate::snapshot::Cursor;
+use crate::terminal::Modes;
 use crate::{Rgb, SharedTerm};
 
 /// A color as the program asked for it.
@@ -73,6 +74,9 @@ pub struct Screen {
     pub cursor: Option<Cursor>,
     /// The program's own title (OSC 0/2); None without one.
     pub title: Option<String>,
+    /// What the program took, read with the rows. `typing` is always false: a mirror doesn't
+    /// need it, and a change of it alone must not send a frame.
+    pub modes: Modes,
 }
 
 impl SharedTerm {
@@ -86,6 +90,10 @@ impl SharedTerm {
         let rows = (0..grid.screen_lines())
             .map(|y| runs(&grid[Line(y as i32)], cols, colors))
             .collect();
+        let modes = Modes {
+            typing: false,
+            ..Modes::of(*term.mode())
+        };
         let shape = term.cursor_style();
         let cursor = (term.mode().contains(TermMode::SHOW_CURSOR)
             && shape.shape != CursorShape::Hidden)
@@ -104,6 +112,7 @@ impl SharedTerm {
             rows,
             cursor,
             title: self.1.title(),
+            modes,
         })
     }
 }
@@ -384,6 +393,25 @@ mod tests {
         assert_eq!(v.shared().screen().unwrap().cursor, None);
         v.feed(b"\x1b]2; \x07");
         assert_eq!(v.shared().screen().unwrap().title, None);
+    }
+
+    #[test]
+    fn the_screen_says_what_the_program_took() {
+        let v = viewer(20, 4);
+        assert_eq!(v.shared().screen().unwrap().modes, Modes::default());
+        v.feed(b"\x1b[?1049h\x1b[?1000h\x1b[>1u");
+        assert_eq!(
+            v.shared().screen().unwrap().modes,
+            Modes {
+                full_screen: true,
+                mouse: true,
+                kitty_keys: true,
+                typing: false,
+            }
+        );
+        // Bracketed paste with the cursor shown is `typing` for Terminal::modes, never for a frame.
+        v.feed(b"\x1b[?2004h");
+        assert!(!v.shared().screen().unwrap().modes.typing);
     }
 
     #[test]

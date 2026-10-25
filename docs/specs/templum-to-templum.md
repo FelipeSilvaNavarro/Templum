@@ -1,7 +1,8 @@
 # Templum to Templum: a workspace of another computer, as if it were here
 
 - **Date:** 2026-10-25
-- **Status:** Designed (kanban card 171, part 2); batch 1 is next for a plan.
+- **Status:** Designed (kanban card 171, part 2). Batch 1a (home's side) implemented; the mirror's side (batch 1b to
+  1d) is next.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
   [cockpit.md](cockpit.md#6-the-workspaces-screen) (the sidebar, the Edit… dialog), [ask-inbox.md](ask-inbox.md)
@@ -389,9 +390,9 @@ key pressed at home does, and raw bytes would be a second encoder that is wrong 
 - **The mirror names what GPUI reports:** a key with modifiers by its name; a character typed (dead keys and IME
   commits included) as one-character keys; AltGr's characters as characters (the same rule `encode_key` applies);
   Templum's own shortcuts never leave the mirror.
-- **`terminal_input`'s `keys`** take these names, 1 to 256 per call, pressed back to back, with 50 ms after an
-  `escape` with no modifier that another key follows (so a program still reads Esc alone where the person paused, now
-  that the network bunches keys). `send_keys` takes the same names and keeps its 16 keys and 50 ms between each.
+- **`terminal_input`'s `keys`** take these names, 1 to 256 per call, pressed back to back, with 50 ms after a key
+  that sends a lone ESC (`escape`, `ctrl+[`, `ctrl+3`, `shift+escape`; not `alt+…`) that another key follows (so a
+  program still reads Esc alone where the person paused, now that the network bunches keys). `send_keys` takes the same names and keeps its 16 keys and 50 ms between each.
 - **Order and pace:** per terminal, one call in flight; keys typed meanwhile wait and go in the next call, up to 1024
   waiting (past that: "Typing faster than winx-desktop answers: some keys were dropped."). A paste is `text` (bracketed
   when the program asked for it, at home), at most 256 KiB ("Paste at most 256 KiB into a mirrored terminal.").
@@ -652,3 +653,45 @@ the threads' and channels' layout inside the rules above; how a workspace is mar
 `Body` arm is named; the SSE reader's shape; how the scaled cells are computed within the font steps; the JSON
 names of the index entry; the constants' and functions' names; which local tools need the remote guard, as long as the
 end to end test proves none sees a remote block.
+
+## As built
+
+### Batch 1a (home's side)
+
+Plan: [2026-10-25-t2t-batch-1a-home.md](../plans/2026-10-25-t2t-batch-1a-home.md). What the builder chose or changed:
+
+- **Key names** are parsed once, in `templum_terminal::named_key` (`NamedKey`, owned; `.input()` is the `KeyInput`), for
+  `send_keys` and `terminal_input`. `ctrl+1` and `ctrl+é` were refused before and are names now (the program gets
+  what `encode_key` makes of them: nothing for `ctrl+1`; for `ctrl+é` nothing in legacy mode and `CSI 233;5u` in
+  the kitty protocol). `alt+X` and `alt+shift+x` send `ESC X`: only Ctrl drops the typed character.
+- **`modes`** ride on `Screen` (`typing` always false) and on every frame; a change of them alone is a frame with no
+  rows. The OpenAPI `Frame` schema leaves `modes` optional (older homes send none).
+- **A share** is `Token::share` (`Share { workspace, way, address }`) in `api.json`; `Store::tunnel` remembers the
+  last tunnel address. `Store::mint_share` makes the token and answers its text once.
+- **A limited token's view of the state** now holds its own share, so the event stream no longer shares one
+  comparison among limited tokens of the same workspaces: the key is the token as well.
+- **`share_workspace`** leaves `expires` optional: null or left out is never (the Share… dialog's default is 30 days).
+  A Directly address with a scheme, or none, is refused "Give Directly's address as host:port."; the code is tried
+  through `code::decode` before the token is made, so a code the other Templum cannot read is never made.
+- **`revoke_share`**'s registry scope is Read (nominally "full, or the share itself"); the glue asks Full of a token
+  for all workspaces to revoke another's.
+- **The mirror's session:** a replacing event stream is looked for before the token's 16-connection check, so stale
+  connections can't keep the new one out. The replaced streams get `event: replaced` as their last frame
+  (`Cell::end_with`; `Cell::end` drops what is queued); their connections close with the body, and the connections
+  with nothing streaming are aborted. The streaming ones are marked replaced at once, so they no longer count against
+  the 16, and are cut after 2 s if their body has not flushed (a sleeping laptop's full send buffer would keep them
+  for minutes). A request without `Templum-Mirror` replaces nothing. Each replacement writes a `mirror_replaced`
+  line in the audit log.
+- **A share revoking itself** gets its answer: the sweep that drops a dead token's connections spares only the
+  `revoke_share` call being answered (its next request is `401`; its streams end through the hub). Every other call of
+  that token, a waiting `delegate` or `wait_for` included, is cut with the token, and so is an event stream still
+  opening when the revoke lands.
+- **Replaced connections are capped:** a token's replaced connections that are still alive (a streaming one has 2 s to
+  flush `replaced`) are at most 16; past that the oldest are aborted at once, so a mirror in a reconnect loop can't
+  fill the 64 connections of the server.
+- **The audit log** groups `terminal_input` and `GET /v1/me` as the noise is grouped (key: address, call, token, status), into
+  `audit.log`; the test that expected two `terminal_input` lines now expects one. A mirror's grouped line that the full noise half gives up is counted in the `lost` line, like any call.
+- **The Edit… dialog** keeps **Share…** below the rows too, so one more computer can be shared with. The Share…
+  dialog makes its own footer: Make code is disabled while the API doesn't fit or the name is empty.
+- **`Server::mirrored`** says the address of a token's oldest connection with an event stream; the stream's opening
+  and its end tell the UI thread (`CLIENTS`), which draws the sidebar's mark from the server.

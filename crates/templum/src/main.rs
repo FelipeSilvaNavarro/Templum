@@ -37,6 +37,7 @@ mod notes;
 mod prompt;
 mod session;
 mod settings;
+mod share_dialog;
 mod sidebar;
 mod silhouette;
 mod space_dialog;

@@ -3,7 +3,7 @@
 //! between two), the terminals the UI thread lends and the reader that turns them into frames.
 
 use crate::events::{self, Cell, Ids};
-use crate::model::{Caller, Color, CursorView, FrameView, RowView, RunView, SizeView};
+use crate::model::{Caller, Color, CursorView, FrameView, ModesView, RowView, RunView, SizeView};
 use bytes::Bytes;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -57,7 +57,7 @@ fn row(y: usize, runs: &[Styled]) -> RowView {
 
 /// What `now` shows that `last` (what the client has) doesn't: None when nothing; the whole
 /// screen when there is no `last` or its size differs; else the rows that differ, by `y`. Size,
-/// cursor and title come in every frame.
+/// cursor, title and modes come in every frame.
 pub(crate) fn frame(last: Option<&Screen>, now: &Screen) -> Option<FrameView> {
     if last == Some(now) {
         return None;
@@ -89,6 +89,11 @@ pub(crate) fn frame(last: Option<&Screen>, now: &Screen) -> Option<FrameView> {
         title: now.title.clone(),
         whole: last.is_none(),
         rows,
+        modes: ModesView {
+            full_screen: now.modes.full_screen,
+            mouse: now.modes.mouse,
+            kitty_keys: now.modes.kitty_keys,
+        },
     })
 }
 
@@ -213,6 +218,20 @@ impl Screens {
             .streams
             .iter()
             .filter(|(_, s)| dead(&s.caller))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in gone {
+            self.close(id);
+        }
+    }
+
+    /// Ends the streams of `token` that are on one of `conns`: its connections from another
+    /// session are being cut.
+    pub fn end_on(&mut self, token: u64, conns: &[u64]) {
+        let gone: Vec<u64> = self
+            .streams
+            .iter()
+            .filter(|(_, s)| s.caller.token == token && conns.contains(&s.conn))
             .map(|(id, _)| *id)
             .collect();
         for id in gone {
@@ -560,6 +579,22 @@ mod tests {
     }
 
     #[test]
+    fn modes_ride_on_every_frame_and_a_change_alone_sends_one() {
+        let v = viewer(10, 3);
+        let a = screen(&v);
+        v.feed(b"\x1b[?1000h");
+        let b = screen(&v);
+        let sent = frame(Some(&a), &b).expect("a mode alone is a change");
+        assert!(!sent.whole && sent.rows.is_empty());
+        assert!(sent.modes.mouse && !sent.modes.full_screen);
+        assert_eq!(
+            serde_json::to_value(&sent).unwrap()["modes"],
+            json!({"mouse": true})
+        );
+        assert_eq!(serde_json::to_value(whole(&a)).unwrap()["modes"], json!({}));
+    }
+
+    #[test]
     fn a_first_frame_is_whole() {
         let v = viewer(10, 3);
         v.feed(b"hi");
@@ -584,6 +619,7 @@ mod tests {
                     RowView { y: 1, runs: vec![] },
                     RowView { y: 2, runs: vec![] },
                 ],
+                modes: ModesView::default(),
             })
         );
         assert_eq!(whole(&a), frame(None, &a).unwrap());

@@ -1,6 +1,7 @@
 //! Settings ▸ API (docs/specs/api.md, Settings ▸ API): the switch, who can reach it, HTTPS and
 //! its certificate, the web pages allowed to call, the tokens and who is connected.
 
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Local, NaiveDate};
@@ -14,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     App, ClickEvent, Context, ElementId, Entity, SharedString, TestSupportExt, Window, div, px,
 };
-use templum_api::store::{Listen, Scope, Tls, Use};
+use templum_api::store::{Listen, Scope, Tls, Token, Use, Way};
 
 use super::row::{Row, commit_input, menu_button, text_area};
 use crate::grid::hsla;
@@ -63,6 +64,34 @@ pub(crate) fn used_words(last: Option<&Use>, now: u64) -> String {
             span(now.saturating_sub(used.at)),
             used.addr
         ),
+    }
+}
+
+/// What a share's token says it is in place of its workspaces: "share of API", or "share of a
+/// deleted workspace" when the workspace it was made for is not among `names` (workspace id →
+/// name). None for a token Settings made.
+pub(crate) fn share_line(token: &Token, names: &HashMap<String, String>) -> Option<String> {
+    token.share.as_ref()?;
+    // The token's list is the truth: the workspace it was made for may be gone and its id used again.
+    let live = token
+        .workspaces
+        .iter()
+        .flatten()
+        .find_map(|id| names.get(id));
+    Some(match live {
+        Some(name) => format!("share of {name}"),
+        None => "share of a deleted workspace".into(),
+    })
+}
+
+/// What New certificate's question says it breaks: every client that pinned the old one, and the
+/// `direct` mirrors that did.
+pub(crate) fn renew_words(direct: usize) -> String {
+    let base = "Clients that pinned the old one stop connecting";
+    match direct {
+        0 => format!("{base}."),
+        1 => format!("{base}, 1 mirror connected directly among them: share again for it."),
+        n => format!("{base}, {n} mirrors connected directly among them: share again for them."),
     }
 }
 
@@ -374,22 +403,22 @@ pub(super) fn rows(
 
     // Tokens.
     let at = now();
+    let names: HashMap<String, String> = ws
+        .order()
+        .iter()
+        .map(|s| (s.id.clone(), s.name.clone()))
+        .collect();
     for token in &store.tokens {
         let id = token.id;
         let e = entity.clone();
-        let workspaces = match &token.workspaces {
+        let workspaces = share_line(token, &names).unwrap_or_else(|| match &token.workspaces {
             None => "all workspaces".to_string(),
             Some(list) => list
                 .iter()
-                .map(|id| {
-                    ws.order()
-                        .iter()
-                        .find(|s| s.id == *id)
-                        .map_or(id.clone(), |s| s.name.clone())
-                })
+                .map(|id| names.get(id).cloned().unwrap_or_else(|| id.clone()))
                 .collect::<Vec<_>>()
                 .join(", "),
-        };
+        });
         let expired = token.expires.is_some_and(|end| end <= at);
         let detail = format!(
             "{} · {} · {} · {}",
@@ -492,6 +521,20 @@ pub(super) fn rows(
 fn certificate_row(ws: &Workspace, entity: &Entity<Workspace>, ui: Ui) -> Row {
     let fingerprint = ws.api.fingerprint.clone().unwrap_or_default();
     let (save, renew) = (entity.clone(), entity.clone());
+    // The mirrors that pinned it: a live share made for Directly.
+    let at = now();
+    let direct = ws
+        .api
+        .store
+        .iter()
+        .flat_map(|s| s.tokens.iter())
+        .filter(|t| {
+            t.live(at)
+                && t.share
+                    .as_ref()
+                    .is_some_and(|share| share.way == Way::Pinned)
+        });
+    let question = renew_words(direct.count());
     Row::new("api.certificate", "Certificate")
         .description(
             "Its SHA-256 fingerprint: a client pins it. Install the .pem on a phone to trust it",
@@ -536,7 +579,7 @@ fn certificate_row(ws: &Workspace, entity: &Entity<Workspace>, ui: Ui) -> Row {
                                     let e = renew.clone();
                                     prompt::confirm(
                                         "Make a new certificate?",
-                                        "Clients that pinned the old one stop connecting.",
+                                        question.clone(),
                                         "New certificate",
                                         move |_, cx| {
                                             e.update(cx, |ws, cx| ws.renew_certificate(cx))
@@ -863,6 +906,55 @@ mod tests {
         assert_eq!(
             used_words(Some(&used), 1000 + 180),
             "last used 3 min ago from 203.0.113.7"
+        );
+    }
+
+    #[test]
+    fn a_shares_line_names_its_workspace_or_says_it_is_gone() {
+        use templum_api::store::{Share, Store};
+        let mut store = Store::default();
+        let share = Share {
+            workspace: "w3".into(),
+            way: Way::Public,
+            address: "https://t.example.com".into(),
+        };
+        store
+            .mint_share(share, "Another computer", Scope::Full, None, 0)
+            .unwrap();
+        store.mint("phone", Scope::Read, None, None, 0).unwrap();
+        let names = HashMap::from([("w3".to_string(), "API".to_string())]);
+        assert_eq!(
+            share_line(&store.tokens[0], &names).as_deref(),
+            Some("share of API")
+        );
+        assert_eq!(
+            share_line(&store.tokens[0], &HashMap::new()).as_deref(),
+            Some("share of a deleted workspace")
+        );
+        assert_eq!(share_line(&store.tokens[1], &names), None);
+        // The workspace it was made for is gone and its id is another workspace's now.
+        store.tokens[0].workspaces = Some(vec![]);
+        assert_eq!(
+            share_line(&store.tokens[0], &names).as_deref(),
+            Some("share of a deleted workspace")
+        );
+    }
+
+    #[test]
+    fn new_certificate_counts_the_direct_mirrors() {
+        assert_eq!(
+            renew_words(0),
+            "Clients that pinned the old one stop connecting."
+        );
+        assert_eq!(
+            renew_words(1),
+            "Clients that pinned the old one stop connecting, 1 mirror connected directly among \
+             them: share again for it."
+        );
+        assert_eq!(
+            renew_words(2),
+            "Clients that pinned the old one stop connecting, 2 mirrors connected directly among \
+             them: share again for them."
         );
     }
 

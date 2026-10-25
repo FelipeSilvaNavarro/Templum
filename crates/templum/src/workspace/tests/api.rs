@@ -164,6 +164,70 @@ fn the_state_shows_workspaces_blocks_agents_and_cards(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_state_has_icons_read_only_blocks_and_shares(cx: &mut TestAppContext) {
+    use templum_api::store::{Share, Way};
+    let (handle, ws) = open(cx);
+    let (_, note, terminal) = three_blocks(handle, &ws, cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    ws.update(cx, |ws, _| {
+        ws.space.look.icon = Some(gpui_kit::assets::IconName::Rocket);
+        ws.space.terminal_mut(terminal).unwrap().follows =
+            Some(crate::workspace::subagents::Follows {
+                parent: "p".into(),
+                id: "s1".into(),
+                done: None,
+            });
+    });
+    let token = with_token(&ws, cx, Scope::Full, None);
+    let share_id = ws.update(cx, |ws, _| {
+        let store = ws.api.store.as_mut().unwrap();
+        let (id, text) = store
+            .mint_share(
+                Share {
+                    workspace: first.clone(),
+                    way: Way::Pinned,
+                    address: "192.168.1.5:7411".into(),
+                },
+                "Another computer",
+                Scope::Full,
+                None,
+                5,
+            )
+            .unwrap();
+        assert!(text.starts_with("tpl_"));
+        id
+    });
+    let seen = state(handle, &ws, cx, &token);
+    assert_eq!(seen.workspaces[0].icon.as_deref(), Some("rocket"));
+    let uids = ws.read_with(cx, |ws, _| ws.space.uids.clone());
+    let read_only = |id: BlockId| {
+        seen.blocks
+            .iter()
+            .find(|b| b.id == uids[&id])
+            .unwrap()
+            .read_only
+    };
+    assert!(read_only(terminal) && !read_only(note));
+    assert_eq!(
+        seen.shares,
+        [templum_api::model::ShareView {
+            id: format!("s{share_id}"),
+            workspace: first,
+            name: "Another computer".into(),
+            scope: Scope::Full,
+            created: 5,
+            expires: None,
+            way: Way::Pinned,
+            address: "192.168.1.5:7411".into(),
+            last: None,
+            mirrored: false,
+        }]
+    );
+    let json = serde_json::to_string(&seen).unwrap();
+    assert!(!json.contains("tpl_"), "no token text in the state");
+}
+
+#[gpui_kit::test]
 fn an_agents_state_is_the_agents_views(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (a, b) = super::agents_view::one_done(handle, &ws, cx);
@@ -2670,6 +2734,42 @@ fn the_tick_lends_terminals_while_a_terminal_stream_is_open(cx: &mut TestAppCont
 // Input: `terminal_input` is the person's keyboard.
 
 #[gpui_kit::test]
+fn terminal_input_waits_only_after_an_escape(cx: &mut TestAppContext) {
+    use crate::workspace::delegate::KEY_GAP;
+    let (handle, ws) = open(cx);
+    let (_, _, terminal) = three_blocks(handle, &ws, cx);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&terminal].clone());
+    let token = with_token(&ws, cx, Scope::Full, None);
+    let inputs = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminal(terminal).unwrap().term.inputs()
+        })
+    };
+    let n = inputs(cx);
+    let answers = api_later(
+        handle,
+        &ws,
+        cx,
+        &token,
+        903,
+        "tools/call",
+        json!({ "name": "terminal_input", "arguments": { "block": uid, "keys": ["a", "b", "escape", "c"] } }),
+    );
+    cx.run_until_parked();
+    assert_eq!(inputs(cx), n + 3, "a, b and Esc back to back; c waits");
+    assert!(
+        answers.try_recv().is_err(),
+        "no answer before the clock moves"
+    );
+    cx.executor()
+        .advance_clock(KEY_GAP + Duration::from_millis(1));
+    cx.run_until_parked();
+    assert_eq!(inputs(cx), n + 4);
+    let line: Value = serde_json::from_str(&answers.try_recv().expect("answered")).unwrap();
+    assert_eq!(said(&line), (false, format!("Pressed 4 keys in {uid}.")));
+}
+
+#[gpui_kit::test]
 fn terminal_input_pastes_and_presses_as_the_keyboard(cx: &mut TestAppContext) {
     use crate::workspace::delegate::KEY_GAP;
     let (handle, ws) = open(cx);
@@ -3000,4 +3100,712 @@ fn the_tick_is_faster_while_the_canvas_moves(cx: &mut TestAppContext) {
     assert_eq!(wait(cx, Some(held)), fast);
     assert_eq!(wait(cx, Some(Drag::Select(id))), slow);
     wait(cx, None);
+}
+
+// Shares: a token limited to one workspace and its connection code.
+
+/// A share of `workspace` in the store, as Share… makes one: its token and its id.
+fn make_share(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    workspace: &str,
+    scope: Scope,
+) -> (Token, String) {
+    use templum_api::store::{Share, Way};
+    ws.update(cx, |ws, _| {
+        let store = ws.api.store.get_or_insert_with(Store::default);
+        let share = Share {
+            workspace: workspace.into(),
+            way: Way::Public,
+            address: "https://t.example.com".into(),
+        };
+        let (id, _) = store
+            .mint_share(share, "Another computer", scope, None, 0)
+            .unwrap();
+        let token = store.tokens.iter().find(|t| t.id == id).unwrap().clone();
+        let share_id = token.share_id().unwrap();
+        (token, share_id)
+    })
+}
+
+#[gpui_kit::test]
+fn a_share_answers_its_code_once(cx: &mut TestAppContext) {
+    use templum_api::code::{self, Trust};
+    use templum_api::store::{Listen, Tls, verify};
+    let (handle, ws, dir) = with_data(cx);
+    let (first, name) = ws.read_with(cx, |ws, _| (ws.space.id.clone(), ws.space.name.clone()));
+    let full = with_token(&ws, cx, Scope::Full, None);
+    // The API fits a pinned share (no server runs: nothing here listens).
+    let settings = |ws: &Entity<Workspace>, cx: &mut TestAppContext, tls: Tls| {
+        ws.update(cx, |ws, _| {
+            let s = &mut ws.api.store.as_mut().unwrap().settings;
+            (s.listen, s.tls) = (Listen::All, tls);
+        })
+    };
+    settings(&ws, cx, Tls::Own);
+    let args = |way: &str, address: &str| {
+        json!({"workspace": first, "name": "Another computer", "scope": "full",
+            "expires": null, "way": way, "address": address})
+    };
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &full,
+        "share_workspace",
+        args("pinned", "192.168.1.5:7411"),
+    );
+    let share_id = {
+        let (is_error, text) = said(&line);
+        assert!(!is_error, "{text}");
+        text.strip_prefix(&format!("Shared {name} as "))
+            .and_then(|rest| rest.strip_suffix('.'))
+            .unwrap_or_else(|| panic!("{text}"))
+            .to_string()
+    };
+    assert_eq!(line["result"]["target"]["workspace"], json!(first));
+    let decoded = code::decode(line["result"]["code"].as_str().unwrap()).unwrap();
+    let pin = templum_api::tls::pin(&templum_api::tls::own(dir.path()).unwrap().chain[0]);
+    assert_eq!(decoded.url, "https://192.168.1.5:7411");
+    assert_eq!(decoded.trust, Trust::Pinned(pin));
+    let token = ws.read_with(cx, |ws, _| {
+        let store = ws.api.store.as_ref().unwrap();
+        verify(&store.tokens, decoded.key.expose(), 1).cloned()
+    });
+    let token = token.expect("the code's key is a token of the store");
+    assert_eq!(token.workspaces, Some(vec![first.clone()]));
+    assert_eq!(token.share_id().as_deref(), Some(share_id.as_str()));
+    // Only its hash is kept; the person's dialog has nothing to show.
+    let file = std::fs::read_to_string(templum_api::store::folder(dir.path()).join("api.json"));
+    assert!(!file.unwrap().contains("tpl_"));
+    let seen = state(handle, &ws, cx, &full);
+    assert_eq!(seen.shares.len(), 1);
+    assert!(!serde_json::to_string(&seen).unwrap().contains("tpl_"));
+    ws.read_with(cx, |ws, _| assert!(ws.api.shown.is_none()));
+    // A tunnel's address is kept for the next share.
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &full,
+        "share_workspace",
+        args("public", " https://t.example.com/ "),
+    );
+    assert!(!said(&line).0, "{line}");
+    let decoded = code::decode(line["result"]["code"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        (decoded.url.as_str(), decoded.trust),
+        ("https://t.example.com", Trust::Public)
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.api.store.as_ref().unwrap().tunnel.as_deref(),
+            Some("https://t.example.com/")
+        )
+    });
+    // Refusals say what to fix; nothing is made.
+    let shares = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.share_views().len())
+    };
+    assert_eq!(shares(&ws, cx), 2);
+    settings(&ws, cx, Tls::Off);
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &full,
+        "share_workspace",
+        args("pinned", "192.168.1.5:7411"),
+    );
+    assert_eq!(
+        said(&line),
+        (
+            true,
+            "A pinned share needs HTTPS with Templum's certificate: Settings ▸ API ▸ HTTPS.".into()
+        )
+    );
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &full,
+        "share_workspace",
+        args("public", "templum.example.com"),
+    );
+    assert_eq!(
+        said(&line),
+        (true, "The address must start with https://.".into())
+    );
+    settings(&ws, cx, Tls::Own);
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &full,
+        "share_workspace",
+        args("pinned", "https://x:1"),
+    );
+    assert_eq!(
+        said(&line),
+        (true, "Give Directly's address as host:port.".into())
+    );
+    // A code that can't be made is this address's fault, said in home's words (not the mirror's).
+    for (way, address) in [("pinned", "a b:1"), ("public", "https://")] {
+        let line = tool(
+            handle,
+            &ws,
+            cx,
+            &full,
+            "share_workspace",
+            args(way, address),
+        );
+        assert_eq!(
+            said(&line),
+            (true, "Templum can't make a code for this address.".into()),
+            "{address}"
+        );
+    }
+    // A login in the address would read as the host and be another.
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &full,
+        "share_workspace",
+        args("public", "https://templum.example.com@evil.com"),
+    );
+    assert_eq!(
+        said(&line),
+        (
+            true,
+            "The address is a host alone: no login, query or fragment.".into()
+        )
+    );
+    // An expiry already past makes no share.
+    let mut past = args("pinned", "192.168.1.5:7411");
+    past["expires"] = json!(1);
+    let line = tool(handle, &ws, cx, &full, "share_workspace", past);
+    assert_eq!(
+        said(&line),
+        (
+            true,
+            "The expiry is already past: choose a later time.".into()
+        )
+    );
+    assert_eq!(shares(&ws, cx), 2, "a refusal makes no token");
+    // Who may share: a token for all workspaces, Full.
+    let limited = with_token(&ws, cx, Scope::Full, Some(vec![first.as_str()]));
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &limited,
+        "share_workspace",
+        args("public", "https://t.example.com"),
+    );
+    assert_eq!(
+        (
+            line["error"]["code"].as_i64(),
+            line["error"]["message"].as_str()
+        ),
+        (
+            Some(i64::from(codes::SCOPE)),
+            Some("share_workspace needs a Full token for all workspaces.")
+        )
+    );
+    let control = with_token(&ws, cx, Scope::Control, None);
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &control,
+        "share_workspace",
+        args("public", "https://t.example.com"),
+    );
+    assert_eq!(
+        line["error"]["message"].as_str(),
+        Some("share_workspace needs a Full token.")
+    );
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &full,
+        "share_workspace",
+        json!({"workspace": "nowhere", "name": "x", "scope": "full", "way": "public", "address": "https://t.example.com"}),
+    );
+    assert_eq!(
+        line["error"]["code"].as_i64(),
+        Some(i64::from(codes::NOT_FOUND))
+    );
+    assert_eq!(shares(&ws, cx), 2);
+}
+
+#[gpui_kit::test]
+fn revoke_share_takes_the_callers_own_or_needs_full(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = with_data(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let full = with_token(&ws, cx, Scope::Full, None);
+    let (a, a_id) = make_share(&ws, cx, &first, Scope::Control);
+    let (b, b_id) = make_share(&ws, cx, &first, Scope::Full);
+    let (_, c_id) = make_share(&ws, cx, &first, Scope::Full);
+    let held = |ws: &Entity<Workspace>, cx: &mut TestAppContext, id: u64| {
+        ws.read_with(cx, |ws, _| {
+            ws.api
+                .store
+                .as_ref()
+                .unwrap()
+                .tokens
+                .iter()
+                .any(|t| t.id == id)
+        })
+    };
+    // A share revokes itself, Control or not.
+    let line = tool(handle, &ws, cx, &a, "revoke_share", json!({}));
+    assert_eq!(said(&line), (false, format!("Revoked {a_id}.")));
+    assert!(!held(&ws, cx, a.id));
+    // But not another: that takes a Full token for all workspaces.
+    let line = tool(handle, &ws, cx, &b, "revoke_share", json!({"share": c_id}));
+    assert_eq!(
+        (
+            line["error"]["code"].as_i64(),
+            line["error"]["message"].as_str()
+        ),
+        (
+            Some(i64::from(codes::SCOPE)),
+            Some("revoke_share needs a Full token for all workspaces.")
+        )
+    );
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &full,
+        "revoke_share",
+        json!({"share": b_id}),
+    );
+    assert_eq!(said(&line), (false, format!("Revoked {b_id}.")));
+    assert!(!held(&ws, cx, b.id));
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &full,
+        "revoke_share",
+        json!({"share": "s999"}),
+    );
+    assert_eq!(
+        (
+            line["error"]["code"].as_i64(),
+            line["error"]["message"].as_str()
+        ),
+        (
+            Some(i64::from(codes::NOT_FOUND)),
+            Some("There's no share s999: GET /v1/shares lists them.")
+        )
+    );
+    // A token Settings made is no share.
+    let line = tool(handle, &ws, cx, &full, "revoke_share", json!({}));
+    assert_eq!(
+        (
+            line["error"]["code"].as_i64(),
+            line["error"]["message"].as_str()
+        ),
+        (
+            Some(i64::from(rpc_params())),
+            Some("revoke_share needs \"share\": this token isn't a share.")
+        )
+    );
+    assert!(held(&ws, cx, full.id));
+}
+
+fn rpc_params() -> i32 {
+    templum_mcp::rpc::PARAMS
+}
+
+#[gpui_kit::test]
+fn the_sharing_rows_say_who_mirrors_and_when(cx: &mut TestAppContext) {
+    use crate::share_dialog::sharing_words;
+    use templum_api::model::{LastView, ShareView};
+    let (_handle, ws, _dir) = with_data(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (_, a) = make_share(&ws, cx, &first, Scope::Control);
+    let (_, b) = make_share(&ws, cx, &first, Scope::Full);
+    let (_, elsewhere) = make_share(&ws, cx, "w9", Scope::Full);
+    ws.read_with(cx, |ws, _| {
+        let ids: Vec<_> = ws.share_rows(&first).into_iter().map(|s| s.id).collect();
+        assert_eq!(
+            ids,
+            [a.clone(), b.clone()],
+            "oldest first, of this workspace only"
+        );
+        assert_eq!(ws.share_rows("w9").len(), 1);
+        assert!(ws.share_rows("w9").iter().all(|s| s.id == elsewhere));
+    });
+    let now = 1_000_000;
+    let day = 86_400;
+    let share = |scope, expires, last: Option<(u64, &str)>, mirrored| ShareView {
+        scope,
+        expires,
+        last: last.map(|(at, addr)| LastView {
+            at,
+            addr: addr.into(),
+        }),
+        mirrored,
+        ..ShareView::default()
+    };
+    assert_eq!(
+        sharing_words(
+            &share(Scope::Full, Some(now + 29 * day), None, false),
+            "",
+            now
+        ),
+        (
+            "Full · expires in 29 days".to_string(),
+            "never used".to_string()
+        )
+    );
+    assert_eq!(
+        sharing_words(
+            &share(
+                Scope::Full,
+                Some(now + day),
+                Some((now, "198.51.100.2")),
+                true
+            ),
+            "203.0.113.7",
+            now
+        )
+        .1,
+        "mirrored now from 203.0.113.7",
+        "the stream's address, not the last call's"
+    );
+    assert_eq!(
+        sharing_words(
+            &share(
+                Scope::Control,
+                None,
+                Some((now - 3 * 3600, "203.0.113.7")),
+                false
+            ),
+            "",
+            now
+        ),
+        (
+            "Control · never expires".to_string(),
+            "last used 3 h ago from 203.0.113.7".to_string()
+        )
+    );
+    assert_eq!(
+        sharing_words(
+            &share(Scope::Full, Some(now - 2 * day), None, false),
+            "",
+            now
+        )
+        .0,
+        "Full · expired 2 days ago"
+    );
+}
+
+#[gpui_kit::test]
+fn a_share_is_a_workspaces_only_while_its_token_reaches_it(cx: &mut TestAppContext) {
+    let (_handle, ws, _dir) = with_data(cx);
+    let (token, _) = make_share(&ws, cx, "w9", Scope::Full);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.share_rows("w9").len(), 1));
+    // The workspace was deleted before it was ever saved; its id comes round again.
+    ws.update(cx, |ws, cx| ws.api_forget_workspace("w9", cx));
+    ws.read_with(cx, |ws, _| {
+        let kept = ws.api.store.as_ref().unwrap().tokens[0].clone();
+        assert_eq!(kept.id, token.id);
+        assert_eq!(kept.share.as_ref().unwrap().workspace, "w9");
+        assert!(ws.share_rows("w9").is_empty(), "the new w9 isn't its");
+    });
+}
+
+#[gpui_kit::test]
+fn the_dialogs_button_makes_the_api_fit(cx: &mut TestAppContext) {
+    use templum_api::store::{Listen, Tls, Way, share_problem};
+    let (_handle, ws, _dir) = with_data(cx);
+    // An ephemeral port, the API off: the dialog's button turns it on.
+    ws.update(cx, |ws, cx| ws.api_edit(|s| s.port = 0, cx));
+    let settings = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            (
+                ws.api.store.as_ref().unwrap().settings.clone(),
+                ws.api.server.is_some(),
+            )
+        })
+    };
+    let (before, listening) = settings(&ws, cx);
+    assert!(!before.enabled && !listening);
+    ws.update(cx, |ws, cx| ws.fit_api(Way::Public, cx));
+    let (s, listening) = settings(&ws, cx);
+    assert!(s.enabled && s.listen == Listen::Loopback && s.tls == Tls::Off && listening);
+    assert_eq!(
+        share_problem(&s, Way::Public, "https://t.example.com"),
+        None
+    );
+    assert!(
+        share_problem(&s, Way::Pinned, "x:1").is_some(),
+        "loopback and plain don't fit"
+    );
+    // On, but not for a direct share: the same button applies what is missing.
+    ws.update(cx, |ws, cx| ws.fit_api(Way::Pinned, cx));
+    let (s, listening) = settings(&ws, cx);
+    assert!(s.listen == Listen::All && s.tls == Tls::Own && listening);
+    assert_eq!(share_problem(&s, Way::Pinned, "192.168.1.5:7411"), None);
+}
+
+#[gpui_kit::test]
+fn the_share_dialog_makes_a_code_shows_it_once_and_drops_it(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::test::TestWindowExt as _;
+    use templum_api::code;
+    no_motion(cx);
+    let (handle, ws, _dir) = with_data(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    // An ephemeral port, and a tunnel remembered from an earlier share.
+    ws.update(cx, |ws, cx| {
+        ws.api_edit(|s| s.port = 0, cx);
+        ws.api.store.as_mut().unwrap().tunnel = Some("https://t.example.com".into());
+    });
+    let shares = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.share_views().len())
+    };
+    cx.update_window(handle, |_, window, cx| {
+        let flow = ws
+            .update(cx, |ws, cx| {
+                crate::share_dialog::open(ws, &first, window, cx)
+            })
+            .expect("a data folder");
+        window.render_frame(cx);
+        // The API is off: the dialog says so, and Make code is not pressable.
+        assert!(window.try_find("share-problem").is_some());
+        window.click("share-make", cx);
+        window.render_frame(cx);
+        assert_eq!(ws.read(cx).share_views().len(), 0);
+        assert!(flow.read(cx).code().is_none());
+        // Turn it on: nothing is wrong now.
+        window.click("share-fix", cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).api.server.is_some());
+        assert!(window.try_find("share-problem").is_none());
+        window.click("share-make", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("share-code").is_some(), "the code is shown");
+        assert!(window.try_find("share-paste-it").is_some());
+        let text = flow.read(cx).code().expect("made").to_string();
+        let decoded = code::decode(&text).unwrap();
+        assert_eq!(decoded.url, "https://t.example.com");
+        assert_eq!(ws.read(cx).share_rows(&first).len(), 1);
+        // Done: the dialog closes and the text is gone from it.
+        window.click("share-done", cx);
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+        assert!(
+            flow.read(cx).code().is_none(),
+            "nothing holds the code after Done"
+        );
+        assert!(ws.read(cx).api.shown.is_none());
+    })
+    .unwrap();
+    assert_eq!(shares(&ws, cx), 1);
+}
+
+#[gpui_kit::test]
+fn the_share_dialog_keeps_blocking_when_the_api_failed_to_start(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    no_motion(cx);
+    let (handle, ws, _dir) = with_data(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    // The port is taken by someone else.
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let busy = taken.local_addr().unwrap().port();
+    ws.update(cx, |ws, cx| {
+        ws.api_edit(|s| s.port = busy, cx);
+        ws.api.store.as_mut().unwrap().tunnel = Some("https://t.example.com".into());
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            crate::share_dialog::open(ws, &first, window, cx)
+        })
+        .expect("a data folder");
+        window.render_frame(cx);
+        window.click("share-fix", cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).api.server.is_none());
+        assert!(ws.read(cx).api.error.is_some(), "the server could not bind");
+        // The problem line stays, with the reason, and Make code makes nothing.
+        assert!(window.try_find("share-problem").is_some());
+        window.click("share-make", cx);
+        window.render_frame(cx);
+        assert_eq!(ws.read(cx).share_views().len(), 0);
+        assert!(window.try_find("share-code").is_none());
+    })
+    .unwrap();
+    drop(taken);
+}
+
+#[gpui_kit::test]
+fn the_edit_dialog_lists_shares_and_revokes_at_once(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::test::TestWindowExt as _;
+    no_motion(cx);
+    let (handle, ws, _dir) = with_data(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (token, share) = make_share(&ws, cx, &first, Scope::Full);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            crate::space_dialog::open(ws, &first, window, cx)
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("space-share-invite").is_none());
+        assert!(window.try_find(format!("space-share-{share}")).is_some());
+        assert!(
+            window.try_find("space-share").is_some(),
+            "Share… for one more"
+        );
+        // Revoke needs no question and no Save.
+        window.click(format!("space-revoke-{share}"), cx);
+        window.render_frame(cx);
+        assert!(window.try_find(format!("space-share-{share}")).is_none());
+        assert!(window.try_find("space-share-invite").is_some());
+        assert!(
+            ws.read(cx)
+                .api
+                .store
+                .as_ref()
+                .unwrap()
+                .tokens
+                .iter()
+                .all(|t| t.id != token.id)
+        );
+        // Share… opens a second dialog over this one.
+        window.click("space-share", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("share-make").is_some());
+        window.click("share-cancel", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("space-share").is_some(),
+            "the Edit… dialog is still there"
+        );
+        window.click("cancel", cx);
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_mirrored_workspace_is_named_with_its_mirror(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    use std::io::{Read, Write};
+    use templum_api::store::{Share, Way};
+    let (handle, ws, _dir) = with_data(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    // A share of the first workspace, before the server starts with the tokens.
+    let text = ws.update(cx, |ws, _| {
+        let share = Share {
+            workspace: first.clone(),
+            way: Way::Public,
+            address: "https://t.example.com".into(),
+        };
+        let store = ws.api.store.get_or_insert_with(Store::default);
+        store
+            .mint_share(share, "Another computer", Scope::Full, None, 0)
+            .unwrap()
+            .1
+    });
+    turn_on(&ws, cx);
+    let port = port(&ws, cx);
+    let (opened, open) = std::sync::mpsc::channel::<()>();
+    let (close, closing) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        write!(
+            stream,
+            "GET /v1/events HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {text}\r\n\r\n"
+        )
+        .unwrap();
+        // Read until the snapshot is in: the stream is open.
+        let mut all = String::new();
+        let mut buf = [0u8; 4096];
+        while !all.contains("event: snapshot") {
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0, "the stream ended early: {all}");
+            all.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        let _ = opened.send(());
+        // Held open until the test says; then the client leaves.
+        let _ = closing.recv();
+    });
+    let mirrors =
+        |cx: &mut TestAppContext, space: &str| ws.read_with(cx, |ws, _| ws.mirrored_now(space));
+    wait_until(cx, "the mirror to be named", |cx| {
+        !mirrors(cx, &first).is_empty()
+    });
+    open.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(
+        mirrors(cx, &first),
+        [("Another computer".to_string(), "127.0.0.1".to_string())]
+    );
+    assert!(mirrors(cx, "w9").is_empty());
+    // The state says it too, for a client that reads shares.
+    let line = ws.read_with(cx, |ws, _| ws.share_views());
+    assert!(line[0].mirrored);
+    // And the sidebar's tile wears the cast mark.
+    let mark = format!("workspace-mirrored-{first}");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(mark.clone()).is_some());
+    })
+    .unwrap();
+    let _ = close.send(());
+    wait_until(cx, "the mirror to leave", |cx| {
+        mirrors(cx, &first).is_empty()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(mark.clone()).is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_share_of_a_deleted_workspace_sees_nothing_and_can_still_be_revoked(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = with_data(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (token, share) = make_share(&ws, cx, &first, Scope::Full);
+    ws.update(cx, |ws, cx| ws.api_forget_workspace(&first, cx));
+    let kept = ws.read_with(cx, |ws, _| ws.api.store.as_ref().unwrap().tokens[0].clone());
+    assert_eq!(
+        kept.workspaces,
+        Some(vec![]),
+        "it is nobody's workspace now"
+    );
+    let seen = state(handle, &ws, cx, &kept);
+    assert!(seen.workspaces.is_empty() && seen.blocks.is_empty());
+    // It still has its share, naming the workspace that was, for Settings to say so.
+    assert_eq!(seen.shares.len(), 1);
+    assert_eq!(seen.shares[0].workspace, first);
+    let names = std::collections::HashMap::new();
+    assert_eq!(
+        crate::settings::api::share_line(&kept, &names).as_deref(),
+        Some("share of a deleted workspace")
+    );
+    let line = tool(handle, &ws, cx, &kept, "revoke_share", json!({}));
+    assert_eq!(said(&line), (false, format!("Revoked {share}.")));
+    assert!(ws.read_with(cx, |ws, _| {
+        ws.api
+            .store
+            .as_ref()
+            .unwrap()
+            .tokens
+            .iter()
+            .all(|t| t.id != token.id)
+    }));
 }

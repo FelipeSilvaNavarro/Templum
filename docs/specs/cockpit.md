@@ -334,6 +334,7 @@ slides it up over 200 ms like the settings panel; closing slides it down.
   "3 terminals · 1 note · 1 Claude Code running" (counts of blocks by kind, and the agents found by the last
   snapshot); the active card has the `accent` border and ring, the others a hairline that goes `hover_border`
   on hover.
+- **A mirrored workspace's card** wears the sidebar tile's cast mark and tooltip, among its dots.
 - **Click a card:** switches to it and closes the screen. **Right-click:** Open, Edit…, Stop (see
   [Stopping a workspace](#stopping-a-workspace)), Delete… (disabled for the last one, with the same confirmation as
   the sidebar). A sidebar tile's right-click menu is the same.
@@ -360,6 +361,12 @@ Replaces the sidebar's **Rename…**, which becomes **Edit…** everywhere. A di
 - **Image:** **Choose an image…** opens the system's file picker (PNG, JPG, JPEG, WebP, SVG); the file is copied
   to `<data folder>/workspaces/icons/<id>.<ext>` (replacing an older one) and shown instead of the icon, cropped to
   the tile's rounded square. **Remove image** goes back to the icon. A file over 4 MB is refused with a message.
+- **Sharing,** below Folder: what it does applies at once, not on Save. With no share, "Let another Templum mirror
+  this workspace: watch it live, move its blocks, answer its agents, type into its terminals." and **Share…**; else a
+  row per share (its name; dim under it, "Full · expires in 29 days" and "mirrored now from 203.0.113.7" with the
+  accent dot, "last used 3 h ago from 203.0.113.7" or "never used") with **Revoke**, and **Share…** for one more.
+  Share… opens a second dialog (name, what it can do, expiry, how the other computer reaches this one) that makes the
+  connection code and shows it once ([templum-to-templum.md](templum-to-templum.md#on-home-sharing-a-workspace)).
 - **Save** and Cancel. Enter saves. Every change previews in the tile at once; Cancel puts everything back.
 
 ### Where the look shows

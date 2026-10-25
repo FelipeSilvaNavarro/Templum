@@ -585,8 +585,9 @@ phone case work).
     - **Input is the API's own tool `terminal_input`** (`block`, then `text` or `keys`; full scope), so it is in the
       registry, `GET /v1/tools` and the OpenAPI document, and `POST /v1/terminals/{block}/input` is its alias. It is the
       person's keyboard, not an agent's `send_keys`: no task check, no screen read back, its answer as soon as the keys
-      are pressed (`Pasted into b7k2m.`, `Pressed 2 keys in b7k2m.`). Keys keep `send_keys`' 50 ms between them (an
-      Esc and the key after it in one burst read as Alt+key), at most 16 per call; text is a paste of at most 256 KiB.
+      are pressed (`Pasted into b7k2m.`, `Pressed 2 keys in b7k2m.`). Keys are 1 to 256 a call, pressed back to back, with 50 ms
+      only after a lone Esc (or Ctrl+[, Ctrl+3) that another key follows, so the pair doesn't read as Alt+key; an agent's
+      `send_keys` waits between all of its keys. Text is a paste of at most 256 KiB.
       The block shows "answered by API · <token name>" as it does for `send_keys`. A client sends its next input after
       the answer to the last, so keys keep their order. Refused: a block that isn't a terminal, a subagent's transcript
       (read-only), a shell that has ended ("b7k2m's shell has ended: nothing typed reaches it.").
@@ -604,7 +605,10 @@ shares it as a token limited to it and one connection code; the other Templum pa
 in a remote workspace of its sidebar, live, through this API (home is the truth). It builds on what batches 1 and 2
 give: workspace-limited tokens, the state and its deltas, `move_block`, Templum's certificate and its fingerprint,
 terminal frames and `terminal_input`; it adds `GET /v1/me`, shares, a block's `read_only`, a workspace's `icon`, a
-frame's `modes` and more key names.
+frame's `modes` and more key names. Home's side is built (plan
+[2026-10-25-t2t-batch-1a-home.md](../plans/2026-10-25-t2t-batch-1a-home.md)): the `share_workspace` and
+`revoke_share` tools and their aliases, the connection code (`templum_api::code`), `Templum-Mirror` and
+`event: replaced`, and the audit log's grouping of `terminal_input` and `GET /v1/me`.
 
 ## Left to the builder
 
