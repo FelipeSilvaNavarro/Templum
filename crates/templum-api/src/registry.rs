@@ -65,6 +65,7 @@ pub const NOT_TARGETS: &[&str] = &[
     "item",
     "keys",
     "kind",
+    "label",
     "last_command",
     "lines",
     "model",

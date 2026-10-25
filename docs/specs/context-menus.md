@@ -52,6 +52,16 @@ would have opened together with the block's. The canvas and the blocks had no me
 | A workspace tile in the sidebar, or its card on the workspaces screen | Open (disabled for the one shown), Edit…, Stop (disabled while it is the only workspace, or stopped), Delete… (disabled for the last workspace) |
 | A drawing (with the Select tool) | Delete |
 
+On a **mirrored workspace** the same menus open, and what home can't do there is dimmed with the rule's words as its
+tooltip ([Templum to Templum](templum-to-templum.md#batch-2b-blocks-wires-and-agents-on-the-canvas)): the canvas menu's
+**AI agent ▸** lists home's agents (before home answered: "Asking *computer*…") and a choice asks which folder of
+home's;
+**Add ▸** has Terminal as one item (home's default shell), Kanban board, Checklist, and Note and Editor dimmed;
+**Notes…** and **Checklists…** are dimmed. A remote terminal's menu is Copy, Paste (dimmed without a Full share),
+**Hand a task…** (when an agent runs in it) and the block menu's end, with Fullscreen, Connect to ▸, Disconnect from ▸,
+Move to workspace and Close each dimmed when home can't. A card of home's has the end alone. A wire's menu has Rename
+wire… and Disconnect. The shells' menu and a drawing's don't open.
+
 Every block's header has a **⋯** (More), shown on hover beside Fullscreen and Close, which opens the block's menu at the
 click, as a right-click does.
 

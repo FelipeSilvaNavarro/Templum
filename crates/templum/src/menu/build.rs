@@ -7,17 +7,19 @@ use crate::agents::AgentEntry;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
-use gpui_kit::{App, ClipboardItem, Context, Entity, SharedString, Window, px};
+use gpui_kit::{App, ClipboardItem, Context, Entity, SharedString, Window, div, px};
 use templum_canvas::{BlockId, Point, Wire};
 
-use super::{Items, SendTo, Shells, Tail};
+use super::{AgentList, Gates, Items, SendTo, Shells, Tail};
 use crate::board::Label;
 use crate::git_block;
 use crate::kanban;
 use crate::launcher;
 use crate::prompt;
 use crate::workspace::Workspace;
+use crate::workspace::remote::{Deed, HomeAgent};
 
 /// An item whose click updates the workspace.
 fn item(
@@ -32,64 +34,113 @@ fn item(
         .on_click(move |_, window, cx| ws.update(cx, |ws, cx| act(ws, window, cx)))
 }
 
+/// An item a mirrored workspace may refuse: as `item` when `why` is None; else dimmed, the rule's
+/// words its tooltip (a popup menu's items have none of their own, so it is an element).
+fn gated_item(
+    ws: &Entity<Workspace>,
+    label: impl Into<SharedString>,
+    icon: Option<IconName>,
+    why: Option<SharedString>,
+    act: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+) -> PopupMenuItem {
+    let Some(why) = why else {
+        return item(ws, label, icon, act);
+    };
+    let label: SharedString = label.into();
+    PopupMenuItem::element(move |_, _| {
+        let why = why.clone();
+        div()
+            .id(label.clone())
+            .child(label.clone())
+            .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+    })
+    .when_some(icon, |item, icon| item.icon(Icon::new(icon)))
+    .disabled(true)
+}
+
 /// Adding blocks, the canvas menu's and a tile's: AI agent ▸ and Add ▸ (Terminal ▸, Kanban board,
 /// Note, Checklist, Editor), their top-left corner at `at` on the canvas. In grid mode they take half of
 /// the focused tile.
+#[allow(clippy::too_many_arguments)]
 fn adding(
     ws: &Entity<Workspace>,
     menu: PopupMenu,
-    agents: Vec<(AgentEntry, bool)>,
-    shells: Shells,
+    agents: AgentList,
+    shells: Option<Shells>,
     at: Point,
+    gates: Gates,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
     let (agent, add) = (ws.clone(), ws.clone());
+    let menu = match gates.why(Deed::OpenAgent) {
+        // The whole submenu is dimmed, with the rule's words.
+        Some(why) => menu.item(gated_item(
+            ws,
+            "AI agent",
+            Some(IconName::Bot),
+            Some(why),
+            |_, _, _| {},
+        )),
+        None => menu.submenu_with_icon(
+            Some(Icon::new(IconName::Bot)),
+            "AI agent",
+            window,
+            cx,
+            move |menu, _, _| agent_items(&agent, menu, agents.clone(), at),
+        ),
+    };
     menu.submenu_with_icon(
-        Some(Icon::new(IconName::Bot)),
-        "AI agent",
-        window,
-        cx,
-        move |menu, _, _| agent_items(&agent, menu, agents.clone(), at),
-    )
-    .submenu_with_icon(
         Some(Icon::new(IconName::Plus)),
         "Add",
         window,
         cx,
         move |menu, window, cx| {
             let ws = &add;
-            let shells = shells.clone();
             let terminal = ws.clone();
-            menu.submenu_with_icon(
-                Some(Icon::new(IconName::SquareTerminal)),
-                "Terminal",
-                window,
-                cx,
-                move |menu, _, _| shell_items(&terminal, menu, shells.clone(), Some(at)),
-            )
-            .item(item(
+            let menu = match shells.clone() {
+                Some(shells) => menu.submenu_with_icon(
+                    Some(Icon::new(IconName::SquareTerminal)),
+                    "Terminal",
+                    window,
+                    cx,
+                    move |menu, _, _| shell_items(&terminal, menu, shells.clone(), Some(at)),
+                ),
+                // A mirror has home's default shell only.
+                None => menu.item(gated_item(
+                    ws,
+                    "Terminal",
+                    Some(IconName::SquareTerminal),
+                    gates.why(Deed::AddTerminal),
+                    move |ws, window, cx| ws.open_shell(None, Some(at), window, cx),
+                )),
+            };
+            menu.item(gated_item(
                 ws,
                 "Kanban board",
                 Some(IconName::LayoutDashboard),
+                gates.why(Deed::AddKanban),
                 move |ws, window, cx| ws.add_kanban_at(at, window, cx),
             ))
-            .item(item(
+            .item(gated_item(
                 ws,
                 "Note",
                 Some(IconName::StickyNote),
+                gates.why(Deed::AddNote),
                 move |ws, window, cx| ws.add_note_at(at, window, cx),
             ))
-            .item(item(
+            .item(gated_item(
                 ws,
                 "Checklist",
                 Some(IconName::ListChecks),
+                gates.why(Deed::AddChecklist),
                 move |ws, window, cx| ws.add_checklist_at(at, window, cx),
             ))
-            .item(item(
+            .item(gated_item(
                 ws,
                 "Editor",
                 Some(IconName::FileCode),
+                gates.why(Deed::AddEditor),
                 move |ws, window, cx| ws.ask_editor_folder(at, window, cx),
             ))
         },
@@ -125,12 +176,13 @@ fn shell_items(
 
 /// The agents, installed first; the others are greyed out (Settings ▸ Agents says how to install
 /// them). `at`: where the agent's block goes.
-fn agent_items(
-    ws: &Entity<Workspace>,
-    menu: PopupMenu,
-    agents: Vec<(AgentEntry, bool)>,
-    at: Point,
-) -> PopupMenu {
+fn agent_items(ws: &Entity<Workspace>, menu: PopupMenu, agents: AgentList, at: Point) -> PopupMenu {
+    let agents = match agents {
+        AgentList::Local(agents) => agents,
+        AgentList::Home { agents, computer } => {
+            return home_agent_items(ws, menu, agents, computer, at);
+        }
+    };
     let (found, missing): (Vec<_>, Vec<_>) =
         agents.into_iter().partition(|(_, installed)| *installed);
     let entry = |menu: PopupMenu, (agent, installed): (AgentEntry, bool)| {
@@ -143,6 +195,40 @@ fn agent_items(
         )
     };
     // Twenty agents: the list scrolls in a short window.
+    let menu = found
+        .into_iter()
+        .fold(menu.scrollable(true).max_h(px(420.0)), entry);
+    if missing.is_empty() {
+        return menu;
+    }
+    missing
+        .into_iter()
+        .fold(menu.separator().label("Not installed"), entry)
+}
+
+/// Home's agents on a mirror, installed first and the others dimmed under "Not installed", as
+/// `agent_items` lists this computer's; a choice asks which folder of home's to open it in. Before
+/// home answered: one dimmed item that says it is asked.
+fn home_agent_items(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    agents: Option<Vec<HomeAgent>>,
+    computer: String,
+    at: Point,
+) -> PopupMenu {
+    let Some(agents) = agents else {
+        return menu.item(PopupMenuItem::new(format!("Asking {computer}…")).disabled(true));
+    };
+    let (found, missing): (Vec<_>, Vec<_>) = agents.into_iter().partition(|a| a.installed);
+    let entry = |menu: PopupMenu, agent: HomeAgent| {
+        let (title, disabled) = (SharedString::from(agent.title.clone()), !agent.installed);
+        menu.item(
+            item(ws, title, None, move |ws, window, cx| {
+                launcher::ask_home_folder(ws, agent.clone(), at, window, cx)
+            })
+            .disabled(disabled),
+        )
+    };
     let menu = found
         .into_iter()
         .fold(menu.scrollable(true).max_h(px(420.0)), entry);
@@ -201,12 +287,14 @@ fn send_to(
 }
 
 /// Connect to ▸ (`on`) the blocks listed, or Disconnect from ▸ them; nothing when there are none.
+#[allow(clippy::too_many_arguments)]
 fn wiring(
     ws: &Entity<Workspace>,
     menu: PopupMenu,
     block: BlockId,
     blocks: Vec<(BlockId, SharedString)>,
     on: bool,
+    why: Option<SharedString>,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
@@ -218,6 +306,10 @@ fn wiring(
     } else {
         (IconName::Unplug, "Disconnect from")
     };
+    // A mirror that can't wire dims the item whole.
+    if why.is_some() {
+        return menu.item(gated_item(ws, label, Some(icon), why, |_, _, _| {}));
+    }
     let ws = ws.clone();
     menu.submenu_with_icon(
         Some(Icon::new(icon)),
@@ -303,6 +395,7 @@ impl Items {
                 spaces,
                 schedules,
                 terminal,
+                gates,
             } => {
                 let menu = inner.build(ws, menu, window, cx).separator();
                 let menu = match tail {
@@ -311,10 +404,11 @@ impl Items {
                         connect,
                         disconnect,
                     } => {
-                        let menu = menu.item(item(
+                        let menu = menu.item(gated_item(
                             ws,
                             "Fullscreen",
                             Some(IconName::Maximize2),
+                            gates.why(Deed::Grid),
                             move |ws, window, cx| {
                                 let ids = if group.contains(&block) {
                                     group.clone()
@@ -324,8 +418,9 @@ impl Items {
                                 ws.enter_grid(ids, window, cx)
                             },
                         ));
-                        let menu = wiring(ws, menu, block, connect, true, window, cx);
-                        let menu = wiring(ws, menu, block, disconnect, false, window, cx);
+                        let (to, from) = (gates.why(Deed::Wire), gates.why(Deed::Unwire));
+                        let menu = wiring(ws, menu, block, connect, true, to, window, cx);
+                        let menu = wiring(ws, menu, block, disconnect, false, from, window, cx);
                         cancelling(ws, menu, schedules, terminal, window, cx)
                     }
                     Tail::Tile {
@@ -337,101 +432,147 @@ impl Items {
                     } => {
                         let bring = ws.clone();
                         // New blocks take half of this tile: it has the focus.
-                        adding(ws, menu, agents, shells, at, window, cx)
-                            .when(!others.is_empty(), |menu| {
-                                menu.submenu("From the canvas", window, cx, move |menu, _, _| {
-                                    others.iter().fold(menu, |menu, (id, title)| {
-                                        let id = *id;
-                                        menu.item(item(
-                                            &bring,
-                                            title.clone(),
-                                            None,
-                                            move |ws, window, cx| {
-                                                ws.add_to_grid(id, block, window, cx)
-                                            },
-                                        ))
-                                    })
+                        adding(
+                            ws,
+                            menu,
+                            agents,
+                            Some(shells),
+                            at,
+                            Gates::default(),
+                            window,
+                            cx,
+                        )
+                        .when(!others.is_empty(), |menu| {
+                            menu.submenu("From the canvas", window, cx, move |menu, _, _| {
+                                others.iter().fold(menu, |menu, (id, title)| {
+                                    let id = *id;
+                                    menu.item(item(
+                                        &bring,
+                                        title.clone(),
+                                        None,
+                                        move |ws, window, cx| ws.add_to_grid(id, block, window, cx),
+                                    ))
                                 })
                             })
-                            .separator()
-                            .when(flip, |menu| {
-                                menu.item(item(ws, "Flip the split", None, move |ws, _, cx| {
-                                    ws.flip_tile(block, cx)
-                                }))
-                            })
-                            .item(item(ws, "Leave the grid", None, move |ws, window, cx| {
-                                ws.leave_tile(block, window, cx)
+                        })
+                        .separator()
+                        .when(flip, |menu| {
+                            menu.item(item(ws, "Flip the split", None, move |ws, _, cx| {
+                                ws.flip_tile(block, cx)
                             }))
-                            .item(item(
-                                ws,
-                                "Back to the canvas",
-                                Some(IconName::Minimize2),
-                                |ws, window, cx| ws.leave_grid(window, cx),
-                            ))
+                        })
+                        .item(item(ws, "Leave the grid", None, move |ws, window, cx| {
+                            ws.leave_tile(block, window, cx)
+                        }))
+                        .item(item(
+                            ws,
+                            "Back to the canvas",
+                            Some(IconName::Minimize2),
+                            |ws, window, cx| ws.leave_grid(window, cx),
+                        ))
                     }
                 };
                 let mover = ws.clone();
-                menu.submenu("Move to workspace", window, cx, move |menu, _, _| {
-                    let to_new = moving.clone();
-                    spaces
-                        .iter()
-                        .fold(menu, |menu, (id, name, takes)| {
-                            let (id, ids) = (id.clone(), moving.clone());
-                            menu.item(
-                                item(&mover, name.clone(), None, move |ws, window, cx| {
-                                    ws.move_blocks(ids.clone(), Some(&id), window, cx)
-                                })
-                                .disabled(!*takes),
-                            )
-                        })
-                        .when(!spaces.is_empty(), |menu| menu.separator())
-                        .item(item(
-                            &mover,
-                            "New workspace",
-                            Some(IconName::Plus),
-                            move |ws, window, cx| ws.move_blocks(to_new.clone(), None, window, cx),
-                        ))
-                })
-                .item(item(
+                let menu = match gates.why(Deed::MoveToWorkspace) {
+                    Some(why) => menu.item(gated_item(
+                        ws,
+                        "Move to workspace",
+                        None,
+                        Some(why),
+                        |_, _, _| {},
+                    )),
+                    None => menu.submenu("Move to workspace", window, cx, move |menu, _, _| {
+                        let to_new = moving.clone();
+                        spaces
+                            .iter()
+                            .fold(menu, |menu, (id, name, takes)| {
+                                let (id, ids) = (id.clone(), moving.clone());
+                                menu.item(
+                                    item(&mover, name.clone(), None, move |ws, window, cx| {
+                                        ws.move_blocks(ids.clone(), Some(&id), window, cx)
+                                    })
+                                    .disabled(!*takes),
+                                )
+                            })
+                            .when(!spaces.is_empty(), |menu| menu.separator())
+                            .item(item(
+                                &mover,
+                                "New workspace",
+                                Some(IconName::Plus),
+                                move |ws, window, cx| {
+                                    ws.move_blocks(to_new.clone(), None, window, cx)
+                                },
+                            ))
+                    }),
+                };
+                menu.item(gated_item(
                     ws,
                     close,
                     Some(IconName::Close),
+                    gates.why(Deed::Close),
                     move |ws, window, cx| ws.close(block, window, cx),
                 ))
             }
-            Items::Canvas { at, agents, shells } => {
-                let notes = item(
+            Items::Canvas {
+                at,
+                agents,
+                shells,
+                gates,
+            } => {
+                // They list this computer's own, which can't go into a mirrored workspace.
+                let notes = gated_item(
                     ws,
                     "Notes…",
                     Some(IconName::NotebookText),
+                    gates.why(Deed::OpenNote),
                     |_, window, cx| crate::note::open_notes(None, window, cx),
                 );
-                let checklists = item(
+                let checklists = gated_item(
                     ws,
                     "Checklists…",
                     Some(IconName::ListChecks),
+                    gates.why(Deed::OpenChecklist),
                     |_, window, cx| crate::checklist::open_checklists(None, window, cx),
                 );
-                adding(ws, menu, agents, shells, at, window, cx)
+                adding(ws, menu, agents, shells, at, gates, window, cx)
                     .item(notes)
                     .item(checklists)
             }
+            Items::Mirrored => menu,
             Items::Checklist { block } => menu.item(item(
                 ws,
                 "All checklists…",
                 Some(IconName::ListChecks),
                 move |_, window, cx| crate::checklist::open_checklists(Some(block), window, cx),
             )),
-            Items::Terminal { selection } => menu
+            Items::Terminal {
+                block,
+                selection,
+                hand,
+                gates,
+            } => menu
                 .item(
                     item(ws, "Copy", Some(IconName::Copy), |ws, window, cx| {
                         ws.copy_selection(window, cx)
                     })
                     .disabled(!selection),
                 )
-                .item(item(ws, "Paste", None, |ws, window, cx| {
-                    ws.paste_clipboard(window, cx)
-                })),
+                .item(gated_item(
+                    ws,
+                    "Paste",
+                    None,
+                    gates.why(Deed::Type),
+                    |ws, window, cx| ws.paste_clipboard(window, cx),
+                ))
+                .when(hand, |menu| {
+                    menu.item(gated_item(
+                        ws,
+                        "Hand a task…",
+                        None,
+                        gates.why(Deed::Delegate),
+                        move |ws, window, cx| ws.ask_task(block, window, cx),
+                    ))
+                }),
             Items::Kanban { block, board } => {
                 let menu = menu.item(item(
                     ws,
@@ -1133,26 +1274,37 @@ impl Items {
                 Some(IconName::Delete),
                 move |ws, _, cx| ws.delete_ink(index, cx),
             )),
-            Items::Wire { wire } => menu
-                .item(item(ws, "Rename wire…", None, move |ws, window, cx| {
-                    let label = ws.space.label(wire).unwrap_or_default().to_string();
-                    let entity = cx.entity();
-                    prompt::ask_text(
-                        "Rename wire",
-                        "Rename",
-                        label,
-                        move |text, _, cx| {
-                            entity.update(cx, |ws, cx| ws.rename_wire(wire, &text, cx));
-                            true
-                        },
-                        window,
-                        cx,
-                    )
-                }))
-                .item(item(
+            Items::Wire { wire, gates } => menu
+                .item(gated_item(
+                    ws,
+                    "Rename wire…",
+                    None,
+                    gates.why(Deed::Label),
+                    move |ws, window, cx| {
+                        let label = ws.space.label(wire).unwrap_or_default().to_string();
+                        let (entity, space) = (cx.entity(), ws.space.id.clone());
+                        prompt::ask_text(
+                            "Rename wire",
+                            "Rename",
+                            label,
+                            move |text, window, cx| {
+                                entity.update(cx, |ws, cx| {
+                                    if ws.still_shown(&space, window, cx) {
+                                        ws.rename_wire(wire, &text, cx);
+                                    }
+                                });
+                                true
+                            },
+                            window,
+                            cx,
+                        )
+                    },
+                ))
+                .item(gated_item(
                     ws,
                     "Disconnect",
                     Some(IconName::Unplug),
+                    gates.why(Deed::Unwire),
                     move |ws, _, cx| {
                         ws.disconnect(wire, cx);
                     },

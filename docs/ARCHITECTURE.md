@@ -105,8 +105,14 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   its notices come as `Update::Notice` (notifications with a cap, `remote_notice`). The state is `Vec<Arc<T>>`, so
   taking it copies pointers and `apply_remote` rebuilds only when blocks, wires, requests or workspaces changed. What
   the person may do on a remote is one rule (`Deed`, `RemoteSpace::why_not`: not yet, not connected, home's Templum is
-  older, needs a Full share); what is shown ahead of home is a `Holds<K, V>` (`workspace/holds.rs`).
-  `--bench-mirror` measures all of it: the mixed cockpit mirrored by the same Templum over loopback.
+  older, needs a Full share); what is shown ahead of home is a `Holds<K, V>` (`workspace/holds.rs`). The mirror's acts
+  on the canvas are calls of home's, none done here: `remote_add` (`add_block`; the block that comes gets the keyboard
+  through `awaiting`/`focus_awaited`), `remote_open_agent`, `remote_close` (a block closed here is held out of the
+  canvas by `closed` until home's state loses it), `remote_wire` and `remote_label` (wires held in `wires_held`),
+  `remote_hand_task`; each canvas step leaves a `Change::Mark` so Ctrl+Z stops there instead of undoing an older move,
+  and a hold that ends with no new state redraws home's last one (`remirror`, `Space::mirror_state`). Menus read the
+  rule per item when they are built (`Gates`, `gated_item`). `--bench-mirror` measures all of it: the mixed cockpit
+  mirrored by the same Templum over loopback.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera

@@ -2336,12 +2336,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **A remote terminal's effort has no place on its block.** (`workspace/remote.rs`, `mirror_blocks`.) Home's
   `agent.effort` is kept in the pane's `RemotePane::agent` but only the usage chip (context, cost, model) shows.
   Fix: put it in the chip's tooltip.
-- [ ] **A remote terminal has no right-click menu.** (`menu/mod.rs`, `open_menu`.) The menus of the canvas, a block, a
-  wire and a drawing say "Not on a mirrored workspace yet" in a notification instead of opening, so Copy of a mirrored
-  terminal's selection is only by the keyboard. Fix: a menu with Copy alone, and the rest disabled with the tooltip.
-- [ ] **A remote workspace's key shortcuts for what it can't do answer nothing.** (`workspace/remote.rs`,
-  `Workspace::on_remote`.) Ctrl+Shift+T, a new note, the Wire tool and the like do nothing there, and only the
-  toolbar and the menus say why. Fix: one notification with `NOT_YET` from the keymap's dispatch.
 - [ ] **`Terminal::grid_size` of a viewer is still its first size.** (`crates/templum-terminal/src/terminal.rs`.) The
   mirror reads `Pane::grid_size` (the grid's own, after a `Feeder::resize`); any other caller of `Terminal::grid_size`
   on a viewer would still read the stale one. Fix: `Terminal::grid_size` reads the grid for a viewer.
@@ -2397,3 +2391,22 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **Typing, a remote's Edit…, Paste a new code…, and the dim foot of a request were checked headlessly only.**
   (`workspace/input.rs`, `space_dialog.rs`, `connect_dialog.rs`, `balloon.rs`.) Their looks and the feel of typing
   through a real tunnel were not seen on a display. Fix: look at them with two `--dev` instances.
+- [ ] **The Open dialog, Hand a task…, the dimmed menu items and the dimmed ✕ were checked headlessly only.**
+  (`launcher.rs`, `ask_home_folder`; `prompt.rs`, `ask_lines`; `menu/build.rs`, `gated_item`; `block.rs`, the header's
+  ✕ and fullscreen.) Their layout, the tooltips of dimmed items (an element item has no hover of its own in a popup
+  menu) and the dimmed look were not seen on a display. Fix: look at them with two `--dev` instances, one a Control
+  share, one a Full share, one an older home.
+- [ ] **The Open dialog's answer closes whatever dialog is on top.** (`launcher.rs`, `ask_home_folder`.) A person who
+  closed it with Esc while home was answering has home's Ok close the next dialog they opened. Fix: keep the dialog's
+  handle and close that one, or ignore an Ok after Cancel.
+- [ ] **A kanban added from a mirror shows a new board.** (`workspace/control.rs`, `add_block_for_agent`.) Home's
+  `add_block` always shows one (a new board with To do, Doing, Review, Done); locally a new kanban shows none. Fix:
+  2d's All boards… on a remote, or `add_block` without a board for a kanban.
+- [ ] **A shared workspace with no folder refuses the mirror's terminals and agents.** (`workspace/api.rs`,
+  `confined_default`.) Home's confinement of a limited token says so in its words ("this workspace has none"), which
+  the mirror shows after the click. Fix: the Share… dialog says it when the workspace has none.
+- [ ] **A refused close brings its block back as a new one.** (`workspace/remote.rs`, `mirror_blocks`.) The block that
+  was closed here and kept by home is drawn again with a new canvas id, so it is no longer selected or focused and
+  keeps no scroll. Fix: keep the closed body for `HOLD` and put it back on a refusal.
+- [ ] **A mirror's Add ▸ Terminal opens home's default shell, with no choice of shell.** (`menu/build.rs`, `adding`;
+  `toolbar.rs`.) The shells of this computer are not home's. Fix: list home's shells in `GET /v1/state` and offer them.

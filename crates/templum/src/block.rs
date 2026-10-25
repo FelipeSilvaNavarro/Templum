@@ -26,6 +26,7 @@ use crate::kanban;
 use crate::motion::{self, Look};
 use crate::note;
 use crate::workspace::agents_view::Doing;
+use crate::workspace::remote::Deed;
 use crate::workspace::{AgentState, Body, Copied, FindBar, Mirrored, Pane, Workspace};
 
 /// World units, like everything in a block.
@@ -48,14 +49,32 @@ const DOT: f32 = 8.0;
 /// The Templum Agent's mark before a title, world units.
 const MARK: f32 = 10.0;
 
+/// Why a mirror's block headers can't close or fill the screen: the same for every block, so
+/// asked once a frame, not once a block.
+pub(crate) struct Gates {
+    close: Option<String>,
+    grid: Option<String>,
+}
+
+impl Gates {
+    pub(crate) fn of(ws: &Workspace) -> Gates {
+        Gates {
+            close: ws.why_not(Deed::Close),
+            grid: ws.why_not(Deed::Grid),
+        }
+    }
+}
+
 /// `look` scales the block around its center (it is drawn at zoom × scale) and fades it.
 /// A block that isn't `live` is a ghost fading out: no controls, and clicks go through it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
     ws: &Workspace,
     block: Block,
     body: &Body,
     look: Look,
     live: bool,
+    gates: &Gates,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
@@ -367,6 +386,9 @@ pub(crate) fn render(
     })
     .test_support();
 
+    // On a mirror, what home can't do from here is dimmed, its tooltip the rule's words.
+    let (no_close, no_grid) = (gates.close.clone(), gates.grid.clone());
+    let no_grid_dim = no_grid.is_some();
     // Painted over the title: pressing it never starts a move.
     let close = div()
         .id(("close", n))
@@ -385,6 +407,10 @@ pub(crate) fn render(
                 .size(px(12.0 * z))
                 .text_color(ui.title),
         )
+        .when_some(no_close, |el, why| {
+            el.opacity(0.4)
+                .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+        })
         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.close(id, window, cx)))
         .test_support();
 
@@ -412,13 +438,14 @@ pub(crate) fn render(
             .text_color(ui.title),
         )
         .tooltip(move |window, cx| {
-            Tooltip::new(if tiled {
-                "Back to the canvas"
-            } else {
-                "Fullscreen"
+            Tooltip::new(match &no_grid {
+                Some(why) => why.clone(),
+                None if tiled => "Back to the canvas".to_string(),
+                None => "Fullscreen".to_string(),
             })
             .build(window, cx)
         })
+        .when(no_grid_dim, |el| el.opacity(0.4))
         // The block isn't focused by this press: that would drop the selection going full screen.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.fullscreen(id, window, cx)))

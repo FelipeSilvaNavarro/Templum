@@ -5,6 +5,7 @@
 mod build;
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::agents::AgentEntry;
 use gpui_kit::SharedString;
@@ -19,6 +20,7 @@ use templum_git::{Branch, Commit, Entry};
 use templum_terminal::ShellOption;
 
 use crate::git_block;
+use crate::workspace::remote::{Deed, HomeAgent};
 use crate::workspace::{Body, Workspace};
 
 /// What was right-clicked.
@@ -116,27 +118,24 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // What a menu there offers (add, move, close, wire, erase) a mirrored workspace doesn't
-        // do yet: the menu says so instead of opening.
-        if self.on_remote()
-            && matches!(
-                target,
-                Target::Canvas(_)
-                    | Target::Block { .. }
-                    | Target::Agents(_)
-                    | Target::Shells
-                    | Target::Ink(_)
-                    | Target::Wire(_)
-            )
-        {
-            crate::workspace::show_notification(
-                window,
-                cx,
-                gpui_kit::component::notification::Notification::info(
-                    crate::workspace::remote::NOT_YET.to_string(),
-                ),
-            );
-            return;
+        // The shells and the ink a mirrored workspace doesn't have: the menu says so instead of
+        // opening. The agents it has only when home can open them.
+        if self.on_remote() {
+            let why = match target {
+                Target::Shells | Target::Ink(_) => Some(crate::workspace::remote::NOT_YET.into()),
+                Target::Agents(_) => self.why_not(Deed::OpenAgent),
+                _ => None,
+            };
+            if let Some(why) = why {
+                return self.warn(why, window, cx);
+            }
+            // Home's agents are read at each connect, and again when they are a minute old.
+            let stale =
+                (self.space.remote.as_deref()).is_some_and(|r| r.agents_stale(Instant::now()));
+            if stale && matches!(target, Target::Canvas(_) | Target::Agents(_)) {
+                let id = self.space.id.clone();
+                self.read_home_agents(&id, cx);
+            }
         }
         self.reload_early_shells();
         let ws = cx.entity();
@@ -206,6 +205,17 @@ impl Workspace {
             .collect()
     }
 
+    /// The agents a menu lists: this computer's, or on a mirror home's (none while unread).
+    fn agent_list_for_menu(&self) -> AgentList {
+        match self.space.remote.as_deref() {
+            Some(remote) => AgentList::Home {
+                agents: remote.agents.clone(),
+                computer: crate::mirror::computer_of(remote),
+            },
+            None => AgentList::Local(self.agents_for_menu()),
+        }
+    }
+
     /// How block `block`'s menu ends: in grid mode, the tile's items; on the canvas, Fullscreen
     /// (with `group`, the selection it is in) and its wiring.
     fn tail(&self, block: BlockId, group: Vec<BlockId>, cx: &App) -> Tail {
@@ -235,7 +245,7 @@ impl Workspace {
                     grid.area.x + grid.area.w / 2.0,
                     grid.area.y + grid.area.h / 2.0,
                 )),
-                agents: self.agents_for_menu(),
+                agents: AgentList::Local(self.agents_for_menu()),
                 shells: self.shells_for_menu(),
                 flip: grid.tiles.ids().len() > 1 && grid.homes.contains_key(&block),
                 others: self
@@ -268,19 +278,35 @@ impl Workspace {
         Some(match target.clone() {
             Target::Canvas(at) => Items::Canvas {
                 at,
-                agents: self.agents_for_menu(),
-                shells: self.shells_for_menu(),
+                agents: self.agent_list_for_menu(),
+                shells: (!self.on_remote()).then(|| self.shells_for_menu()),
+                gates: Gates::of(
+                    self,
+                    &[
+                        Deed::OpenAgent,
+                        Deed::AddTerminal,
+                        Deed::AddKanban,
+                        Deed::AddNote,
+                        Deed::AddChecklist,
+                        Deed::AddEditor,
+                        Deed::OpenNote,
+                        Deed::OpenChecklist,
+                    ],
+                ),
             },
             Target::Shells => Items::Shells(self.shells_for_menu()),
             Target::Agents(at) => Items::Agents {
                 at,
-                agents: self.agents_for_menu(),
+                agents: self.agent_list_for_menu(),
             },
             Target::Block { id: block, group } => {
                 let body = self.space.blocks.get(&block)?;
                 let inner = match body {
                     Body::Terminal(pane) => Items::Terminal {
+                        block,
                         selection: pane.term.shared().selection_text().is_some(),
+                        hand: pane.remote.as_ref().is_some_and(|r| r.agent.is_some()),
+                        gates: Gates::of(self, &[Deed::Type, Deed::Delegate]),
                     },
                     Body::Kanban(k) => Items::Kanban {
                         block,
@@ -295,8 +321,7 @@ impl Workspace {
                         send: self.send_to_menu(n.to_send(cx)),
                     },
                     Body::Checklist(_) => Items::Checklist { block },
-                    // Nothing to do with a card of home's yet.
-                    Body::Mirrored(_) => return None,
+                    Body::Mirrored(_) => Items::Mirrored,
                     Body::Editor(e) => Items::Editor {
                         block,
                         tree: e.show_tree,
@@ -326,6 +351,16 @@ impl Workspace {
                         .map(|s| (s.id.clone(), s.name.clone(), s.takes_blocks()))
                         .collect(),
                     tail: self.tail(block, group, cx),
+                    gates: Gates::of(
+                        self,
+                        &[
+                            Deed::Grid,
+                            Deed::Wire,
+                            Deed::Unwire,
+                            Deed::MoveToWorkspace,
+                            Deed::Close,
+                        ],
+                    ),
                     close: if body.terminal().is_some() {
                         "Close terminal"
                     } else {
@@ -356,7 +391,10 @@ impl Workspace {
                 ),
             },
             Target::Ink(index) => Items::Ink { index },
-            Target::Wire(wire) => Items::Wire { wire },
+            Target::Wire(wire) => Items::Wire {
+                wire,
+                gates: Gates::of(self, &[Deed::Label, Deed::Unwire]),
+            },
             Target::GitCommitMenu => {
                 let git = self.space.git()?;
                 Items::GitCommitMenu {
@@ -577,8 +615,45 @@ enum Tail {
         flip: bool,
         others: Vec<(BlockId, SharedString)>,
         at: Point,
-        agents: Vec<(AgentEntry, bool)>,
+        agents: AgentList,
         shells: Shells,
+    },
+}
+
+/// Why a mirrored workspace's menu items can't be used, by the deed each does: the rule's words,
+/// read when the menu is built (a local workspace has none).
+#[derive(Clone, Default)]
+struct Gates(Vec<(Deed, SharedString)>);
+
+impl Gates {
+    /// The words of each of `deeds` the workspace shown can't do now.
+    fn of(ws: &Workspace, deeds: &[Deed]) -> Gates {
+        Gates(
+            deeds
+                .iter()
+                .filter_map(|deed| Some((*deed, ws.why_not(*deed)?.into())))
+                .collect(),
+        )
+    }
+
+    /// Why `deed` can't be done, or None.
+    fn why(&self, deed: Deed) -> Option<SharedString> {
+        self.0
+            .iter()
+            .find(|(gated, _)| *gated == deed)
+            .map(|(_, why)| why.clone())
+    }
+}
+
+/// The agents a menu lists.
+#[derive(Clone)]
+enum AgentList {
+    /// This computer's, and whether each one's program was found.
+    Local(Vec<(AgentEntry, bool)>),
+    /// A mirror's: home's, none while they are not read yet; and the computer's name.
+    Home {
+        agents: Option<Vec<HomeAgent>>,
+        computer: String,
     },
 }
 
@@ -606,21 +681,31 @@ enum Items {
         /// its terminal (`TEMPLUM_TERMINAL`).
         schedules: Vec<(u64, String)>,
         terminal: Option<String>,
+        /// Fullscreen, Connect to, Disconnect from, Move to workspace and Close on a mirror.
+        gates: Gates,
     },
     Canvas {
         at: Point,
-        /// Each agent the menu lists, and whether its program was found.
-        agents: Vec<(AgentEntry, bool)>,
-        shells: Shells,
+        agents: AgentList,
+        /// None on a mirror: home's default shell, an item.
+        shells: Option<Shells>,
+        gates: Gates,
     },
     Shells(Shells),
     Agents {
         at: Point,
-        agents: Vec<(AgentEntry, bool)>,
+        agents: AgentList,
     },
     Terminal {
+        block: BlockId,
         selection: bool,
+        /// A remote terminal with an agent in it: Hand a task….
+        hand: bool,
+        /// Paste and Hand a task… on a mirror.
+        gates: Gates,
     },
+    /// A card of home's block: nothing of its own to do.
+    Mirrored,
     Kanban {
         block: BlockId,
         /// The board it shows: its id, its name and how many cards it has.
@@ -750,6 +835,7 @@ enum Items {
     /// A wire: Rename wire…, Disconnect.
     Wire {
         wire: Wire,
+        gates: Gates,
     },
     /// Terminals to show, one item each.
     Reveal {

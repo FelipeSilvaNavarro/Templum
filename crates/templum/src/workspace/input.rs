@@ -724,6 +724,11 @@ impl Workspace {
     }
 
     pub(crate) fn run(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        // On a mirror, a shortcut for what home can't do says why, once, instead of answering
+        // nothing.
+        if let Some(why) = super::remote::command_deed(command).and_then(|d| self.why_not(d)) {
+            return self.tell_shortcut(why, window, cx);
+        }
         match command {
             Command::NewTerminal => self.new_terminal(window, cx),
             Command::CloseTerminal => self.close_terminal(window, cx),

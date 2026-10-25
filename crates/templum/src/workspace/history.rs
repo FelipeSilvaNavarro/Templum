@@ -26,6 +26,9 @@ pub(crate) enum Change {
     Disconnect(Wire),
     /// Give this wire this label, or none (it had another).
     Label(Wire, Option<String>),
+    /// An act done at home that this Ctrl+Z can't take back: it only says so, and the next
+    /// Ctrl+Z undoes the older move.
+    Mark,
 }
 
 impl Change {
@@ -41,6 +44,7 @@ impl Change {
             Change::Connect(Wire { a, b })
             | Change::Disconnect(Wire { a, b })
             | Change::Label(Wire { a, b }, _) => vec![a, b],
+            Change::Mark => Vec::new(),
         }
     }
 }
@@ -72,6 +76,18 @@ impl Workspace {
         stack.push(step);
         if stack.len() > CANVAS_UNDO {
             stack.remove(0);
+        }
+    }
+
+    /// An act was done at home that Ctrl+Z can't take back (a block added, closed, a wire made):
+    /// a stop in the undo stack, so Ctrl+Z says so instead of undoing an older move by surprise.
+    /// Acts one after another are one stop.
+    pub(super) fn mark_remote(&mut self) {
+        if matches!(self.space.undo.last(), Some((_, Change::Mark))) {
+            // A new act still ends what Ctrl+Shift+Z could redo.
+            self.space.redo.clear();
+        } else {
+            self.keep(Change::Mark, Then::New);
         }
     }
 
@@ -112,6 +128,15 @@ impl Workspace {
                 return false;
             };
             let then = if redo { Then::Redo(n) } else { Then::Undo(n) };
+            if matches!(change, Change::Mark) {
+                self.take_step(then);
+                let computer = (self.space.remote.as_deref())
+                    .map_or_else(String::new, crate::mirror::computer_of);
+                let sentence =
+                    format!("On a mirror, Ctrl+Z undoes moves only: undo the rest on {computer}.");
+                self.warn(sentence, window, cx);
+                return true;
+            }
             // A step whose blocks are all gone (a shell that exited) has nothing to take back; nor
             // has a wire's when one of its blocks is.
             let wire = matches!(
@@ -152,6 +177,7 @@ impl Workspace {
                     self.take_step(then);
                     self.set_label(wire, label, then, cx);
                 }
+                Change::Mark => unreachable!("a mark is taken off above"),
             }
             return true;
         }

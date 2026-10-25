@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use keyring_core::mock;
 use serde_json::json;
-use templum_api::client::{Keys, SERVICE_DEV, Secrets, Status, Why, entry_name};
+use templum_api::client::{Keys, SERVICE_DEV, Secrets, Status, Tools, Why, entry_name};
 use templum_api::code::{self, Code};
 use templum_api::model::{AgentView, BlockView, Rect as ApiRect, State, WorkspaceView};
 use templum_api::store::{Scope, Way};
@@ -16,6 +16,7 @@ use super::api::{port, turn_on, with_data};
 use super::*;
 use crate::session::{self, IndexEntry, Keeping, RemoteEntry};
 use crate::workspace::api::ShareDraft;
+use crate::workspace::history::Change;
 use crate::workspace::remote::{Connecting, RemoteSpace};
 use crate::workspace::waits::Approved;
 use crate::workspace::{Body, Waiting};
@@ -424,7 +425,7 @@ pub(super) fn pump_home(
 }
 
 /// The shown remote is live on a share of `scope`, as home's `GET /v1/me` said.
-fn live(ws: &mut Workspace, scope: Scope) {
+pub(super) fn live(ws: &mut Workspace, scope: Scope) {
     let remote = ws.space.remote.as_mut().unwrap();
     remote.status = Status::Live;
     remote.me = Some(templum_api::model::MeView {
@@ -439,21 +440,28 @@ fn space_of(ws: &Workspace) -> &crate::workspace::Space {
 }
 
 /// A mirror that connects to nothing, for states made by hand.
-fn offline(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, tempfile::TempDir) {
+pub(super) fn offline(
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<Workspace>, tempfile::TempDir) {
     let key = templum_api::code::Key::new("tpl_NOTUSED".into());
     let code = code::encode("http://127.0.0.1:9", &key, None);
     let (handle, ws, dir, _store) = with_remote(cx, &code, Keeping::None, false);
     (handle, ws, dir)
 }
 
-fn apply(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext, state: State) {
+pub(super) fn apply(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    state: State,
+) {
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| ws.apply_remote("r1", state, window, cx))
     })
     .unwrap();
 }
 
-fn terminal_of_home(agent: Option<AgentView>) -> State {
+pub(super) fn terminal_of_home(agent: Option<AgentView>) -> State {
     State {
         workspaces: vec![Arc::new(WorkspaceView {
             id: "w1".into(),
@@ -1136,16 +1144,9 @@ fn a_remote_workspace_refuses_what_it_cant_do_yet(cx: &mut TestAppContext) {
     use crate::workspace::history::Then;
     use templum_canvas::Wire;
     let (_, (handle, ws), _, _keep) = shown_mirror(cx);
-    let (first, viewer) = ws.read_with(cx, |ws, _| {
+    let first = ws.read_with(cx, |ws, _| {
         assert!(ws.on_remote());
-        let viewer = ws
-            .space
-            .blocks
-            .iter()
-            .find(|(_, body)| matches!(body, Body::Terminal(_)))
-            .map(|(id, _)| *id)
-            .expect("home's terminal is drawn as a viewer");
-        (ws.spaces().next().unwrap().id.clone(), viewer)
+        ws.spaces().next().unwrap().id.clone()
     });
     let blocks = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
         ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len())
@@ -1161,17 +1162,11 @@ fn a_remote_workspace_refuses_what_it_cant_do_yet(cx: &mut TestAppContext) {
     });
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.new_terminal(window, cx);
             ws.new_note(window, cx);
-            ws.new_kanban(window, cx);
-            ws.new_checklist(None, window, cx);
             ws.new_editor(window, cx);
             let rect = ws.new_terminal_rect(window, cx);
             ws.open(rect, window, cx);
-            ws.close(viewer, window, cx);
-            ws.close_terminal(window, cx);
             ws.toggle_grid(window, cx);
-            ws.set_tool(Tool::Wire, window, cx);
             ws.set_tool(Tool::Pen, window, cx);
             ws.set_tool(Tool::Eraser, window, cx);
             ws.toggle_git(window, cx);
@@ -1185,10 +1180,8 @@ fn a_remote_workspace_refuses_what_it_cant_do_yet(cx: &mut TestAppContext) {
             ws.move_blocks(all.clone(), Some(&first), window, cx);
             ws.move_blocks(all, None, window, cx);
             ws.stop_space("r1", window, cx);
-            // Menus, wires and labels, shapes, notes, and the editors that settings and the Git
-            // list open.
-            let target = crate::workspace::menu::Target::Canvas(Point::new(0.0, 0.0));
-            ws.open_menu(target, point(px(100.0), px(100.0)), window, cx);
+            // Wires and labels, shapes, notes, and the editors that settings and the Git list
+            // open.
             let (a, b) = (ids[0], ids[1]);
             let wire = Wire::new(a, b).unwrap();
             ws.set_wire(wire, true, Then::New, cx);
@@ -1208,7 +1201,6 @@ fn a_remote_workspace_refuses_what_it_cant_do_yet(cx: &mut TestAppContext) {
     .unwrap();
     assert_eq!(blocks(&ws, cx), 3, "nothing was added, closed or moved");
     ws.read_with(cx, |ws, _| {
-        assert!(ws.menu.is_none(), "a remote's canvas has no menu yet");
         assert_eq!(ws.space.wires, [Wire::new(ids[0], ids[1]).unwrap()]);
         assert!(ws.space.labels.is_empty(), "no label was made or wired");
         assert!(!ws.shapes_open);
@@ -1218,7 +1210,7 @@ fn a_remote_workspace_refuses_what_it_cant_do_yet(cx: &mut TestAppContext) {
             "no editor took a uid in the mirror"
         );
         assert!(ws.space.grid.is_none() && ws.space.git.is_none() && !ws.git_open);
-        assert!(!ws.tool.draws() && ws.tool != Tool::Wire, "{:?}", ws.tool);
+        assert!(!ws.tool.draws(), "{:?}", ws.tool);
         assert!(!ws.space.stopped, "a remote can't be stopped");
         assert_eq!(ws.spaces().count(), spaces, "no workspace was made");
         let local = ws.spaces().find(|s| s.id == first).unwrap();
@@ -1324,7 +1316,7 @@ fn no_local_tool_sees_a_remote_block(cx: &mut TestAppContext) {
 // What the review of plan 1c found.
 
 /// Home's terminals `ids`, side by side, back to front.
-fn terminals_of_home(ids: &[&str]) -> State {
+pub(super) fn terminals_of_home(ids: &[&str]) -> State {
     let mut state = terminal_of_home(None);
     state.blocks = ids
         .iter()
@@ -1349,7 +1341,11 @@ fn terminals_of_home(ids: &[&str]) -> State {
 }
 
 /// The remote `r1` of `offline`, shown, its camera at the origin and 100%.
-fn show_remote(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+pub(super) fn show_remote(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) {
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             ws.switch_to(1, window, cx);
@@ -1630,7 +1626,7 @@ fn the_toolbar_dims_a_remote_s_controls_with_the_rule_s_words(cx: &mut TestAppCo
     show_remote(handle, &ws, cx);
     ws.read_with(cx, |ws, _| {
         assert_eq!(
-            crate::toolbar::gated(ws, Deed::AddTerminal, "Terminal"),
+            crate::toolbar::gated(ws, Deed::AddEditor, "Editor"),
             ("Not on a mirrored workspace yet".into(), true)
         );
     });
@@ -3619,4 +3615,1073 @@ fn codes_pasted_before_any_is_kept_all_read_the_key_that_holds_the_secrets(
     })
     .unwrap();
     ws.read_with(cx, |ws, _| assert!(remote_of(ws).inherits.is_none()));
+}
+
+// Batch 2b: blocks, wires and agents on the canvas.
+
+/// A shown, live (Control) mirror of home's workspace `w1` with a terminal for each of `ids`.
+pub(super) fn live_terminals(
+    cx: &mut TestAppContext,
+    ids: &[&str],
+) -> (AnyWindowHandle, Entity<Workspace>, tempfile::TempDir) {
+    let (handle, ws, dir) = offline(cx);
+    show_remote(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        live(ws, Scope::Control);
+        ws.space.remote.as_mut().unwrap().entry.home = Some("w1".into());
+    });
+    apply(handle, &ws, cx, terminals_of_home(ids));
+    (handle, ws, dir)
+}
+
+/// The block here that is home's `home`.
+pub(super) fn viewer(ws: &Entity<Workspace>, cx: &mut TestAppContext, home: &str) -> BlockId {
+    ws.read_with(cx, |ws, _| remote_of(ws).homes[home])
+}
+
+/// The calls kept for want of a client: their tool and arguments.
+pub(super) fn sent(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> Vec<(String, serde_json::Value)> {
+    ws.read_with(cx, |ws, _| {
+        ws.calls
+            .iter()
+            .map(|(_, call, _)| (call.tool.clone(), call.args.clone()))
+            .collect()
+    })
+}
+
+/// Answers the call `n` kept for want of a client.
+pub(super) fn answer(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    n: usize,
+    answered: templum_api::client::Answered,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.answer_call(n, answered, window, cx))
+    })
+    .unwrap();
+}
+
+pub(super) fn refusal(sentence: &str) -> templum_api::client::Answered {
+    Err(templum_api::client::Refusal {
+        sentence: sentence.into(),
+    })
+}
+
+#[gpui_kit::test]
+fn adding_on_a_remote_asks_home_at_the_point(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let p = Point::new(120.0, -40.0);
+    let (checklists, boards) = ws.read_with(cx, |ws, _| {
+        (ws.checklists.lists.len(), ws.boards.boards.len())
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open_shell(None, Some(p), window, cx);
+            ws.add_kanban_at(p, window, cx);
+            ws.add_checklist_at(p, window, cx);
+            // A terminal added from the toolbar goes where a local one would.
+            let size = templum_canvas::chrome::block_size(
+                crate::workspace::DEFAULT_COLS,
+                crate::workspace::DEFAULT_ROWS,
+                ws.cell.size,
+            );
+            let center = ws.space.camera().to_world(ws.center(window));
+            let rect = ws.space.room_around(center, size);
+            ws.new_terminal(window, cx);
+            assert_eq!(
+                ws.calls[3].1.args,
+                json!({"workspace": "w1", "kind": "terminal", "x": rect.x, "y": rect.y})
+            );
+        })
+    })
+    .unwrap();
+    let calls = sent(&ws, cx);
+    let at = |kind: &str| json!({"workspace": "w1", "kind": kind, "x": 120.0, "y": -40.0});
+    assert_eq!(calls[0], ("add_block".to_string(), at("terminal")));
+    assert_eq!(calls[1], ("add_block".to_string(), at("kanban")));
+    let mut checklist = at("checklist");
+    checklist["text"] = json!(crate::checklists::NAME);
+    assert_eq!(calls[2], ("add_block".to_string(), checklist));
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            ws.calls
+                .iter()
+                .all(|(space, call, _)| space == "r1" && !call.slow)
+        );
+        assert_eq!(ws.space.canvas.blocks().len(), 1, "nothing is added here");
+        assert_eq!(ws.checklists.lists.len(), checklists);
+        assert_eq!(ws.boards.boards.len(), boards);
+        assert!(
+            matches!(ws.space.undo.as_slice(), [(_, Change::Mark)]),
+            "four acts, one stop"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn a_home_without_x_places_the_block_itself(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    ws.update(cx, |ws, _| {
+        ws.space.remote.as_mut().unwrap().tools = Some(Tools::read(&json!([
+            {"name": "add_block", "inputSchema": {"properties": {"workspace": {}, "kind": {}}}}
+        ])));
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_kanban_at(Point::new(120.0, -40.0), window, cx)
+        })
+    })
+    .unwrap();
+    assert_eq!(
+        sent(&ws, cx),
+        [(
+            "add_block".to_string(),
+            json!({"workspace": "w1", "kind": "kanban"})
+        )]
+    );
+}
+
+#[gpui_kit::test]
+fn the_new_block_gets_the_keyboard_whichever_comes_first(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let p = Point::new(120.0, -40.0);
+    let add = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.open_shell(None, Some(p), window, cx))
+        })
+        .unwrap()
+    };
+    let focused = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.focused);
+    // a) home answers first, its state after.
+    add(cx);
+    answer(
+        handle,
+        &ws,
+        cx,
+        0,
+        Ok(json!({"text": "Added a terminal.", "block": "b9"})),
+    );
+    apply(handle, &ws, cx, terminals_of_home(&["b1", "b9"]));
+    assert_eq!(focused(cx), Some(viewer(&ws, cx, "b9")));
+    // b) its state first, the answer after.
+    ws.update(cx, |ws, _| ws.space.focused = None);
+    add(cx);
+    apply(handle, &ws, cx, terminals_of_home(&["b1", "b9", "b10"]));
+    answer(handle, &ws, cx, 0, Ok(json!({"block": "b10"})));
+    assert_eq!(focused(cx), Some(viewer(&ws, cx, "b10")));
+    // c) the person focused something else since the act.
+    ws.update(cx, |ws, _| ws.space.focused = None);
+    add(cx);
+    let b1 = viewer(&ws, cx, "b1");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(b1, window, cx))
+    })
+    .unwrap();
+    answer(handle, &ws, cx, 0, Ok(json!({"block": "b11"})));
+    apply(
+        handle,
+        &ws,
+        cx,
+        terminals_of_home(&["b1", "b9", "b10", "b11"]),
+    );
+    assert_eq!(focused(cx), Some(b1));
+    // d) home took more than 5 s to show it.
+    ws.update(cx, |ws, _| ws.space.focused = None);
+    add(cx);
+    answer(handle, &ws, cx, 0, Ok(json!({"block": "b12"})));
+    ws.update(cx, |ws, _| {
+        let awaited = ws.space.remote.as_mut().unwrap().awaited.as_mut().unwrap();
+        awaited.at = Instant::now() - Duration::from_secs(6);
+    });
+    apply(
+        handle,
+        &ws,
+        cx,
+        terminals_of_home(&["b1", "b9", "b10", "b11", "b12"]),
+    );
+    assert_eq!(focused(cx), None);
+    ws.read_with(cx, |ws, _| assert!(remote_of(ws).awaited.is_none()));
+    // e) the person opened a dialog since the act.
+    add(cx);
+    cx.update_window(handle, |_, window, cx| {
+        crate::prompt::confirm("Rename wire", "", "Rename", |_, _| {}, window, cx);
+    })
+    .unwrap();
+    answer(handle, &ws, cx, 0, Ok(json!({"block": "b13"})));
+    apply(
+        handle,
+        &ws,
+        cx,
+        terminals_of_home(&["b1", "b9", "b10", "b11", "b12", "b13"]),
+    );
+    assert_eq!(focused(cx), None, "the dialog keeps the keyboard");
+    ws.read_with(cx, |ws, _| assert!(remote_of(ws).awaited.is_none()));
+    cx.update_window(handle, |_, window, cx| {
+        use gpui_kit::component::WindowExt as _;
+        window.close_dialog(cx)
+    })
+    .unwrap();
+    // A refusal says so and focuses nothing.
+    add(cx);
+    answer(
+        handle,
+        &ws,
+        cx,
+        0,
+        refusal("A token limited to some workspaces opens things inside their folders."),
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.said.last().map(String::as_str),
+            Some("A token limited to some workspaces opens things inside their folders.")
+        );
+        assert!(remote_of(ws).awaited.is_none());
+    });
+    assert_eq!(focused(cx), None);
+}
+
+#[gpui_kit::test]
+fn ctrl_z_stops_once_at_the_mark_then_undoes_older_moves(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let b1 = viewer(&ws, cx, "b1");
+    let at = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.canvas.get(b1).unwrap().rect.x)
+    };
+    let p = Point::new(120.0, -40.0);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.placing(&[b1]);
+            ws.space.canvas.get_mut(b1).unwrap().rect.x += 100.0;
+            ws.end_placing();
+            assert_eq!(ws.space.undo.len(), 1);
+            ws.open_shell(None, Some(p), window, cx);
+            ws.add_kanban_at(p, window, cx);
+            assert!(matches!(
+                ws.space.undo.as_slice(),
+                [(_, Change::Place(_)), (_, Change::Mark)]
+            ));
+            assert!(ws.undo_canvas(false, window, cx));
+            let computer = crate::mirror::computer_of(remote_of(ws));
+            assert_eq!(
+                ws.said.last().cloned(),
+                Some(format!(
+                    "On a mirror, Ctrl+Z undoes moves only: undo the rest on {computer}."
+                ))
+            );
+            assert_eq!(ws.space.undo.len(), 1, "the mark is off");
+        })
+    })
+    .unwrap();
+    assert_eq!(at(&ws, cx), 100.0, "the older move is still there");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            assert!(ws.undo_canvas(false, window, cx));
+            assert!(ws.space.undo.is_empty());
+            assert!(
+                matches!(ws.space.redo.as_slice(), [(_, Change::Place(_))]),
+                "the move only"
+            );
+        })
+    })
+    .unwrap();
+    assert_eq!(at(&ws, cx), 0.0);
+}
+
+#[gpui_kit::test]
+fn an_act_after_an_undone_move_ends_what_ctrl_shift_z_could_redo(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let b1 = viewer(&ws, cx, "b1");
+    let p = Point::new(120.0, -40.0);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open_shell(None, Some(p), window, cx);
+            ws.placing(&[b1]);
+            ws.space.canvas.get_mut(b1).unwrap().rect.x += 100.0;
+            ws.end_placing();
+            assert!(ws.undo_canvas(false, window, cx));
+            assert!(matches!(ws.space.undo.as_slice(), [(_, Change::Mark)]));
+            assert_eq!(ws.space.redo.len(), 1, "the move can be redone");
+            ws.open_shell(None, Some(p), window, cx);
+            assert!(ws.space.redo.is_empty(), "not across the newer act");
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn notes_and_editors_stay_off_a_remote(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.new_note(window, cx);
+            ws.add_note_at(Point::new(0.0, 0.0), window, cx);
+            ws.new_editor(window, cx);
+        })
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.calls.is_empty());
+        assert_eq!(ws.space.canvas.blocks().len(), 1);
+        assert!(ws.space.undo.is_empty(), "no mark");
+    });
+}
+
+#[gpui_kit::test]
+fn home_s_agent_list_reads_as_home_writes_it(cx: &mut TestAppContext) {
+    use crate::workspace::remote::home_agents;
+    let (_handle, ws) = open(cx);
+    ws.update(cx, |ws, _| ws.agents[0].show = false);
+    ws.read_with(cx, |ws, _| {
+        let text = ws.agent_list();
+        let shown: Vec<_> = ws.agents.iter().filter(|a| a.show).collect();
+        assert!(text.lines().next().unwrap().ends_with("  hidden"));
+        let agents = home_agents(&text);
+        assert_eq!(agents.len(), shown.len().min(100));
+        assert!(!agents.is_empty());
+        assert!(
+            agents.iter().all(|a| a.id != ws.agents[0].id),
+            "hidden at home"
+        );
+        for (home, entry) in agents.iter().zip(shown) {
+            assert_eq!(home.id, entry.id);
+            assert_eq!(home.title, crate::workspace::bus::clean_title(&entry.title));
+            assert_eq!(home.installed, templum_terminal::installed(entry.program()));
+        }
+    });
+}
+
+#[gpui_kit::test]
+fn home_s_agents_are_read_at_connect_and_again_after_a_minute(cx: &mut TestAppContext) {
+    use crate::menu::Target;
+    use crate::workspace::remote::HomeAgent;
+    use templum_api::client::Update;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let tools = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let tools = json!([{"name": "list_agents"}, {"name": "open_agent"}]);
+                ws.heard("r1", Update::Tools(Tools::read(&tools)), window, cx)
+            })
+        })
+        .unwrap()
+    };
+    tools(&ws, cx);
+    assert_eq!(sent(&ws, cx), [("list_agents".to_string(), json!({}))]);
+    // One at a time.
+    tools(&ws, cx);
+    assert_eq!(sent(&ws, cx).len(), 1);
+    answer(
+        handle,
+        &ws,
+        cx,
+        0,
+        Ok(json!({"text": "codex  \"Codex\"  installed  takes a model  efforts high"})),
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            remote_of(ws).agents,
+            Some(vec![HomeAgent {
+                id: "codex".into(),
+                title: "Codex".into(),
+                installed: true
+            }])
+        );
+    });
+    let open = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_menu(
+                    Target::Agents(Point::new(0.0, 0.0)),
+                    point(px(100.0), px(100.0)),
+                    window,
+                    cx,
+                )
+            })
+        })
+        .unwrap()
+    };
+    open(&ws, cx);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.menu.is_some(), "the agents' menu opens on a mirror")
+    });
+    assert!(sent(&ws, cx).is_empty(), "read a moment ago");
+    ws.update(cx, |ws, _| {
+        let remote = ws.space.remote.as_mut().unwrap();
+        remote.agents_at = Some(Instant::now() - Duration::from_secs(61));
+    });
+    open(&ws, cx);
+    assert_eq!(sent(&ws, cx), [("list_agents".to_string(), json!({}))]);
+}
+
+#[gpui_kit::test]
+fn the_open_dialog_offers_the_workspace_s_folder_then_its_terminals_once(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_terminals(cx, &["b1", "b2", "b3", "b4"]);
+    let mut state = terminals_of_home(&["b1", "b2", "b3", "b4"]);
+    let folders = ["/srv/api", "/srv/api/web", "/srv/api/web", "/srv/api/db"];
+    state.blocks = state
+        .blocks
+        .iter()
+        .zip(folders)
+        .map(|(b, folder)| {
+            Arc::new(BlockView {
+                folder: Some(folder.into()),
+                ..BlockView::clone(b)
+            })
+        })
+        .collect();
+    let mut home = WorkspaceView::clone(&state.workspaces[0]);
+    home.folder = Some("/srv/api".into());
+    state.workspaces = vec![Arc::new(home)];
+    apply(handle, &ws, cx, state);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.home_folders(),
+            [
+                ("/srv/api".to_string(), Some("Workspace folder")),
+                ("/srv/api/web".to_string(), None),
+                ("/srv/api/db".to_string(), None),
+            ]
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn the_open_dialog_lists_the_workspace_s_folder_and_at_most_twenty_more(cx: &mut TestAppContext) {
+    let ids: Vec<String> = (0..25).map(|n| format!("b{n}")).collect();
+    let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let (handle, ws, _dir) = live_terminals(cx, &refs);
+    let mut state = terminals_of_home(&refs);
+    state.blocks = state
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(n, b)| {
+            Arc::new(BlockView {
+                folder: Some(format!("/srv/{n}")),
+                ..BlockView::clone(b)
+            })
+        })
+        .collect();
+    let mut home = WorkspaceView::clone(&state.workspaces[0]);
+    home.folder = Some("/srv".into());
+    state.workspaces = vec![Arc::new(home)];
+    apply(handle, &ws, cx, state);
+    ws.read_with(cx, |ws, _| {
+        let folders = ws.home_folders();
+        assert_eq!(folders.len(), 21);
+        assert_eq!(folders[0].1, Some("Workspace folder"));
+    });
+}
+
+#[gpui_kit::test]
+fn opening_an_agent_on_a_remote_sends_open_agent_and_hands_back_a_refusal(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let p = Point::new(120.0, -40.0);
+    let results = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let open = |cx: &mut TestAppContext, folder: &'static str| {
+        let results = results.clone();
+        ws.update(cx, |ws, cx| {
+            ws.remote_open_agent(
+                "codex",
+                folder,
+                p,
+                move |_, result, _, _| results.borrow_mut().push(result),
+                cx,
+            )
+            .unwrap()
+        })
+    };
+    open(cx, "web");
+    assert_eq!(
+        sent(&ws, cx),
+        [(
+            "open_agent".to_string(),
+            json!({"agent": "codex", "workspace": "w1", "folder": "web", "x": 120.0, "y": -40.0})
+        )]
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(matches!(ws.space.undo.as_slice(), [(_, Change::Mark)]))
+    });
+    answer(
+        handle,
+        &ws,
+        cx,
+        0,
+        refusal("That folder lies outside API's folder."),
+    );
+    assert_eq!(
+        results.borrow().as_slice(),
+        [Err("That folder lies outside API's folder.".to_string())]
+    );
+    ws.read_with(cx, |ws, _| assert!(remote_of(ws).awaited.is_none()));
+    open(cx, "");
+    assert!(
+        sent(&ws, cx)[0].1.get("folder").is_none(),
+        "no folder: home's"
+    );
+    answer(
+        handle,
+        &ws,
+        cx,
+        0,
+        Ok(json!({"text": "Opened Codex as b9.", "block": "b9"})),
+    );
+    assert_eq!(results.borrow().len(), 2);
+    assert_eq!(results.borrow()[1], Ok(()));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(remote_of(ws).awaited.as_ref().unwrap().home, "b9");
+    });
+    // Not live: refused at once, in the rule's words, and nothing is sent.
+    ws.update(cx, |ws, _| {
+        ws.space.remote.as_mut().unwrap().status = Status::Disconnected;
+    });
+    let refused = ws.update(cx, |ws, cx| {
+        ws.remote_open_agent("codex", "", p, |_, _, _, _| {}, cx)
+    });
+    assert_eq!(refused, Err("Not connected.".to_string()));
+    assert!(sent(&ws, cx).is_empty());
+}
+
+#[gpui_kit::test]
+fn the_open_dialog_asks_home_closes_when_it_opened_and_shows_a_refusal(cx: &mut TestAppContext) {
+    use crate::workspace::remote::HomeAgent;
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::test::TestWindowExt as _;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let mut state = terminals_of_home(&["b1"]);
+    let mut home = WorkspaceView::clone(&state.workspaces[0]);
+    home.folder = Some("/srv/api".into());
+    state.workspaces = vec![Arc::new(home)];
+    apply(handle, &ws, cx, state);
+    let agent = HomeAgent {
+        id: "claude".into(),
+        title: "Claude Code".into(),
+        installed: true,
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            crate::launcher::ask_home_folder(ws, agent, Point::new(1.0, 2.0), window, cx)
+        });
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+        window.within("dialog").click("home-folder-0", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(
+        sent(&ws, cx),
+        [(
+            "open_agent".to_string(),
+            json!({"agent": "claude", "workspace": "w1", "folder": "/srv/api", "x": 1.0, "y": 2.0})
+        )]
+    );
+    // A second click while asking sends nothing more; a refusal leaves the dialog open.
+    cx.update_window(handle, |_, window, cx| {
+        window.within("dialog").click("home-folder-0", cx);
+    })
+    .unwrap();
+    assert_eq!(sent(&ws, cx).len(), 1);
+    answer(handle, &ws, cx, 0, refusal("Claude Code isn't installed."));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "the refusal is said in it");
+        window.within("dialog").click("home-folder-0", cx);
+    })
+    .unwrap();
+    assert_eq!(sent(&ws, cx).len(), 1, "asked again");
+    answer(handle, &ws, cx, 0, Ok(json!({"block": "b9"})));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            !window.has_active_dialog(cx),
+            "it opened: the dialog closes"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn an_agent_opened_from_the_open_dialog_gets_the_keyboard(cx: &mut TestAppContext) {
+    use crate::workspace::remote::HomeAgent;
+    use gpui_kit::test::TestWindowExt as _;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let mut state = terminals_of_home(&["b1"]);
+    let mut home = WorkspaceView::clone(&state.workspaces[0]);
+    home.folder = Some("/srv/api".into());
+    state.workspaces = vec![Arc::new(home)];
+    apply(handle, &ws, cx, state);
+    let agent = HomeAgent {
+        id: "claude".into(),
+        title: "Claude Code".into(),
+        installed: true,
+    };
+    // The keyboard is on a handle that goes away, as the menu's does when its item opens the
+    // dialog.
+    let menu = ws.update(cx, |_, cx| cx.focus_handle());
+    cx.update_window(handle, |_, window, cx| {
+        window.focus(&menu, cx);
+        ws.update(cx, |ws, cx| {
+            crate::launcher::ask_home_folder(ws, agent, Point::new(1.0, 2.0), window, cx)
+        });
+        window.render_frame(cx);
+        window.within("dialog").click("home-folder-0", cx);
+    })
+    .unwrap();
+    answer(handle, &ws, cx, 0, Ok(json!({"block": "b9"})));
+    drop(menu);
+    apply(handle, &ws, cx, terminals_of_home(&["b1", "b9"]));
+    let b9 = viewer(&ws, cx, "b9");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.focused, Some(b9));
+            assert!(ws.canvas_has_keys(window));
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn closing_on_a_remote_asks_home_and_the_block_leaves_at_once(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_terminals(cx, &["b1", "b2"]);
+    let v1 = viewer(&ws, cx, "b1");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close(v1, window, cx))
+    })
+    .unwrap();
+    assert_eq!(
+        sent(&ws, cx),
+        [("close_block".to_string(), json!({"block": "b1"}))]
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.canvas.get(v1).is_none());
+        assert!(matches!(ws.space.undo.as_slice(), [(_, Change::Mark)]));
+    });
+    // Home's state still lists it, within the hold: it stays closed, and so does its wire.
+    apply(
+        handle,
+        &ws,
+        cx,
+        with_wire(terminals_of_home(&["b1", "b2"]), "b1", "b2", None),
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.canvas.get(v1).is_none());
+        assert_eq!(ws.space.canvas.blocks().len(), 1);
+        assert!(ws.space.wires.is_empty(), "a wire to a closed block");
+    });
+    // Home's state loses it.
+    apply(handle, &ws, cx, terminals_of_home(&["b2"]));
+    ws.read_with(cx, |ws, _| {
+        let remote = remote_of(ws);
+        assert!(!remote.homes.contains_key("b1"));
+        assert!(remote.closed.get(&v1).is_none());
+        assert_eq!(ws.space.canvas.blocks().len(), 1);
+    });
+}
+
+#[gpui_kit::test]
+fn a_closed_block_home_still_lists_past_hold_comes_back(cx: &mut TestAppContext) {
+    use crate::workspace::holds::HOLD;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1", "b2"]);
+    let v1 = viewer(&ws, cx, "b1");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close(v1, window, cx))
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| {
+        ws.expire_holds(Instant::now() + HOLD + Duration::from_millis(1));
+    });
+    ws.read_with(cx, |ws, _| {
+        let back = remote_of(ws).homes["b1"];
+        let block = ws.space.canvas.get(back).expect("back on the canvas");
+        assert_eq!(block.rect, Rect::new(0.0, 0.0, 400.0, 300.0));
+        assert!(matches!(
+            ws.space.blocks.get(&back),
+            Some(Body::Terminal(_))
+        ));
+        assert_eq!(remote_of(ws).home_of(back).as_deref(), Some("b1"));
+    });
+}
+
+#[gpui_kit::test]
+fn a_refused_close_brings_the_block_back_at_once(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_terminals(cx, &["b1", "b2"]);
+    let v1 = viewer(&ws, cx, "b1");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close(v1, window, cx))
+    })
+    .unwrap();
+    answer(
+        handle,
+        &ws,
+        cx,
+        0,
+        refusal("There's no block b1: overview lists them."),
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.blocks().len(), 2);
+        assert!(ws.space.canvas.get(remote_of(ws).homes["b1"]).is_some());
+        assert_eq!(
+            ws.said.last().map(String::as_str),
+            Some("There's no block b1: overview lists them.")
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn closing_many_blocks_that_home_refuses_says_it_once(cx: &mut TestAppContext) {
+    use crate::workspace::history::Then;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1", "b2", "b3"]);
+    let all: Vec<BlockId> = ["b1", "b2", "b3"]
+        .iter()
+        .map(|b| viewer(&ws, cx, b))
+        .collect();
+    let said = ws.read_with(cx, |ws, _| ws.said.len());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close_blocks(all, Then::New, window, cx))
+    })
+    .unwrap();
+    assert_eq!(sent(&ws, cx).len(), 3);
+    ws.read_with(cx, |ws, _| assert!(ws.space.canvas.blocks().is_empty()));
+    for _ in 0..3 {
+        answer(
+            handle,
+            &ws,
+            cx,
+            0,
+            refusal("winx-desktop is slow to answer: try again."),
+        );
+    }
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.blocks().len(), 3, "all three are back");
+        assert_eq!(ws.said.len(), said + 1, "said once");
+    });
+}
+
+#[gpui_kit::test]
+fn closing_a_remote_agent_asks_first(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::test::TestWindowExt as _;
+    let (handle, ws, _dir) = offline(cx);
+    show_remote(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        live(ws, Scope::Control);
+        ws.space.remote.as_mut().unwrap().entry.home = Some("w1".into());
+    });
+    let agent = AgentView {
+        agent: "Claude Code".into(),
+        state: "working".into(),
+        ..AgentView::default()
+    };
+    apply(handle, &ws, cx, terminal_of_home(Some(agent)));
+    let v = viewer(&ws, cx, "abcde");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close(v, window, cx));
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+    })
+    .unwrap();
+    assert!(sent(&ws, cx).is_empty());
+    cx.update_window(handle, |_, window, cx| {
+        window.within("dialog").click("ok", cx);
+    })
+    .unwrap();
+    assert_eq!(
+        sent(&ws, cx),
+        [("close_block".to_string(), json!({"block": "abcde"}))]
+    );
+    // An idle terminal closes with no question.
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let v = viewer(&ws, cx, "b1");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close(v, window, cx));
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
+    assert_eq!(sent(&ws, cx).len(), 1);
+}
+
+#[gpui_kit::test]
+fn a_question_confirmed_after_another_workspace_is_shown_does_nothing(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::test::TestWindowExt as _;
+    let (handle, ws, _dir) = offline(cx);
+    show_remote(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        live(ws, Scope::Control);
+        ws.space.remote.as_mut().unwrap().entry.home = Some("w1".into());
+    });
+    let agent = AgentView {
+        agent: "Claude Code".into(),
+        state: "working".into(),
+        ..AgentView::default()
+    };
+    apply(handle, &ws, cx, terminal_of_home(Some(agent)));
+    let v = viewer(&ws, cx, "abcde");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close(v, window, cx));
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+        // Block ids count from 0 in every workspace: the question was about r1's.
+        ws.update(cx, |ws, cx| ws.switch_to(0, window, cx));
+        window.within("dialog").click("ok", cx);
+    })
+    .unwrap();
+    assert!(sent(&ws, cx).is_empty());
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.said.last().map(String::as_str),
+            Some("Another workspace is shown now: nothing was done.")
+        );
+        assert!(
+            !space_of(ws).canvas.blocks().is_empty(),
+            "r1 keeps its block"
+        );
+    });
+}
+
+/// `state` with home's wire between `a` and `b` (labeled `label`).
+fn with_wire(mut state: State, a: &str, b: &str, label: Option<&str>) -> State {
+    state.wires = vec![Arc::new(templum_api::model::WireView {
+        a: a.into(),
+        b: b.into(),
+        label: label.map(Into::into),
+    })];
+    state
+}
+
+#[gpui_kit::test]
+fn wiring_on_a_remote_asks_home_and_shows_at_once(cx: &mut TestAppContext) {
+    use crate::workspace::holds::HOLD;
+    use templum_canvas::Wire;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1", "b2"]);
+    let (v1, v2) = (viewer(&ws, cx, "b1"), viewer(&ws, cx, "b2"));
+    let wire = Wire::new(v1, v2).unwrap();
+    ws.update(cx, |ws, cx| assert!(ws.connect(v1, v2, cx)));
+    assert_eq!(
+        sent(&ws, cx),
+        [("connect".to_string(), json!({"a": "b1", "b": "b2"}))]
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.wires, [wire]);
+        assert!(matches!(ws.space.undo.as_slice(), [(_, Change::Mark)]));
+    });
+    // Home's state, changed but without the wire, within the hold: still wired.
+    apply(handle, &ws, cx, terminals_of_home(&["b1", "b2"]));
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.wires, [wire]));
+    // The hold passes with no wire at home: it is home's.
+    ws.update(cx, |ws, _| {
+        ws.expire_holds(Instant::now() + HOLD + Duration::from_millis(1));
+    });
+    ws.read_with(cx, |ws, _| assert!(ws.space.wires.is_empty()));
+    // Again; this time home's state shows it.
+    ws.update(cx, |ws, cx| assert!(ws.connect(v1, v2, cx)));
+    apply(
+        handle,
+        &ws,
+        cx,
+        with_wire(terminals_of_home(&["b1", "b2"]), "b1", "b2", None),
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.wires, [wire]);
+        assert!(remote_of(ws).wires_held.keys().is_empty());
+    });
+    // Nothing more is sent for what is wired already.
+    ws.update(cx, |ws, cx| assert!(!ws.connect(v2, v1, cx)));
+    assert_eq!(sent(&ws, cx).len(), 2);
+}
+
+#[gpui_kit::test]
+fn unwiring_on_a_remote_and_its_refusal(cx: &mut TestAppContext) {
+    use templum_canvas::Wire;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1", "b2"]);
+    apply(
+        handle,
+        &ws,
+        cx,
+        with_wire(terminals_of_home(&["b1", "b2"]), "b1", "b2", None),
+    );
+    let (v1, v2) = (viewer(&ws, cx, "b1"), viewer(&ws, cx, "b2"));
+    let wire = Wire::new(v1, v2).unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.wires, [wire]));
+    ws.update(cx, |ws, cx| assert!(ws.disconnect(wire, cx)));
+    assert_eq!(
+        sent(&ws, cx),
+        [("disconnect".to_string(), json!({"a": "b1", "b": "b2"}))]
+    );
+    ws.read_with(cx, |ws, _| assert!(ws.space.wires.is_empty()));
+    answer(handle, &ws, cx, 0, refusal("b1 and b2 aren't wired."));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.wires, [wire], "home's");
+        assert_eq!(
+            ws.said.last().map(String::as_str),
+            Some("b1 and b2 aren't wired.")
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn renaming_a_remote_wire_asks_home_with_its_label(cx: &mut TestAppContext) {
+    use templum_canvas::Wire;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1", "b2"]);
+    apply(
+        handle,
+        &ws,
+        cx,
+        with_wire(terminals_of_home(&["b1", "b2"]), "b1", "b2", None),
+    );
+    let wire = Wire::new(viewer(&ws, cx, "b1"), viewer(&ws, cx, "b2")).unwrap();
+    ws.update(cx, |ws, cx| {
+        assert!(ws.rename_wire(wire, "  deploys  ", cx))
+    });
+    assert_eq!(
+        sent(&ws, cx),
+        [(
+            "connect".to_string(),
+            json!({"a": "b1", "b": "b2", "label": "deploys"})
+        )]
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.label(wire), None, "home's state brings it")
+    });
+    apply(
+        handle,
+        &ws,
+        cx,
+        with_wire(
+            terminals_of_home(&["b1", "b2"]),
+            "b1",
+            "b2",
+            Some("deploys"),
+        ),
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.label(wire), Some("deploys"))
+    });
+    ws.update(cx, |ws, cx| assert!(ws.rename_wire(wire, "", cx)));
+    assert_eq!(sent(&ws, cx)[1].1["label"], json!(""));
+}
+
+#[gpui_kit::test]
+fn a_held_wire_to_a_block_closed_here_goes_with_it(cx: &mut TestAppContext) {
+    use crate::workspace::holds::HOLD;
+    let (_handle, ws, _dir) = live_terminals(cx, &["b1", "b2"]);
+    let (v1, v2) = (viewer(&ws, cx, "b1"), viewer(&ws, cx, "b2"));
+    cx.update_window(_handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            assert!(ws.connect(v1, v2, cx));
+            ws.close(v2, window, cx);
+            assert!(ws.space.wires.is_empty());
+            assert!(remote_of(ws).wires_held.keys().is_empty());
+            ws.expire_holds(Instant::now() + HOLD + Duration::from_millis(1));
+            assert!(ws.space.wires.is_empty());
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_wire_tool_works_on_a_remote_that_can_wire(cx: &mut TestAppContext) {
+    use crate::workspace::Tool;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.set_tool(Tool::Wire, window, cx);
+            assert_eq!(ws.tool, Tool::Wire);
+            // Picked on the local workspace, then the live remote is shown: it stays.
+            ws.switch_to(0, window, cx);
+            ws.set_tool(Tool::Wire, window, cx);
+            ws.switch_to(1, window, cx);
+            assert_eq!(ws.tool, Tool::Wire);
+            // A remote that can't wire lets it go.
+            ws.switch_to(0, window, cx);
+            ws.space_by_id_mut("r1")
+                .unwrap()
+                .remote
+                .as_mut()
+                .unwrap()
+                .status = Status::Disconnected;
+            ws.switch_to(1, window, cx);
+            assert_eq!(ws.tool, Tool::Select);
+            ws.set_tool(Tool::Wire, window, cx);
+            assert_eq!(ws.tool, Tool::Select, "not connected: refused");
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_task_handed_on_a_remote_is_home_s_delegate(cx: &mut TestAppContext) {
+    use templum_mcp::tools::MAX_TEXT;
+    let (handle, ws, _dir) = offline(cx);
+    show_remote(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        live(ws, Scope::Control);
+        ws.space.remote.as_mut().unwrap().entry.home = Some("w1".into());
+    });
+    let agent = AgentView {
+        agent: "Codex".into(),
+        state: "idle".into(),
+        ..AgentView::default()
+    };
+    apply(handle, &ws, cx, terminal_of_home(Some(agent)));
+    let v = viewer(&ws, cx, "abcde");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.remote_hand_task(v, "Take card 4.\nThen review.".into(), window, cx)
+        })
+    })
+    .unwrap();
+    assert_eq!(
+        sent(&ws, cx),
+        [(
+            "delegate".to_string(),
+            json!({"block": "abcde", "task": "Take card 4.\nThen review."})
+        )]
+    );
+    ws.read_with(cx, |ws, _| assert!(ws.space.undo.is_empty(), "no step"));
+    let said = ws.read_with(cx, |ws, _| ws.said.len());
+    answer(
+        handle,
+        &ws,
+        cx,
+        0,
+        Ok(json!({"text": "Handed to abcde as task t1."})),
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.said.len(), said, "a success says nothing")
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.remote_hand_task(v, "x".repeat(MAX_TEXT + 1), window, cx)
+        })
+    })
+    .unwrap();
+    assert!(sent(&ws, cx).is_empty());
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.said.last().map(String::as_str),
+            Some("A task is at most 256 KiB: hand it in parts.")
+        )
+    });
+    // A refusal is said.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.remote_hand_task(v, "Go.".into(), window, cx)
+        })
+    })
+    .unwrap();
+    answer(handle, &ws, cx, 0, refusal("Codex is on a task already."));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.said.last().map(String::as_str),
+            Some("Codex is on a task already.")
+        )
+    });
 }

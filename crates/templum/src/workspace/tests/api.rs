@@ -555,6 +555,57 @@ fn an_api_call_skips_the_gate_and_acts_as_the_person(cx: &mut TestAppContext) {
     }));
 }
 
+#[gpui_kit::test]
+fn add_block_goes_at_x_and_y(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let token = with_token(&ws, cx, Scope::Control, None);
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &token,
+        "add_block",
+        json!({ "workspace": first, "kind": "kanban", "x": 1234.0, "y": -567.0 }),
+    );
+    assert!(!said(&line).0, "{line}");
+    let uid = line["result"]["target"]["block"].as_str().unwrap();
+    ws.read_with(cx, |ws, _| {
+        let id = ws.space.block_by_uid(uid).unwrap();
+        let at = ws.space.canvas.get(id).unwrap().rect.origin();
+        assert_eq!((at.x, at.y), (1234.0, -567.0));
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn open_agent_at_x_and_y_answers_its_block(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    super::templum_agent::cat_agents(&ws, cx);
+    let folder = tempfile::tempdir().unwrap();
+    let first = ws.update(cx, |ws, _| {
+        ws.space.folder = Some(folder.path().to_path_buf());
+        ws.space.id.clone()
+    });
+    let token = with_token(&ws, cx, Scope::Control, None);
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &token,
+        "open_agent",
+        json!({ "agent": "codex", "workspace": first, "x": 300.0, "y": 200.0 }),
+    );
+    assert!(!said(&line).0, "{line}");
+    let uid = line["result"]["target"]["block"].as_str().unwrap();
+    ws.read_with(cx, |ws, _| {
+        let id = ws.space.block_by_uid(uid).unwrap();
+        assert!(ws.space.terminal(id).is_some());
+        let at = ws.space.canvas.get(id).unwrap().rect.origin();
+        assert_eq!((at.x, at.y), (300.0, 200.0));
+    });
+}
+
 #[cfg(unix)]
 #[gpui_kit::test]
 fn a_task_from_the_api_is_typed_from_it_and_its_end_is_a_notice(cx: &mut TestAppContext) {

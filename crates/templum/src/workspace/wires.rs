@@ -11,7 +11,13 @@ use super::history::{Change, Then};
 use super::{Drag, Space, Workspace};
 
 /// The longest a label is, in characters.
-pub(crate) const LABEL_MAX: usize = 60;
+pub(crate) const LABEL_MAX: usize = templum_mcp::control::LABEL_MOST;
+
+/// `text` as a label: on one line, at most LABEL_MAX characters; None when blank.
+pub(super) fn tidy_label(text: &str) -> Option<String> {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then(|| text.chars().take(LABEL_MAX).collect())
+}
 
 /// A label's key from its wire's ends' block ids, in either order.
 pub(crate) fn label_key(a: &str, b: &str) -> (String, String) {
@@ -54,7 +60,7 @@ impl Space {
     }
 
     /// False when they weren't wired.
-    fn remove_wire(&mut self, wire: Wire) -> bool {
+    pub(super) fn remove_wire(&mut self, wire: Wire) -> bool {
         let before = self.wires.len();
         self.wires.retain(|w| *w != wire);
         if self.selected_wire == Some(wire) {
@@ -96,6 +102,9 @@ impl Workspace {
     /// Wires `a` and `b`, a step Ctrl+Z takes back. False, silently, when they can't be: one
     /// block, already wired, or one isn't on the canvas.
     pub(crate) fn connect(&mut self, a: BlockId, b: BlockId, cx: &mut Context<Self>) -> bool {
+        if self.on_remote() {
+            return Wire::new(a, b).is_some_and(|wire| self.remote_wire(wire, true, cx));
+        }
         self.set_wire(Wire { a, b }, true, Then::New, cx)
     }
 
@@ -106,9 +115,10 @@ impl Workspace {
         if !self.space.wires.contains(&wire) {
             return false;
         }
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let label = (!text.is_empty()).then(|| text.chars().take(LABEL_MAX).collect());
-        self.set_label(wire, label, Then::New, cx)
+        if self.on_remote() {
+            return self.remote_label(wire, tidy_label(text), cx);
+        }
+        self.set_label(wire, tidy_label(text), Then::New, cx)
     }
 
     /// Gives `wire` `label` (None: none); the change that takes it back is kept as `then` says.
@@ -175,6 +185,9 @@ impl Workspace {
 
     /// Unwires them, a step Ctrl+Z takes back. False when they weren't wired.
     pub(crate) fn disconnect(&mut self, wire: Wire, cx: &mut Context<Self>) -> bool {
+        if self.on_remote() {
+            return self.remote_wire(wire, false, cx);
+        }
         self.set_wire(wire, false, Then::New, cx)
     }
 

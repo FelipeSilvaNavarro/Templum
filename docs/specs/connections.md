@@ -89,6 +89,13 @@ agents without MCP, scripts and hooks.
   right-click on it offers **Disconnect**.
 - **Undo:** connecting and disconnecting are steps of Ctrl+Z and Ctrl+Shift+Z. Closing a block removes its wires,
   and undoing the close brings them back.
+- **A wire named through `connect`:** the control server's and the API's `connect` take a `label` (one line, at most
+  60 characters; blank takes it off). On two blocks already wired it renames their wire, one step of Ctrl+Z; else
+  it wires them, one step, and the name is kept by the wire's key, as every label is.
+- **Hand a task… on a mirror:** a remote terminal whose state shows an agent has **Hand a task…** in its menu: a field
+  of several lines (Ctrl+Enter, or the **Hand over** button) and home's `delegate` types it into the agent as the
+  API's tasks are (`[from API · <share's name>, task t7]`). The mirror says nothing on success; the task's end comes
+  as a notice, and a refusal is said. A task is at most 256 KiB.
 - **A block wired twice** to the same block, or to itself, is refused silently.
 - **While a task is handed over** along a wire ([Delegating](#delegating)), a dot travels along it from the agent
   that handed it to the one working, until the answer comes back. It takes 1.2 s from one end to the other, then starts

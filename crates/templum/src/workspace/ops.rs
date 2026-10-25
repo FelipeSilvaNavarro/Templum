@@ -45,6 +45,8 @@ pub(crate) enum Place {
     Near(BlockId),
     /// At the middle of the workspace's view.
     Free,
+    /// With its top-left corner there, over what is there, as a block added at a click.
+    At(templum_canvas::Point),
 }
 
 /// What [`Workspace::stop_in`] ended: the program in front of the shell (its agent's name, else its
@@ -1081,6 +1083,7 @@ impl Space {
         match place {
             Place::Near(id) => self.room_near(*id, size),
             Place::Free => Some(self.room_around(center, size)),
+            Place::At(p) => Some(Rect::new(p.x, p.y, size.w, size.h)),
         }
     }
 }

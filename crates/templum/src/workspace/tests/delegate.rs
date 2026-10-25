@@ -27,7 +27,16 @@ pub(super) fn agents_running(
     cx: &mut TestAppContext,
     command: Option<(String, Vec<String>)>,
 ) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
-    let (handle, ws) = open_as(cx, Some(agent_cat()), None, None);
+    agents_running_in(cx, command, None)
+}
+
+/// `agents_running` with a data folder (the API keeps its file there).
+pub(super) fn agents_running_in(
+    cx: &mut TestAppContext,
+    command: Option<(String, Vec<String>)>,
+    data: Option<std::path::PathBuf>,
+) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
+    let (handle, ws) = open_as(cx, Some(agent_cat()), None, data);
     let mine = first_id(&ws, cx);
     let theirs = cx
         .update_window(handle, |_, window, cx| {

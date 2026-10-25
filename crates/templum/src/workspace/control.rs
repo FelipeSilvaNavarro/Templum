@@ -1,11 +1,14 @@
 //! The control server, served (docs/specs/templum-agent.md#the-control-server): the Templum
 //! Agent's own tools, for its engine's process alone, on every workspace.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, Window};
 use serde_json::{Value, json};
 use templum_agent::Target;
-use templum_canvas::BlockId;
+use templum_canvas::{BlockId, Point};
 use templum_mcp::control::{self, AddBlock, ControlCall, Kind, Opening, Parsed};
 use templum_mcp::{Call, Hello, Incoming, Replier, Reply, rpc, tools};
 
@@ -13,6 +16,7 @@ use super::bus::{Outcome, agent_state, clean_title};
 use super::ops::{NewBlock, Place};
 use super::spawn::Opener;
 use super::waits::Asked;
+use super::wires::tidy_label;
 use super::{Space, Workspace, show_notification};
 
 /// Who a control call acts for: the Templum Agent, whose tools these are, or a token of the API,
@@ -227,13 +231,14 @@ impl Workspace {
                 {
                     return (Outcome::Now(refused), None);
                 }
-                return (
-                    self.open_agent_for_agent(actor, opening, args.clone(), window, cx),
-                    None,
-                );
+                return self.open_agent_for_agent(actor, opening, args.clone(), window, cx);
             }
-            ControlCall::Connect { a, b } => return self.wire_for_agent(&a, &b, true, cx),
-            ControlCall::Disconnect { a, b } => return self.wire_for_agent(&a, &b, false, cx),
+            ControlCall::Connect { a, b, label } => {
+                return self.wire_for_agent(&a, &b, true, label.as_deref(), cx);
+            }
+            ControlCall::Disconnect { a, b } => {
+                return self.wire_for_agent(&a, &b, false, None, cx);
+            }
             ControlCall::CloseBlock { block } => {
                 let asker = actor.asker();
                 return self.on_block(&block, |ws, at| {
@@ -506,8 +511,9 @@ impl Workspace {
             return refuse(Reply::err("That workspace is gone."));
         };
         let (name, home_folder) = (clean_title(&home.name), home.folder.clone());
-        let place = match &add.near {
-            Some(near) => match home.block_by_uid(near) {
+        let place = match (&add.near, add.at) {
+            (_, Some((x, y))) => Place::At(Point::new(x, y)),
+            (Some(near), None) => match home.block_by_uid(near) {
                 Some(id) => Place::Near(id),
                 None => {
                     return refuse(Reply::err(format!(
@@ -515,7 +521,7 @@ impl Workspace {
                     )));
                 }
             },
-            None => Place::Free,
+            (None, None) => Place::Free,
         };
         let folder = add
             .folder
@@ -639,8 +645,8 @@ impl Workspace {
         args: Value,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Outcome {
-        let refuse = |why: String| Outcome::Now(Reply::err(why));
+    ) -> (Outcome, Option<Target>) {
+        let refuse = |why: String| (Outcome::Now(Reply::err(why)), None);
         let spawn = opening.spawn;
         // Parsed with one: no fork, no role.
         let agent = spawn.agent.as_deref().unwrap_or_default();
@@ -661,7 +667,7 @@ impl Workspace {
         }
         let space = match self.space_of(&opening.workspace, false) {
             Ok(space) => space,
-            Err(refused) => return Outcome::Now(refused),
+            Err(refused) => return (Outcome::Now(refused), None),
         };
         let Some(home) = self.space_named(&space) else {
             return refuse("That workspace is gone.".into());
@@ -676,10 +682,11 @@ impl Workspace {
             Ok(ids) => ids,
             Err(why) => return refuse(why),
         };
-        let place = match opening.near.as_deref().map(block) {
-            Some(Ok(id)) => Place::Near(id),
-            Some(Err(why)) => return refuse(why),
-            None => Place::Free,
+        let place = match (opening.at, opening.near.as_deref().map(block)) {
+            (Some((x, y)), _) => Place::At(Point::new(x, y)),
+            (None, Some(Ok(id))) => Place::Near(id),
+            (None, Some(Err(why))) => return refuse(why),
+            (None, None) => Place::Free,
         };
         let folder = match (spawn.folder.as_deref(), home.folder.clone()) {
             (Some(named), here) => {
@@ -708,6 +715,10 @@ impl Workspace {
             },
         };
         let touched = actor.agent();
+        // The block it opened at once, for the answer's target.
+        let opened = Rc::new(Cell::new(None));
+        let opened_here = opened.clone();
+        let workspace = space.clone();
         let open = move |ws: &mut Self,
                          folder: &std::path::Path,
                          window: &mut Window,
@@ -715,15 +726,16 @@ impl Workspace {
             let (done, uid) = ws.open_agent_in(
                 &space, &entry, None, folder, &spawn, place, &wire_to, opener, window, cx,
             );
-            if let Some(uid) = uid
-                && touched
-            {
-                ws.templum_agent.conversation.own.blocks.push(uid.clone());
-                let target = Target {
-                    workspace: Some(space),
-                    block: Some(uid),
-                };
-                ws.touch("open_agent", &args, target, cx);
+            if let Some(uid) = uid {
+                opened_here.set(Some(uid.clone()));
+                if touched {
+                    ws.templum_agent.conversation.own.blocks.push(uid.clone());
+                    let target = Target {
+                        workspace: Some(space),
+                        block: Some(uid),
+                    };
+                    ws.touch("open_agent", &args, target, cx);
+                }
             }
             done
         };
@@ -736,16 +748,25 @@ impl Workspace {
             }
             _ => None,
         };
-        self.in_worktree(folder, worktree, roots, open, window, cx)
+        let outcome = self.in_worktree(folder, worktree, roots, open, window, cx);
+        // The agent's row was touched by `open` itself, once; only the API's call has a target
+        // left for the caller to touch.
+        let target = (opened.take().filter(|_| !touched)).map(|uid| Target {
+            workspace: Some(workspace),
+            block: Some(uid),
+        });
+        (outcome, target)
     }
 
     /// `connect` (`on`) and `disconnect`: a wire between two blocks of one workspace, a step of
-    /// that workspace's Ctrl+Z.
+    /// that workspace's Ctrl+Z. With a `label`, `connect` names the wire: renaming it when the
+    /// blocks are wired already (a step), else wiring them (the name is kept by its key).
     fn wire_for_agent(
         &mut self,
         a: &str,
         b: &str,
         on: bool,
+        label: Option<&str>,
         cx: &mut Context<Self>,
     ) -> (Outcome, Option<Target>) {
         let (Some((space, x)), Some((other, y))) = (self.find_block(a), self.find_block(b)) else {
@@ -756,17 +777,43 @@ impl Workspace {
             let why = format!("{a} and {b} aren't in one workspace.");
             return (Outcome::Now(Reply::err(why)), None);
         }
+        let wire = templum_canvas::Wire { a: x, b: y };
+        // Blank is a label too: it takes the name off.
+        let label = label.map(tidy_label);
+        let wired = self.space_named(&space).is_some_and(|s| s.wired(x, y));
+        if let (true, true, Some(label)) = (on, wired, label.clone()) {
+            self.in_space(&space, |ws| {
+                ws.rename_wire(wire, label.as_deref().unwrap_or_default(), cx)
+            });
+            let done = match label {
+                Some(label) => format!("Named the wire between {a} and {b} \"{label}\"."),
+                None => format!("Took the name off the wire between {a} and {b}."),
+            };
+            let target = Target {
+                workspace: Some(space),
+                block: Some(a.to_string()),
+            };
+            return (Outcome::Now(Reply::ok(done)), Some(target));
+        }
         let changed = self
             .in_space(&space, |ws| {
-                if on {
-                    ws.connect(x, y, cx)
-                } else {
-                    ws.disconnect(templum_canvas::Wire { a: x, b: y }, cx)
+                if !on {
+                    return ws.disconnect(wire, cx);
                 }
+                let changed = ws.connect(x, y, cx);
+                if let (true, Some(Some(label))) = (changed, &label)
+                    && let Some(key) = ws.space.label_key(wire)
+                {
+                    ws.space.labels.insert(key, label.clone());
+                }
+                changed
             })
             .unwrap_or(false);
         let done = match (on, changed) {
-            (true, true) => Reply::ok(format!("Connected {a} and {b}.")),
+            (true, true) => match label.flatten() {
+                Some(label) => Reply::ok(format!("Connected {a} and {b} as \"{label}\".")),
+                None => Reply::ok(format!("Connected {a} and {b}.")),
+            },
             (true, false) => Reply::err(format!(
                 "{a} and {b} can't be wired: they already are, or are one block."
             )),
@@ -1029,7 +1076,7 @@ impl Workspace {
     }
 
     /// `list_agents`' answer: a line per agent Templum can open.
-    fn agent_list(&self) -> String {
+    pub(super) fn agent_list(&self) -> String {
         let lines: Vec<String> = self
             .agents
             .iter()
@@ -1055,8 +1102,10 @@ impl Workspace {
                 } else {
                     ""
                 };
+                // Last: a mirror's parser (`home_agents`) leaves out what the person hid here.
+                let hidden = if a.show { "" } else { "  hidden" };
                 format!(
-                    "{}  {:?}  {installed}  {model}  {efforts}{account}",
+                    "{}  {:?}  {installed}  {model}  {efforts}{account}{hidden}",
                     a.id,
                     clean_title(&a.title)
                 )

@@ -34,6 +34,11 @@ impl<K: Copy + Eq + Hash, V: Clone> Holds<K, V> {
         self.held.get(key).map(|(value, _)| value)
     }
 
+    /// Every key held, in no order.
+    pub fn keys(&self) -> Vec<K> {
+        self.held.keys().copied().collect()
+    }
+
     /// A refusal, or the thing gone: the hold ends at once.
     pub fn end(&mut self, key: &K) -> Option<V> {
         self.held.remove(key).map(|(value, _)| value)
@@ -92,6 +97,16 @@ mod tests {
         holds.hold(2, 20, t);
         assert_eq!(holds.shown(2, 5, t + HOLD, |a, b| a == b), 5);
         assert_eq!(holds.get(&2), None);
+    }
+
+    #[test]
+    fn keys_lists_what_is_held() {
+        let t = Instant::now();
+        let mut holds = Holds::<u64, u64>::default();
+        holds.hold(1, 10, t);
+        holds.hold(2, 20, t);
+        holds.end(&1);
+        assert_eq!(holds.keys(), vec![2]);
     }
 
     #[test]

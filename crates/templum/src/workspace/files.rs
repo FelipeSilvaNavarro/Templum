@@ -212,13 +212,16 @@ impl Workspace {
             self.remove_tab(block, i, window, cx);
             return;
         };
-        let ws = cx.entity();
-        let saver = ws.clone();
+        let (ws, space) = (cx.entity(), self.space.id.clone());
+        let (saver, shown) = (ws.clone(), space.clone());
         prompt::save_or_discard(
             format!("Save {name}?"),
             "Its changes are lost otherwise.",
             move |window, cx| {
                 saver.update(cx, |ws, cx| {
+                    if !ws.still_shown(&shown, window, cx) {
+                        return false;
+                    }
                     let saved = ws.save_tab(block, i, window, cx);
                     if saved {
                         ws.remove_tab(block, i, window, cx);
@@ -226,7 +229,13 @@ impl Workspace {
                     saved
                 })
             },
-            move |window, cx| ws.update(cx, |ws, cx| ws.remove_tab(block, i, window, cx)),
+            move |window, cx| {
+                ws.update(cx, |ws, cx| {
+                    if ws.still_shown(&space, window, cx) {
+                        ws.remove_tab(block, i, window, cx);
+                    }
+                })
+            },
             window,
             cx,
         );
@@ -599,7 +608,7 @@ impl Workspace {
         else {
             return;
         };
-        let ws = cx.entity();
+        let (ws, space) = (cx.entity(), self.space.id.clone());
         prompt::ask_text(
             "Go to line",
             "Go",
@@ -609,7 +618,9 @@ impl Workspace {
                     return false;
                 };
                 ws.update(cx, |ws, cx| {
-                    ws.open_file(block, &path, Some(line), window, cx)
+                    if ws.still_shown(&space, window, cx) {
+                        ws.open_file(block, &path, Some(line), window, cx);
+                    }
                 });
                 true
             },

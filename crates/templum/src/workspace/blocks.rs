@@ -17,6 +17,7 @@ use crate::config::WorkingDirectory;
 use crate::kanban::{self, Kanban};
 use crate::note::Note;
 use crate::prompt;
+use templum_mcp::control::Kind;
 
 use super::history::{Change, Then};
 use super::remote::Deed;
@@ -308,6 +309,9 @@ impl Workspace {
         if self.why_not(Deed::AddKanban).is_some() {
             return;
         }
+        if self.on_remote() {
+            return self.remote_add(Kind::Kanban, at, cx);
+        }
         self.space.pristine = false;
         let rect = Rect::new(at.x, at.y, kanban::SIZE.w, kanban::SIZE.h);
         self.add_block(rect, Body::Kanban(Kanban::default()));
@@ -327,6 +331,11 @@ impl Workspace {
     ) {
         if self.why_not(Deed::AddTerminal).is_some() {
             return;
+        }
+        if self.on_remote() {
+            // Home's default shell: there is no choice of shell on a mirror.
+            let at = at.unwrap_or_else(|| self.new_terminal_rect(window, cx).origin());
+            return self.remote_add(Kind::Terminal, at, cx);
         }
         let rect = match at {
             Some(at) => {
@@ -681,7 +690,7 @@ impl Workspace {
 
     /// Starts a terminal in a new focused block, in the configured start folder.
     pub(crate) fn open(&mut self, rect: Rect, window: &mut Window, cx: &mut Context<Self>) {
-        if self.why_not(Deed::AddTerminal).is_some() {
+        if self.on_remote() || self.why_not(Deed::AddTerminal).is_some() {
             return;
         }
         let folder = self.start_dir(window, cx);
@@ -802,6 +811,9 @@ impl Workspace {
         if self.why_not(Deed::Close).is_some() {
             return;
         }
+        if self.on_remote() {
+            return self.remote_close(ids, window, cx);
+        }
         let one = ids.len() == 1;
         let busy: Vec<String> = ids
             .iter()
@@ -825,11 +837,16 @@ impl Workspace {
             self.close_now(&ids, then, window, cx);
             return;
         }
-        let ws = cx.entity();
+        let (ws, space) = (cx.entity(), self.space.id.clone());
+        let shown = space.clone();
         let close = {
             let (ws, ids) = (ws.clone(), ids.clone());
             move |window: &mut Window, cx: &mut App| {
-                ws.update(cx, |ws, cx| ws.close_now(&ids, then, window, cx))
+                ws.update(cx, |ws, cx| {
+                    if ws.still_shown(&space, window, cx) {
+                        ws.close_now(&ids, then, window, cx);
+                    }
+                })
             }
         };
         let busy = busy.join(" ");
@@ -853,6 +870,9 @@ impl Workspace {
             move |window, cx| {
                 // Every one is tried, even after a failure.
                 let saved = ws.update(cx, |ws, cx| {
+                    if !ws.still_shown(&shown, window, cx) {
+                        return false;
+                    }
                     let mut ok = true;
                     for id in &ids {
                         ok &= ws.save_all(*id, window, cx);

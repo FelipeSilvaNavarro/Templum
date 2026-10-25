@@ -52,6 +52,8 @@ pub struct AddBlock {
     pub columns: Vec<String>,
     pub text: Option<String>,
     pub near: Option<String>,
+    /// Its top-left corner on the canvas; not with `near`.
+    pub at: Option<(f32, f32)>,
 }
 
 /// What `open_agent` opens: `spawn_agent`'s agent in a workspace, wired to `connect`.
@@ -61,6 +63,8 @@ pub struct Opening {
     pub spawn: Spawn,
     pub connect: Vec<String>,
     pub near: Option<String>,
+    /// Its top-left corner on the canvas; not with `near`.
+    pub at: Option<(f32, f32)>,
 }
 
 /// A control tool's call, its arguments checked.
@@ -81,9 +85,11 @@ pub enum ControlCall {
     },
     AddBlock(AddBlock),
     OpenAgent(Opening),
+    /// Wires two blocks; `label` names the wire (blank takes the name off), left out keeps it.
     Connect {
         a: String,
         b: String,
+        label: Option<String>,
     },
     Disconnect {
         a: String,
@@ -202,6 +208,9 @@ fn for_it(tool: &Value) -> Value {
 /// The farthest a block may be put from the canvas's origin, in canvas units.
 const PLACE_MOST: f32 = 10_000_000.0;
 
+/// The longest name of a wire, in characters.
+pub const LABEL_MOST: usize = 60;
+
 /// The longest `reason`, in bytes: the approval draws it whole above its buttons.
 const MAX_REASON: usize = 500;
 
@@ -210,11 +219,59 @@ fn reason() -> Value {
     json!({ "type": "string", "description": "Why, in a few words: the person sees it in the approval." })
 }
 
+/// The number under `key`: null is none, a finite number is some, else Err.
+fn number(args: &Value, key: &str) -> Result<Option<f32>, String> {
+    match &args[key] {
+        Value::Null => Ok(None),
+        value => value
+            .as_f64()
+            .map(|n| n as f32)
+            .filter(|n| n.is_finite())
+            .map(Some)
+            .ok_or_else(|| format!("\"{key}\" is a number")),
+    }
+}
+
+/// A place no canvas reaches is a typo, and would be stored as it is.
+fn within(places: &[(&str, Option<f32>)]) -> Result<(), String> {
+    match places
+        .iter()
+        .find(|(_, place)| place.is_some_and(|p| p.abs() > PLACE_MOST))
+    {
+        Some((key, _)) => Err(format!("\"{key}\" is within ±10000000")),
+        None => Ok(()),
+    }
+}
+
+/// `x` and `y` of `add_block` and `open_agent`: both or neither, and not with `near`.
+fn place(args: &Value) -> Result<Option<(f32, f32)>, String> {
+    let (x, y) = (number(args, "x")?, number(args, "y")?);
+    within(&[("x", x), ("y", y)])?;
+    let Some((x, y)) = x.zip(y) else {
+        return if x.is_some() || y.is_some() {
+            Err("\"x\" and \"y\" go together".into())
+        } else {
+            Ok(None)
+        };
+    };
+    if args["near"].as_str().is_some_and(|n| !n.trim().is_empty()) {
+        return Err("Give near, or x and y: not both.".into());
+    }
+    Ok(Some((x, y)))
+}
+
 /// `tools/list`'s result.
 pub fn list() -> Value {
     let block = json!({ "type": "string", "description": "A block's id, as overview shows it." });
     let workspace = json!({ "type": "string", "description": "A workspace's name or id (w3), as overview shows it." });
     let none = json!({ "type": "object", "properties": {} });
+    let at = |key: &str| {
+        json!({
+            "type": "number",
+            "description": format!("Its top-left corner on the canvas, with {} (canvas units): it goes there, over what is there.",
+                if key == "x" { "y" } else { "x" }),
+        })
+    };
     let blocks = tools::list();
     let blocks = blocks["tools"].as_array().expect("tools");
     let shared = blocks
@@ -255,6 +312,8 @@ pub fn list() -> Value {
         "description": "Blocks of that workspace to wire it to (a kanban, a note), by id.",
     });
     opening["near"] = json!({ "type": "string", "description": "A block to open it beside; else the workspace's free spot." });
+    opening["x"] = at("x");
+    opening["y"] = at("y");
     let own = json!([
         {
             "name": "overview",
@@ -267,7 +326,8 @@ pub fn list() -> Value {
         {
             "name": "list_agents",
             "description": "The agents Templum can open (open_agent's agent): id, title, whether it is \
-                            installed, the efforts it takes and whether it takes a model, and the accounts.",
+                            installed, the efforts it takes and whether it takes a model, and the accounts; \
+                            one the person hid in the menus ends its line with \"hidden\".",
             "inputSchema": none,
         },
         {
@@ -298,7 +358,7 @@ pub fn list() -> Value {
         {
             "name": "add_block",
             "description": "Opens a block in a workspace where it covers nothing: beside near, else at the \
-                            workspace's free spot. A terminal runs no command. Says its id.",
+                            workspace's free spot; at x and y when given. A terminal runs no command. Says its id.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -309,6 +369,8 @@ pub fn list() -> Value {
                     "columns": { "type": "array", "items": { "type": "string" }, "description": "A new board's columns." },
                     "text": { "type": "string", "description": "A note's text; a checklist's name on its first line, then an item per line." },
                     "near": block,
+                    "x": at("x"),
+                    "y": at("y"),
                 },
                 "required": ["workspace", "kind"],
             },
@@ -324,10 +386,19 @@ pub fn list() -> Value {
         },
         {
             "name": "connect",
-            "description": "Wires two blocks of one workspace (the person takes it back with Ctrl+Z).",
+            "description": "Wires two blocks of one workspace (the person takes it back with Ctrl+Z); with label, \
+                            names it.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "a": block, "b": block },
+                "properties": {
+                    "a": block,
+                    "b": block,
+                    "label": {
+                        "type": "string",
+                        "description": "The wire's name, one line, at most 60 characters; blank takes it off. \
+                                        On two blocks already wired it renames their wire.",
+                    },
+                },
                 "required": ["a", "b"],
             },
         },
@@ -457,6 +528,7 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
             columns: strings("columns")?,
             text: optional("text")?,
             near: optional("near")?,
+            at: place(args)?,
         }),
         "open_agent" => {
             text("agent")?;
@@ -473,11 +545,25 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
                 spawn,
                 connect: strings("connect")?,
                 near: optional("near")?,
+                at: place(args)?,
             })
         }
         "connect" => ControlCall::Connect {
             a: text("a")?,
             b: text("b")?,
+            label: match &args["label"] {
+                Value::Null => None,
+                Value::String(label) => {
+                    let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if label.chars().count() > LABEL_MOST {
+                        return Err(format!(
+                            "\"label\" is at most {LABEL_MOST} characters: a few words."
+                        ));
+                    }
+                    Some(label)
+                }
+                _ => return Err("\"label\" is a string".into()),
+            },
         },
         "disconnect" => ControlCall::Disconnect {
             a: text("a")?,
@@ -487,22 +573,13 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
             block: text("block")?,
         },
         "move_block" => {
-            let number = |key: &str| match &args[key] {
-                Value::Null => Ok(None),
-                value => value
-                    .as_f64()
-                    .map(|n| n as f32)
-                    .filter(|n| n.is_finite())
-                    .map(Some)
-                    .ok_or_else(|| format!("\"{key}\" is a number")),
-            };
-            let (x, y, w, h) = (number("x")?, number("y")?, number("w")?, number("h")?);
-            // A place no canvas reaches is a typo, and would be stored as it is.
-            for (key, place) in [("x", x), ("y", y)] {
-                if place.is_some_and(|p| p.abs() > PLACE_MOST) {
-                    return Err(format!("\"{key}\" is within ±10000000"));
-                }
-            }
+            let (x, y, w, h) = (
+                number(args, "x")?,
+                number(args, "y")?,
+                number(args, "w")?,
+                number(args, "h")?,
+            );
+            within(&[("x", x), ("y", y)])?;
             if [x, y, w, h].iter().all(Option::is_none) {
                 return Err("move_block needs x, y, w or h".into());
             }
@@ -681,6 +758,82 @@ mod tests {
     }
 
     #[test]
+    fn add_block_and_open_agent_take_a_place() {
+        let err = |name: &str, args: Value| parse(name, &args).unwrap_err();
+        let base = json!({"workspace": "w3", "kind": "terminal"});
+        let with = |extra: Value| {
+            let mut a = base.clone();
+            a.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            a
+        };
+        assert_eq!(
+            err("add_block", with(json!({"x": 10}))),
+            "\"x\" and \"y\" go together"
+        );
+        assert_eq!(
+            err("add_block", with(json!({"x": 1e8, "y": 0}))),
+            "\"x\" is within ±10000000"
+        );
+        assert_eq!(
+            err("add_block", with(json!({"x": "left", "y": 0}))),
+            "\"x\" is a number"
+        );
+        assert_eq!(
+            err("add_block", with(json!({"x": 1, "y": 2, "near": "b7k2m"}))),
+            "Give near, or x and y: not both."
+        );
+        let ControlCall::AddBlock(add) = parse("add_block", &with(json!({"x": -12.5, "y": 40})))
+            .unwrap()
+            .call
+        else {
+            panic!()
+        };
+        assert_eq!(add.at, Some((-12.5, 40.0)));
+        let opening = json!({"agent": "codex", "workspace": "w3", "x": 1e7, "y": -1e7});
+        let ControlCall::OpenAgent(open) = parse("open_agent", &opening).unwrap().call else {
+            panic!()
+        };
+        assert_eq!(open.at, Some((1e7, -1e7)));
+        assert_eq!(
+            err(
+                "open_agent",
+                json!({"agent": "codex", "workspace": "w3", "y": 3})
+            ),
+            "\"x\" and \"y\" go together"
+        );
+    }
+
+    #[test]
+    fn connect_takes_a_label_of_one_line() {
+        let label = |l: Value| match parse("connect", &json!({"a": "a1", "b": "b1", "label": l})) {
+            Ok(Parsed {
+                call: ControlCall::Connect { label, .. },
+                ..
+            }) => Ok(label),
+            Ok(other) => panic!("{other:?}"),
+            Err(e) => Err(e),
+        };
+        assert_eq!(
+            label(json!("  two \n words ")),
+            Ok(Some("two words".into()))
+        );
+        assert_eq!(label(json!("  ")), Ok(Some(String::new())));
+        assert_eq!(label(json!(5)), Err("\"label\" is a string".into()));
+        assert_eq!(
+            label(json!("x".repeat(61))),
+            Err("\"label\" is at most 60 characters: a few words.".into())
+        );
+        assert!(matches!(
+            parse("connect", &json!({"a": "a1", "b": "b1"}))
+                .unwrap()
+                .call,
+            ControlCall::Connect { label: None, .. }
+        ));
+    }
+
+    #[test]
     fn every_tool_parses_its_example_and_names_what_is_missing() {
         let examples = [
             ("overview", json!({})),
@@ -787,6 +940,7 @@ mod tests {
                 },
                 connect: vec!["k1".into(), "n2".into()],
                 near: None,
+                at: None,
             })
         );
         for refused in [

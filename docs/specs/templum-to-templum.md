@@ -3,7 +3,8 @@
 - **Date:** 2026-10-25
 - **Status:** Batch 1 implemented (kanban card 171, part 2; plans 2026-10-25-t2t-batch-1a…1d: home's side; the
   mirror's client; the remote workspace on the canvas; acting from the mirror, Edit…, the end-to-end test and
-  `--bench-mirror`). Batch 2: part 2a built (plan 2026-10-25-t2t-batch-2a-footing); parts 2b–2h designed, not built
+  `--bench-mirror`). Batch 2: parts 2a and 2b built (plans 2026-10-25-t2t-batch-2a-footing and
+  2026-10-25-t2t-batch-2b-canvas); parts 2c–2h designed, not built
   ([Batch 2](#batch-2-the-whole-workspace-live)). Later batches (see [Later batches](#later-batches)) are sketched.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
@@ -1715,3 +1716,75 @@ unknown dim nothing). What the builder chose or changed:
 Departures from the plan: `Update::Notice` is handled in `heard` before it borrows the remote (like `Refused`);
 `Deed::Start` is asked by `Act::StartIt`, not only listed; the tests that read `held` ask `held.get(&block)` (`Holds`
 has no `is_empty`). Not done: the undo mark (2b's).
+
+### Batch 2b (blocks, wires and agents on the canvas)
+
+Plan: [2026-10-25-t2t-batch-2b-canvas.md](../plans/2026-10-25-t2t-batch-2b-canvas.md). The plan's "Open for the
+orchestrator" items were settled as it recommended: the Ctrl+Z that reaches a mark says the sentence and takes the mark
+off, and marks one after another are one; only acts that are a canvas step at home leave one (Hand a task… leaves
+none); a mark is left when the act is sent; `x` and `y` go together and exclude `near`; `connect` with a label on two
+unwired blocks is one step (the wire); `open_agent`'s answer names its block; home's agents are read from
+`list_agents`' text, at `Update::Tools` and again when a menu opens a minute on; a shortcut is told once per sentence
+per remote per run; the toolbar's Terminal adds at once on a remote; Notes… and Checklists… are dimmed in a remote's
+canvas menu; labels aren't held; Hand a task…'s success says nothing; a kanban added from a mirror shows the new board
+home makes. What the builder chose or changed:
+
+- **Home:** `add_block` and `open_agent` take `x` and `y` (`AddBlock::at`, `Opening::at`, parsed by `place`, which
+  `move_block`'s `number` and `within` share; `Place::At(Point)`, the block's top-left over what is there);
+  `open_agent_for_agent` returns its target, the block it opened at once (a shared `Rc<Cell>` the `open` closure fills,
+  so a worktree's later open answers none). `connect` takes `label` (`ControlCall::Connect.label`, `LABEL_MOST` 60,
+  `wires::tidy_label`): on a wired pair it renames (`rename_wire`, a step, the answer says named or took the name off),
+  on an unwired pair it wires and keeps the name by its key. `"label"` is in the registry's `NOT_TARGETS`.
+- **The adds:** `remote_add(kind, at)` asks home (`add_block` with `x`, `y` when `RemoteSpace::takes`, a checklist with
+  `NAME`), leaves a mark, adds nothing here; `awaiting` keeps the id home answers in `RemoteSpace::awaited` and
+  `focus_awaited` (at the answer, and at the end of each `apply_remote`) gives that block the keyboard if the keyboard
+  is where it was and 5 s have not passed. `open(rect)` refuses on a remote; `add_checklist_at` got the rule's guard.
+- **Home's agents:** `home_agents` parses `list_agents`' lines (at most 100, an id of 64 bytes without control or
+  quote characters, a title through `clean_title`, none that ends `  hidden`, which `agent_list` writes for an agent
+  the person hid at home); `read_home_agents` runs at `Update::Tools` and when `open_menu`
+  finds them `AGENTS_AGAIN` old. The Open dialog (`launcher::ask_home_folder`) lists `home_folders()`, home's workspace
+  folder and its terminals' (at most 20 besides it), and a path field; it says "Asking {computer}…" until home
+  answers, closes on Ok and shows the refusal in itself. `remote_open_agent` returns `Err` at once when the rule
+  says no.
+- **Closing:** `RemoteSpace::closed: Holds<BlockId, bool>`; the closed block fades out as a local one and is not
+  drawn until home's state loses it, or two seconds pass and it comes back (as a new block, `mirror_blocks`). A refusal
+  ends the hold, redraws home's state (`remirror`) and says its sentence once per close. A terminal with an agent asks
+  first, as a local one does. `Space::mirror_state` is `apply_remote`'s blocks-and-wires pass, which `remirror` and
+  `expire_holds` call when a hold ends with no new state.
+- **Wires:** `wires_held: Holds<(BlockId, BlockId), bool>`; `connect`, `disconnect` and `rename_wire` route to
+  `remote_wire` and `remote_label` on a remote (so the Wire tool, the menus and Delete all reach them); a name is not
+  held. `Deed::needs` makes a home whose `connect` lacks `label` "older" for Rename wire… only. `mirror_wires` leaves
+  out a wire whose end is not on the canvas (closed here, not yet gone from home's state). `mark_remote` ends the
+  redo stack even when the top of the undo stack is a mark already.
+- **The mark:** `Change::Mark` and `mark_remote()`; `undo_canvas` meets it before the "gone" skip, says the sentence
+  and takes it off.
+- **Menus and shortcuts:** `Gates::of(ws, deeds)` reads the rule's words per item when a menu is built; `gated_item`
+  is a disabled element item whose tooltip is the words (a gated submenu — AI agent ▸, Connect to ▸, Disconnect from ▸,
+  Move to workspace — is a dimmed item without an arrow). `Items::Mirrored` is a card of home's; a remote terminal's
+  menu has Hand a task… when its state shows an agent (`ask_task`, `prompt::ask_lines`: six rows, Ctrl+Enter). `run`
+  asks `command_deed` and tells a refused shortcut once (`shortcuts_told`). `NOT_MIRRORED` and the docs say what is
+  left.
+
+Review round 1: a dialog opened on a workspace acts only while that one is shown (`Workspace::still_shown`: Hand a
+task…, the busy-close question here and on a local workspace, Rename wire…; the Open dialog compares the id in its
+`go`), saying "Another workspace is shown now: nothing was done."; `focus_awaited` also gives up when a dialog is open
+or the keyboard left the canvas, and the Open dialog closes before the wait; `open_agent` touches the agent's row once;
+the block headers' `why_not(Close)` and `Grid` are read once a frame (`block::Gates`).
+
+Review round 2: an agent opened from the Open dialog takes the keyboard. The dialog is reached from a menu item, whose
+popup still has the keyboard when the handler runs, so the dialog gives it back to a handle that is gone; when home
+answers, `ask_home_folder` closes the dialog and focuses the canvas right after, before `awaiting` looks at
+`canvas_has_keys`. The save-or-discard question of a tab (`close_tab`) and Go to line keep the workspace's id and act
+only while it is shown (`still_shown`), so a `show` while the question is open cannot remove a tab of another
+workspace's editor with the same id.
+
+Departures from the plan: the mirror's hand-over is `remote_hand_task` (`hand_task` is the local delegate's);
+`remote_open_agent` returns `Result<(), String>`; `remirror(id, now)` takes the remote's workspace id (a refusal may
+come after the person switched); `open_menu`'s refusals (the shells, ink, the agents when home can't open them) are
+`warn`s, which also reach the tests' `said`; `Items::Canvas.shells` is `Option<Shells>` (none on a mirror); the
+agents-read test hears `Tools` that list `list_agents` and `open_agent` (an empty list makes the rule call home
+older, which closes the agents' menu); the end-to-end task test asserts the notice's first line ("task t1 … done in …",
+a notice shows one line) and waits a few rounds after `submitted` so home's answer to the call comes before the end;
+the add test compares the toolbar's point with `room_around` (`new_terminal_rect` pans the view, so calling it twice
+differs). Checked headlessly only, and logged in `docs/minors.md`: the Open dialog, Hand a task…, the dimmed menu
+items and tooltips, the dimmed ✕ and fullscreen.

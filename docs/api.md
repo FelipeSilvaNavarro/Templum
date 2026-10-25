@@ -242,6 +242,13 @@ REST aliases name the common calls; path parameters and the body become the tool
 | `PATCH /v1/automations/{automation}`, `POST …/run`, `DELETE …` | `set_automation`, `run_automation`, `delete_automation` |
 | `POST /v1/workspaces/{workspace}/shares`, `DELETE /v1/shares/{share}` | `share_workspace`, `revoke_share` |
 
+**Placing and naming.** `add_block` and `open_agent` take `x` and `y`, the block's top-left in canvas units within
+±10⁷, both or neither and not with `near`: the block goes there, as one added at a click. `open_agent`'s answer
+names its block when it opened at once (not in a new worktree). `connect` takes `label` (one line, at most 60
+characters; blank takes it off): on two blocks already wired it renames their wire, else it wires them with that
+name; either is one Ctrl+Z step. `list_agents` ends the line of an agent the person hid in Templum's menus with `  hidden`
+(it still opens); a mirror's menus leave those out.
+
 **Who acts.** A call acts as you: no approval, comments by `you`. Tasks it hands (`delegate`, `open_agent`'s prompt) are
 typed as `[from API · <token name>, task t7]`, and their end, a `wait_for` with `wait: false` and every other notice
 Templum would type into an asker's terminal come as `notice` events. **Tools that wait** (`delegate` with `wait`,
@@ -559,9 +566,12 @@ What the banner says, what it means, and whether it tries again by itself:
 ### 7. What a mirror can't do yet
 
 Not mirrored: a note's, checklist's, editor's and board's content (a card names each), ink and shapes, scrolling back in
-a terminal, the mouse in a terminal. Not on a mirrored workspace: adding, closing and wiring blocks, drawing, grid mode,
-Move to workspace, Copy and Paste of blocks, Stop, the Git popup, the right-click menus. The banner's ⓘ lists them. A
-selection of several blocks moved on the mirror is one Ctrl+Z step per block on home.
+a terminal, the mouse in a terminal. Not on a mirrored workspace: editors, adding notes (notes are read-only on a
+mirror for now), drawing, grid mode, Move to workspace, Copy and Paste of blocks, Stop, the Git popup. The banner's ⓘ
+lists them. Adding, closing and wiring blocks, naming wires, opening home's agents and handing them tasks work from the
+mirror, each done at home through its API; a block you close or a wire you make shows at once and home's state wins
+after two seconds. Ctrl+Z there undoes moves only: it stops once at each of those acts and says to undo the rest on
+home. A selection of several blocks moved on the mirror is one Ctrl+Z step per block on home.
 
 ### 8. Safety
 

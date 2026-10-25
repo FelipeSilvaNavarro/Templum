@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use futures::StreamExt;
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{AppContext as _, ClipboardItem, Context, Window};
 use templum_api::client::{
@@ -17,6 +18,7 @@ use templum_api::code::{self, Code, Key, Trust};
 use templum_api::model::{AgentView, BlockView, MeView, RequestView, State, WorkspaceView, same};
 use templum_api::store::Scope;
 use templum_canvas::{BlockId, Camera, Point, Rect, Size, Wire, chrome};
+use templum_mcp::control::Kind;
 use templum_terminal::Terminal;
 
 use super::holds::Holds;
@@ -198,6 +200,22 @@ pub(crate) struct RemoteSpace {
     /// The blocks moved or resized here and not yet shown by home: the rectangle the person left
     /// them at. It stands over home's until home shows it, or [`holds::HOLD`] passes.
     pub held: Holds<BlockId, Rect>,
+    /// The blocks closed here and not yet gone from home's state (true: closed here). They are
+    /// not drawn until home's state loses them, or [`holds::HOLD`] passes and they come back.
+    pub closed: Holds<BlockId, bool>,
+    /// The wires made or taken away here and not yet shown by home: by their two ends, the
+    /// smaller first (true: wired here, false: unwired here).
+    pub wires_held: Holds<(BlockId, BlockId), bool>,
+    /// The block home was asked to add or open and has not shown yet: it gets the keyboard when
+    /// it comes, if the person has not moved on.
+    pub awaited: Option<Awaited>,
+    /// The sentences a shortcut already told this run (`tell_shortcut`).
+    pub shortcuts_told: HashSet<String>,
+    /// The agents home can open: None until read. Read at each connect and again when a menu
+    /// opens [`AGENTS_AGAIN`] after the last read.
+    pub agents: Option<Vec<HomeAgent>>,
+    pub agents_at: Option<Instant>,
+    agents_asking: bool,
     /// What typing already told, once: (home's block, which sentence). "Not connected" is told
     /// again after the remote was live in between.
     pub told: HashSet<(String, &'static str)>,
@@ -212,6 +230,91 @@ pub(crate) struct RemoteSpace {
     /// The notices past the budget, not yet told as how many more.
     notices_folded: usize,
 }
+
+/// A block home was asked to add: its id there, what had the keyboard when it was asked, and
+/// when home answered.
+pub(crate) struct Awaited {
+    pub home: String,
+    pub before: Option<BlockId>,
+    pub at: Instant,
+}
+
+/// How long after home answered a block it added may still take the keyboard.
+const KEYBOARD_WAIT: Duration = Duration::from_secs(5);
+
+/// The most agents of home's a mirror lists, and the longest an id of one is, in bytes.
+pub(crate) const MOST_AGENTS: usize = 100;
+const AGENT_ID_MOST: usize = 64;
+
+/// How old home's agent list may be when a menu opens before it is read again.
+const AGENTS_AGAIN: Duration = Duration::from_secs(60);
+
+/// The most folders the Open dialog lists besides the one of home's workspace.
+const MOST_FOLDERS: usize = 20;
+
+/// An agent home can open, as its `list_agents` says.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HomeAgent {
+    pub id: String,
+    pub title: String,
+    pub installed: bool,
+}
+
+/// Home's agents out of its `list_agents` answer, a line each as home writes them
+/// (`Workspace::agent_list`): `id  "title"  installed|not installed  …`. Home is not trusted: at
+/// most [`MOST_AGENTS`], a line with an id that is long, quoted or has a control character is
+/// left out, and a title is one clean line. An agent home's person hid (`  hidden` ends its line)
+/// is left out, as home's own menus leave it out.
+pub(crate) fn home_agents(text: &str) -> Vec<HomeAgent> {
+    text.lines()
+        .filter_map(home_agent)
+        .take(MOST_AGENTS)
+        .collect()
+}
+
+fn home_agent(line: &str) -> Option<HomeAgent> {
+    let (id, rest) = line.split_once("  ")?;
+    if id.is_empty() || id.len() > AGENT_ID_MOST || id.chars().any(|c| c.is_control() || c == '"') {
+        return None;
+    }
+    // The title is Rust's `{:?}` of a string: `\"` and `\\` are escaped. A long one is read to its
+    // end and kept short.
+    let mut chars = rest.strip_prefix('"')?.chars();
+    let mut title = String::new();
+    let mut closed = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                closed = true;
+                break;
+            }
+            '\\' => {
+                let escaped = chars.next()?;
+                if title.len() < TITLE_READ {
+                    title.push(escaped);
+                }
+            }
+            c if title.len() < TITLE_READ => title.push(c),
+            _ => {}
+        }
+    }
+    if !closed || chars.as_str().ends_with("  hidden") {
+        return None;
+    }
+    let title = super::bus::clean_title(&title);
+    Some(HomeAgent {
+        installed: chars.as_str().starts_with("  installed"),
+        title: if title.is_empty() {
+            id.to_string()
+        } else {
+            title
+        },
+        id: id.to_string(),
+    })
+}
+
+/// How much of a title is read before `clean_title` cuts it.
+const TITLE_READ: usize = 1000;
 
 /// How many notifications of one kind a remote may make in a [`NOTICE_SPAN`], so a home that went
 /// wrong can't flood the person.
@@ -265,6 +368,13 @@ impl RemoteSpace {
             notices_folded: 0,
             rects: HashMap::new(),
             held: Holds::default(),
+            closed: Holds::default(),
+            wires_held: Holds::default(),
+            awaited: None,
+            shortcuts_told: HashSet::new(),
+            agents: None,
+            agents_at: None,
+            agents_asking: false,
             old_keys: Vec::new(),
             inherits: None,
             entry,
@@ -306,13 +416,18 @@ impl RemoteSpace {
     /// remote isn't live, home's Templum lacks the tool (once its tools were read: unknown ones
     /// dim nothing), or the share is below the scope the call takes.
     pub(crate) fn why_not(&self, deed: Deed) -> Option<Nay> {
+        if deed == Deed::AddNote {
+            return Some(Nay::NotesReadOnly);
+        }
         let Some((tool, args)) = deed.call() else {
             return Some(Nay::NotYet);
         };
         if self.status != Status::Live {
             return Some(Nay::NotConnected);
         }
-        if self.tools.as_ref().is_some_and(|tools| !tools.has(tool)) {
+        if self.tools.as_ref().is_some_and(|tools| {
+            !tools.has(tool) || deed.needs().iter().any(|arg| !tools.takes(tool, arg))
+        }) {
             return Some(Nay::Older);
         }
         let takes = templum_api::registry::scope(tool, &args).unwrap_or(Scope::Full);
@@ -324,6 +439,25 @@ impl RemoteSpace {
             .as_ref()
             .is_none_or(|me| takes > me.scope)
             .then_some(Nay::NeedsFull)
+    }
+
+    /// Whether home's tool `tool` takes `argument`, or its tools are unknown: the rule's second
+    /// rung, an argument a home lacks is left out when the act still means the same.
+    pub(crate) fn takes(&self, tool: &str, argument: &str) -> bool {
+        self.tools
+            .as_ref()
+            .is_none_or(|tools| tools.takes(tool, argument))
+    }
+
+    /// Home's agents are not read yet, or were read [`AGENTS_AGAIN`] ago or more.
+    pub(crate) fn agents_stale(&self, now: Instant) -> bool {
+        self.agents_at
+            .is_none_or(|at| now.saturating_duration_since(at) >= AGENTS_AGAIN)
+    }
+
+    /// Home's workspace this one mirrors: as its state names it, else the entry's.
+    fn home_workspace(&self) -> Option<String> {
+        (self.home.as_ref().map(|h| h.id.clone())).or_else(|| self.entry.home.clone())
     }
 
     /// Home's id of the block `id` here.
@@ -546,6 +680,12 @@ pub(crate) enum Deed {
     OpenChecklist,
     Close,
     Wire,
+    /// Taking a wire away.
+    Unwire,
+    /// Naming a wire, or taking its name off.
+    Label,
+    /// Handing an agent a task.
+    Delegate,
     Draw,
     Grid,
     MoveToWorkspace,
@@ -563,8 +703,31 @@ impl Deed {
             Deed::Move => ("move_block", json!({ "block": "b", "x": 0.0, "y": 0.0 })),
             Deed::Answer(_) => ("answer_request", json!({ "request": "r1" })),
             Deed::Start => ("show", json!({ "workspace": "w" })),
+            Deed::OpenAgent => ("open_agent", json!({ "agent": "a", "workspace": "w" })),
+            Deed::Close => ("close_block", json!({ "block": "b" })),
+            Deed::Delegate => ("delegate", json!({ "block": "b", "task": "t" })),
+            Deed::Wire => ("connect", json!({ "a": "a", "b": "b" })),
+            Deed::Unwire => ("disconnect", json!({ "a": "a", "b": "b" })),
+            Deed::Label => ("connect", json!({ "a": "a", "b": "b", "label": "l" })),
+            Deed::AddTerminal => ("add_block", json!({ "workspace": "w", "kind": "terminal" })),
+            Deed::AddKanban => ("add_block", json!({ "workspace": "w", "kind": "kanban" })),
+            Deed::AddChecklist => (
+                "add_block",
+                json!({ "workspace": "w", "kind": "checklist" }),
+            ),
             _ => return None,
         })
+    }
+}
+
+impl Deed {
+    /// The arguments home's tool must take for the deed to mean the same (the rule's second rung):
+    /// a home without one is older than the deed needs.
+    pub(crate) fn needs(self) -> &'static [&'static str] {
+        match self {
+            Deed::Label => &["label"],
+            _ => &[],
+        }
     }
 }
 
@@ -573,6 +736,8 @@ impl Deed {
 pub(crate) enum Nay {
     /// No call of home's does it yet.
     NotYet,
+    /// A note is only read on a mirror for now.
+    NotesReadOnly,
     NotConnected,
     /// Home's Templum lacks the tool.
     Older,
@@ -585,11 +750,30 @@ impl Nay {
     pub(crate) fn words(self, computer: &str) -> String {
         match self {
             Nay::NotYet => NOT_YET.into(),
+            Nay::NotesReadOnly => format!(
+                "Notes are read-only on a mirror for now: add and edit notes on {computer}."
+            ),
             Nay::NotConnected => "Not connected.".into(),
             Nay::Older => format!("{computer}'s Templum is older: update it to do this from here."),
             Nay::NeedsFull => format!("Needs a Full share: share again on {computer}."),
         }
     }
+}
+
+/// The deed a shortcut does, for the rule to say whether the mirror can: None for a command that
+/// is no deed of the canvas.
+pub(super) fn command_deed(command: crate::keys::Command) -> Option<Deed> {
+    use crate::keys::Command;
+    Some(match command {
+        Command::NewTerminal => Deed::AddTerminal,
+        Command::CloseTerminal => Deed::Close,
+        Command::NewKanban => Deed::AddKanban,
+        Command::NewNote => Deed::AddNote,
+        Command::NewEditor | Command::OpenFile => Deed::AddEditor,
+        Command::NewGit => Deed::Git,
+        Command::ToggleGrid => Deed::Grid,
+        _ => return None,
+    })
 }
 
 /// What typing says when the remote isn't live (the client's own sentence, said once).
@@ -853,7 +1037,7 @@ fn failure_words(remote: &RemoteSpace) -> String {
 }
 
 /// What a viewer of home's terminal is made with.
-struct Viewers {
+pub(super) struct Viewers {
     cell: templum_canvas::Size,
     palette: templum_terminal::Palette,
     options: templum_terminal::TermOptions,
@@ -876,8 +1060,8 @@ fn session_of(agent: &AgentView) -> Option<templum_usage::Session> {
 /// The banner's ⓘ: what a mirror doesn't have yet.
 pub(crate) const NOT_MIRRORED: &str = "Not mirrored yet: notes', checklists', editors' and \
      boards' content (a card shows each), ink and shapes, scrolling back in a terminal, the mouse \
-     in a terminal. Not on a mirrored workspace yet: adding, closing and wiring blocks, \
-     drawing, grid mode, Move to workspace, Copy and Paste of blocks, Stop, the Git popup.";
+     in a terminal. Not on a mirrored workspace yet: editors, adding notes, drawing, grid mode, \
+     Move to workspace, Copy and Paste of blocks, Stop, the Git popup.";
 
 /// The tooltip of a control a mirrored workspace doesn't have yet.
 pub(crate) const NOT_YET: &str = "Not on a mirrored workspace yet";
@@ -957,6 +1141,25 @@ impl Space {
             .collect()
     }
 
+    /// Home's blocks of workspace `home`, back to front, and its wires become this canvas's.
+    pub(super) fn mirror_state(
+        &mut self,
+        remote: &mut RemoteSpace,
+        state: &State,
+        home: Option<&str>,
+        make: &Viewers,
+        (now, dragged): (Instant, &HashSet<BlockId>),
+    ) {
+        let mut blocks: Vec<&Arc<BlockView>> = state
+            .blocks
+            .iter()
+            .filter(|b| home.is_some_and(|h| h == b.workspace))
+            .collect();
+        blocks.sort_by_key(|b| b.z);
+        self.mirror_blocks(remote, &blocks, make, (now, dragged));
+        self.mirror_wires(remote, state, now);
+    }
+
     /// Home's blocks, back to front, become this canvas's: new ones are added quietly (no id for
     /// agents, no undo step, no focus, no pop-in), known ones take home's rectangle, title and
     /// agent, and those home no longer has go without a trace.
@@ -989,6 +1192,7 @@ impl Space {
             remote.names.remove(&id);
             remote.rects.remove(&id);
             remote.held.end(&id);
+            remote.closed.end(&id);
             self.canvas.remove(id);
             self.blocks.remove(&id);
             self.appearing.remove(&id);
@@ -1007,9 +1211,15 @@ impl Space {
         for (b, rect) in &blocks {
             let rect = *rect;
             let b = &tidy_block(b);
-            let id = match remote.homes.get(&b.id) {
-                Some(id) => *id,
-                None => {
+            let id = match remote.homes.get(&b.id).copied() {
+                // Closed here, home not caught up: not drawn.
+                Some(id) if remote.closed.shown(id, false, now, |a, b| a == b) => continue,
+                Some(id) if self.canvas.get(id).is_some() => id,
+                // Closed here and still home's past the hold, or refused: a new block.
+                stale => {
+                    if let Some(stale) = stale {
+                        remote.names.remove(&stale);
+                    }
                     let id = self.canvas.add(rect);
                     self.blocks.insert(id, remote_body(b, rect, make));
                     remote.homes.insert(b.id.clone(), id);
@@ -1042,6 +1252,7 @@ impl Space {
         let order: Vec<BlockId> = blocks
             .iter()
             .filter_map(|(b, _)| remote.homes.get(&b.id).copied())
+            .filter(|id| self.canvas.get(*id).is_some())
             .collect();
         let now: Vec<BlockId> = self.canvas.blocks().iter().map(|b| b.id).collect();
         if order != now {
@@ -1052,8 +1263,9 @@ impl Space {
     }
 
     /// Home's wires, between the blocks mirrored here (the first `MOST_WIRES` of them, each
-    /// once), and their labels (kept by home's ids).
-    fn mirror_wires(&mut self, remote: &RemoteSpace, state: &State) {
+    /// once), and their labels (kept by home's ids). A wire made or taken away here stands over
+    /// home's until home shows it or the hold passes.
+    fn mirror_wires(&mut self, remote: &mut RemoteSpace, state: &State, now: Instant) {
         let mut seen = std::collections::HashSet::new();
         let mut wires = Vec::new();
         let mut labels = HashMap::new();
@@ -1064,6 +1276,10 @@ impl Space {
             let (Some(a), Some(b)) = (remote.homes.get(&w.a), remote.homes.get(&w.b)) else {
                 continue;
             };
+            // A block closed here and not gone from home's state yet is not on the canvas.
+            if self.canvas.get(*a).is_none() || self.canvas.get(*b).is_none() {
+                continue;
+            }
             let key = super::wires::label_key(&w.a, &w.b);
             let Some(wire) = Wire::new(*a, *b) else {
                 continue;
@@ -1079,6 +1295,23 @@ impl Space {
                 .filter(|l| !l.is_empty())
             {
                 labels.insert(key, label);
+            }
+        }
+        for key @ (a, b) in remote.wires_held.keys() {
+            let wire = Wire::new(a, b)
+                .filter(|_| self.canvas.get(a).is_some() && self.canvas.get(b).is_some());
+            let Some(wire) = wire else {
+                remote.wires_held.end(&key);
+                continue;
+            };
+            let home = wires.contains(&wire);
+            let want = remote
+                .wires_held
+                .shown(key, home, now, |mine, home| mine == home);
+            if want && !home {
+                wires.push(wire);
+            } else if !want && home {
+                wires.retain(|w| *w != wire);
             }
         }
         if self.wires != wires {
@@ -1306,6 +1539,7 @@ impl Workspace {
             _ => {}
         }
         let pending = self.pending_connect.as_deref() == Some(id);
+        let mut reads_agents = false;
         let Some(remote) = self.remote_mut(id) else {
             return heard;
         };
@@ -1340,7 +1574,10 @@ impl Workspace {
                 remote.me = Some(me);
             }
             Update::Latency(latency) => remote.latency = Some(latency),
-            Update::Tools(tools) => remote.tools = Some(tools),
+            Update::Tools(tools) => {
+                remote.tools = Some(tools);
+                reads_agents = true;
+            }
             Update::Kept(kept) => {
                 remote.entry.key = match kept {
                     Kept::Keyring => Keeping::Keyring,
@@ -1360,6 +1597,9 @@ impl Workspace {
             | Update::Dropped(_)
             | Update::Keyring(_)
             | Update::Notice(_) => {}
+        }
+        if reads_agents {
+            self.read_home_agents(id, cx);
         }
         heard
     }
@@ -1450,7 +1690,46 @@ impl Workspace {
                 b.rect = *rect;
             }
         }
-        due
+        let (back, closed_due) = remote.closed.expire(now, |_| false);
+        let (undone, wires_due) = remote.wires_held.expire(now, |_| false);
+        // What was done here that home's state never showed ends: home's last state is drawn
+        // again (a block closed here that home still lists comes back).
+        if !back.is_empty() || !undone.is_empty() {
+            let id = self.space.id.clone();
+            self.remirror(&id, now);
+        }
+        [due, closed_due, wires_due].into_iter().flatten().min()
+    }
+
+    /// What `apply_remote` builds a mirrored canvas with.
+    pub(super) fn viewers(&self) -> Viewers {
+        Viewers {
+            cell: self.cell.size,
+            palette: self.theme.palette,
+            options: self.config.term_options(),
+            notify: self.notify.clone(),
+        }
+    }
+
+    /// Home's last state of remote `id` is drawn again: a hold ended with no new state to
+    /// end it, and home's state is the truth.
+    pub(super) fn remirror(&mut self, id: &str, now: Instant) {
+        let make = self.viewers();
+        let dragged: HashSet<BlockId> = if self.space.id == id {
+            self.placed.iter().map(|(id, _)| *id).collect()
+        } else {
+            HashSet::new()
+        };
+        let Some(space) = self.space_by_id_mut(id) else {
+            return;
+        };
+        let Some(mut remote) = space.remote.take() else {
+            return;
+        };
+        let state = remote.state.clone();
+        let home = remote.home.as_ref().map(|h| h.id.clone());
+        space.mirror_state(&mut remote, &state, home.as_deref(), &make, (now, &dragged));
+        space.remote = Some(remote);
     }
 
     /// The newest state of remote `id` into its workspace: home's blocks at home's rectangles,
@@ -1469,12 +1748,7 @@ impl Workspace {
         } else {
             HashSet::new()
         };
-        let make = Viewers {
-            cell: self.cell.size,
-            palette: self.theme.palette,
-            options: self.config.term_options(),
-            notify: self.notify.clone(),
-        };
+        let make = self.viewers();
         let Some(space) = self.space_by_id_mut(id) else {
             return;
         };
@@ -1511,14 +1785,8 @@ impl Workspace {
             || !same(&state.wires, &remote.state.wires)
             || !same(&state.requests, &remote.state.requests);
         if changed {
-            let mut blocks: Vec<&Arc<BlockView>> = state
-                .blocks
-                .iter()
-                .filter(|b| home.as_ref().is_some_and(|h| h.id == b.workspace))
-                .collect();
-            blocks.sort_by_key(|b| b.z);
-            space.mirror_blocks(&mut remote, &blocks, &make, (now, &dragged));
-            space.mirror_wires(&remote, &state);
+            let home_id = home.as_ref().map(|h| h.id.as_str());
+            space.mirror_state(&mut remote, &state, home_id, &make, (now, &dragged));
         }
         if !remote.placed && home.is_some() {
             remote.placed = true;
@@ -1549,6 +1817,7 @@ impl Workspace {
         if let Some(requests) = requests {
             self.remote_requests(id, home_id.as_deref(), &requests, window, cx);
         }
+        self.focus_awaited(id, now, window, cx);
     }
 
     /// What the person pasted into the Connect dialog becomes a remote workspace, hidden until it
@@ -1638,6 +1907,10 @@ impl Workspace {
         remote.tools = None;
         remote.latency = None;
         remote.told.clear();
+        remote.awaited = None;
+        remote.agents = None;
+        remote.agents_at = None;
+        remote.agents_asking = false;
         remote.requests_told.clear();
         remote.requests_budget = Budget::default();
         remote.notice_budget = Budget::default();
@@ -1983,7 +2256,9 @@ impl Workspace {
         let computer = crate::mirror::computer_of(remote);
         let (said, sentence) = match remote.why_not(Deed::Type) {
             None => return Some((space, block)),
-            Some(Nay::NotConnected | Nay::NotYet) => (NOT_LIVE, NOT_CONNECTED.to_string()),
+            Some(Nay::NotConnected | Nay::NotYet | Nay::NotesReadOnly) => {
+                (NOT_LIVE, NOT_CONNECTED.to_string())
+            }
             Some(Nay::NeedsFull) => (
                 NEEDS_FULL,
                 format!("Typing needs a Full share: share again on {computer}."),
@@ -1997,10 +2272,31 @@ impl Workspace {
     }
 
     /// A warning about a mirrored workspace, in words the person reads.
-    fn warn(&mut self, sentence: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn warn(&mut self, sentence: String, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(test)]
         self.said.push(sentence.clone());
         show_notification(window, cx, Notification::warning(sentence));
+    }
+
+    /// Whether the workspace `space` is the one shown. A dialog acts on the workspace it was
+    /// opened on only: block ids count from 0 in every workspace, so another one shown by the
+    /// time it is confirmed (a `show`, a notification) would take them for its own. When it
+    /// isn't, this says so and the dialog does nothing.
+    pub(crate) fn still_shown(
+        &mut self,
+        space: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let shown = self.space.id == space;
+        if !shown {
+            self.warn(
+                "Another workspace is shown now: nothing was done.".into(),
+                window,
+                cx,
+            );
+        }
+        shown
     }
 
     /// `keys` (names, `templum_terminal::key_name`) typed into the focused remote terminal: home
@@ -2391,6 +2687,493 @@ impl Workspace {
         .detach();
     }
 
+    /// The person adds a block of `kind` with its top-left corner at `at` on the remote shown:
+    /// home adds it (`add_block`), where it places it itself when its Templum can't place one. Nothing
+    /// is added here; the block comes with home's state, and takes the keyboard (`awaiting`).
+    pub(super) fn remote_add(&mut self, kind: Kind, at: Point, cx: &mut Context<Self>) {
+        let (deed, name) = match kind {
+            Kind::Terminal => (Deed::AddTerminal, "terminal"),
+            Kind::Kanban => (Deed::AddKanban, "kanban"),
+            Kind::Checklist => (Deed::AddChecklist, "checklist"),
+            Kind::Note | Kind::Editor => return,
+        };
+        let Some(remote) = self.space.remote.as_deref() else {
+            return;
+        };
+        let Some(workspace) = remote
+            .home_workspace()
+            .filter(|_| remote.why_not(deed).is_none())
+        else {
+            return;
+        };
+        let mut args = serde_json::json!({ "workspace": workspace, "kind": name });
+        if remote.takes("add_block", "x") {
+            args["x"] = at.x.into();
+            args["y"] = at.y.into();
+        }
+        if kind == Kind::Checklist {
+            args["text"] = crate::checklists::NAME.into();
+        }
+        let (space, before) = (self.space.id.clone(), self.space.focused);
+        self.mark_remote();
+        let call = Call {
+            tool: "add_block".into(),
+            args,
+            slow: false,
+        };
+        let then: Then = Box::new(move |ws, answered, window, cx| match answered {
+            Ok(answer) => ws.awaiting(&space, &answer, before, window, cx),
+            Err(refusal) => ws.warn(refusal.sentence, window, cx),
+        });
+        let space = self.space.id.clone();
+        self.remote_call(&space, call, then, cx);
+    }
+
+    /// Home answered `answer` to an add: its `block` is waited for, to take the keyboard when
+    /// home's state brings it (or has already), unless the person moved the keyboard since.
+    pub(super) fn awaiting(
+        &mut self,
+        space: &str,
+        answer: &serde_json::Value,
+        before: Option<BlockId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(home) = answer["block"]
+            .as_str()
+            .filter(|b| b.len() <= 64 && !b.chars().any(char::is_control))
+        else {
+            return;
+        };
+        let Some(entry) = self.space_named(space) else {
+            return;
+        };
+        if entry.focused != before {
+            return;
+        }
+        let home = home.to_string();
+        let Some(remote) = self.remote_mut(space) else {
+            return;
+        };
+        let now = Instant::now();
+        remote.awaited = Some(Awaited {
+            home,
+            before,
+            at: now,
+        });
+        self.focus_awaited(space, now, window, cx);
+    }
+
+    /// The block home was asked to add takes the keyboard once it is on the canvas, if the remote
+    /// is shown, the keyboard is where it was when asked (on the canvas, no dialog open) and
+    /// [`KEYBOARD_WAIT`] has not passed; when one of those stops being so, it is not waited
+    /// for anymore.
+    pub(super) fn focus_awaited(
+        &mut self,
+        space: &str,
+        now: Instant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(entry) = self.space_named(space) else {
+            return;
+        };
+        let Some(remote) = entry.remote.as_deref() else {
+            return;
+        };
+        let Some(awaited) = &remote.awaited else {
+            return;
+        };
+        let waiting = self.space.id == space
+            && entry.focused == awaited.before
+            && now.saturating_duration_since(awaited.at) <= KEYBOARD_WAIT
+            && !window.has_active_dialog(cx)
+            && self.canvas_has_keys(window);
+        let block =
+            (remote.homes.get(&awaited.home).copied()).filter(|id| entry.canvas.get(*id).is_some());
+        match (waiting, block) {
+            (true, None) => return,
+            (true, Some(id)) => self.focus_block(id, window, cx),
+            (false, _) => {}
+        }
+        if let Some(remote) = self.remote_mut(space) {
+            remote.awaited = None;
+        }
+    }
+
+    /// Asks home which agents it can open (`list_agents`), unless that is under way: its answer
+    /// is the list `open_menu` and the Open dialog use. A refusal says nothing.
+    pub(crate) fn read_home_agents(&mut self, space: &str, cx: &mut Context<Self>) {
+        let Some(remote) = self.remote_mut(space) else {
+            return;
+        };
+        if std::mem::replace(&mut remote.agents_asking, true) {
+            return;
+        }
+        let id = space.to_string();
+        let then: Then = Box::new(move |ws, answered, _, _| {
+            let Some(remote) = ws.remote_mut(&id) else {
+                return;
+            };
+            remote.agents_asking = false;
+            if let Ok(answer) = answered {
+                remote.agents = Some(home_agents(answer["text"].as_str().unwrap_or_default()));
+                remote.agents_at = Some(Instant::now());
+            }
+        });
+        let call = Call {
+            tool: "list_agents".into(),
+            args: serde_json::json!({}),
+            slow: false,
+        };
+        self.remote_call(space, call, then, cx);
+    }
+
+    /// The folders the Open dialog offers on the remote shown, as paths of home's computer:
+    /// its workspace's folder first, then each folder of its terminals, each once.
+    pub(crate) fn home_folders(&self) -> Vec<(String, Option<&'static str>)> {
+        let Some(remote) = self.space.remote.as_deref() else {
+            return Vec::new();
+        };
+        let Some(home) = &remote.home else {
+            return Vec::new();
+        };
+        let mut terminals: Vec<&Arc<BlockView>> = remote
+            .state
+            .blocks
+            .iter()
+            .filter(|b| b.workspace == home.id && b.kind == "terminal")
+            .collect();
+        terminals.sort_by_key(|b| b.z);
+        let own = home.folder.iter().map(|f| (f, Some("Workspace folder")));
+        let theirs = terminals
+            .iter()
+            .filter_map(|b| b.folder.as_ref())
+            .map(|f| (f, None));
+        let mut seen = HashSet::new();
+        own.chain(theirs)
+            .map(|(path, tag)| (super::bus::clean_to(path, LINE_CHARS), tag))
+            .filter(|(path, _)| !path.is_empty() && seen.insert(path.clone()))
+            .take(MOST_FOLDERS + 1)
+            .collect()
+    }
+
+    /// The person opens home's agent `agent` in `folder` (relative to home's workspace's folder,
+    /// or whole; blank: its folder) with its block's top-left corner at `at`. Home opens it
+    /// (`open_agent`) and `then` gets how it went: home's refusal, said in the dialog that
+    /// asked. Nothing is opened here. Err at once when the remote can't do it now.
+    pub(crate) fn remote_open_agent(
+        &mut self,
+        agent: &str,
+        folder: &str,
+        at: Point,
+        then: impl FnOnce(&mut Workspace, Result<(), String>, &mut Window, &mut Context<Workspace>)
+        + 'static,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(remote) = self.space.remote.as_deref() else {
+            return Err("This workspace is gone.".into());
+        };
+        if let Some(nay) = remote.why_not(Deed::OpenAgent) {
+            return Err(nay.words(&crate::mirror::computer_of(remote)));
+        }
+        let Some(workspace) = remote.home_workspace() else {
+            return Err("This workspace is gone.".into());
+        };
+        let mut args = serde_json::json!({ "agent": agent, "workspace": workspace });
+        if !folder.trim().is_empty() {
+            args["folder"] = folder.trim().into();
+        }
+        if remote.takes("open_agent", "x") {
+            args["x"] = at.x.into();
+            args["y"] = at.y.into();
+        }
+        let (space, before) = (self.space.id.clone(), self.space.focused);
+        self.mark_remote();
+        let call = Call {
+            tool: "open_agent".into(),
+            args,
+            slow: false,
+        };
+        let reply: Then = Box::new(move |ws, answered, window, cx| match answered {
+            Ok(answer) => {
+                // The Open dialog closes first: it doesn't keep the keyboard from the block.
+                then(ws, Ok(()), window, cx);
+                ws.awaiting(&space, &answer, before, window, cx);
+            }
+            Err(refusal) => then(ws, Err(refusal.sentence), window, cx),
+        });
+        let space = self.space.id.clone();
+        self.remote_call(&space, call, reply, cx);
+        Ok(())
+    }
+
+    /// The person closes `ids` of the remote shown (the header's ✕, Close in a menu, Ctrl+Shift+W):
+    /// a terminal home shows an agent in asks first, as a local one does; the rest go at once.
+    pub(super) fn remote_close(
+        &mut self,
+        ids: Vec<BlockId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.why_not(Deed::Close).is_some() {
+            return;
+        }
+        let busy: Vec<String> = ids
+            .iter()
+            .filter_map(|id| {
+                let pane = self.space.terminal(*id)?;
+                let agent = pane.remote.as_ref()?.agent.as_ref()?;
+                let why =
+                    crate::alert::busy(&templum_terminal::Status::default(), Some(&agent.agent))?;
+                Some(if ids.len() == 1 {
+                    why
+                } else {
+                    format!("{}: {why}", pane.remote.as_ref()?.title)
+                })
+            })
+            .collect();
+        if busy.is_empty() {
+            return self.close_remote_now(&ids, window, cx);
+        }
+        let title = if ids.len() == 1 {
+            "Close the terminal?".to_string()
+        } else {
+            format!("Close {} blocks?", ids.len())
+        };
+        let (ws, space) = (cx.entity(), self.space.id.clone());
+        crate::prompt::confirm(
+            title,
+            busy.join(" "),
+            "Close",
+            move |window, cx| {
+                ws.update(cx, |ws, cx| {
+                    if ws.still_shown(&space, window, cx) {
+                        ws.close_remote_now(&ids, window, cx);
+                    }
+                })
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Home closes `ids` (`close_block` each); they leave this canvas at once, as a closed block
+    /// fades, and stay closed here until home's state loses them. A refusal brings its block
+    /// back, and is said once for all the blocks of this close.
+    pub(super) fn close_remote_now(
+        &mut self,
+        ids: &[BlockId],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let space = self.space.id.clone();
+        let said = std::rc::Rc::new(std::cell::Cell::new(false));
+        let now = Instant::now();
+        let mut sent = false;
+        for id in ids {
+            let Some(remote) = self.space.remote.as_mut() else {
+                return;
+            };
+            let Some(block) = remote.home_of(*id) else {
+                continue;
+            };
+            remote.closed.hold(*id, true, now);
+            remote.rects.remove(id);
+            remote.held.end(id);
+            for key in remote.wires_held.keys() {
+                if key.0 == *id || key.1 == *id {
+                    remote.wires_held.end(&key);
+                }
+            }
+            sent = true;
+            let (id, said, space) = (*id, said.clone(), space.clone());
+            let call = Call {
+                tool: "close_block".into(),
+                args: serde_json::json!({ "block": block }),
+                slow: false,
+            };
+            let then: Then = Box::new(move |ws, answered, window, cx| {
+                let Err(refusal) = answered else {
+                    return;
+                };
+                if let Some(remote) = ws.remote_mut(&space) {
+                    remote.closed.end(&id);
+                }
+                ws.remirror(&space, Instant::now());
+                if !said.replace(true) {
+                    ws.warn(refusal.sentence, window, cx);
+                }
+            });
+            self.remote_call(&self.space.id.clone(), call, then, cx);
+            if self.space.focused == Some(id) {
+                self.space.focused = None;
+            }
+            self.remove_block(id, window, cx);
+        }
+        if sent {
+            self.mark_remote();
+        }
+    }
+
+    /// The person wires (`on`) or unwires `wire` on the remote shown: the wire shows at once and
+    /// stands over home's state until home shows it or [`holds::HOLD`] passes; home makes or takes
+    /// it (`connect`, `disconnect`), and a refusal puts it back as home has it. False when nothing
+    /// is sent: it can't be done now, it already is so here, or an end isn't home's.
+    pub(super) fn remote_wire(&mut self, wire: Wire, on: bool, cx: &mut Context<Self>) -> bool {
+        let Some(remote) = self.space.remote.as_deref() else {
+            return false;
+        };
+        let deed = if on { Deed::Wire } else { Deed::Unwire };
+        let ends = remote.home_of(wire.a).zip(remote.home_of(wire.b));
+        let Some((a, b)) = ends.filter(|_| remote.why_not(deed).is_none()) else {
+            return false;
+        };
+        let key = (wire.a.min(wire.b), wire.a.max(wire.b));
+        let done = if on {
+            self.space.add_wire(wire.a, wire.b).is_some()
+        } else {
+            self.space.remove_wire(wire)
+        };
+        if !done {
+            return false;
+        }
+        let space = self.space.id.clone();
+        if let Some(remote) = self.space.remote.as_mut() {
+            remote.wires_held.hold(key, on, Instant::now());
+        }
+        self.mark_remote();
+        let call = Call {
+            tool: if on { "connect" } else { "disconnect" }.into(),
+            args: serde_json::json!({ "a": a, "b": b }),
+            slow: false,
+        };
+        let id = space.clone();
+        let then: Then = Box::new(move |ws, answered, window, cx| {
+            let Err(refusal) = answered else {
+                return;
+            };
+            if let Some(remote) = ws.remote_mut(&id) {
+                remote.wires_held.end(&key);
+            }
+            ws.remirror(&id, Instant::now());
+            ws.warn(refusal.sentence, window, cx);
+        });
+        self.remote_call(&space, call, then, cx);
+        cx.notify();
+        true
+    }
+
+    /// The person names `wire` (`label`; None takes its name off) on the remote shown: home does
+    /// (`connect` with a `label`) and the name shows when home's state brings it. False when
+    /// nothing is sent.
+    pub(super) fn remote_label(
+        &mut self,
+        wire: Wire,
+        label: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(remote) = self.space.remote.as_deref() else {
+            return false;
+        };
+        let ends = remote.home_of(wire.a).zip(remote.home_of(wire.b));
+        let Some((a, b)) = ends
+            .filter(|_| remote.why_not(Deed::Label).is_none() && self.space.wires.contains(&wire))
+        else {
+            return false;
+        };
+        self.mark_remote();
+        let call = Call {
+            tool: "connect".into(),
+            args: serde_json::json!({ "a": a, "b": b, "label": label.unwrap_or_default() }),
+            slow: false,
+        };
+        let then: Then = Box::new(|ws, answered, window, cx| ws.warn_refusal(answered, window, cx));
+        let space = self.space.id.clone();
+        self.remote_call(&space, call, then, cx);
+        true
+    }
+
+    /// The person hands the agent in the remote terminal `block` a task: home types it there
+    /// (`delegate`), as it types the API's, and its end comes as a notice. Nothing is a step of
+    /// Ctrl+Z and a success says nothing; a task too long for home, or home's refusal, is said.
+    pub(crate) fn remote_hand_task(
+        &mut self,
+        block: BlockId,
+        task: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if task.trim().is_empty() || self.why_not(Deed::Delegate).is_some() {
+            return;
+        }
+        let Some(home) = self.space.remote.as_deref().and_then(|r| r.home_of(block)) else {
+            return;
+        };
+        if task.len() > templum_mcp::tools::MAX_TEXT {
+            return self.warn(
+                "A task is at most 256 KiB: hand it in parts.".into(),
+                window,
+                cx,
+            );
+        }
+        let call = Call {
+            tool: "delegate".into(),
+            args: serde_json::json!({ "block": home, "task": task }),
+            slow: false,
+        };
+        let then: Then = Box::new(|ws, answered, window, cx| ws.warn_refusal(answered, window, cx));
+        let space = self.space.id.clone();
+        self.remote_call(&space, call, then, cx);
+    }
+
+    /// Hand a task…: asks for the task to give the agent in the remote terminal `block`.
+    pub(crate) fn ask_task(&mut self, block: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(remote) = self.space.remote.as_deref() else {
+            return;
+        };
+        let Some(pane) = self.space.terminal(block).and_then(|p| p.remote.as_ref()) else {
+            return;
+        };
+        let agent = pane.agent.as_ref().map(|a| a.agent.clone());
+        let about = format!(
+            "{:?} on {}: it types it in, and its end comes back as a notice.",
+            pane.title,
+            crate::mirror::computer_of(remote)
+        );
+        let (ws, space) = (cx.entity(), self.space.id.clone());
+        crate::prompt::ask_lines(
+            format!("Hand a task to {}", agent.as_deref().unwrap_or("the agent")),
+            about,
+            "Hand over",
+            move |task, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    if ws.still_shown(&space, window, cx) {
+                        ws.remote_hand_task(block, task, window, cx);
+                    }
+                });
+                true
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// A shortcut the remote shown can't do says why (`words`), the first time this run; a held
+    /// key or a habit never stacks notifications.
+    pub(super) fn tell_shortcut(
+        &mut self,
+        words: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let told =
+            (self.space.remote.as_mut()).is_none_or(|r| !r.shortcuts_told.insert(words.clone()));
+        if !told {
+            self.warn(words, window, cx);
+        }
+    }
+
     /// The `then` of a call whose only result is its refusal, said.
     fn warn_refusal(&mut self, answered: Answered, window: &mut Window, cx: &mut Context<Self>) {
         if let Err(refusal) = answered {
@@ -2699,7 +3482,7 @@ mod tests {
         );
         let words = |r: &RemoteSpace, d| r.why_not(d).map(|n| n.words("winx-desktop"));
         assert_eq!(
-            words(&remote, Deed::AddTerminal).as_deref(),
+            words(&remote, Deed::AddEditor).as_deref(),
             Some("Not on a mirrored workspace yet")
         );
         assert_eq!(
@@ -2743,6 +3526,107 @@ mod tests {
         assert_eq!(scope(Deed::Move), Scope::Control);
         assert_eq!(scope(Deed::Start), Scope::Control);
         assert_eq!(scope(Deed::Answer(Scope::Control)), Scope::Control);
+        for control in [
+            Deed::AddTerminal,
+            Deed::AddKanban,
+            Deed::AddChecklist,
+            Deed::OpenAgent,
+            Deed::Close,
+            Deed::Wire,
+            Deed::Unwire,
+            Deed::Label,
+            Deed::Delegate,
+        ] {
+            assert_eq!(scope(control), Scope::Control, "{control:?}");
+        }
+    }
+
+    #[test]
+    fn rename_is_dimmed_on_a_home_without_label() {
+        let mut remote = remote_at("https://winx-desktop.example.com", Status::Live);
+        remote.me.as_mut().unwrap().scope = Scope::Control;
+        remote.tools = Some(Tools::read(&serde_json::json!([
+            { "name": "connect", "inputSchema": { "properties": { "a": {}, "b": {} } } },
+            { "name": "disconnect" },
+        ])));
+        assert_eq!(remote.why_not(Deed::Label), Some(Nay::Older));
+        assert_eq!(remote.why_not(Deed::Wire), None);
+        assert_eq!(remote.why_not(Deed::Unwire), None);
+        assert_eq!(
+            remote
+                .why_not(Deed::Label)
+                .map(|n| n.words("winx-desktop"))
+                .as_deref(),
+            Some("winx-desktop's Templum is older: update it to do this from here.")
+        );
+    }
+
+    #[test]
+    fn home_s_agent_list_is_capped_and_cleaned() {
+        let many: String = (0..150)
+            .map(|n| format!("a{n}  \"Agent {n}\"  installed  no model  no effort\n"))
+            .collect();
+        let agents = home_agents(&many);
+        assert_eq!(agents.len(), MOST_AGENTS);
+        assert_eq!(
+            agents[7],
+            HomeAgent {
+                id: "a7".into(),
+                title: "Agent 7".into(),
+                installed: true
+            }
+        );
+        let text = [
+            "codex  \"Co\\\"dex\"  not installed  no model  no effort".to_string(),
+            format!("{}  \"Long id\"  installed", "x".repeat(65)),
+            "quo\"te  \"Quoted id\"  installed".to_string(),
+            "bell\u{7}  \"Control id\"  installed".to_string(),
+            "notitle  installed  no model".to_string(),
+            "unclosed  \"Never ends  installed".to_string(),
+            String::new(),
+            format!("big  \"{}\"  installed  an account", "y".repeat(1_000_000)),
+            "bell  \"Rings\u{7}here\"  installed".to_string(),
+            "blank  \"\"  not installed".to_string(),
+            "shy  \"Hidden\"  installed  no model  no effort  an account  hidden".to_string(),
+        ]
+        .join("\n");
+        let agents = home_agents(&text);
+        let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["codex", "big", "bell", "blank"]);
+        assert_eq!(agents[0].title, "Co\"dex");
+        assert!(!agents[0].installed);
+        assert!(agents[1].installed && agents[1].title.chars().count() <= 60);
+        assert!(!agents[1].title.contains('\n'));
+        assert!(
+            !agents[2].title.chars().any(char::is_control),
+            "{:?}",
+            agents[2].title
+        );
+        assert_eq!(agents[3].title, "blank", "no title: the id");
+    }
+
+    #[test]
+    fn notes_say_they_are_read_only_and_adds_are_home_s_calls() {
+        let mut remote = remote_at("https://winx-desktop.example.com", Status::Live);
+        remote.me.as_mut().unwrap().scope = Scope::Control;
+        let words = |r: &RemoteSpace, d| r.why_not(d).map(|n| n.words("winx-desktop"));
+        assert_eq!(
+            words(&remote, Deed::AddNote).as_deref(),
+            Some("Notes are read-only on a mirror for now: add and edit notes on winx-desktop.")
+        );
+        assert_eq!(
+            words(&remote, Deed::AddEditor).as_deref(),
+            Some("Not on a mirrored workspace yet")
+        );
+        for add in [Deed::AddTerminal, Deed::AddKanban, Deed::AddChecklist] {
+            assert_eq!(remote.why_not(add), None, "{add:?}");
+        }
+        // An argument home lacks is left out; unknown tools take everything.
+        assert!(remote.takes("add_block", "x"));
+        remote.tools = Some(Tools::read(&serde_json::json!([
+            { "name": "add_block", "inputSchema": { "properties": { "kind": {} } } }
+        ])));
+        assert!(remote.takes("add_block", "kind") && !remote.takes("add_block", "x"));
     }
 
     #[test]

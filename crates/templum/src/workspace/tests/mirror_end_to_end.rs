@@ -357,3 +357,225 @@ fn a_watch_set_at_home_through_the_api_shows_its_notice_on_the_mirror(cx: &mut T
         })
     });
 }
+
+/// The first workspace's block at `at`, if it has one.
+fn block_at(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    space: &str,
+    at: (f32, f32),
+) -> Option<BlockId> {
+    ws.read_with(cx, |ws, _| {
+        let home = ws.spaces().find(|s| s.id == space)?;
+        home.canvas
+            .blocks()
+            .iter()
+            .find(|b| (b.rect.x, b.rect.y) == at)
+            .map(|b| b.id)
+    })
+}
+
+#[gpui_kit::test]
+fn a_terminal_added_on_the_mirror_is_there_at_home_has_the_keyboard_and_closes_there(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, dir) = with_data(cx);
+    let folder = tempfile::tempdir().unwrap();
+    ws.update(cx, |ws, _| {
+        ws.space.folder = Some(folder.path().to_path_buf())
+    });
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let _ = (kanban, note);
+    let first_uid = ws.read_with(cx, |ws, _| ws.space.uids[&terminal].clone());
+    let (first, _store) = mirrored(handle, &ws, cx, dir.path());
+    pump_home(&ws, cx, "r1's blocks", |cx| {
+        ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len() == 3)
+    });
+    // 1. A move made on r1 first, which Ctrl+Z must not reach past the add.
+    let viewer = ws.read_with(cx, |ws, _| remote_of(ws).homes[&first_uid]);
+    let before = rect_in(&ws, cx, &first, terminal);
+    ws.update(cx, |ws, _| {
+        ws.placing(&[viewer]);
+        ws.space.canvas.get_mut(viewer).unwrap().rect.x += 100.0;
+        ws.end_drag();
+    });
+    let moved = Rect::new(before.x + 100.0, before.y, before.w, before.h);
+    pump_home(&ws, cx, "home's terminal to move", |cx| {
+        rect_in(&ws, cx, &first, terminal) == moved
+    });
+    // 2. A terminal added on r1 is added at home, where it was put, and takes the keyboard.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open_shell(None, Some(Point::new(1234.0, 567.0)), window, cx)
+        })
+    })
+    .unwrap();
+    let mut added = None;
+    pump_home(&ws, cx, "the new terminal at home", |cx| {
+        added = block_at(&ws, cx, &first, (1234.0, 567.0));
+        added.is_some()
+    });
+    let added = added.unwrap();
+    let uid = ws.read_with(cx, |ws, _| {
+        let home = ws.spaces().find(|s| s.id == first).unwrap();
+        assert!(home.terminal(added).is_some(), "a terminal");
+        home.uids[&added].clone()
+    });
+    pump_home(&ws, cx, "the new block to get the keyboard", |cx| {
+        ws.read_with(cx, |ws, _| {
+            remote_of(ws)
+                .homes
+                .get(&uid)
+                .is_some_and(|id| ws.space.focused == Some(*id))
+        })
+    });
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.uids.is_empty(), "never a relay")
+    });
+    // 3. Ctrl+Z stops at the add, and leaves both the move and the terminal.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| assert!(ws.undo_canvas(false, window, cx)))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let computer = crate::mirror::computer_of(remote_of(ws));
+        assert_eq!(
+            ws.said.last().cloned(),
+            Some(format!(
+                "On a mirror, Ctrl+Z undoes moves only: undo the rest on {computer}."
+            ))
+        );
+    });
+    assert_eq!(rect_in(&ws, cx, &first, terminal), moved);
+    assert!(block_at(&ws, cx, &first, (1234.0, 567.0)).is_some());
+    // 4. Closing it on r1 closes it at home.
+    let new_viewer = ws.read_with(cx, |ws, _| remote_of(ws).homes[&uid]);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close(new_viewer, window, cx))
+    })
+    .unwrap();
+    pump_home(&ws, cx, "the terminal to close at home", |cx| {
+        block_at(&ws, cx, &first, (1234.0, 567.0)).is_none()
+    });
+}
+
+#[gpui_kit::test]
+fn two_blocks_wired_and_named_on_the_mirror_are_wired_and_named_at_home(cx: &mut TestAppContext) {
+    use templum_canvas::Wire;
+    let (handle, ws, dir) = with_data(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let _ = note;
+    let uids = ws.read_with(cx, |ws, _| {
+        [terminal, kanban].map(|id| ws.space.uids[&id].clone())
+    });
+    let (first, _store) = mirrored(handle, &ws, cx, dir.path());
+    pump_home(&ws, cx, "r1's blocks", |cx| {
+        ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len() == 3)
+    });
+    let [viewer, card] = ws.read_with(cx, |ws, _| uids.clone().map(|u| remote_of(ws).homes[&u]));
+    ws.update(cx, |ws, cx| assert!(ws.connect(viewer, card, cx)));
+    let at_home = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let home = ws.spaces().find(|s| s.id == first).unwrap();
+            (
+                home.wired(terminal, kanban),
+                home.label(Wire::new(terminal, kanban).unwrap())
+                    .map(str::to_string),
+            )
+        })
+    };
+    pump_home(&ws, cx, "the wire at home", |cx| at_home(cx).0);
+    let wire = Wire::new(viewer, card).unwrap();
+    ws.update(cx, |ws, cx| assert!(ws.rename_wire(wire, "deploys", cx)));
+    pump_home(&ws, cx, "the name at home", |cx| {
+        at_home(cx).1.as_deref() == Some("deploys")
+    });
+    pump_home(&ws, cx, "the name on the mirror", |cx| {
+        ws.read_with(cx, |ws, _| ws.space.label(wire) == Some("deploys"))
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_task_handed_on_the_mirror_is_typed_at_home_and_its_end_shows_on_the_mirror(
+    cx: &mut TestAppContext,
+) {
+    use super::bus::{after, event, me, screen_with};
+    use super::delegate::{agents_running_in, entered};
+    let dir = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws, _mine, theirs) = agents_running_in(cx, None, Some(dir.path().to_path_buf()));
+    ws.update(cx, |ws, _| {
+        ws.space.folder = Some(folder.path().to_path_buf())
+    });
+    let (worker, _) = me(&ws, cx, theirs);
+    let their_uid = ws.read_with(cx, |ws, _| ws.space.uids[&theirs].clone());
+    let (first, _store) = mirrored(handle, &ws, cx, dir.path());
+    pump_home(&ws, cx, "r1's blocks", |cx| {
+        ws.read_with(cx, |ws, _| remote_of(ws).homes.contains_key(&their_uid))
+    });
+    let viewer = ws.read_with(cx, |ws, _| remote_of(ws).homes[&their_uid]);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.remote_hand_task(viewer, "Green.".into(), window, cx)
+        })
+    })
+    .unwrap();
+    // Home is shown to look at its terminal, as the API's tests do.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.switch_to(0, window, cx))
+    })
+    .unwrap();
+    assert_eq!(ws.read_with(cx, |ws, _| ws.space.id.clone()), first);
+    pump_home(&ws, cx, "the task to reach home", |cx| {
+        after(cx, 50);
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(theirs)
+                .is_some_and(|t| t.handed.is_some())
+        })
+    });
+    screen_with(&ws, cx, theirs, "[from API · Itself, task t");
+    entered(&ws, cx, theirs);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    // Home answers the call once the agent took the task: a few rounds, and nothing is said.
+    let mut rounds = 0;
+    pump_home(&ws, cx, "home to answer the call", |cx| {
+        after(cx, 250);
+        rounds += 1;
+        rounds > 4
+    });
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "stopped", "message": "Green." }),
+    );
+    let title = ws.read_with(cx, |ws, _| {
+        let r1 = ws.spaces().find(|s| s.id == "r1").unwrap();
+        format!(
+            "{} on {}",
+            r1.name,
+            crate::mirror::computer_of(r1.remote.as_deref().unwrap())
+        )
+    });
+    pump_home(&ws, cx, "the end of the task on the mirror", |cx| {
+        after(cx, 250);
+        ws.read_with(cx, |ws, _| {
+            // The notice shows its first line: the task's number and who ended it.
+            ws.said
+                .iter()
+                .any(|s| s.starts_with(&title) && s.contains("task t1") && s.contains("done in"))
+        })
+    });
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            ws.said
+                .iter()
+                .all(|s| !s.contains("before it took the task")),
+            "a task taken says nothing: {:?}",
+            ws.said
+        )
+    });
+}

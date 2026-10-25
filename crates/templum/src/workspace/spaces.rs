@@ -323,9 +323,10 @@ impl Workspace {
         self.others.insert(self.active, current);
         self.space = self.others.remove(to);
         self.active = to;
-        // A mirrored workspace has no drawing tool yet: the one picked on the workspace left is
-        // let go.
-        if self.on_remote() && !matches!(self.tool, Tool::Select | Tool::Hand) {
+        // A mirrored workspace has no drawing tool, and the Wire tool only while home can wire:
+        // the one picked on the workspace left is let go.
+        let wires = self.tool == Tool::Wire && self.why_not(Deed::Wire).is_none();
+        if self.on_remote() && !matches!(self.tool, Tool::Select | Tool::Hand) && !wires {
             self.tool = Tool::Select;
             self.shapes_open = false;
         }

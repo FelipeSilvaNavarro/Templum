@@ -11,6 +11,8 @@ use crate::checklist::{self, Checklist, Editing, Field};
 use crate::checklists::Checklists;
 use crate::notes;
 
+use templum_mcp::control::Kind;
+
 use super::remote::Deed;
 use super::{Body, CHECKLIST_UNDO, Space, Workspace};
 
@@ -26,6 +28,10 @@ impl Workspace {
         if self.why_not(Deed::AddChecklist).is_some() {
             return;
         }
+        if self.on_remote() {
+            let at = self.room_in_view(checklist::SIZE, window, cx).origin();
+            return self.remote_add(Kind::Checklist, at, cx);
+        }
         let id = self.checklists.add(notes::now());
         let block = self.place_checklist(id, into, window, cx);
         self.edit_field(block, Field::Name, window, cx);
@@ -39,6 +45,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.why_not(Deed::AddChecklist).is_some() {
+            return;
+        }
+        if self.on_remote() {
+            return self.remote_add(Kind::Checklist, at, cx);
+        }
         let id = self.checklists.add(notes::now());
         let block = self.add_checklist_block(at, id, window, cx);
         self.edit_field(block, Field::Name, window, cx);

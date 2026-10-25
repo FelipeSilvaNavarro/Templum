@@ -802,7 +802,7 @@ fn a_wire_asks_again_when_either_end_changed(cx: &mut TestAppContext) {
 /// Claude Code and Codex started as `cat` in front of new terminals' shells, their input boxes
 /// bracketing pastes (as the spawn tests' `spawner`).
 #[cfg(unix)]
-fn cat_agents(ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+pub(super) fn cat_agents(ws: &Entity<Workspace>, cx: &mut TestAppContext) {
     ws.update(cx, |ws, _| {
         ws.command = Some(jobs("printf '\\033[?2004h'; cat; true"));
         for agent in &mut ws.agents {
@@ -883,6 +883,53 @@ fn open_agent_opens_in_a_workspace_not_shown_wired_to_its_board(cx: &mut TestApp
             (Some("gpt-5.6"), Some("high"))
         );
         assert!(ws.templum_agent.conversation.own.blocks.contains(&uid));
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn two_identical_open_agent_rows_each_get_their_own_block(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cat_agents(&ws, cx);
+    let folder = tempfile::tempdir().unwrap();
+    let shown = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let args = json!({"agent": "codex", "workspace": shown, "folder": folder.path()});
+    ws.update(cx, |ws, _| {
+        for n in 0..2 {
+            ws.templum_agent
+                .conversation
+                .rows
+                .push(::templum_agent::Row::Action {
+                    id: format!("t{n}"),
+                    tool: "open_agent".into(),
+                    input: args.clone(),
+                    state: ::templum_agent::ActionState::Running,
+                    said: String::new(),
+                    target: None,
+                });
+        }
+    });
+    let uids: Vec<String> = (0..2)
+        .map(|_| {
+            let (failed, text) = control(handle, &ws, cx, "open_agent", args.clone());
+            assert!(!failed, "{text}");
+            opened_uid(&text)
+        })
+        .collect();
+    ws.read_with(cx, |ws, _| {
+        let blocks: Vec<_> = ws
+            .templum_agent
+            .conversation
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                ::templum_agent::Row::Action { target, .. } => {
+                    target.as_ref().and_then(|t| t.block.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blocks, uids);
     });
 }
 

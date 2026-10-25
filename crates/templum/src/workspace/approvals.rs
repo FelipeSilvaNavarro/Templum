@@ -214,7 +214,7 @@ impl Workspace {
         };
         let foreign = |uid: &&String| terminal(uid) && !self.own_block(uid);
         match call {
-            ControlCall::Connect { a, b } if terminal(a) && terminal(b) => {
+            ControlCall::Connect { a, b, .. } if terminal(a) && terminal(b) => {
                 [a, b].into_iter().filter(foreign).cloned().collect()
             }
             ControlCall::OpenAgent(opening) => {
@@ -279,7 +279,7 @@ impl Workspace {
                 "Its agent or command ends, with every process it started; its shell stays."
                     .to_string(),
             ),
-            ControlCall::Connect { a, b } => {
+            ControlCall::Connect { a, b, .. } => {
                 let titled = |uid: &str| {
                     self.find_block(uid)
                         .and_then(|(space, id)| self.space_named(&space)?.blocks.get(&id))

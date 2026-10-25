@@ -430,6 +430,7 @@ impl Render for Workspace {
                 window.request_animation_frame();
             }
         }
+        let gates = block::Gates::of(self);
         let mut blocks: Vec<_> = visible
             .into_iter()
             .map(|mut b| {
@@ -449,13 +450,13 @@ impl Render for Workspace {
                     b.rect = super::tiling::between(*was, b.rect, t);
                 }
                 let body = &self.space.blocks[&b.id];
-                block::render(self, b, body, look, true, window, cx)
+                block::render(self, b, body, look, true, &gates, window, cx)
             })
             .collect();
         // Ghosts fade above the blocks, where they were.
         blocks.extend(self.space.ghosts.iter().map(|g| {
             let look = motion::closing(motion::progress(g.since, now, motion::CLOSE));
-            block::render(self, g.block, &g.body, look, false, window, cx)
+            block::render(self, g.block, &g.body, look, false, &gates, window, cx)
         }));
 
         let entity = cx.entity();

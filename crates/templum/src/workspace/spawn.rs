@@ -256,7 +256,7 @@ impl Workspace {
                 let center = ws.space.camera().to_world(ws.center(window));
                 let near = match place {
                     Place::Near(id) => Some(id),
-                    Place::Free => None,
+                    Place::Free | Place::At(_) => None,
                 };
                 let rect = ws.space.spot(&place, size, center)?;
                 let kept = (
