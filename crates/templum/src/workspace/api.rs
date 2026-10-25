@@ -1070,10 +1070,11 @@ impl Workspace {
         }
     }
 
-    /// A notice for the API's asker, with the block and workspace it is about.
-    pub(super) fn api_notice_about(&mut self, text: String, about: Option<(String, u64)>) {
-        let place = about
-            .and_then(|(terminal, _)| self.caller(&terminal))
+    /// A notice for the API's asker, with the block and workspace of the `terminal` it is about
+    /// (a task's worker, or the terminal a watch is on).
+    pub(super) fn api_notice_about(&mut self, text: String, terminal: Option<&str>) {
+        let place = terminal
+            .and_then(|terminal| self.caller(terminal))
             .map(|(space, id)| {
                 let uid = self
                     .space_named(&space)

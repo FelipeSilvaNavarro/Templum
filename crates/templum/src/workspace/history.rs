@@ -6,6 +6,7 @@ use templum_canvas::{BlockId, Rect, Wire};
 
 use crate::session;
 
+use super::remote::Deed;
 use super::{CANVAS_UNDO, Workspace};
 
 /// A change to the canvas's blocks, kept to take back another: applying one gives the change
@@ -98,7 +99,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> bool {
         // Home is the truth: a mirror that isn't live moves nothing.
-        if self.remote_frozen() {
+        if self.why_not(Deed::Move).is_some() {
             return false;
         }
         loop {

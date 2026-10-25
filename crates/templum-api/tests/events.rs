@@ -6,9 +6,10 @@ use common::*;
 use serde_json::json;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use templum_api::Notice;
-use templum_api::model::State;
+use templum_api::model::{BlockView, State};
 use templum_api::store::Scope;
 
 fn now() -> u64 {
@@ -72,7 +73,7 @@ fn a_published_change_is_a_put_or_a_delete() {
     let stream = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     assert_eq!(stream.event().event, "snapshot");
     let mut moved = sample();
-    moved.blocks[0].rect.x = 50.0;
+    Arc::make_mut(&mut moved.blocks[0]).rect.x = 50.0;
     fake.server.publish(moved.clone());
     let put = stream.event();
     assert_eq!(
@@ -107,14 +108,14 @@ fn a_limited_token_hears_only_its_workspaces() {
     assert_eq!(stream.event().event, "snapshot");
     // A new block in w4 is not heard.
     let mut elsewhere = sample();
-    let mut x1 = elsewhere.blocks[0].clone();
+    let mut x1 = BlockView::clone(&elsewhere.blocks[0]);
     x1.id = "x1".into();
     x1.workspace = "w4".into();
-    elsewhere.blocks.push(x1);
+    elsewhere.blocks.push(Arc::new(x1));
     fake.server.publish(elsewhere.clone());
     // b7k2m moves from w3 to w4: a delete (and of what hangs on it); then back: a put.
     let mut moved = elsewhere.clone();
-    moved.blocks[0].workspace = "w4".into();
+    Arc::make_mut(&mut moved.blocks[0]).workspace = "w4".into();
     fake.server.publish(moved);
     let mut kinds = Vec::new();
     for _ in 0..3 {
@@ -573,7 +574,7 @@ fn a_new_mirror_session_replaces_the_old_one() {
     assert!(a.next().is_none(), "and then it ended");
     // B stays: a publish reaches it.
     let mut moved = sample();
-    moved.blocks[0].title = "moved".into();
+    Arc::make_mut(&mut moved.blocks[0]).title = "moved".into();
     fake.server.publish(moved);
     assert_eq!(b.event().event, "block");
     assert_eq!(fake.server.mirrored().len(), 1);
@@ -616,7 +617,7 @@ fn a_settings_token_keeps_its_streams() {
     );
     assert_eq!(b.event().event, "snapshot");
     let mut moved = sample();
-    moved.blocks[0].title = "moved".into();
+    Arc::make_mut(&mut moved.blocks[0]).title = "moved".into();
     fake.server.publish(moved);
     // Both hear the change, and neither was told anything else.
     assert_eq!(a.event().event, "block");
@@ -774,7 +775,7 @@ fn a_replaced_stream_whose_client_never_reads_is_cut_after_the_grace() {
     // More than any socket buffer holds: the server's write to it blocks.
     for n in 0..200 {
         let mut state = sample();
-        state.blocks[0].title = format!("{}{}", n % 10, "x".repeat(128 * 1024));
+        Arc::make_mut(&mut state.blocks[0]).title = format!("{}{}", n % 10, "x".repeat(128 * 1024));
         fake.server.publish(state);
         std::thread::sleep(Duration::from_millis(5));
     }

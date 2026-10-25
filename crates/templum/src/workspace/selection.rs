@@ -9,6 +9,7 @@ use templum_canvas::{BlockId, Gesture, Point, Rect};
 use crate::session;
 
 use super::history::{Change, Then};
+use super::remote::Deed;
 use super::{Drag, Workspace};
 
 /// How far outside the selected blocks their box is drawn (world units).
@@ -71,7 +72,7 @@ impl Workspace {
     /// A press on a selected block's title, or on its body (`picks` it, if let go in place), or on
     /// the empty canvas in the selection's box: dragging moves every selected block.
     pub(crate) fn begin_group_move(&mut self, pos: PixelPoint<Pixels>, picks: Option<BlockId>) {
-        if self.space.grid.is_some() || self.remote_frozen() {
+        if self.space.grid.is_some() || self.why_not(Deed::Move).is_some() {
             return;
         }
         let p = self.local(pos);
@@ -111,7 +112,7 @@ impl Workspace {
 
     /// Copies the selected blocks to the clipboard. False when none is selected.
     pub(super) fn copy_blocks(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.on_remote() {
+        if self.why_not(Deed::CopyBlocks).is_some() {
             return false;
         }
         let items: Vec<_> = self
@@ -137,7 +138,7 @@ impl Workspace {
     /// Pastes the blocks on the clipboard, centered in the view (or beside the blocks already
     /// there), and selects them. False when the clipboard holds no blocks.
     pub(super) fn paste_blocks(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.on_remote() {
+        if self.why_not(Deed::CopyBlocks).is_some() {
             return false;
         }
         let Some(clip) = cx

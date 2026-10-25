@@ -11,6 +11,7 @@ use crate::checklist::{self, Checklist, Editing, Field};
 use crate::checklists::Checklists;
 use crate::notes;
 
+use super::remote::Deed;
 use super::{Body, CHECKLIST_UNDO, Space, Workspace};
 
 impl Workspace {
@@ -22,7 +23,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.on_remote() {
+        if self.why_not(Deed::AddChecklist).is_some() {
             return;
         }
         let id = self.checklists.add(notes::now());
@@ -116,7 +117,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.on_remote() {
+        if self.why_not(Deed::OpenChecklist).is_some() {
             return;
         }
         if let Some((space, block)) = self.checklist_open_at(id) {

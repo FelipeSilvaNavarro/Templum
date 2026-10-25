@@ -16,12 +16,13 @@ use crate::editor::{self, Editor};
 use crate::launcher;
 use crate::prompt;
 
+use super::remote::Deed;
 use super::{Body, Workspace, remember, show_notification};
 
 impl Workspace {
     /// Asks for a folder, then opens an editor on it at the viewport's center.
     pub(crate) fn new_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.on_remote() {
+        if self.why_not(Deed::AddEditor).is_some() {
             return;
         }
         let at = self.room_in_view(editor::SIZE, window, cx).origin();
@@ -30,7 +31,7 @@ impl Workspace {
 
     /// The folder dialog; the editor's top-left corner goes to `at` (world units).
     pub(crate) fn ask_editor_folder(&self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
-        if self.on_remote() {
+        if self.why_not(Deed::AddEditor).is_some() {
             return;
         }
         let entity = cx.entity();
@@ -53,7 +54,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
-        if self.on_remote() {
+        if self.why_not(Deed::AddEditor).is_some() {
             return None;
         }
         if !folder.is_dir() {

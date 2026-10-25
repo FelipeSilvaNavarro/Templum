@@ -10,10 +10,11 @@ mod sse;
 mod trust;
 
 use crate::code::Trust;
-use crate::model::{ApplyError, MeView, Rect, State};
+use crate::model::{ApplyError, MeView, Notice, Rect, State};
 use remote::Msg;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use templum_terminal::Feeder;
@@ -173,9 +174,35 @@ pub enum About {
     /// Typing into this block.
     Keys(String),
     Move(String),
-    Answer(String),
-    Show,
+    /// The secrets that couldn't be kept.
+    Key,
 }
+
+/// A tool of home's, called from the mirror (docs/specs/templum-to-templum.md, The mirror's side).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Call {
+    pub tool: String,
+    pub args: Value,
+    /// On the slow connection: a call that may take minutes, which the quick ones don't wait for.
+    pub slow: bool,
+}
+
+/// Home's words for why it did not do a call, or the mirror's for why it could not ask.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Refusal {
+    pub sentence: String,
+}
+
+impl Refusal {
+    pub(crate) fn of(sentence: impl Into<String>) -> Refusal {
+        Refusal {
+            sentence: sentence.into(),
+        }
+    }
+}
+
+/// What a call came to: home's JSON (`{"text": …}` and what it touched), or a refusal.
+pub type Answered = Result<Value, Refusal>;
 
 /// What a remote tells the UI thread, besides its newest state.
 #[derive(Clone, Debug)]
@@ -196,6 +223,85 @@ pub enum Update {
     Dropped(String),
     /// Whether the system's keyring answers (for the empty id: the answer to `probe`).
     Keyring(bool),
+    /// The tools home has, read at each connect (`GET /v1/tools`).
+    Tools(Tools),
+    /// Something happened at home that isn't state: a task ended, an agent needs its person, a
+    /// watch matched. Cleaned and short.
+    Notice(Notice),
+}
+
+/// The most tools of home's the mirror keeps.
+const TOOLS_MOST: usize = 500;
+/// The longest name of a tool or of an argument the mirror keeps, in bytes.
+const NAME_MOST: usize = 64;
+/// The most characters of a notice's text the mirror keeps.
+pub const NOTICE_CHARS: usize = 300;
+
+/// The tools home has, by name, each with the names of its arguments: what the mirror asks before
+/// it offers something home's Templum may not do (docs/specs/templum-to-templum.md, One rule).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tools {
+    by_name: HashMap<String, std::collections::HashSet<String>>,
+}
+
+impl Tools {
+    /// Reads `GET /v1/tools`' array: each item's `name` and the keys of its
+    /// `inputSchema.properties`. Home is not trusted: at most 500 tools, a name that is long or
+    /// has a control character is left out, and anything that is not an array is none.
+    pub fn read(list: &Value) -> Tools {
+        let fit = |name: &str| name.len() <= NAME_MOST && !name.chars().any(char::is_control);
+        let by_name = list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|tool| {
+                let name = tool.get("name")?.as_str().filter(|n| fit(n))?;
+                let arguments = tool
+                    .pointer("/inputSchema/properties")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flat_map(|properties| properties.keys())
+                    .filter(|key| fit(key))
+                    .cloned()
+                    .collect();
+                Some((name.to_string(), arguments))
+            })
+            .take(TOOLS_MOST)
+            .collect();
+        Tools { by_name }
+    }
+
+    pub fn has(&self, tool: &str) -> bool {
+        self.by_name.contains_key(tool)
+    }
+
+    /// Whether `tool` takes `argument`.
+    pub fn takes(&self, tool: &str, argument: &str) -> bool {
+        self.by_name
+            .get(tool)
+            .is_some_and(|arguments| arguments.contains(argument))
+    }
+}
+
+/// A `notice` event as the UI may take it: the first line of its text, at most [`NOTICE_CHARS`]
+/// characters, and a block and workspace only when short and plain. None for one that is not.
+pub(crate) fn notice_of(data: &str) -> Option<Notice> {
+    let notice: Notice = serde_json::from_str(data).ok()?;
+    let plain = |id: Option<String>| {
+        id.filter(|id| id.len() <= NAME_MOST && !id.chars().any(char::is_control))
+    };
+    Some(Notice {
+        text: notice
+            .text
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(NOTICE_CHARS)
+            .collect(),
+        block: plain(notice.block),
+        workspace: plain(notice.workspace),
+    })
 }
 
 /// What the UI thread asks of a remote.
@@ -203,7 +309,7 @@ pub enum Command {
     Disconnect,
     /// Retry at once, or start again a remote that was cut or disconnected.
     TryNow,
-    /// The terminals to stream, nearest the center first: the first 12 are.
+    /// The terminals to stream, nearest the center first: the first 11 are.
     Terminals(Vec<(String, Feeder)>),
     /// Named keys typed into a block.
     Keys {
@@ -218,12 +324,11 @@ pub enum Command {
         block: String,
         rect: Rect,
     },
-    Answer {
-        request: String,
-        args: Value,
+    /// Calls a tool of home's: `Mirror::call` sends it and awaits the answer.
+    Call {
+        call: Call,
+        answer: tokio::sync::oneshot::Sender<Answered>,
     },
-    /// Start the workspace at home and show it there.
-    Show,
     /// The person accepted a certificate signed by an authority this computer added
     /// (`Why::AddedAuthority`): the key is kept that way from now on, and the remote starts again.
     /// A click, never the index, can say so: the index could be rewritten by anything that writes
@@ -390,6 +495,14 @@ impl Shared {
         }
         Ok(changed)
     }
+
+    /// The newest state of the remote `id` if it is newer than the one last taken. A clone copies
+    /// pointers, not items: every item that didn't change is the very `Arc` of the last take.
+    pub(crate) fn take(&self, id: &str) -> Option<State> {
+        let mut inner = self.inner();
+        let (state, fresh) = inner.states.get_mut(id)?;
+        std::mem::take(fresh).then(|| state.clone())
+    }
 }
 
 /// One thread, `templum-mirror`, with a single-threaded runtime, follows every remote. The UI
@@ -465,6 +578,19 @@ impl Mirror {
             .send(Order::Send(id.into(), Msg::Command(command)));
     }
 
+    /// Calls `call` at home. The order is sent at once; the future is the answer, which the UI
+    /// thread awaits in a task (never on the thread itself). A remote that is unknown, forgotten
+    /// or gone answers "Couldn't reach the other computer.".
+    pub fn call(&self, id: &str, call: Call) -> impl Future<Output = Answered> + Send + 'static {
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        self.send(id, Command::Call { call, answer });
+        async move {
+            answered
+                .await
+                .unwrap_or_else(|_| Err(Refusal::of("Couldn't reach the other computer.")))
+        }
+    }
+
     /// Ends the remote `id`: when `revoke` and it is live, its share is revoked at home first;
     /// then its key is deleted and its connections dropped. No update follows.
     pub fn forget(&self, id: &str, revoke: bool) {
@@ -496,9 +622,7 @@ impl Mirror {
 
     /// The newest state of the remote `id` if it is newer than the one last taken.
     pub fn state(&self, id: &str) -> Option<State> {
-        let mut inner = self.shared.inner();
-        let (state, fresh) = inner.states.get_mut(id)?;
-        std::mem::take(fresh).then(|| state.clone())
+        self.shared.take(id)
     }
 }
 
@@ -515,7 +639,94 @@ pub(crate) fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{self, BlockView, CardView};
     use serde_json::json;
+
+    #[test]
+    fn home_s_tools_are_capped_and_read_by_name_and_argument() {
+        let mut list: Vec<Value> = (0..600)
+            .map(|i| {
+                json!({ "name": format!("t{i}"), "inputSchema": { "properties": { "a": {}, "x".repeat(65): {} } } })
+            })
+            .collect();
+        list.insert(0, json!({ "name": "y".repeat(65) }));
+        let tools = Tools::read(&Value::Array(list));
+        assert!(
+            tools.has("t0")
+                && tools.has("t498")
+                && !tools.has("t500")
+                && !tools.has(&"y".repeat(65))
+        );
+        assert!(
+            tools.takes("t0", "a")
+                && !tools.takes("t0", "b")
+                && !tools.takes("t0", &"x".repeat(65))
+        );
+        assert_eq!(Tools::read(&json!({"tools": []})), Tools::default());
+    }
+
+    #[test]
+    fn a_notice_is_its_first_line_and_a_short_plain_place() {
+        let data = json!({
+            "text": format!("{}\nsecond", "é".repeat(400)),
+            "block": "b7k2m",
+            "workspace": "w\u{1b}3",
+        })
+        .to_string();
+        let notice = notice_of(&data).unwrap();
+        assert_eq!(notice.text, "é".repeat(300));
+        assert_eq!(notice.block.as_deref(), Some("b7k2m"));
+        assert_eq!(notice.workspace, None);
+        assert!(notice_of("[]").is_none());
+    }
+
+    #[test]
+    fn a_take_shares_every_item_that_did_not_change() {
+        let shared = Shared::for_tests();
+        shared.inner().current.insert("r1".into(), 1);
+        let block = |id: &str, title: &str| {
+            Arc::new(BlockView {
+                id: id.into(),
+                workspace: "w3".into(),
+                kind: "terminal".into(),
+                title: title.into(),
+                ..Default::default()
+            })
+        };
+        let snapshot = serde_json::to_value(State {
+            blocks: vec![block("b1", "one"), block("b2", "two")],
+            cards: vec![Arc::new(CardView {
+                id: 40,
+                board: 3,
+                title: "Ship".into(),
+                ..Default::default()
+            })],
+            ..Default::default()
+        })
+        .unwrap();
+        shared.apply("r1", 1, "snapshot", &snapshot, 100).unwrap();
+        let first = shared.take("r1").unwrap();
+        let put = |b: Arc<BlockView>| json!({ "op": "put", "id": b.id.clone(), "value": &*b });
+        shared
+            .apply("r1", 1, "block", &put(block("b1", "new")), 50)
+            .unwrap();
+        // The same item again.
+        shared
+            .apply("r1", 1, "block", &put(block("b2", "two")), 50)
+            .unwrap();
+        let second = shared.take("r1").unwrap();
+        assert_eq!(second.blocks[0].title, "new");
+        assert!(!Arc::ptr_eq(&first.blocks[0], &second.blocks[0]));
+        assert!(
+            Arc::ptr_eq(&first.blocks[1], &second.blocks[1]),
+            "an equal put keeps the item"
+        );
+        assert!(Arc::ptr_eq(&first.cards[0], &second.cards[0]));
+        assert!(
+            model::same(&first.cards, &second.cards) && !model::same(&first.blocks, &second.blocks)
+        );
+        assert!(shared.take("r1").is_none(), "nothing newer");
+    }
 
     #[test]
     fn what_a_state_weighs_is_capped_in_bytes_and_given_back_when_items_go() {

@@ -21,8 +21,20 @@ use tokio_rustls::rustls::ClientConfig;
 
 /// The most a call's answer may hold.
 const ANSWER_MOST: usize = 1024 * 1024;
+/// The most the answer of `git` or `read_terminal` may hold.
+const LARGE_ANSWER_MOST: usize = 8 * 1024 * 1024;
 /// How long a call may take, from its request to the end of its answer.
-const CALL: Duration = Duration::from_secs(30);
+pub(crate) const CALL: Duration = Duration::from_secs(30);
+/// How long a call of the slow connection may take.
+pub(crate) const SLOW_CALL: Duration = Duration::from_secs(600);
+
+/// The most the answer of the tool `tool` may hold.
+pub(crate) fn answer_most(tool: &str) -> usize {
+    match tool {
+        "git" | "read_terminal" => LARGE_ANSWER_MOST,
+        _ => ANSWER_MOST,
+    }
+}
 
 /// What every request of a mirror carries. No `Debug`: it holds the key.
 #[derive(Clone)]
@@ -126,6 +138,20 @@ impl Conn {
         body: Option<&Value>,
         headers: &Headers,
     ) -> Result<Value, Failure> {
+        self.call_within(method, path, body, headers, CALL, ANSWER_MOST)
+            .await
+    }
+
+    /// [`Conn::call`] with `limit` to answer in and an answer of at most `most` bytes.
+    pub(crate) async fn call_within(
+        &mut self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        headers: &Headers,
+        limit: Duration,
+        most: usize,
+    ) -> Result<Value, Failure> {
         let mut request = headers.apply(
             Request::builder()
                 .method(method)
@@ -139,7 +165,7 @@ impl Conn {
             None => Bytes::new(),
         };
         let request = built(request, payload)?;
-        let (status, answered, bytes) = tokio::time::timeout(CALL, async {
+        let (status, answered, bytes) = tokio::time::timeout(limit, async {
             self.sender
                 .ready()
                 .await
@@ -150,7 +176,11 @@ impl Conn {
                 .await
                 .map_err(|e| Failure::Down(e.to_string()))?;
             let (parts, body) = response.into_parts();
-            Ok::<_, Failure>((parts.status.as_u16(), parts.headers, read(body).await?))
+            Ok::<_, Failure>((
+                parts.status.as_u16(),
+                parts.headers,
+                read(body, most).await?,
+            ))
         })
         .await
         .map_err(|_| Failure::Down("home didn't answer in time".into()))??;
@@ -165,8 +195,8 @@ impl Conn {
 }
 
 /// A body read whole, up to what the client keeps.
-async fn read(body: Incoming) -> Result<Bytes, Failure> {
-    match Limited::new(body, ANSWER_MOST).collect().await {
+async fn read(body: Incoming, most: usize) -> Result<Bytes, Failure> {
+    match Limited::new(body, most).collect().await {
         Ok(all) => Ok(all.to_bytes()),
         Err(e) if e.is::<http_body_util::LengthLimitError>() => Err(Failure::TooLarge),
         Err(e) => Err(Failure::Down(e.to_string())),
@@ -254,7 +284,7 @@ pub(crate) async fn stream_within(
     .map_err(|_| late())??;
     let (parts, body) = response.into_parts();
     if parts.status.as_u16() != 200 {
-        let bytes = tokio::time::timeout(within, read(body))
+        let bytes = tokio::time::timeout(within, read(body, ANSWER_MOST))
             .await
             .map_err(|_| late())??;
         return Err(failure(parts.status.as_u16(), &parts.headers, &bytes, path));
@@ -339,7 +369,8 @@ pub(crate) fn failure(status: u16, headers: &HeaderMap, body: &[u8], path: &str)
             Some((code, _)) if code == "busy" => Failure::Busy(retry_after(headers)),
             _ => down(),
         },
-        502 | 504 | 530 => down(),
+        // 524 is Cloudflare's: a tunnel cut a call that took more than 100 s.
+        502 | 504 | 524 | 530 => down(),
         300..=399 => {
             let to_access = headers
                 .get(LOCATION)
@@ -414,6 +445,10 @@ mod tests {
         );
         assert_eq!(failure(530, &none, b"", "/v1/me"), down(530));
         assert_eq!(failure(502, &none, b"", "/v1/me"), down(502));
+        assert!(matches!(
+            failure(524, &with(&[]), b"", "/v1/tools/git"),
+            Failure::Down(_)
+        ));
         assert_eq!(
             failure(
                 302,

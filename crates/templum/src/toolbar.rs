@@ -15,7 +15,7 @@ use crate::ink;
 use crate::keys::{self, Command};
 use crate::menu::Target;
 use crate::theme::Ui;
-use crate::workspace::remote::NOT_YET;
+use crate::workspace::remote::Deed;
 use crate::workspace::{Tool, Workspace};
 
 const BUTTON: f32 = 32.0;
@@ -81,7 +81,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-wire",
             IconName::Cable,
-            gated(ws, "Wire: connect two blocks"),
+            gated(ws, Deed::Wire, "Wire: connect two blocks"),
             tool == Tool::Wire,
             ui,
         )
@@ -93,7 +93,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-terminal",
             IconName::SquareTerminal,
-            gated(ws, tip("Terminal", Command::NewTerminal)),
+            gated(ws, Deed::AddTerminal, tip("Terminal", Command::NewTerminal)),
             false,
             ui,
         )
@@ -106,7 +106,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-note",
             IconName::StickyNote,
-            gated(ws, tip("Note", Command::NewNote)),
+            gated(ws, Deed::AddNote, tip("Note", Command::NewNote)),
             false,
             ui,
         )
@@ -116,7 +116,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-checklist",
             IconName::ListChecks,
-            gated(ws, "Checklist"),
+            gated(ws, Deed::AddChecklist, "Checklist"),
             false,
             ui,
         )
@@ -126,7 +126,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-kanban",
             IconName::LayoutDashboard,
-            gated(ws, tip("Kanban board", Command::NewKanban)),
+            gated(ws, Deed::AddKanban, tip("Kanban board", Command::NewKanban)),
             false,
             ui,
         )
@@ -136,7 +136,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-editor",
             IconName::FileCode,
-            gated(ws, tip("Editor", Command::NewEditor)),
+            gated(ws, Deed::AddEditor, tip("Editor", Command::NewEditor)),
             false,
             ui,
         )
@@ -146,7 +146,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-agent",
             IconName::Bot,
-            gated(ws, "AI agent"),
+            gated(ws, Deed::OpenAgent, "AI agent"),
             false,
             ui,
         )
@@ -162,7 +162,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-pen",
             IconName::Pencil,
-            gated(ws, "Pen"),
+            gated(ws, Deed::Draw, "Pen"),
             tool == Tool::Pen,
             ui,
         )
@@ -172,7 +172,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-highlighter",
             IconName::Highlighter,
-            gated(ws, "Highlighter"),
+            gated(ws, Deed::Draw, "Highlighter"),
             tool == Tool::Highlighter,
             ui,
         )
@@ -186,7 +186,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-shapes",
             ws.last_shape.map_or(IconName::Shapes, shape_icon),
-            gated(ws, "Shapes"),
+            gated(ws, Deed::Draw, "Shapes"),
             matches!(tool, Tool::Shape(_)),
             ui,
         )
@@ -196,7 +196,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-eraser",
             IconName::Eraser,
-            gated(ws, "Eraser"),
+            gated(ws, Deed::Draw, "Eraser"),
             tool == Tool::Eraser,
             ui,
         )
@@ -388,23 +388,42 @@ fn shape_name(kind: ShapeKind) -> &'static str {
     }
 }
 
-/// A control a mirrored workspace doesn't have yet is dimmed, and its tooltip says so.
-fn gated(ws: &Workspace, tip: impl Into<SharedString>) -> SharedString {
-    if ws.on_remote() {
-        NOT_YET.into()
-    } else {
-        tip.into()
+/// What a button's tooltip says, and whether the button is dimmed.
+struct Tip(SharedString, bool);
+
+impl From<&'static str> for Tip {
+    fn from(tip: &'static str) -> Tip {
+        Tip(tip.into(), false)
+    }
+}
+
+impl From<(SharedString, bool)> for Tip {
+    fn from((tip, dim): (SharedString, bool)) -> Tip {
+        Tip(tip, dim)
+    }
+}
+
+/// A control a mirrored workspace can't use now is dimmed, and its tooltip says why: the rule's
+/// words for `deed`, else `tip`.
+pub(crate) fn gated(
+    ws: &Workspace,
+    deed: Deed,
+    tip: impl Into<SharedString>,
+) -> (SharedString, bool) {
+    match ws.why_not(deed) {
+        Some(why) => (why.into(), true),
+        None => (tip.into(), false),
     }
 }
 
 fn button(
     id: &'static str,
     icon: IconName,
-    tip: impl Into<SharedString>,
+    tip: impl Into<Tip>,
     active: bool,
     ui: Ui,
 ) -> Stateful<Div> {
-    let tip = tip.into();
+    let Tip(tip, dim) = tip.into();
     div()
         .id(id)
         .flex()
@@ -414,7 +433,7 @@ fn button(
         .rounded(px(8.0))
         .cursor_pointer()
         .when(active, |el| el.bg(ui.card))
-        .when(tip == NOT_YET, |el| el.opacity(0.4))
+        .when(dim, |el| el.opacity(0.4))
         .aria_selected(active)
         .hover(move |s| s.bg(ui.hover))
         .active(move |s| s.bg(ui.pressed))

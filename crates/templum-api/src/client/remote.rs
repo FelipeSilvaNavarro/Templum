@@ -6,12 +6,12 @@
 
 use super::dial::{Place, Proxy, is_loopback, place};
 use super::frames::Painter;
-use super::http::{Conn, Headers, Task, stream};
+use super::http::{CALL, Conn, Headers, SLOW_CALL, Task, answer_most, stream};
 use super::sse;
 use super::trust::{self, Pinned};
 use super::{
-    About, Bad, Command, Failure, Kept, KeySource, Keys, Limits, Order, Remote, Shared, Status,
-    Update, Why,
+    About, Answered, Bad, Call, Command, Failure, Kept, KeySource, Keys, Limits, Order, Refusal,
+    Remote, Shared, Status, Tools, Update, Why, notice_of,
 };
 use crate::code::Trust;
 use crate::model::{ApplyError, FrameView, MeView};
@@ -25,11 +25,15 @@ use templum_mcp::tools::MAX_TEXT;
 use templum_terminal::Feeder;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::oneshot;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_rustls::rustls::ClientConfig;
 
-/// At most this many terminals stream at once.
-const STREAMS_MOST: usize = 12;
+/// At most this many terminals stream at once. With the events, the calls, the slow calls and the
+/// typing connections, a remote holds 15 connections at most (home keeps 16 per token).
+const STREAMS_MOST: usize = 11;
+/// At most this many calls wait for a free connection, per remote; past it a new call is refused.
+const CALLS_WAITING_MOST: usize = 64;
 /// At most this many keys wait, per terminal; past it the new ones are dropped.
 const WAITING_MOST: usize = 1024;
 /// At most this many events wait for the coordinator: past it the event stream isn't read, so a
@@ -82,6 +86,11 @@ pub(crate) enum Msg {
         epoch: u64,
         result: Result<(MeView, Duration), Failure>,
     },
+    /// What `GET /v1/tools` answered, once per attempt.
+    Tools {
+        epoch: u64,
+        result: Result<Value, Failure>,
+    },
     Opened {
         epoch: u64,
     },
@@ -99,9 +108,11 @@ pub(crate) enum Msg {
     },
     Called {
         epoch: u64,
-        about: About,
+        lane: Lane,
         result: Result<Value, Failure>,
         took: Duration,
+        /// False when the connection never opened: the call did not leave.
+        sent: bool,
     },
     Typed {
         epoch: u64,
@@ -193,19 +204,48 @@ struct Net {
 /// What an attempt is made of: dropping it ends every task and connection.
 struct Attempt {
     net: Arc<Net>,
-    calls: UnboundedSender<Call>,
+    /// The calls connection, and the slow one, which starts with the first slow call.
+    quick: Wire,
+    slow: Option<Wire>,
+    /// The calls that wait for a free connection, oldest first.
+    jobs: VecDeque<Job>,
     typing: Option<UnboundedSender<Batch>>,
     events_started: bool,
-    /// What its calls were handed for and haven't answered: ended with the attempt, each is
-    /// refused then.
-    calling: Vec<About>,
     _tasks: Vec<Task>,
 }
 
-struct Call {
-    about: About,
-    tool: &'static str,
+/// Which connection makes a call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lane {
+    Quick,
+    Slow,
+}
+
+/// A calls connection as the coordinator sees it: one call at a time goes to it, and who awaits
+/// the answer waits here until it comes.
+struct Wire {
+    work: UnboundedSender<Work>,
+    busy: Option<To>,
+    /// The slow connection's task, ended with it (the quick one's is the attempt's).
+    _task: Option<Task>,
+}
+
+/// What a calls connection is handed.
+struct Work {
+    tool: String,
     args: Value,
+}
+
+/// A call that waits for its connection, and who it answers to.
+struct Job {
+    call: Call,
+    to: To,
+}
+
+enum To {
+    /// A block moved: the answer is only heard when it is a refusal.
+    Move(String),
+    Answer(oneshot::Sender<Answered>),
 }
 
 struct Batch {
@@ -382,7 +422,7 @@ impl Life {
                         // It may be the only copy of the Access token: nothing is saved, so
                         // nothing is dropped, and Try again reads it again.
                         self.say(Update::Refused {
-                            about: About::Show,
+                            about: About::Key,
                             sentence: "Templum couldn't read the old key for the Access token or the proxy login: try again, or connect again with a new code.".into(),
                         });
                         return Err(Why::Keyring);
@@ -397,7 +437,7 @@ impl Life {
                             secrets.access_secret = old.access_secret;
                         } else {
                             self.say(Update::Refused {
-                                about: About::Show,
+                                about: About::Key,
                                 sentence:
                                     "The address changed: type the Client Secret again in More…"
                                         .into(),
@@ -416,7 +456,7 @@ impl Life {
                     Ok(kept) => self.say(Update::Kept(kept)),
                     Err(sentence) => {
                         self.say(Update::Refused {
-                            about: About::Show,
+                            about: About::Key,
                             sentence,
                         });
                         return Err(Why::Keyring);
@@ -434,7 +474,7 @@ impl Life {
         };
         if !self.remote.binds(&secrets) {
             self.say(Update::Refused {
-                about: About::Show,
+                about: About::Key,
                 sentence:
                     "This connection's address or way in changed outside Templum, so its key \
                            isn't sent. Connect again with a new code."
@@ -448,7 +488,7 @@ impl Life {
         })?;
         if !fits(&self.remote.trust, &place) {
             self.say(Update::Refused {
-                about: About::Show,
+                about: About::Key,
                 sentence: "The address and the way it is reached don't agree, so the key isn't \
                            sent."
                     .into(),
@@ -501,11 +541,23 @@ impl Life {
     /// What its tasks already said is ignored from now on: the epoch moves.
     fn drop_attempt(&mut self) {
         self.epoch += 1;
-        for about in self.attempt.take().map(|a| a.calling).unwrap_or_default() {
-            self.say(Update::Refused {
-                about,
-                sentence: "Couldn't reach the other computer.".into(),
-            });
+        if let Some(attempt) = self.attempt.take() {
+            let busy = [Some(attempt.quick), attempt.slow]
+                .into_iter()
+                .flatten()
+                .filter_map(|wire| wire.busy);
+            let waiting = attempt.jobs.into_iter().map(|job| job.to);
+            // A call in flight was sent: home may have done it.
+            let may_have_done_it = format!(
+                "{} may have done it: the connection dropped before it answered.",
+                self.computer()
+            );
+            for to in busy {
+                self.refuse(to, may_have_done_it.clone());
+            }
+            for to in waiting {
+                self.refuse(to, "Couldn't reach the other computer.");
+            }
         }
         self.timer = None;
         self.streams.clear();
@@ -536,20 +588,26 @@ impl Life {
                 host: ready.place.host_header(),
             },
         });
-        let (calls, inbox) = unbounded_channel();
+        let (work, inbox) = unbounded_channel();
         let task = Task::spawn(calls_task(
             net.clone(),
             self.epoch,
+            Lane::Quick,
             inbox,
             self.tx.clone(),
             self.limits.me_every,
         ));
         self.attempt = Some(Attempt {
             net,
-            calls,
+            quick: Wire {
+                work,
+                busy: None,
+                _task: None,
+            },
+            slow: None,
+            jobs: VecDeque::new(),
             typing: None,
             events_started: false,
-            calling: Vec::new(),
             _tasks: vec![task],
         });
     }
@@ -629,6 +687,11 @@ impl Life {
                 self.begin();
             }
             Msg::Me { epoch, result } if epoch == self.epoch => self.me_arrived(result),
+            // A failure says nothing: the tools stay unknown, and nothing is dimmed as older.
+            Msg::Tools {
+                epoch,
+                result: Ok(list),
+            } if epoch == self.epoch => self.say(Update::Tools(Tools::read(&list))),
             Msg::Opened { epoch } if epoch == self.epoch => self.live(),
             Msg::Event { epoch, event, .. } if epoch == self.epoch => self.event(event),
             Msg::Lost {
@@ -638,10 +701,11 @@ impl Life {
             } if epoch == self.epoch => self.lost(failure, quiet),
             Msg::Called {
                 epoch,
-                about,
+                lane,
                 result,
                 took,
-            } if epoch == self.epoch => self.called(about, result, took),
+                sent,
+            } if epoch == self.epoch => self.called(lane, result, took, sent),
             Msg::Typed {
                 epoch,
                 block,
@@ -724,6 +788,13 @@ impl Life {
         if let Some(id) = event.id {
             self.last_id = Some(id);
         }
+        if event.event == "notice" {
+            // Not state: one that is malformed is dropped, and the stream goes on.
+            if let Some(notice) = notice_of(&event.data) {
+                self.say(Update::Notice(notice));
+            }
+            return;
+        }
         let applied = serde_json::from_str::<Value>(&event.data)
             .map_err(|e| ApplyError::Malformed(format!("a malformed {} event: {e}", event.event)))
             .and_then(|data| {
@@ -779,36 +850,20 @@ impl Life {
                 let args = json!({
                     "block": block, "x": rect.x, "y": rect.y, "w": rect.w, "h": rect.h,
                 });
-                self.call(About::Move(block), "move_block", args);
-            }
-            Command::Answer { request, args } => {
-                let mut fields = match args {
-                    Value::Object(fields) => fields,
-                    _ => serde_json::Map::new(),
+                let call = Call {
+                    tool: "move_block".into(),
+                    args,
+                    slow: false,
                 };
-                fields.insert("request".into(), request.clone().into());
-                self.call(
-                    About::Answer(request),
-                    "answer_request",
-                    Value::Object(fields),
-                );
+                self.call(Job {
+                    call,
+                    to: To::Move(block),
+                });
             }
-            Command::Show => {
-                let workspace = self
-                    .me
-                    .as_ref()
-                    .and_then(|me| me.workspaces.as_ref())
-                    .and_then(|list| list.first().cloned());
-                match workspace {
-                    Some(workspace) => {
-                        self.call(About::Show, "show", json!({ "workspace": workspace }))
-                    }
-                    None => self.say(Update::Refused {
-                        about: About::Show,
-                        sentence: "Not connected.".into(),
-                    }),
-                }
-            }
+            Command::Call { call, answer } => self.call(Job {
+                call,
+                to: To::Answer(answer),
+            }),
         }
     }
 
@@ -847,54 +902,169 @@ impl Life {
         self.start().await;
     }
 
-    /// Hands a call to the calls task, or says it can't be made now.
-    fn call(&mut self, about: About, tool: &'static str, args: Value) {
-        let sent = match (&mut self.attempt, self.phase) {
-            (Some(attempt), Phase::Live) => {
-                let sent = attempt
-                    .calls
-                    .send(Call {
-                        about: about.clone(),
-                        tool,
-                        args,
-                    })
-                    .is_ok();
-                if sent {
-                    attempt.calling.push(about.clone());
-                }
-                sent
+    /// The computer's name for the sentences that name it.
+    fn computer(&self) -> String {
+        self.me
+            .as_ref()
+            .map(|me| me.computer.clone())
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| "The other computer".into())
+    }
+
+    /// Answers a call's `to` with a refusal. A move is told as an update, as it always was.
+    fn refuse(&self, to: To, sentence: impl Into<String>) {
+        let sentence = sentence.into();
+        match to {
+            To::Move(block) => self.say(Update::Refused {
+                about: About::Move(block),
+                sentence,
+            }),
+            To::Answer(answer) => {
+                let _ = answer.send(Err(Refusal::of(sentence)));
             }
-            _ => false,
-        };
-        if !sent {
-            self.say(Update::Refused {
-                about,
-                sentence: "Not connected.".into(),
-            });
         }
     }
 
-    fn called(&mut self, about: About, result: Result<Value, Failure>, took: Duration) {
+    /// Queues a call for a free connection, or refuses it now: not live, or 64 already wait. A
+    /// move of a block whose earlier move still waits takes its place, so a drag sends its newest.
+    fn call(&mut self, job: Job) {
+        let live = self.phase == Phase::Live;
+        let Some(attempt) = self.attempt.as_mut().filter(|_| live) else {
+            return self.refuse(job.to, "Not connected.");
+        };
+        let twin = match &job.to {
+            To::Move(block) => attempt
+                .jobs
+                .iter_mut()
+                .find(|waiting| matches!(&waiting.to, To::Move(b) if b == block)),
+            To::Answer(_) => None,
+        };
+        if let Some(waiting) = twin {
+            *waiting = job;
+        } else if attempt.jobs.len() >= CALLS_WAITING_MOST {
+            let sentence = format!("{} is slow to answer: try again.", self.computer());
+            return self.refuse(job.to, sentence);
+        } else {
+            attempt.jobs.push_back(job);
+        }
+        self.pump_calls();
+    }
+
+    /// Hands the oldest waiting call to each connection that is free: the quick one, and the slow
+    /// one (which starts with the first call that needs it).
+    fn pump_calls(&mut self) {
+        let Some(attempt) = self.attempt.as_mut().filter(|_| self.phase == Phase::Live) else {
+            return;
+        };
+        let (net, epoch, tx) = (attempt.net.clone(), self.epoch, self.tx.clone());
+        let mut gone = Vec::new();
+        for lane in [Lane::Quick, Lane::Slow] {
+            let slow = lane == Lane::Slow;
+            let free = match lane {
+                Lane::Quick => attempt.quick.busy.is_none(),
+                Lane::Slow => attempt.slow.as_ref().is_none_or(|wire| wire.busy.is_none()),
+            };
+            let Some(at) = attempt.jobs.iter().position(|job| job.call.slow == slow) else {
+                continue;
+            };
+            if !free {
+                continue;
+            }
+            let Some(Job { call, to }) = attempt.jobs.remove(at) else {
+                continue;
+            };
+            let wire = match lane {
+                Lane::Quick => &mut attempt.quick,
+                Lane::Slow => attempt.slow.get_or_insert_with(|| {
+                    let (work, inbox) = unbounded_channel();
+                    let task = Task::spawn(calls_task(
+                        net.clone(),
+                        epoch,
+                        Lane::Slow,
+                        inbox,
+                        tx.clone(),
+                        Duration::MAX,
+                    ));
+                    Wire {
+                        work,
+                        busy: None,
+                        _task: Some(task),
+                    }
+                }),
+            };
+            let work = Work {
+                tool: call.tool,
+                args: call.args,
+            };
+            if wire.work.send(work).is_ok() {
+                wire.busy = Some(to);
+            } else {
+                gone.push(to);
+            }
+        }
+        for to in gone {
+            self.refuse(to, "Couldn't reach the other computer.");
+        }
+    }
+
+    fn called(&mut self, lane: Lane, result: Result<Value, Failure>, took: Duration, sent: bool) {
         // A failure that ends the attempt leaves its call to `drop_attempt`, which refuses it.
-        if !matches!(&result, Err(Failure::Auth | Failure::Stop(_)))
-            && let Some(calling) = self.attempt.as_mut().map(|a| &mut a.calling)
-            && let Some(at) = calling.iter().position(|a| *a == about)
+        // (A slow call that stops after it was sent is told as one that didn't answer: it may still be
+        // running.)
+        if let Err(failure) = &result
+            && (matches!(failure, Failure::Auth)
+                || (lane == Lane::Quick && matches!(failure, Failure::Stop(_))))
         {
-            calling.remove(at);
+            return self.lost(failure.clone(), false);
         }
-        match result {
-            Ok(_) => self.say(Update::Latency(took)),
-            Err(Failure::Refused(sentence) | Failure::Missing(sentence)) => {
-                self.say(Update::Refused { about, sentence })
+        let Some(attempt) = self.attempt.as_mut() else {
+            return;
+        };
+        let to = match lane {
+            Lane::Quick => attempt.quick.busy.take(),
+            Lane::Slow => attempt.slow.as_mut().and_then(|wire| wire.busy.take()),
+        };
+        let Some(to) = to else { return };
+        let answer = match result {
+            Ok(json) => {
+                if lane == Lane::Quick {
+                    self.say(Update::Latency(took));
+                }
+                Ok(json)
             }
-            Err(Failure::Down(_) | Failure::Busy(_) | Failure::TooLarge) => {
-                self.say(Update::Refused {
-                    about,
-                    sentence: "Couldn't reach the other computer.".into(),
-                })
+            Err(Failure::Refused(sentence) | Failure::Missing(sentence)) => Err(sentence),
+            Err(Failure::TooLarge) => Err(format!(
+                "{}'s answer was too large to show.",
+                self.computer()
+            )),
+            // A slow call cut by a timeout or a tunnel may still be running there; the slow
+            // connection is dropped, the remote is not.
+            Err(_) if lane == Lane::Slow && sent => {
+                if let Some(attempt) = self.attempt.as_mut() {
+                    attempt.slow = None;
+                }
+                Err(format!(
+                    "{} didn't answer in time: it may still be running there.",
+                    self.computer()
+                ))
             }
-            Err(failure) => self.lost(failure, false),
+            Err(_) => {
+                if lane == Lane::Slow
+                    && let Some(attempt) = self.attempt.as_mut()
+                {
+                    attempt.slow = None;
+                }
+                Err("Couldn't reach the other computer.".into())
+            }
+        };
+        match (to, answer) {
+            (To::Answer(sender), answer) => {
+                let _ = sender.send(answer.map_err(Refusal::of));
+            }
+            (To::Move(_), Ok(_)) => {}
+            (to @ To::Move(_), Err(sentence)) => self.refuse(to, sentence),
         }
+        self.pump_calls();
     }
 
     /// Opens a stream for each wanted terminal that has none, and ends those no longer wanted.
@@ -1108,17 +1278,29 @@ fn down(error: impl std::fmt::Display) -> Failure {
     Failure::Down(error.to_string())
 }
 
-/// The calls connection: `GET /v1/me` first, then the calls it is given in order, and `GET
-/// /v1/me` again when none came for `every`.
+/// The calls connection: on the quick lane `GET /v1/me` first, then the calls it is given one
+/// at a time, and `GET /v1/me` again when none came for `every`. The slow lane starts with its
+/// first call, waits for the next as long as it takes, and gives each call `SLOW_CALL` to answer.
 async fn calls_task(
     net: Arc<Net>,
     epoch: u64,
-    mut inbox: UnboundedReceiver<Call>,
+    lane: Lane,
+    mut inbox: UnboundedReceiver<Work>,
     tx: UnboundedSender<Msg>,
     every: Duration,
 ) {
-    let mut conn: Option<Conn> = None;
-    let mut job = None;
+    let (limit, mut conn, mut job) = (
+        if lane == Lane::Slow { SLOW_CALL } else { CALL },
+        None::<Conn>,
+        None,
+    );
+    let mut tools_asked = lane == Lane::Slow;
+    if lane == Lane::Slow {
+        job = match inbox.recv().await {
+            Some(first) => Some(first),
+            None => return,
+        };
+    }
     loop {
         if conn.as_ref().is_none_or(|c| !c.open_still()) {
             match Conn::open(&net.place, net.tls.clone(), net.proxy.as_ref()).await {
@@ -1129,11 +1311,12 @@ async fn calls_task(
                             epoch,
                             result: Err(failure),
                         }),
-                        Some(Call { about, .. }) => tx.send(Msg::Called {
+                        Some(_) => tx.send(Msg::Called {
                             epoch,
-                            about,
+                            lane,
                             result: Err(failure),
                             took: Duration::ZERO,
+                            sent: false,
                         }),
                     };
                     job = match next_call(&mut inbox, every).await {
@@ -1160,20 +1343,33 @@ async fn calls_task(
                         })
                     });
                 let took = started.elapsed();
-                if result.is_err() {
-                    conn = None;
-                }
+                let failed = result.is_err();
                 let _ = tx.send(Msg::Me {
                     epoch,
                     result: result.map(|me| (me, took)),
                 });
+                // Home's tools, once per attempt, after its first answer.
+                if !failed && !tools_asked {
+                    tools_asked = true;
+                    let result = open.call("GET", "/v1/tools", None, &net.headers).await;
+                    if result.is_err() {
+                        conn = None;
+                    }
+                    let _ = tx.send(Msg::Tools { epoch, result });
+                } else if failed {
+                    conn = None;
+                }
             }
-            Some(Call { about, tool, args }) => {
+            Some(Work { tool, args }) => {
                 let path = format!("/v1/tools/{tool}");
+                let most = answer_most(&tool);
                 let mut tries = 0;
                 // A call home answered "busy" is made again after it says to wait.
                 let result = loop {
-                    match open.call("POST", &path, Some(&args), &net.headers).await {
+                    match open
+                        .call_within("POST", &path, Some(&args), &net.headers, limit, most)
+                        .await
+                    {
                         Err(Failure::Busy(wait)) if tries + 1 < BUSY_TRIES => {
                             tries += 1;
                             tokio::time::sleep(wait.max(PACE)).await;
@@ -1186,9 +1382,10 @@ async fn calls_task(
                 }
                 let _ = tx.send(Msg::Called {
                     epoch,
-                    about,
+                    lane,
                     result,
                     took: started.elapsed(),
+                    sent: true,
                 });
             }
         }
@@ -1201,9 +1398,9 @@ async fn calls_task(
 
 /// The next call, `Some(None)` when none came in `every` (time to ask `GET /v1/me`), None when
 /// the coordinator is gone.
-async fn next_call(inbox: &mut UnboundedReceiver<Call>, every: Duration) -> Option<Option<Call>> {
+async fn next_call(inbox: &mut UnboundedReceiver<Work>, every: Duration) -> Option<Option<Work>> {
     match tokio::time::timeout(every, inbox.recv()).await {
-        Ok(Some(call)) => Some(Some(call)),
+        Ok(Some(work)) => Some(Some(work)),
         Ok(None) => None,
         Err(_) => Some(None),
     }
@@ -1489,6 +1686,10 @@ mod tests {
     // -- A life, and servers that say what a test needs --
 
     fn life_at(url: &str) -> Life {
+        life_with_inbox(url).0
+    }
+
+    fn life_with_inbox(url: &str) -> (Life, UnboundedReceiver<Msg>) {
         let remote = Remote {
             url: url.into(),
             trust: Trust::Loopback,
@@ -1505,8 +1706,8 @@ mod tests {
                 proxy: None,
             }),
         };
-        let (tx, _inbox) = unbounded_channel();
-        Life::new(
+        let (tx, inbox) = unbounded_channel();
+        let life = Life::new(
             "r1",
             1,
             remote,
@@ -1514,7 +1715,23 @@ mod tests {
             Arc::new(Shared::for_tests()),
             Limits::default(),
             tx,
-        )
+        );
+        (life, inbox)
+    }
+
+    /// A job that waits for its connection, and the answer it will get.
+    fn answered(tool: &str, slow: bool) -> (Job, oneshot::Receiver<Answered>) {
+        let (answer, answered) = oneshot::channel();
+        let call = Call {
+            tool: tool.into(),
+            args: json!({}),
+            slow,
+        };
+        let job = Job {
+            call,
+            to: To::Answer(answer),
+        };
+        (job, answered)
     }
 
     /// Hands each connection to `serve` on a thread of its own. The port.
@@ -1847,22 +2064,167 @@ mod tests {
             life.prepare().await.unwrap();
             life.begin();
             life.phase = Phase::Live;
-            life.call(About::Answer("r3".into()), "answer_request", json!({}));
-            life.call(About::Answer("r4".into()), "answer_request", json!({}));
-            // One was answered before: it is not refused too.
-            life.called(About::Answer("r4".into()), Ok(json!({})), Duration::ZERO);
-            // The stream ended and home was looked at again: no status changes, no refusal comes.
+            let ((first, mut first_answer), (second, mut second_answer)) = (
+                answered("answer_request", false),
+                answered("answer_request", false),
+            );
+            life.call(first);
+            life.call(second);
+            // One was answered before: it is not refused too, and the next goes out.
+            life.called(Lane::Quick, Ok(json!({})), Duration::ZERO, true);
+            // The stream ended and home was looked at again: no status changes.
             life.begin();
+            assert_eq!(first_answer.try_recv().unwrap(), Ok(json!({})));
+            assert_eq!(
+                second_answer.try_recv().unwrap(),
+                Err(Refusal::of(
+                    "The other computer may have done it: the connection dropped before it answered."
+                ))
+            );
             let said = life.out.inner().updates.clone();
-            let refused: Vec<_> = said
-                .iter()
-                .filter_map(|(_, u)| match u {
-                    Update::Refused { about, .. } => Some(about.clone()),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(refused, [About::Answer("r3".into())], "{said:?}");
+            assert!(
+                said.iter()
+                    .all(|(_, u)| !matches!(u, Update::Refused { .. })),
+                "{said:?}"
+            );
         });
+    }
+
+    #[test]
+    fn calls_waiting_when_the_attempt_drops_are_each_refused_once() {
+        block_on(async {
+            let mut life = life_at("http://127.0.0.1:9");
+            life.out.inner().current.insert("r1".into(), 1);
+            life.prepare().await.unwrap();
+            life.begin();
+            life.phase = Phase::Live;
+            let mut answers = Vec::new();
+            for _ in 0..3 {
+                let (job, answer) = answered("show", false);
+                life.call(job);
+                answers.push(answer);
+            }
+            life.drop_attempt();
+            life.begin();
+            for (n, mut answer) in answers.into_iter().enumerate() {
+                // The first was sent: home may have done it. The others never left.
+                let words = if n == 0 {
+                    "The other computer may have done it: the connection dropped before it answered."
+                } else {
+                    "Couldn't reach the other computer."
+                };
+                assert_eq!(answer.try_recv().unwrap(), Err(Refusal::of(words)));
+            }
+            assert!(
+                life.attempt.as_ref().unwrap().jobs.is_empty(),
+                "none is sent again"
+            );
+        });
+    }
+
+    #[test]
+    fn a_slow_call_a_tunnel_cuts_is_told_and_never_cuts_the_remote() {
+        let me = serde_json::to_string(&MeView {
+            computer: "winx-desktop".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let port = server(move |mut stream| {
+            use std::io::Write;
+            while let Some((head, _)) = request(&mut stream) {
+                let answer = if head.starts_with("GET /v1/me ") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{me}",
+                        me.len()
+                    )
+                } else {
+                    // Cloudflare's: a tunnel cut the call at 100 s, with no Templum body.
+                    "HTTP/1.1 524 A Timeout Occurred\r\nContent-Length: 0\r\n\r\n".to_string()
+                };
+                if stream.write_all(answer.as_bytes()).is_err() {
+                    return;
+                }
+            }
+        });
+        block_on(async {
+            let (mut life, mut inbox) = life_with_inbox(&format!("http://127.0.0.1:{port}"));
+            life.out.inner().current.insert("r1".into(), 1);
+            life.prepare().await.unwrap();
+            life.begin();
+            life.me = Some(MeView {
+                computer: "winx-desktop".into(),
+                ..Default::default()
+            });
+            life.phase = Phase::Live;
+            life.status(Status::Live);
+            let (job, answer) = answered("git", true);
+            life.call(job);
+            loop {
+                match inbox.recv().await {
+                    Some(Msg::Called {
+                        lane,
+                        result,
+                        took,
+                        sent,
+                        ..
+                    }) => {
+                        life.called(lane, result, took, sent);
+                        break;
+                    }
+                    Some(_) => {}
+                    None => panic!("the calls task ended"),
+                }
+            }
+            assert_eq!(
+                answer.await.unwrap(),
+                Err(Refusal::of(
+                    "winx-desktop didn't answer in time: it may still be running there."
+                ))
+            );
+            assert_eq!(life.phase, Phase::Live);
+            let said = life.out.inner().updates.clone();
+            assert!(
+                said.iter()
+                    .all(|(_, u)| matches!(u, Update::Status(Status::Live))),
+                "only Live was said: {said:?}"
+            );
+            assert!(
+                life.attempt.as_ref().unwrap().slow.is_none(),
+                "the slow connection is dropped"
+            );
+        });
+    }
+
+    #[test]
+    fn a_slow_call_that_never_left_or_came_back_too_large_is_not_told_as_one_still_running() {
+        for (failure, sent, words) in [
+            (
+                Failure::Down("refused".into()),
+                false,
+                "Couldn't reach the other computer.",
+            ),
+            (
+                Failure::TooLarge,
+                true,
+                "winx-desktop's answer was too large to show.",
+            ),
+        ] {
+            block_on(async {
+                let (mut life, _inbox) = life_with_inbox("http://127.0.0.1:9");
+                life.prepare().await.unwrap();
+                life.begin();
+                life.me = Some(MeView {
+                    computer: "winx-desktop".into(),
+                    ..Default::default()
+                });
+                life.phase = Phase::Live;
+                let (job, answer) = answered("git", true);
+                life.call(job);
+                life.called(Lane::Slow, Err(failure), Duration::ZERO, sent);
+                assert_eq!(answer.await.unwrap(), Err(Refusal::of(words)));
+                assert_eq!(life.phase, Phase::Live);
+            });
+        }
     }
 
     #[test]
@@ -2113,6 +2475,8 @@ mod tests {
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{me}",
                         me.len()
                     )
+                } else if head.starts_with("GET /v1/tools ") {
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]".to_string()
                 } else if counted_move(&counted) {
                     "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nRetry-After: 0\r\nContent-Length: 82\r\n\r\n{\"error\":{\"code\":\"busy\",\"message\":\"Too many connections: try again in a moment.\"}}".to_string()
                 } else {
@@ -2129,6 +2493,7 @@ mod tests {
             let _task = Task::spawn(calls_task(
                 net_at(port),
                 1,
+                Lane::Quick,
                 inbox,
                 tx,
                 Duration::from_secs(60),
@@ -2138,14 +2503,17 @@ mod tests {
                 Some(Msg::Me { result: Ok(_), .. })
             ));
             calls
-                .send(Call {
-                    about: About::Move("b".into()),
-                    tool: "move_block",
+                .send(Work {
+                    tool: "move_block".into(),
                     args: json!({"block": "b"}),
                 })
                 .unwrap();
-            let Some(Msg::Called { result, .. }) = results.recv().await else {
-                panic!("called")
+            let result = loop {
+                match results.recv().await {
+                    Some(Msg::Called { result, .. }) => break result,
+                    Some(Msg::Tools { .. }) => {}
+                    _ => panic!("called"),
+                }
             };
             assert!(result.is_ok(), "{result:?}");
         });

@@ -2,6 +2,7 @@
 //! thread: walked as `overview` walks them, so a feature that is in the state is on the event
 //! stream without more code.
 
+use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use gpui_kit::App;
@@ -58,13 +59,19 @@ impl Workspace {
                         .as_deref()
                         .map(super::remote::RemoteSpace::view),
                 })
+                .map(Arc::new)
                 .collect(),
             blocks: spaces
                 .iter()
                 .flat_map(|space| self.block_views(space, now, wall, cx))
+                .map(Arc::new)
                 .collect(),
-            wires: spaces.iter().flat_map(|space| wire_views(space)).collect(),
-            requests: self.request_views(now, wall),
+            wires: spaces
+                .iter()
+                .flat_map(|space| wire_views(space))
+                .map(Arc::new)
+                .collect(),
+            requests: arcs(self.request_views(now, wall)),
             boards: self
                 .boards
                 .boards
@@ -82,6 +89,7 @@ impl Workspace {
                         })
                         .collect(),
                 })
+                .map(Arc::new)
                 .collect(),
             cards: self
                 .boards
@@ -94,9 +102,10 @@ impl Workspace {
                         .iter()
                         .map(move |card| card_view(board, column.id, card))
                 })
+                .map(Arc::new)
                 .collect(),
-            automations: self.automation_views(cx),
-            shares: self.share_views(),
+            automations: arcs(self.automation_views(cx)),
+            shares: arcs(self.share_views()),
             view: self.view_of_shown(),
             usage: (!self.limits.is_empty()).then(|| UsageView {
                 limits: self
@@ -389,6 +398,11 @@ impl Workspace {
             })
             .collect()
     }
+}
+
+/// Home hands out its state as `Arc` items, so a mirror takes it by pointer.
+fn arcs<T>(items: Vec<T>) -> Vec<Arc<T>> {
+    items.into_iter().map(Arc::new).collect()
 }
 
 fn wire_views(space: &Space) -> Vec<WireView> {

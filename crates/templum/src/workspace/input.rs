@@ -22,6 +22,7 @@ use crate::git_block;
 use crate::keys::{self, Command};
 use crate::menu;
 
+use super::remote::Deed;
 use super::{
     CLICK_SLOP, Copied, Drag, QUIT_AGAIN, Tool, Workspace, effective, option_types_text, secondary,
     show_notification, undo_key, workspace_digit,
@@ -126,7 +127,7 @@ impl Workspace {
     }
 
     pub(crate) fn begin_move(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
-        if self.remote_frozen() {
+        if self.why_not(Deed::Move).is_some() {
             return;
         }
         // A tile is dropped on another to trade places.
@@ -174,7 +175,7 @@ impl Workspace {
     }
 
     pub(crate) fn begin_resize(&mut self, id: BlockId, edges: Edges, pos: PixelPoint<Pixels>) {
-        if self.remote_frozen() {
+        if self.why_not(Deed::Move).is_some() {
             return;
         }
         let p = self.local(pos);

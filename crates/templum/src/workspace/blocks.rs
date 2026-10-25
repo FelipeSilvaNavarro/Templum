@@ -19,6 +19,7 @@ use crate::note::Note;
 use crate::prompt;
 
 use super::history::{Change, Then};
+use super::remote::Deed;
 use super::{
     AGENT_COLS, AGENT_ROWS, BOARD_UNDO, Body, DEFAULT_COLS, DEFAULT_ROWS, Ghost, Pane, Space,
     Workspace, remember, show_notification,
@@ -304,7 +305,7 @@ impl Workspace {
 
     /// A kanban block showing no board, its top-left corner at `at` (world units).
     pub(crate) fn add_kanban_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
-        if self.on_remote() {
+        if self.why_not(Deed::AddKanban).is_some() {
             return;
         }
         self.space.pristine = false;
@@ -324,7 +325,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.on_remote() {
+        if self.why_not(Deed::AddTerminal).is_some() {
             return;
         }
         let rect = match at {
@@ -680,7 +681,7 @@ impl Workspace {
 
     /// Starts a terminal in a new focused block, in the configured start folder.
     pub(crate) fn open(&mut self, rect: Rect, window: &mut Window, cx: &mut Context<Self>) {
-        if self.on_remote() {
+        if self.why_not(Deed::AddTerminal).is_some() {
             return;
         }
         let folder = self.start_dir(window, cx);
@@ -798,7 +799,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.on_remote() {
+        if self.why_not(Deed::Close).is_some() {
             return;
         }
         let one = ids.len() == 1;

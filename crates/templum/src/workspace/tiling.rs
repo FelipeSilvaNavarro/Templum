@@ -10,6 +10,7 @@ use std::time::Instant;
 use gpui_kit::{Context, Window};
 use templum_canvas::{BlockId, Camera, Direction, GAP, Rect, Size, Tile, neighbour};
 
+use super::remote::Deed;
 use super::{Grid, Tool, Workspace};
 
 /// `a` on its way to `b`, `t` of the way (0 to 1).
@@ -32,7 +33,7 @@ impl Workspace {
     /// Ctrl+Shift+Enter: grid mode for the selected blocks, else the focused one; in grid mode,
     /// back to the canvas.
     pub(crate) fn toggle_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.on_remote() {
+        if self.why_not(Deed::Grid).is_some() {
             return;
         }
         if self.space.grid.is_some() {

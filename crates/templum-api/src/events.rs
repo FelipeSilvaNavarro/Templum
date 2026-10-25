@@ -804,10 +804,12 @@ mod tests {
         );
         let mut new = old.clone();
         new.shares = ["s1", "s2"]
-            .map(|id| ShareView {
-                id: id.into(),
-                workspace: "w3".into(),
-                ..Default::default()
+            .map(|id| {
+                Arc::new(ShareView {
+                    id: id.into(),
+                    workspace: "w3".into(),
+                    ..Default::default()
+                })
             })
             .into();
         publish(&hub, &ids, &new);
@@ -825,11 +827,11 @@ mod tests {
     fn publish_queues_the_differences_and_resyncs_a_stream_that_is_behind() {
         let (ids, hub) = (Ids::new(), Mutex::new(Hub::default()));
         let mut old = State::default();
-        old.blocks.push(BlockView {
+        old.blocks.push(Arc::new(BlockView {
             id: "b1".into(),
             workspace: "w3".into(),
             ..Default::default()
-        });
+        }));
         let (a, b) = {
             let mut h = hub.lock().unwrap();
             let now = Instant::now();
@@ -862,7 +864,7 @@ mod tests {
             b.cell.0.lock().unwrap().queue.take(),
         );
         let mut new = old.clone();
-        new.blocks[0].title = "moved".into();
+        Arc::make_mut(&mut new.blocks[0]).title = "moved".into();
         // `b` is far behind.
         for _ in 0..=QUEUE {
             b.cell.push(Bytes::from("x"));
@@ -890,10 +892,10 @@ mod tests {
     fn streams_of_one_caller_share_the_view_and_the_comparison() {
         let (ids, hub) = (Ids::new(), Mutex::new(Hub::default()));
         let mut old = State::default();
-        old.blocks.push(BlockView {
+        old.blocks.push(Arc::new(BlockView {
             id: "b1".into(),
             ..Default::default()
-        });
+        }));
         let now = Instant::now();
         let opened: Vec<Opened> = {
             let mut h = hub.lock().unwrap();
@@ -915,7 +917,7 @@ mod tests {
                 .collect()
         };
         let mut new = old.clone();
-        new.blocks[0].title = "moved".into();
+        Arc::make_mut(&mut new.blocks[0]).title = "moved".into();
         publish(&hub, &ids, &new);
         let frame = |o: &Opened| o.cell.0.lock().unwrap().queue.take().unwrap();
         let (a, b) = (frame(&opened[0]), frame(&opened[1]));
@@ -939,17 +941,17 @@ mod tests {
         let (ids, hub) = (Ids::new(), Mutex::new(Hub::default()));
         let mut publisher = Publisher::default();
         let mut state = State::default();
-        state.blocks.push(BlockView {
+        state.blocks.push(Arc::new(BlockView {
             id: "b1".into(),
             ..Default::default()
-        });
+        }));
         assert!(publisher.publish(&hub, &ids, state.clone()), "the first");
         assert!(
             !publisher.publish(&hub, &ids, state.clone()),
             "the same again"
         );
         let mut moved = state.clone();
-        moved.blocks[0].title = "x".into();
+        Arc::make_mut(&mut moved.blocks[0]).title = "x".into();
         assert!(publisher.publish(&hub, &ids, moved.clone()));
         // A stream that opened since hasn't seen it, whatever its snapshot said.
         hub.lock()

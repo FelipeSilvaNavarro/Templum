@@ -72,7 +72,7 @@ fn a_mirror_follows_home_live() {
     assert_eq!(mirror.state("r1"), None, "taken: none until a newer one");
 
     let mut moved = sample();
-    moved.blocks[0].rect.x = 55.0;
+    Arc::make_mut(&mut moved.blocks[0]).rect.x = 55.0;
     fake.server.publish(moved);
     wait_for("the delta", || {
         mirror
@@ -348,9 +348,30 @@ fn a_changed_pin_and_a_tunnel_that_isnt_templum_are_refused() {
 
 // -- Terminals, typing, moves, answers, Forget --
 
+use futures::executor::block_on;
 use serde_json::{Value, json};
-use templum_api::client::{About, Mirror};
+use templum_api::Notice;
+use templum_api::client::{About, Call, Mirror, Refusal};
 use templum_api::model::Rect;
+
+fn call(tool: &str, args: Value, slow: bool) -> Call {
+    Call {
+        tool: tool.into(),
+        args,
+        slow,
+    }
+}
+
+/// A call that comes back means the mirror has dealt with everything sent before it.
+fn settled(mirror: &Mirror) {
+    block_on(mirror.call("r1", call("show", json!({"workspace": "w3"}), false))).unwrap();
+}
+
+fn refusal(sentence: &str) -> Refusal {
+    Refusal {
+        sentence: sentence.into(),
+    }
+}
 
 /// A mirror live on a share of w3 on `fake`, as `r1`.
 fn live_on(fake: &Fake, text: &str) -> Mirror {
@@ -408,7 +429,7 @@ fn a_terminal_streams_into_its_viewer() {
 }
 
 #[test]
-fn at_most_twelve_terminals_stream() {
+fn at_most_eleven_terminals_stream() {
     let (text, token) = share_token(Scope::Full, "w3");
     let fake = fake(vec![token], |_| {});
     let homes: Vec<_> = (0..14).map(|_| viewer(10, 2)).collect();
@@ -421,13 +442,9 @@ fn at_most_twelve_terminals_stream() {
     }
     let mirror = live_on(&fake, &text);
     mirror.send("r1", Command::Terminals(set));
-    wait_for("twelve streams", || fake.server.terminal_streams() == 12);
-    // A call that comes back means the mirror has dealt with everything sent before it.
-    mirror.send("r1", Command::Show);
-    until(&mirror, "r1", "a round trip", |u| {
-        matches!(u, Update::Latency(_))
-    });
-    assert_eq!(fake.server.terminal_streams(), 12);
+    wait_for("eleven streams", || fake.server.terminal_streams() == 11);
+    settled(&mirror);
+    assert_eq!(fake.server.terminal_streams(), 11);
 }
 
 #[test]
@@ -444,13 +461,7 @@ fn a_terminal_home_refused_is_asked_again_when_the_set_changes_not_when_reordere
             .filter(|s| s.method == templum_api::TERMINAL && s.params["block"] == block)
             .count()
     };
-    // A round trip means the mirror has dealt with everything sent before it.
-    let round_trip = || {
-        mirror.send("r1", Command::Show);
-        until(&mirror, "r1", "a round trip", |u| {
-            matches!(u, Update::Latency(_))
-        });
-    };
+    let round_trip = || settled(&mirror);
     let set = |blocks: &[(&str, &templum_terminal::Terminal)]| {
         Command::Terminals(
             blocks
@@ -617,7 +628,7 @@ fn a_paste_goes_after_the_keys_typed_before_it() {
 }
 
 #[test]
-fn moves_answers_and_show_are_calls() {
+fn moves_and_calls_reach_home() {
     let (text, token) = share_token(Scope::Full, "w3");
     let fake = fake(vec![token], |_| {});
     let mirror = live_on(&fake, &text);
@@ -633,14 +644,16 @@ fn moves_answers_and_show_are_calls() {
             },
         },
     );
-    mirror.send(
+    let answered = block_on(mirror.call(
         "r1",
-        Command::Answer {
-            request: "r12".into(),
-            args: json!({"answers": [["Postgres"]]}),
-        },
-    );
-    mirror.send("r1", Command::Show);
+        call(
+            "answer_request",
+            json!({"request": "r12", "answers": [["Postgres"]]}),
+            false,
+        ),
+    ));
+    assert_eq!(answered.unwrap()["text"], "did answer_request");
+    settled(&mirror);
     wait_for("the three calls", || fake.calls().len() >= 3);
     assert_eq!(
         calls_of(&fake, "move_block"),
@@ -673,6 +686,166 @@ fn moves_answers_and_show_are_calls() {
 }
 
 #[test]
+fn a_call_is_answered_with_home_s_json() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |_| {});
+    let mirror = live_on(&fake, &text);
+    let answered = block_on(mirror.call("r1", call("show", json!({"workspace": "w3"}), false)));
+    assert_eq!(answered.unwrap()["text"], "did show");
+    assert_eq!(calls_of(&fake, "show"), [json!({"workspace": "w3"})]);
+}
+
+#[test]
+fn a_refused_call_says_home_s_words() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |_| {});
+    let mirror = live_on(&fake, &text);
+    let answered =
+        block_on(mirror.call("r1", call("close_block", json!({"block": "b7k2m"}), false)));
+    assert_eq!(answered, Err(refusal("No.")));
+}
+
+#[test]
+fn past_sixty_four_waiting_calls_are_refused_at_once() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |options| {
+        options.computer = "winx-desktop".into()
+    });
+    let mirror = live_on(&fake, &text);
+    fake.hold_tool("show");
+    let first = mirror.call("r1", call("show", json!({"workspace": "w3"}), false));
+    wait_for("the first call at home", || fake.held() == 1);
+    let waiting: Vec<_> = (0..64)
+        .map(|_| mirror.call("r1", call("show", json!({"workspace": "w3"}), false)))
+        .collect();
+    assert_eq!(
+        block_on(mirror.call("r1", call("show", json!({"workspace": "w3"}), false))),
+        Err(refusal("winx-desktop is slow to answer: try again."))
+    );
+    fake.release_tool();
+    assert!(block_on(first).is_ok());
+    for answered in waiting {
+        assert!(block_on(answered).is_ok());
+    }
+}
+
+#[test]
+fn a_block_s_waiting_moves_keep_only_the_newest() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |_| {});
+    let mirror = live_on(&fake, &text);
+    fake.hold_tool("show");
+    let shown = mirror.call("r1", call("show", json!({"workspace": "w3"}), false));
+    wait_for("the show at home", || fake.held() == 1);
+    for x in [1.0, 2.0, 3.0] {
+        mirror.send(
+            "r1",
+            Command::Move {
+                block: "b7k2m".into(),
+                rect: Rect {
+                    x,
+                    y: 5.0,
+                    w: 300.0,
+                    h: 200.0,
+                },
+            },
+        );
+    }
+    fake.release_tool();
+    assert!(block_on(shown).is_ok());
+    wait_for("the move", || !calls_of(&fake, "move_block").is_empty());
+    settled(&mirror);
+    assert_eq!(
+        calls_of(&fake, "move_block"),
+        [json!({"block": "b7k2m", "x": 3.0, "y": 5.0, "w": 300.0, "h": 200.0})]
+    );
+}
+
+#[test]
+fn a_quick_call_is_answered_while_a_slow_one_runs() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |_| {});
+    let mirror = live_on(&fake, &text);
+    fake.hold_tool("show");
+    let slow = mirror.call("r1", call("show", json!({"workspace": "w3"}), true));
+    wait_for("the slow call at home", || fake.held() == 1);
+    let quick = block_on(mirror.call(
+        "r1",
+        call("move_block", json!({"block": "b7k2m", "x": 1.0}), false),
+    ));
+    assert!(quick.is_ok(), "{quick:?}");
+    assert_eq!(fake.held(), 1);
+    fake.release_tool();
+    assert!(block_on(slow).is_ok());
+}
+
+#[test]
+fn calls_waiting_when_the_attempt_drops_are_refused_once() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |_| {});
+    let mirror = live_on(&fake, &text);
+    fake.hold_tool("show");
+    let calls: Vec<_> = (0..3)
+        .map(|_| mirror.call("r1", call("show", json!({"workspace": "w3"}), false)))
+        .collect();
+    wait_for("the first call at home", || fake.held() == 1);
+    mirror.send("r1", Command::Disconnect);
+    for (n, answered) in calls.into_iter().enumerate() {
+        // The first was in flight: home may have done it. The others never left.
+        let words = if n == 0 {
+            "winx may have done it: the connection dropped before it answered."
+        } else {
+            "Couldn't reach the other computer."
+        };
+        assert_eq!(block_on(answered), Err(refusal(words)));
+    }
+    mirror.send("r1", Command::TryNow);
+    until(&mirror, "r1", "live again", live);
+    fake.release_tool();
+    settled(&mirror);
+    assert_eq!(
+        calls_of(&fake, "show").len(),
+        2,
+        "the barrier's, and the one that was in flight"
+    );
+}
+
+#[test]
+fn home_s_tools_come_at_each_connect() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |_| {});
+    let (mirror, _) = common::mirror(Keys::without_keyring(None));
+    mirror.connect("r1", remote_for(&fake, &text));
+    let is_home_s = |u: &Update| {
+        matches!(u, Update::Tools(t)
+            if t.has("move_block") && t.takes("move_block", "x") && !t.has("nope"))
+    };
+    until(&mirror, "r1", "home's tools", is_home_s);
+    mirror.send("r1", Command::Disconnect);
+    until(&mirror, "r1", "disconnected", |u| {
+        matches!(u, Update::Status(Status::Disconnected))
+    });
+    mirror.send("r1", Command::TryNow);
+    until(&mirror, "r1", "the tools again", is_home_s);
+}
+
+#[test]
+fn a_notice_reaches_the_ui_as_its_first_line() {
+    let (text, token) = share_token(Scope::Full, "w3");
+    let fake = fake(vec![token], |_| {});
+    let mirror = live_on(&fake, &text);
+    fake.server.notice(Notice {
+        text: format!("{}\nsecond", "é".repeat(400)),
+        block: Some("b7k2m".into()),
+        workspace: Some("w3".into()),
+    });
+    until(&mirror, "r1", "the notice", |u| {
+        matches!(u, Update::Notice(n)
+            if n.text == "é".repeat(300) && n.block.as_deref() == Some("b7k2m"))
+    });
+}
+
+#[test]
 fn a_command_while_not_live_is_refused_or_dropped() {
     let (text, token) = share_token(Scope::Full, "w3");
     let fake = fake(vec![token], |_| {});
@@ -688,16 +861,10 @@ fn a_command_while_not_live_is_refused_or_dropped() {
             keys: vec!["a".into()],
         },
     );
-    mirror.send("r1", Command::Show);
-    until(&mirror, "r1", "refused", |u| {
-        matches!(
-            u,
-            Update::Refused {
-                about: About::Show,
-                ..
-            }
-        )
-    });
+    assert_eq!(
+        block_on(mirror.call("r1", call("show", json!({"workspace": "w3"}), false))),
+        Err(refusal("Not connected."))
+    );
     assert!(
         keys_sent(&fake).is_empty(),
         "keys are never queued for later"
@@ -1187,16 +1354,11 @@ fn typing_while_not_live_is_refused_once_a_block_and_overflow_says_so_once() {
         },
     );
     send("other", vec!["a".into()]);
-    mirror.send("r1", Command::Show);
-    let seen = until(&mirror, "r1", "show refused", |u| {
-        matches!(
-            u,
-            Update::Refused {
-                about: About::Show,
-                ..
-            }
-        )
-    });
+    assert_eq!(
+        block_on(mirror.call("r1", call("show", json!({"workspace": "w3"}), false))),
+        Err(refusal("Not connected."))
+    );
+    let seen: Vec<Update> = mirror.updates().into_iter().map(|(_, u)| u).collect();
     assert_eq!(typed_refusals(&seen, "b7k2m"), 1, "{seen:?}");
     assert_eq!(typed_refusals(&seen, "other"), 1, "{seen:?}");
     assert!(keys_sent(&fake).is_empty());
@@ -1209,16 +1371,11 @@ fn typing_while_not_live_is_refused_once_a_block_and_overflow_says_so_once() {
         matches!(u, Update::Status(Status::Disconnected))
     });
     send("b7k2m", vec!["a".into()]);
-    mirror.send("r1", Command::Show);
-    let seen = until(&mirror, "r1", "show refused again", |u| {
-        matches!(
-            u,
-            Update::Refused {
-                about: About::Show,
-                ..
-            }
-        )
-    });
+    assert_eq!(
+        block_on(mirror.call("r1", call("show", json!({"workspace": "w3"}), false))),
+        Err(refusal("Not connected."))
+    );
+    let seen: Vec<Update> = mirror.updates().into_iter().map(|(_, u)| u).collect();
     assert_eq!(typed_refusals(&seen, "b7k2m"), 1, "{seen:?}");
 
     // A full queue says `Dropped` once, not for each command past it.

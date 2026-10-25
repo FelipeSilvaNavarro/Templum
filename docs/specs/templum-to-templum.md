@@ -3,8 +3,8 @@
 - **Date:** 2026-10-25
 - **Status:** Batch 1 implemented (kanban card 171, part 2; plans 2026-10-25-t2t-batch-1a…1d: home's side; the
   mirror's client; the remote workspace on the canvas; acting from the mirror, Edit…, the end-to-end test and
-  `--bench-mirror`). Batch 2 designed, not built ([Batch 2](#batch-2-the-whole-workspace-live), parts 2a–2h). Later
-  batches (see [Later batches](#later-batches)) are sketched.
+  `--bench-mirror`). Batch 2: part 2a built (plan 2026-10-25-t2t-batch-2a-footing); parts 2b–2h designed, not built
+  ([Batch 2](#batch-2-the-whole-workspace-live)). Later batches (see [Later batches](#later-batches)) are sketched.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
   [cockpit.md](cockpit.md#6-the-workspaces-screen) (the sidebar, the Edit… dialog), [ask-inbox.md](ask-inbox.md)
@@ -113,7 +113,7 @@ revoke must not wait for Save).
 | Field | Control |
 |---|---|
 | Name | One line, required, at most 60 characters, default "Another computer" |
-| Can | **Full** (default): "Watch, move blocks, answer requests and type into terminals. Anyone with the code can run commands on this computer." **Control:** "Watch, move blocks and answer requests. No typing." |
+| Can | **Full** (default): "Also type and click into terminals, discard Git changes, delete branches, stashes and automations. Anyone with the code can run commands on this computer." **Control:** "Watch and work with blocks, cards, checklists, Git and automations, open agents and hand them tasks, answer requests. No typing into terminals; agents it opens can run commands." (Words since batch 2a.) |
 | Expires | In 1 day, 7 days, **30 days** (default), 90 days, 1 year, Never |
 | The other computer reaches this one | **Through a tunnel or proxy** (cloudflared, Caddy, nginx, your own certificate), with **Address**: `https://templum.example.com` (an optional path prefix is kept), remembered for the next share. **Directly** (same network, VPN, Tailscale), with **Address**: host and port, prefilled with this computer's address on its main network and the API's port, `192.168.1.5:7411` (a Tailscale name may replace it) |
 
@@ -318,8 +318,8 @@ server doesn't send its whole chain".
   (its order matters), one for everything else.
 - **Server-Sent Events** are read by a small parser of the client's own (fields `event`, `data`, `id`, comments), with
   a cap of 16 MiB per event: a bigger one drops that stream, which reopens.
-- **Connections per remote,** under home's 16 per token: one event stream, at most 12 terminal streams, two for calls,
-  one spare for a reconnect's overlap.
+- **Connections per remote,** under home's 16 per token: one event stream, at most 11 terminal streams, one each for
+  calls, slow calls and typing, one spare for a reconnect's overlap.
 - **Proxies:** the Connect dialog's More… has **Proxy** (`http://proxy.corp:8080`, optional), prefilled from
   `HTTPS_PROXY` (or `https_proxy`, `ALL_PROXY`) unless `NO_PROXY` names the host, and kept with the remote. Through it
   the mirror opens an HTTP `CONNECT`, with Basic credentials when the proxy's URL holds them (kept in the keyring with
@@ -368,7 +368,7 @@ server doesn't send its whole chain".
 
 ### Terminals
 
-- **Which stream:** the terminals on screen at Full detail, nearest the canvas's center first, at most 12, and always
+- **Which stream:** the terminals on screen at Full detail, nearest the canvas's center first, at most 11, and always
   the focused one; the UI thread tells the client when that set changes, at most every 100 ms. Others keep their last
   frame (a terminal that comes into view gets live within a round trip). A remote workspace not on screen streams no
   terminal; its state stream stays open, for requests and dots (*the designer's call*: home paints only what is on
@@ -598,7 +598,7 @@ keyring**, with a file only when there is none and the person asks for it.
 - **Painting:** a remote terminal is a viewer, painted as any terminal; frames are fed off the UI thread. A new
   `--bench-mirror` runs one Templum as both ends: the `--bench-mixed` cockpit shared over loopback and its remote
   workspace on screen, its terminals streaming; `p95_ms` ≤ 16.7, pasted in the pull request.
-- **Memory is bounded:** per remote, one pending state, at most 12 terminal streams, one pending frame each, events of
+- **Memory is bounded:** per remote, one pending state, at most 11 terminal streams, one pending frame each, events of
   at most 16 MiB, 1024 waiting keys; viewers without scrollback.
 - **Tests** run on Linux, macOS and Windows, with no agent CLI, no real keyring (keyring-core's mock store, or the file
   in a temporary folder), no network beyond loopback, no sleeps (conditions with a deadline):
@@ -637,7 +637,7 @@ later batches only as far as batch 1 prepares for them.
     `share_workspace`, `revoke_share`, `read_only`, `icon`, `modes`, the key names, the mirror's session and
     `replaced`, the audit log's grouping.
   - Mirror: Connect to a Templum…; the code; both ways in and the private authority check; the proxy; Cloudflare
-    Access's service token; the keyring and the file; the remote tile, banner and canvas; terminals live (12 at most);
+    Access's service token; the keyring and the file; the remote tile, banner and canvas; terminals live (11 at most);
     the keyboard; moving and resizing; requests with their sound and notification; the "not mirrored yet" cards and the
     disabled actions; every state of [When it isn't live](#when-it-isnt-live), Start of a stopped workspace included;
     Edit…, Disconnect, Forget; the mirror's API state.
@@ -1663,3 +1663,55 @@ pending frame; the mirror keeps no scrollback and says so once; typing is the pe
 a request of home's is a wait of the mirror's inbox that is answered through the API and listed nowhere else. Not done
 in batch 1, by design: notes, checklists, editors and boards as live blocks, ink and shapes, scrolling back and the
 mouse in a terminal, and adding, closing and wiring blocks on a mirror.
+
+### Batch 2a (the mirror's footing)
+
+Plan: [2026-10-25-t2t-batch-2a-footing.md](../plans/2026-10-25-t2t-batch-2a-footing.md). The plan's "Open for the
+orchestrator" items were settled as it recommended (the rule asks "not yet" first; the undo mark is 2b's; a watch set
+through the API names its block and workspace; the state's items are `Arc`s at home too; "only what changed" is per
+collection for blocks, wires, requests and workspaces; a slow call never cuts the remote and 524 is "down"; notices have
+their own budget; answers and Start are answered calls; the Edit… row keeps batch 1's words until 2h; home's tools
+unknown dim nothing). What the builder chose or changed:
+
+- **The state is `Vec<Arc<T>>`** for workspaces, blocks, wires, requests, boards, cards, automations and shares
+  (serde's `rc`, already in the tree). `Edit::run` keeps the `Arc` of an item an equal put leaves, so
+  `Shared::take` (`Mirror::state`) clones pointers; `model::same` compares two collections by `Arc::ptr_eq`. Home's
+  `api_state` wraps each item once. `RemoteSpace::state` is home's state as last taken; `apply_remote` runs
+  `mirror_blocks`, `mirror_wires` and `remote_requests` only when workspaces, blocks, wires or requests are not the
+  same, and always sets the name, look and first camera. Home's words are cleaned where they are used (`tidy_block`
+  in `mirror_blocks`, the workspace's name where `apply_remote` takes it, a wire's label in `mirror_wires`).
+- **Calls:** `Call { tool, args, slow }`, `Refusal`, `Answered`, `Mirror::call` (the order is sent before the future
+  is polled; a forgotten or unknown remote answers "Couldn't reach the other computer."). `Command::Answer` and
+  `Command::Show` and `About::Answer` and `About::Show` are gone (`About::Key` names the key's refusal, which fixes a
+  minor). The coordinator keeps `jobs` (64 at most; a move replaces its waiting twin) and feeds one call at a time to
+  each of two lanes (`Lane::Quick`, the calls connection with its 30 s; `Lane::Slow`, started at the first slow call,
+  600 s, no `GET /v1/me`); `drop_attempt` answers every waiting and in-flight call once: a waiting one "Couldn't reach
+  the other computer.", an in-flight one (it was sent) "{computer} may have done it: the connection dropped before it
+  answered.". A slow lane's failure other than `Auth`, a refusal, a missing thing or `TooLarge` is "{computer} didn't
+  answer in time: it may still be running there." and drops that connection only, unless the connection never opened
+  (`Msg::Called.sent` false): that call is "Couldn't reach the other computer." An answer past the cap (`TooLarge`, on
+  either lane) is "{computer}'s answer was too large to show.". A refusal that comes after its wait (an answer to a
+  request) or its remote (Start it) is gone is not said. `Conn::call_within(limit, most)`; `git` and `read_terminal` answers may weigh 8 MiB.
+  Terminal streams are 11 (`STREAMS_MOST`, `MOST_STREAMS`), so a remote holds 15 connections at most.
+- **Home's tools and notices:** `Tools` (`has`, `takes`) from `GET /v1/tools`, once per attempt after the first
+  `GET /v1/me` (`Update::Tools`; a failure says nothing); `Update::Notice` is a `notice` event's first line, at most
+  300 characters, with a block and workspace only when short and plain. At home, a notice for the API's asker names
+  the terminal it is about whether or not it is a task's (`api_notice_about(text, terminal)`); `docs/api.md` says so.
+- **The rule:** `Deed`, `Nay`, `RemoteSpace::why_not` and `Workspace::why_not` (`workspace/remote.rs`). The guards of
+  what a remote must never hold stay `on_remote()` (`spawn_block_with`, `set_wire`, `set_label`, `begin_ink`,
+  `switch_to`'s tool reset, `open_menu`). `Deed::Move` replaced `remote_frozen`: a live remote with no `GET /v1/me`
+  answered yet is "Needs a Full share", so the tests that made a remote live by hand set `me` too (`live` in
+  `tests/remote.rs`). `Start it` asks `Deed::Start` and calls `show` with `entry.home`. `toolbar::gated` answers the
+  words and a dim flag.
+- **Holds:** `workspace/holds.rs`, `Holds<K, V>` with `hold`, `get`, `end`, `shown`, `expire`; `RemoteSpace::held` is
+  `Holds<BlockId, Rect>`. `HOLD` lives there.
+- **Notices as notifications:** `Budget` (3 in 60 s, one fold a minute) twice per remote (`requests_budget`,
+  `notice_budget`); `remote_notice` ignores a notice whose workspace is not `entry.home`, titles the notification
+  "{workspace} on {computer}" and, on a click, reveals the block when `homes` has it, else shows the workspace.
+  `fold_notices` runs at each drain.
+- **Share… dialog:** its two scopes say the words of the batch-2 design (read in `share_dialog.rs` against the spec;
+  the dialog was not looked at on a display).
+
+Departures from the plan: `Update::Notice` is handled in `heard` before it borrows the remote (like `Refused`);
+`Deed::Start` is asked by `Act::StartIt`, not only listed; the tests that read `held` ask `held.get(&block)` (`Holds`
+has no `is_empty`). Not done: the undo mark (2b's).

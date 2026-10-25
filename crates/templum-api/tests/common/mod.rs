@@ -65,27 +65,27 @@ pub fn sample() -> State {
             api: 1,
             shown: Some("w3".into()),
         },
-        workspaces: vec![WorkspaceView {
+        workspaces: vec![Arc::new(WorkspaceView {
             id: "w3".into(),
             name: "API".into(),
             shown: true,
             ..Default::default()
-        }],
-        blocks: vec![b7k2m, k9x1d],
-        wires: vec![WireView {
+        })],
+        blocks: vec![Arc::new(b7k2m), Arc::new(k9x1d)],
+        wires: vec![Arc::new(WireView {
             a: "b7k2m".into(),
             b: "k9x1d".into(),
             label: None,
-        }],
-        requests: vec![RequestView {
+        })],
+        requests: vec![Arc::new(RequestView {
             id: "r12".into(),
             kind: "question".into(),
             block: Some("b7k2m".into()),
             workspace: Some("w3".into()),
             summary: "Which database?".into(),
             ..Default::default()
-        }],
-        boards: vec![BoardView {
+        })],
+        boards: vec![Arc::new(BoardView {
             id: 3,
             name: "Sprint".into(),
             columns: vec![ColumnView {
@@ -93,27 +93,29 @@ pub fn sample() -> State {
                 title: "Doing".into(),
                 cards: vec![40],
             }],
-        }],
-        cards: vec![CardView {
+        })],
+        cards: vec![Arc::new(CardView {
             id: 40,
             board: 3,
             column: 7,
             title: "Login".into(),
             ..Default::default()
-        }],
-        automations: vec![AutomationView {
+        })],
+        automations: vec![Arc::new(AutomationView {
             id: 1,
             name: "Morning".into(),
             workspace: Some("w3".into()),
             ..Default::default()
-        }],
+        })],
         shares: ["s1", "s2"]
-            .map(|id| ShareView {
-                id: id.into(),
-                workspace: "w3".into(),
-                name: "Another computer".into(),
-                scope: Scope::Full,
-                ..Default::default()
+            .map(|id| {
+                Arc::new(ShareView {
+                    id: id.into(),
+                    workspace: "w3".into(),
+                    name: "Another computer".into(),
+                    scope: Scope::Full,
+                    ..Default::default()
+                })
             })
             .into(),
         usage: Some(UsageView::default()),
@@ -155,8 +157,11 @@ pub struct Fake {
     pub hold_calls: Arc<AtomicBool>,
     /// While set, the fake UI thread never answers `revoke_share`, as a home that is slow does.
     pub hold_revoke: Arc<AtomicBool>,
+    /// The tool whose `tools/call`s the fake UI thread keeps unanswered (`hold_tool`).
+    holding_tool: Arc<Mutex<Option<String>>>,
     parked: Arc<Mutex<Vec<Parked>>>,
     parked_calls: Arc<Mutex<Vec<Parked>>>,
+    parked_tool: Arc<Mutex<Vec<Parked>>>,
     pub dir: tempfile::TempDir,
 }
 
@@ -209,6 +214,24 @@ impl Fake {
         }
     }
 
+    /// Parks the `tools/call`s of `name` unanswered, as a home that is slow to answer does.
+    pub fn hold_tool(&self, name: &str) {
+        *self.holding_tool.lock().unwrap() = Some(name.into());
+    }
+
+    /// How many calls of the tool held are parked.
+    pub fn held(&self) -> usize {
+        self.parked_tool.lock().unwrap().len()
+    }
+
+    /// Answers each call of the tool held "did {name}", and stops holding.
+    pub fn release_tool(&self) {
+        let name = self.holding_tool.lock().unwrap().take().unwrap_or_default();
+        for (id, reply) in self.parked_tool.lock().unwrap().drain(..) {
+            let _ = reply.send(tools::tool_result(&id, &Reply::ok(format!("did {name}"))));
+        }
+    }
+
     /// Answers the state requests held, and stops holding.
     pub fn release_state(&self) {
         self.hold_state.store(false, Ordering::SeqCst);
@@ -256,6 +279,10 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
     let holding_revoke = hold_revoke.clone();
     let parked_calls: Arc<Mutex<Vec<Parked>>> = Arc::default();
     let park_calls = parked_calls.clone();
+    let holding_tool: Arc<Mutex<Option<String>>> = Arc::default();
+    let held_tool = holding_tool.clone();
+    let parked_tool: Arc<Mutex<Vec<Parked>>> = Arc::default();
+    let park_tool = parked_tool.clone();
     // A weak hold, so that dropping the fake still drops the server.
     let lender = Arc::downgrade(&server);
     std::thread::spawn(move || {
@@ -314,6 +341,10 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
                     park_calls.lock().unwrap().push((id, message.reply));
                     continue;
                 }
+                "tools/call" if held_tool.lock().unwrap().as_deref() == Some(name) => {
+                    park_tool.lock().unwrap().push((id, message.reply));
+                    continue;
+                }
                 "tools/call" if name == "delegate" && params["arguments"]["wait"] == true => {
                     held.push(message.reply);
                     continue;
@@ -352,8 +383,10 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
         hold_state,
         hold_calls,
         hold_revoke,
+        holding_tool,
         parked,
         parked_calls,
+        parked_tool,
         dir,
     }
 }

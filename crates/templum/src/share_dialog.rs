@@ -29,9 +29,11 @@ use crate::workspace::{Workspace, show_notification};
 /// What the Edit… dialog says under Sharing when nothing is shared.
 pub(crate) const INVITE: &str = "Let another Templum mirror this workspace: watch it live, move \
     its blocks, answer its agents, type into its terminals.";
-const FULL_SAYS: &str = "Watch, move blocks, answer requests and type into terminals. Anyone with \
-    the code can run commands on this computer.";
-const CONTROL_SAYS: &str = "Watch, move blocks and answer requests. No typing.";
+const FULL_SAYS: &str = "Also type and click into terminals, discard Git changes, delete branches, \
+    stashes and automations. Anyone with the code can run commands on this computer.";
+const CONTROL_SAYS: &str = "Watch and work with blocks, cards, checklists, Git and automations, \
+    open agents and hand them tasks, answer requests. No typing into terminals; agents it opens \
+    can run commands.";
 const PASTE_IT: &str = "Paste it in the other Templum: sidebar ▸ Connect to a Templum… Templum \
     keeps only a fingerprint of its key: this code can't be shown again.";
 /// What a share is called until the person says.

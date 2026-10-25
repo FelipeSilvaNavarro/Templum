@@ -1694,7 +1694,8 @@ impl Workspace {
     ) {
         // The API's asker has no terminal to type into: its notice is an event on its streams.
         if to == templum_api::ASKER {
-            return self.api_notice_about(text, about);
+            return self
+                .api_notice_about(text, about.as_ref().map(|(terminal, _)| terminal.as_str()));
         }
         let at = cx.background_executor().now();
         self.notices.push(Notice {

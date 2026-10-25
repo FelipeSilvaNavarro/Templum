@@ -14,7 +14,7 @@ templum-mcp = { path = "../templum-mcp" }
 # The terminals' screens the stream's frames are read from (UI-free).
 templum-terminal = { path = "../templum-terminal" }
 # Already in the tree: the settings file, the state and the events.
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 # Already in the tree (GPUI's): the channel to the UI thread, and the executor that reads it in tests.
 futures = "0.3"

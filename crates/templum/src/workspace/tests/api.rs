@@ -1,6 +1,7 @@
 //! The Templum API's glue (docs/specs/api.md): the calls its server hands the UI thread, the
 //! checks of a token's scope and workspaces, the state, and the notices.
 
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use serde_json::{Value, json};
@@ -12,7 +13,7 @@ use templum_mcp::{Hello, Incoming, Message};
 use super::bus::{after, event, screen_with};
 use super::bus::{answered, call_later, me};
 #[cfg(unix)]
-use super::delegate::{agents_running, entered};
+use super::delegate::{agents_running, entered, prints};
 use super::*;
 use crate::workspace::AgentState;
 
@@ -210,7 +211,7 @@ fn the_state_has_icons_read_only_blocks_and_shares(cx: &mut TestAppContext) {
     assert!(read_only(terminal) && !read_only(note));
     assert_eq!(
         seen.shares,
-        [templum_api::model::ShareView {
+        [Arc::new(templum_api::model::ShareView {
             id: format!("s{share_id}"),
             workspace: first,
             name: "Another computer".into(),
@@ -221,7 +222,7 @@ fn the_state_has_icons_read_only_blocks_and_shares(cx: &mut TestAppContext) {
             address: "192.168.1.5:7411".into(),
             last: None,
             mirrored: false,
-        }]
+        })]
     );
     let json = serde_json::to_string(&seen).unwrap();
     assert!(!json.contains("tpl_"), "no token text in the state");
@@ -597,6 +598,44 @@ fn a_task_from_the_api_is_typed_from_it_and_its_end_is_a_notice(cx: &mut TestApp
     });
 }
 
+/// A watch set through the API carries the watched block and its workspace, so a token limited to
+/// that workspace hears its notice.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_watch_set_through_the_api_names_its_block_and_workspace(cx: &mut TestAppContext) {
+    let (handle, ws, _, theirs) = agents_running(cx, None);
+    let (_, them) = me(&ws, cx, theirs);
+    let token = with_token(&ws, cx, Scope::Control, None);
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &token,
+        "wait_for",
+        json!({ "block": them, "pattern": "ERROR", "wait": false, "timeout": 300 }),
+    );
+    let (refused, text) = said(&line);
+    assert!(
+        !refused && text.contains("a match comes back as a notice event."),
+        "{text}"
+    );
+    prints(&ws, cx, theirs, b"ERROR one\r");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ws.read_with(cx, |ws, _| ws.api.notices.is_empty()) {
+        after(cx, 250);
+        assert!(std::time::Instant::now() < deadline, "no notice came");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let notices = ws.read_with(cx, |ws, _| ws.api.notices.clone());
+    assert_eq!(
+        notices[0].block.as_deref(),
+        Some(them.as_str()),
+        "{notices:?}"
+    );
+    let workspace = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    assert_eq!(notices[0].workspace.as_deref(), Some(workspace.as_str()));
+}
+
 #[cfg(unix)]
 #[gpui_kit::test]
 fn a_closed_api_call_drops_its_wait(cx: &mut TestAppContext) {
@@ -669,7 +708,7 @@ fn requests(
     state(handle, ws, cx, token)
         .requests
         .into_iter()
-        .map(|r| r.id)
+        .map(|r| r.id.clone())
         .collect()
 }
 
@@ -830,7 +869,7 @@ fn dismiss_and_allow(cx: &mut TestAppContext) {
     );
     let request = state(handle, &ws, cx, &token).requests.remove(0);
     assert_eq!(
-        (request.kind.as_str(), request.buttons),
+        (request.kind.as_str(), request.buttons.clone()),
         ("connect", Some(["Allow".to_string(), "Deny".to_string()]))
     );
     let line = answer_request(

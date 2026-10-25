@@ -611,6 +611,7 @@ pub fn document() -> Value {
 mod tests {
     use super::*;
     use crate::model::*;
+    use std::sync::Arc;
 
     #[test]
     fn the_document_has_every_route_and_tool() {
@@ -773,7 +774,7 @@ mod tests {
                 api: 1,
                 shown: Some("w3".into()),
             },
-            workspaces: vec![WorkspaceView {
+            workspaces: vec![Arc::new(WorkspaceView {
                 id: "w3".into(),
                 name: "API".into(),
                 folder: Some("/p".into()),
@@ -788,8 +789,8 @@ mod tests {
                     status: "live".into(),
                     latency_ms: Some(84),
                 }),
-            }],
-            blocks: vec![BlockView {
+            })],
+            blocks: vec![Arc::new(BlockView {
                 id: "b7k2m".into(),
                 workspace: "w3".into(),
                 kind: "terminal".into(),
@@ -819,13 +820,13 @@ mod tests {
                     }),
                 }),
                 read_only: true,
-            }],
-            wires: vec![WireView {
+            })],
+            wires: vec![Arc::new(WireView {
                 a: "a".into(),
                 b: "b".into(),
                 label: Some("l".into()),
-            }],
-            requests: vec![RequestView {
+            })],
+            requests: vec![Arc::new(RequestView {
                 id: "r12".into(),
                 kind: "question".into(),
                 block: Some("b7k2m".into()),
@@ -862,8 +863,8 @@ mod tests {
                 details: Some("d".into()),
                 facts: Some("f".into()),
                 reason: Some("r".into()),
-            }],
-            boards: vec![BoardView {
+            })],
+            boards: vec![Arc::new(BoardView {
                 id: 3,
                 name: "Sprint".into(),
                 columns: vec![ColumnView {
@@ -871,8 +872,8 @@ mod tests {
                     title: "Doing".into(),
                     cards: vec![40],
                 }],
-            }],
-            cards: vec![CardView {
+            })],
+            cards: vec![Arc::new(CardView {
                 id: 40,
                 board: 3,
                 column: 7,
@@ -900,8 +901,8 @@ mod tests {
                     name: "shot.png".into(),
                     size: 48128,
                 }],
-            }],
-            automations: vec![AutomationView {
+            })],
+            automations: vec![Arc::new(AutomationView {
                 id: 1,
                 name: "Morning".into(),
                 on: true,
@@ -914,8 +915,8 @@ mod tests {
                 last: Some(json!({"at": 1, "went": "ran", "about": "x"})),
                 next: Some(10),
                 sentence: "Every day".into(),
-            }],
-            shares: vec![ShareView {
+            })],
+            shares: vec![Arc::new(ShareView {
                 id: "s4".into(),
                 workspace: "w3".into(),
                 name: "Another computer".into(),
@@ -929,7 +930,7 @@ mod tests {
                     addr: "203.0.113.7".into(),
                 }),
                 mirrored: true,
-            }],
+            })],
             view: Some(ViewView {
                 workspace: "w3".into(),
                 x: 1.0,

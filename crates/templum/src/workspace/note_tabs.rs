@@ -11,12 +11,13 @@ use crate::board::Label;
 use crate::note::{self, Note, NoteTab, Renaming};
 use crate::notes;
 
+use super::remote::Deed;
 use super::{Body, Space, Workspace};
 
 impl Workspace {
     /// A note block at the viewport's center with a new note, its editor with the keyboard.
     pub(crate) fn new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.on_remote() {
+        if self.why_not(Deed::AddNote).is_some() {
             return;
         }
         let at = self.room_in_view(note::SIZE, window, cx).origin();
@@ -26,7 +27,7 @@ impl Workspace {
     /// A note block with a new note, its top-left corner at `at` (world units), its editor with
     /// the keyboard.
     pub(crate) fn add_note_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
-        if self.on_remote() {
+        if self.why_not(Deed::AddNote).is_some() {
             return;
         }
         let id = self.notes.add(String::new(), None, notes::now());
@@ -99,7 +100,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.on_remote() {
+        if self.why_not(Deed::OpenNote).is_some() {
             return;
         }
         if let Some((space, block)) = self.note_open_at(id) {

@@ -6,13 +6,18 @@ use templum_canvas::{Color, Drawing, HIT_PX, Point, ShapeKind};
 
 use crate::ink;
 
+use super::remote::Deed;
 use super::{Drag, INK_UNDO, Tool, Workspace};
 
 impl Workspace {
     /// The toolbar's tool; the keyboard goes back to the canvas. A wire being drawn is given up.
     pub(crate) fn set_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
-        // A mirrored workspace is only looked at and moved around in, for now.
-        if self.on_remote() && !matches!(tool, Tool::Select | Tool::Hand) {
+        let deed = match tool {
+            Tool::Select | Tool::Hand => None,
+            Tool::Wire => Some(Deed::Wire),
+            _ => Some(Deed::Draw),
+        };
+        if deed.is_some_and(|deed| self.why_not(deed).is_some()) {
             return;
         }
         if matches!(self.drag, Some(Drag::Wire { .. })) {
@@ -39,7 +44,7 @@ impl Workspace {
 
     /// The shapes pill above the toolbar, or closes it.
     pub(crate) fn toggle_shapes(&mut self, cx: &mut Context<Self>) {
-        if self.on_remote() {
+        if self.why_not(Deed::Draw).is_some() {
             return;
         }
         self.shapes_open = !self.shapes_open;

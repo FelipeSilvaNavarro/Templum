@@ -8,16 +8,18 @@ use std::time::{Duration, Instant, SystemTime};
 
 use futures::StreamExt;
 use gpui_kit::component::notification::Notification;
-use gpui_kit::{ClipboardItem, Context, Window};
+use gpui_kit::{AppContext as _, ClipboardItem, Context, Window};
 use templum_api::client::{
-    self, About, Command, Inherit, Kept, KeySource, Mirror, Secrets, Status, Update, Why,
+    self, About, Answered, Call, Command, Inherit, Kept, KeySource, Mirror, Secrets, Status, Tools,
+    Update, Why,
 };
 use templum_api::code::{self, Code, Key, Trust};
-use templum_api::model::{AgentView, BlockView, MeView, RequestView, State, WorkspaceView};
+use templum_api::model::{AgentView, BlockView, MeView, RequestView, State, WorkspaceView, same};
 use templum_api::store::Scope;
 use templum_canvas::{BlockId, Camera, Point, Rect, Size, Wire, chrome};
 use templum_terminal::Terminal;
 
+use super::holds::Holds;
 use super::waits::{Approved, Asked, RemoteAsk, Wait, Waiting};
 use super::{
     Body, DEFAULT_COLS, DEFAULT_ROWS, Mirrored, Pane, RemotePane, Space, Workspace,
@@ -157,6 +159,11 @@ pub(crate) struct RemoteSpace {
     pub me: Option<MeView>,
     /// Home's workspace, as the newest state shows it.
     pub home: Option<WorkspaceView>,
+    /// Home's state as last taken, its items the client's own (`Arc`s): the next take shows by
+    /// pointer which collections changed.
+    pub state: State,
+    /// The tools home has, as read at the last connect; None until read (and when it couldn't be).
+    pub tools: Option<Tools>,
     /// The last round trip to home.
     pub latency: Option<Duration>,
     /// The last time it was live.
@@ -189,8 +196,8 @@ pub(crate) struct RemoteSpace {
     /// Home's rectangle of each block, as its state last said it.
     pub rects: HashMap<BlockId, Rect>,
     /// The blocks moved or resized here and not yet shown by home: the rectangle the person left
-    /// them at, and when. It stands over home's until home shows it, or [`HOLD`] passes.
-    pub held: HashMap<BlockId, (Rect, Instant)>,
+    /// them at. It stands over home's until home shows it, or [`holds::HOLD`] passes.
+    pub held: Holds<BlockId, Rect>,
     /// What typing already told, once: (home's block, which sentence). "Not connected" is told
     /// again after the remote was live in between.
     pub told: HashSet<(String, &'static str)>,
@@ -198,9 +205,46 @@ pub(crate) struct RemoteSpace {
     /// the last notifications were made: a home that went wrong can't flood the person
     /// (`remote_tells`).
     requests_told: HashSet<String>,
-    notices: VecDeque<Instant>,
-    /// When the last notice of how many more requests ask was given: one a [`NOTICE_SPAN`].
+    requests_budget: Budget,
+    /// The same for home's notices (a task's end, a watch), counted apart: a burst of requests
+    /// never swallows the end of a task.
+    notice_budget: Budget,
+    /// The notices past the budget, not yet told as how many more.
+    notices_folded: usize,
+}
+
+/// How many notifications of one kind a remote may make in a [`NOTICE_SPAN`], so a home that went
+/// wrong can't flood the person.
+#[derive(Default)]
+struct Budget {
+    at: VecDeque<Instant>,
+    /// When the last notice of how many more there were was given: one a [`NOTICE_SPAN`].
     folded_at: Option<Instant>,
+}
+
+impl Budget {
+    /// Whether a notification is made now: at most [`MOST_NOTICES`] in a [`NOTICE_SPAN`].
+    fn tell(&mut self, now: Instant) -> bool {
+        while (self.at.front()).is_some_and(|at| now.saturating_duration_since(*at) >= NOTICE_SPAN)
+        {
+            self.at.pop_front();
+        }
+        if self.at.len() >= MOST_NOTICES {
+            return false;
+        }
+        self.at.push_back(now);
+        true
+    }
+
+    /// Whether the notification of how many more is given now: one a [`NOTICE_SPAN`].
+    fn fold(&mut self, now: Instant) -> bool {
+        let again =
+            (self.folded_at).is_none_or(|at| now.saturating_duration_since(at) >= NOTICE_SPAN);
+        if again {
+            self.folded_at = Some(now);
+        }
+        again
+    }
 }
 
 impl RemoteSpace {
@@ -216,16 +260,19 @@ impl RemoteSpace {
             wheel_told: Default::default(),
             told: Default::default(),
             requests_told: HashSet::new(),
-            notices: VecDeque::new(),
-            folded_at: None,
+            requests_budget: Budget::default(),
+            notice_budget: Budget::default(),
+            notices_folded: 0,
             rects: HashMap::new(),
-            held: HashMap::new(),
+            held: Holds::default(),
             old_keys: Vec::new(),
             inherits: None,
             entry,
             status: Status::Connecting,
             me: None,
             home: None,
+            tools: None,
+            state: State::default(),
             latency: None,
             live_at: None,
             since: Instant::now(),
@@ -253,6 +300,30 @@ impl RemoteSpace {
             status: self.status.word().to_string(),
             latency_ms: self.latency.map(|l| l.as_millis() as u64),
         }
+    }
+
+    /// Why `deed` can't be done on this remote now, in the rule's order: it is no call yet, the
+    /// remote isn't live, home's Templum lacks the tool (once its tools were read: unknown ones
+    /// dim nothing), or the share is below the scope the call takes.
+    pub(crate) fn why_not(&self, deed: Deed) -> Option<Nay> {
+        let Some((tool, args)) = deed.call() else {
+            return Some(Nay::NotYet);
+        };
+        if self.status != Status::Live {
+            return Some(Nay::NotConnected);
+        }
+        if self.tools.as_ref().is_some_and(|tools| !tools.has(tool)) {
+            return Some(Nay::Older);
+        }
+        let takes = templum_api::registry::scope(tool, &args).unwrap_or(Scope::Full);
+        let takes = match deed {
+            Deed::Answer(asked) => takes.max(asked),
+            _ => takes,
+        };
+        self.me
+            .as_ref()
+            .is_none_or(|me| takes > me.scope)
+            .then_some(Nay::NeedsFull)
     }
 
     /// Home's id of the block `id` here.
@@ -318,10 +389,6 @@ pub(crate) struct Connecting {
     pub file: bool,
 }
 
-/// How long the rectangle of a block moved here stands over home's, if home's state doesn't show
-/// it before.
-pub(crate) const HOLD: Duration = Duration::from_secs(2);
-
 /// Two rectangles that differ by no more than half a unit are the same one: home's float
 /// round trip.
 fn same_rect(a: Rect, b: Rect) -> bool {
@@ -332,21 +399,11 @@ fn same_rect(a: Rect, b: Rect) -> bool {
 
 impl RemoteSpace {
     /// The rectangle to draw block `id` at, home having it at `home`: the one held when it
-    /// is newer than [`HOLD`] and home's isn't it yet; else home's, and the hold goes.
+    /// is newer than [`holds::HOLD`] and home's isn't it yet; else home's, and the hold goes.
     fn rect_shown(&mut self, id: BlockId, home: Rect, now: Instant) -> Rect {
         self.rects.insert(id, home);
-        match self.held.get(&id) {
-            Some((mine, at))
-                if !same_rect(*mine, home) && now.saturating_duration_since(*at) < HOLD =>
-            {
-                *mine
-            }
-            Some(_) => {
-                self.held.remove(&id);
-                home
-            }
-            None => home,
-        }
+        self.held
+            .shown(id, home, now, |mine, home| same_rect(*mine, *home))
     }
 }
 
@@ -414,8 +471,12 @@ fn holder(old: &RemoteEntry, inherits: &Option<(String, bool)>) -> Option<(Strin
     }
 }
 
+/// What the UI thread does with home's answer to a call, when it comes.
+pub(crate) type Then =
+    Box<dyn FnOnce(&mut Workspace, Answered, &mut Window, &mut Context<Workspace>)>;
+
 /// The most terminals of one remote streamed at a time (the client's own cap is the same).
-pub(crate) const MOST_STREAMS: usize = 12;
+pub(crate) const MOST_STREAMS: usize = 11;
 /// How often the set of terminals to stream is chosen again, at most.
 pub(crate) const STREAM_EVERY: Duration = Duration::from_millis(100);
 
@@ -465,11 +526,78 @@ pub(super) struct Heard {
     pub settled: Option<(String, Status, String)>,
 }
 
+/// What the person does on a remote workspace (docs/specs/templum-to-templum.md, One rule for
+/// what the mirror can do): each is a call of home's, or not on a mirror yet. A later part gives a
+/// deed its call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Deed {
+    Type,
+    Move,
+    /// Answering a request that asks this scope of the share.
+    Answer(Scope),
+    Start,
+    AddTerminal,
+    AddNote,
+    AddChecklist,
+    AddKanban,
+    AddEditor,
+    OpenAgent,
+    OpenNote,
+    OpenChecklist,
+    Close,
+    Wire,
+    Draw,
+    Grid,
+    MoveToWorkspace,
+    CopyBlocks,
+    Git,
+}
+
+impl Deed {
+    /// The tool of home's it calls and arguments enough for `registry::scope` to say what scope it
+    /// takes; None for a deed that isn't a call yet.
+    pub(crate) fn call(self) -> Option<(&'static str, serde_json::Value)> {
+        use serde_json::json;
+        Some(match self {
+            Deed::Type => ("terminal_input", json!({ "block": "b", "keys": ["a"] })),
+            Deed::Move => ("move_block", json!({ "block": "b", "x": 0.0, "y": 0.0 })),
+            Deed::Answer(_) => ("answer_request", json!({ "request": "r1" })),
+            Deed::Start => ("show", json!({ "workspace": "w" })),
+            _ => return None,
+        })
+    }
+}
+
+/// Why a deed can't be done now, in the order the rule asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Nay {
+    /// No call of home's does it yet.
+    NotYet,
+    NotConnected,
+    /// Home's Templum lacks the tool.
+    Older,
+    /// The share is below the scope the call takes.
+    NeedsFull,
+}
+
+impl Nay {
+    /// The sentence that says it, `computer` being the other computer's name.
+    pub(crate) fn words(self, computer: &str) -> String {
+        match self {
+            Nay::NotYet => NOT_YET.into(),
+            Nay::NotConnected => "Not connected.".into(),
+            Nay::Older => format!("{computer}'s Templum is older: update it to do this from here."),
+            Nay::NeedsFull => format!("Needs a Full share: share again on {computer}."),
+        }
+    }
+}
+
 /// What typing says when the remote isn't live (the client's own sentence, said once).
 pub(crate) const NOT_CONNECTED: &str = "Not connected: what you type isn't sent.";
 /// `RemoteSpace::told`'s tags.
 const NOT_LIVE: &str = "not live";
 const NEEDS_FULL: &str = "needs full";
+const OLDER: &str = "older";
 
 /// What the banner over a remote's canvas can be asked to do (its buttons).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -835,13 +963,13 @@ impl Space {
     fn mirror_blocks(
         &mut self,
         remote: &mut RemoteSpace,
-        blocks: &[&BlockView],
+        blocks: &[&Arc<BlockView>],
         make: &Viewers,
         (now, dragged): (Instant, &HashSet<BlockId>),
     ) {
         // The front MOST_BLOCKS whose rectangle is sane; a rectangle is clamped like a restored
         // canvas', and one beyond MOST_FAR (or not finite) is left out.
-        let mut blocks: Vec<(&BlockView, Rect)> = blocks
+        let mut blocks: Vec<(&Arc<BlockView>, Rect)> = blocks
             .iter()
             .rev()
             .filter_map(|b| Some((*b, mirrored_rect(b, make.cell)?)))
@@ -860,7 +988,7 @@ impl Space {
             remote.homes.remove(&home);
             remote.names.remove(&id);
             remote.rects.remove(&id);
-            remote.held.remove(&id);
+            remote.held.end(&id);
             self.canvas.remove(id);
             self.blocks.remove(&id);
             self.appearing.remove(&id);
@@ -878,6 +1006,7 @@ impl Space {
         }
         for (b, rect) in &blocks {
             let rect = *rect;
+            let b = &tidy_block(b);
             let id = match remote.homes.get(&b.id) {
                 Some(id) => *id,
                 None => {
@@ -943,7 +1072,12 @@ impl Space {
                 continue;
             }
             wires.push(wire);
-            if let Some(label) = w.label.clone() {
+            if let Some(label) = w
+                .label
+                .as_deref()
+                .map(super::bus::clean_title)
+                .filter(|l| !l.is_empty())
+            {
                 labels.insert(key, label);
             }
         }
@@ -967,31 +1101,21 @@ fn mirrored_rect(b: &BlockView, cell: Size) -> Option<Rect> {
     super::persist::restorable_rect(r, cell)
 }
 
-/// Home's words, cleaned once where they enter: they reach this computer's tiles, index and API
-/// (docs/specs/templum-to-templum.md, threat model). One line each, and short.
-fn tidy(state: &mut State) {
+/// Home's block with its words cleaned where they are used: they reach this computer's tiles,
+/// index and API (docs/specs/templum-to-templum.md, threat model). One line each, and short.
+fn tidy_block(b: &BlockView) -> BlockView {
     use super::bus::{clean_title, clean_to};
-    for w in &mut state.workspaces {
-        w.name = clean_title(&w.name);
+    let mut b = b.clone();
+    b.title = clean_title(&b.title);
+    b.kind = clean_title(&b.kind);
+    if let Some(a) = &mut b.agent {
+        a.agent = clean_title(&a.agent);
+        a.state = clean_title(&a.state);
+        a.asks = a.asks.as_deref().map(|s| clean_to(s, ASKS_CHARS));
+        a.model = a.model.as_deref().map(clean_title);
+        a.effort = a.effort.as_deref().map(clean_title);
     }
-    for b in &mut state.blocks {
-        b.title = clean_title(&b.title);
-        b.kind = clean_title(&b.kind);
-        if let Some(a) = &mut b.agent {
-            a.agent = clean_title(&a.agent);
-            a.state = clean_title(&a.state);
-            a.asks = a.asks.as_deref().map(|s| clean_to(s, ASKS_CHARS));
-            a.model = a.model.as_deref().map(clean_title);
-            a.effort = a.effort.as_deref().map(clean_title);
-        }
-    }
-    for w in &mut state.wires {
-        w.label = w
-            .label
-            .as_deref()
-            .map(clean_title)
-            .filter(|l| !l.is_empty());
-    }
+    b
 }
 
 /// Who home says it is: its computer's name is shown on tiles and in the banner, and the id of its
@@ -1033,7 +1157,9 @@ fn remote_body(b: &BlockView, rect: Rect, make: &Viewers) -> Body {
 }
 
 impl Workspace {
-    /// The workspace shown is a mirror of another computer's: what it can't do yet does nothing.
+    /// The workspace shown is a mirror of another computer's. What a remote must never hold (an
+    /// id for an agent, a wire, a label, ink) is guarded by this; what the person does asks
+    /// `why_not`.
     pub(crate) fn on_remote(&self) -> bool {
         self.space.is_remote()
     }
@@ -1115,7 +1241,8 @@ impl Workspace {
             .map(|s| s.id.clone())
             .collect();
         let states: Vec<(String, State)> = ids
-            .into_iter()
+            .iter()
+            .cloned()
             .filter_map(|id| Some((id.clone(), mirror.state(&id)?)))
             .collect();
         let mut index = false;
@@ -1127,6 +1254,9 @@ impl Workspace {
         }
         for (id, state) in states {
             self.apply_remote(&id, state, window, cx);
+        }
+        for id in ids {
+            self.fold_notices(&id, window, cx);
         }
         for (id, status, words) in connected {
             self.connect_moved(&id, &status, words, window, cx);
@@ -1157,6 +1287,10 @@ impl Workspace {
         match update {
             Update::Refused { about, sentence } => {
                 self.refused(id, about, &sentence, window, cx);
+                return heard;
+            }
+            Update::Notice(notice) => {
+                self.remote_notice(id, notice, window, cx);
                 return heard;
             }
             Update::Dropped(_) => {
@@ -1206,6 +1340,7 @@ impl Workspace {
                 remote.me = Some(me);
             }
             Update::Latency(latency) => remote.latency = Some(latency),
+            Update::Tools(tools) => remote.tools = Some(tools),
             Update::Kept(kept) => {
                 remote.entry.key = match kept {
                     Kept::Keyring => Keeping::Keyring,
@@ -1221,7 +1356,10 @@ impl Workspace {
                 }
             }
             // Said above, or the probe's, which has no remote.
-            Update::Refused { .. } | Update::Dropped(_) | Update::Keyring(_) => {}
+            Update::Refused { .. }
+            | Update::Dropped(_)
+            | Update::Keyring(_)
+            | Update::Notice(_) => {}
         }
         heard
     }
@@ -1237,20 +1375,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.warn(super::bus::clean_to(sentence, 200), window, cx);
-        // An answer home refused shows in the inbox again.
-        if let About::Answer(request) = &about {
-            for ask in self.waits.iter_mut().filter_map(|w| w.remote.as_mut()) {
-                if ask.space == id && ask.request == *request {
-                    ask.sent = false;
-                }
-            }
-        }
         if let About::Move(block) = about
             && let Some(space) = self.space_by_id_mut(id)
             && let Some(mut remote) = space.remote.take()
         {
             if let Some(local) = remote.homes.get(&block).copied() {
-                remote.held.remove(&local);
+                remote.held.end(&local);
                 if let (Some(rect), Some(b)) =
                     (remote.rects.get(&local), space.canvas.get_mut(local))
                 {
@@ -1261,23 +1391,23 @@ impl Workspace {
         }
     }
 
-    /// Whether the remote shown is not live: nothing can be moved or answered on it.
-    pub(crate) fn remote_frozen(&self) -> bool {
-        self.space
-            .remote
-            .as_ref()
-            .is_some_and(|r| r.status != Status::Live)
+    /// Why `deed` can't be done on the workspace shown, in words: None on a local workspace, and
+    /// when the mirror can do it.
+    pub(crate) fn why_not(&self, deed: Deed) -> Option<String> {
+        let remote = self.space.remote.as_deref()?;
+        let nay = remote.why_not(deed)?;
+        Some(nay.words(&crate::mirror::computer_of(remote)))
     }
 
     /// The blocks `ids` of the remote shown were moved or resized here (a drag let go, Ctrl+Z):
     /// home moves each one (a `move_block` per block), and the rectangle left here stands until
-    /// home's state shows it or [`HOLD`] passes. With the remote not live nothing is sent and
+    /// home's state shows it or [`holds::HOLD`] passes. With the remote not live nothing is sent and
     /// they go back where home has them.
     pub(super) fn remote_moved(&mut self, ids: &[BlockId], now: Instant) {
         let Some(mut remote) = self.space.remote.take() else {
             return;
         };
-        let live = remote.status == Status::Live;
+        let live = remote.why_not(Deed::Move).is_none();
         for id in ids {
             let (Some(block), Some(home)) = (self.space.canvas.get_mut(*id), remote.home_of(*id))
             else {
@@ -1287,15 +1417,15 @@ impl Workspace {
                 continue;
             };
             // What home has, as far as this knows: a move sent and not shown yet counts.
-            let sent = remote.held.get(id).map_or(last, |(rect, _)| *rect);
+            let sent = remote.held.get(id).copied().unwrap_or(last);
             if !live {
                 block.rect = last;
-                remote.held.remove(id);
+                remote.held.end(id);
             } else if same_rect(block.rect, sent) {
                 continue;
             } else {
                 let r = block.rect;
-                remote.held.insert(*id, (r, now));
+                remote.held.hold(*id, r, now);
                 let rect = templum_api::model::Rect {
                     x: r.x,
                     y: r.y,
@@ -1308,27 +1438,14 @@ impl Workspace {
         self.space.remote = Some(remote);
     }
 
-    /// Each frame: the rectangles held for [`HOLD`] are home's again. The time the next one is
+    /// Each frame: the rectangles held for [`holds::HOLD`] are home's again. The time the next one is
     /// due, if there is one (`stream_at` repaints then).
     pub(super) fn expire_holds(&mut self, now: Instant) -> Option<Instant> {
         let remote = self.space.remote.as_mut()?;
-        let mut due: Option<Instant> = None;
-        let mut back = Vec::new();
-        remote.held.retain(|id, (_, at)| {
-            // A block in the person's hand isn't taken from it; its release holds it again.
-            if self.placed.iter().any(|(p, _)| p == id) {
-                return true;
-            }
-            let ends = *at + HOLD;
-            if now >= ends {
-                back.push(*id);
-                false
-            } else {
-                due = Some(due.map_or(ends, |d| d.min(ends)));
-                true
-            }
-        });
-        for id in back {
+        let (ended, due) = remote
+            .held
+            .expire(now, |id| self.placed.iter().any(|(p, _)| p == id));
+        for id in ended {
             if let (Some(rect), Some(b)) = (remote.rects.get(&id), self.space.canvas.get_mut(id)) {
                 b.rect = *rect;
             }
@@ -1341,11 +1458,10 @@ impl Workspace {
     pub(super) fn apply_remote(
         &mut self,
         id: &str,
-        mut state: State,
+        state: State,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        tidy(&mut state);
         let viewport = self.viewport(window);
         let now = Instant::now();
         let dragged: HashSet<BlockId> = if self.space.id == id {
@@ -1370,7 +1486,10 @@ impl Workspace {
             .iter()
             .find(|w| Some(&w.id) == remote.entry.home.as_ref())
             .or(state.workspaces.first())
-            .cloned();
+            .map(|w| WorkspaceView {
+                name: super::bus::clean_title(&w.name),
+                ..WorkspaceView::clone(w)
+            });
         if let Some(home) = &home {
             if !home.name.is_empty() && space.name != home.name {
                 space.name.clone_from(&home.name);
@@ -1385,14 +1504,22 @@ impl Workspace {
                 remote.home_look = true;
             }
         }
-        let mut blocks: Vec<&BlockView> = state
-            .blocks
-            .iter()
-            .filter(|b| home.as_ref().is_some_and(|h| h.id == b.workspace))
-            .collect();
-        blocks.sort_by_key(|b| b.z);
-        space.mirror_blocks(&mut remote, &blocks, &make, (now, &dragged));
-        space.mirror_wires(&remote, &state);
+        // What the three depend on one another for, and what a change of cards, boards,
+        // automations or shares alone doesn't touch: all or none.
+        let changed = !same(&state.workspaces, &remote.state.workspaces)
+            || !same(&state.blocks, &remote.state.blocks)
+            || !same(&state.wires, &remote.state.wires)
+            || !same(&state.requests, &remote.state.requests);
+        if changed {
+            let mut blocks: Vec<&Arc<BlockView>> = state
+                .blocks
+                .iter()
+                .filter(|b| home.as_ref().is_some_and(|h| h.id == b.workspace))
+                .collect();
+            blocks.sort_by_key(|b| b.z);
+            space.mirror_blocks(&mut remote, &blocks, &make, (now, &dragged));
+            space.mirror_wires(&remote, &state);
+        }
         if !remote.placed && home.is_some() {
             remote.placed = true;
             let mut camera = space.canvas.camera;
@@ -1416,8 +1543,12 @@ impl Workspace {
         }
         let home_id = home.as_ref().map(|h| h.id.clone());
         remote.home = home;
+        let requests = changed.then(|| state.requests.clone());
+        remote.state = state;
         space.remote = Some(remote);
-        self.remote_requests(id, home_id.as_deref(), &state.requests, window, cx);
+        if let Some(requests) = requests {
+            self.remote_requests(id, home_id.as_deref(), &requests, window, cx);
+        }
     }
 
     /// What the person pasted into the Connect dialog becomes a remote workspace, hidden until it
@@ -1504,11 +1635,13 @@ impl Workspace {
         remote.since = Instant::now();
         remote.started = true;
         remote.me = None;
+        remote.tools = None;
         remote.latency = None;
         remote.told.clear();
         remote.requests_told.clear();
-        remote.notices.clear();
-        remote.folded_at = None;
+        remote.requests_budget = Budget::default();
+        remote.notice_budget = Budget::default();
+        remote.notices_folded = 0;
         let connection = remote.remote(KeySource::Save {
             entry: remote.entry.entry.clone(),
             secrets,
@@ -1623,7 +1756,28 @@ impl Workspace {
             }
             Act::Paste => crate::connect_dialog::open_for(self, id, window, cx),
             Act::Forget => crate::mirror::forget_dialog(self, id, window, cx),
-            Act::StartIt => self.mirror_send(id, Command::Show),
+            Act::StartIt => {
+                if let Some(nay) = remote.why_not(Deed::Start) {
+                    let words = nay.words(&crate::mirror::computer_of(remote));
+                    return self.warn(words, window, cx);
+                }
+                let Some(workspace) = remote.entry.home.clone() else {
+                    return self.warn("Not connected.".into(), window, cx);
+                };
+                let call = Call {
+                    tool: "show".into(),
+                    args: serde_json::json!({ "workspace": workspace }),
+                    slow: false,
+                };
+                // A refusal for a remote forgotten meanwhile is not said.
+                let space = id.to_string();
+                let then: Then = Box::new(move |ws, answered, window, cx| {
+                    if ws.space_named(&space).is_some() {
+                        Self::warn_refusal(ws, answered, window, cx);
+                    }
+                });
+                self.remote_call(id, call, then, cx);
+            }
             Act::DontConnect if pending => {
                 self.give_up_connecting(id, window, cx);
                 self.connect_done = Some(Err("Not connected.".into()));
@@ -1827,15 +1981,14 @@ impl Workspace {
         let space = self.space.id.clone();
         let remote = self.space.remote.as_mut()?;
         let computer = crate::mirror::computer_of(remote);
-        let (said, sentence) = if remote.status != Status::Live {
-            (NOT_LIVE, NOT_CONNECTED.to_string())
-        } else if remote.me.as_ref().is_none_or(|m| m.scope != Scope::Full) {
-            (
+        let (said, sentence) = match remote.why_not(Deed::Type) {
+            None => return Some((space, block)),
+            Some(Nay::NotConnected | Nay::NotYet) => (NOT_LIVE, NOT_CONNECTED.to_string()),
+            Some(Nay::NeedsFull) => (
                 NEEDS_FULL,
                 format!("Typing needs a Full share: share again on {computer}."),
-            )
-        } else {
-            return Some((space, block));
+            ),
+            Some(older @ Nay::Older) => (OLDER, older.words(&computer)),
         };
         if remote.told.insert((block, said)) {
             self.warn(sentence, window, cx);
@@ -1893,16 +2046,8 @@ impl Workspace {
     pub(crate) fn remote_blocked(&self, wait: &Wait) -> Option<String> {
         let ask = wait.remote.as_ref()?;
         let remote = self.space_named(&ask.space)?.remote.as_deref()?;
-        if remote.status != Status::Live {
-            return Some("Not connected.".into());
-        }
-        if remote.me.as_ref().is_none_or(|m| ask.scope > m.scope) {
-            return Some(format!(
-                "Needs a Full share: share again on {}.",
-                crate::mirror::computer_of(remote)
-            ));
-        }
-        None
+        let nay = remote.why_not(Deed::Answer(ask.scope))?;
+        Some(nay.words(&crate::mirror::computer_of(remote)))
     }
 
     /// The answer `args` to the mirrored request `key` goes to its home (`answer_request`); the
@@ -1924,7 +2069,36 @@ impl Workspace {
             return;
         };
         let (space, request) = (ask.space.clone(), ask.request.clone());
-        self.mirror_send(&space, Command::Answer { request, args });
+        let mut fields = match args {
+            serde_json::Value::Object(fields) => fields,
+            _ => serde_json::Map::new(),
+        };
+        fields.insert("request".into(), request.into());
+        let call = Call {
+            tool: "answer_request".into(),
+            args: serde_json::Value::Object(fields),
+            slow: false,
+        };
+        // Home refused: the request shows in the inbox again, and its words are said. One that
+        // left the inbox meanwhile (home's state dropped it, or its remote was forgotten) is not
+        // there to show again, and its words are not said: nobody waits for them.
+        let then: Then = Box::new(move |ws, answered, window, cx| {
+            if answered.is_ok() {
+                return;
+            }
+            let Some(ask) = ws
+                .waits
+                .iter_mut()
+                .find(|w| w.key == key)
+                .and_then(|w| w.remote.as_mut())
+            else {
+                return;
+            };
+            ask.sent = false;
+            Self::warn_refusal(ws, answered, window, cx);
+            cx.notify();
+        });
+        self.remote_call(&space, call, then, cx);
         if let Some(ask) = self
             .waits
             .iter_mut()
@@ -1945,11 +2119,11 @@ impl Workspace {
         &mut self,
         id: &str,
         home: Option<&str>,
-        requests: &[RequestView],
+        requests: &[Arc<RequestView>],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let wanted: Vec<&RequestView> = requests
+        let wanted: Vec<&Arc<RequestView>> = requests
             .iter()
             .filter(|r| r.workspace.as_deref() == home && home.is_some())
             .filter(|r| r.id.len() <= 32 && !r.id.chars().any(char::is_control))
@@ -2001,35 +2175,18 @@ impl Workspace {
         if !remote.requests_told.insert(request.to_string()) {
             return Notice::Again;
         }
-        let now = Instant::now();
-        while remote
-            .notices
-            .front()
-            .is_some_and(|at| now.saturating_duration_since(*at) >= NOTICE_SPAN)
-        {
-            remote.notices.pop_front();
+        if remote.requests_budget.tell(Instant::now()) {
+            Notice::Tell
+        } else {
+            Notice::Fold
         }
-        if remote.notices.len() >= MOST_NOTICES {
-            return Notice::Fold;
-        }
-        remote.notices.push_back(now);
-        Notice::Tell
     }
 
     /// Whether the notice of how many more requests ask is given now: at most one a
     /// [`NOTICE_SPAN`], so a home that makes a new request every state can't flood the person.
     fn fold_tells(&mut self, id: &str) -> bool {
-        let Some(remote) = self.remote_mut(id) else {
-            return false;
-        };
-        let now = Instant::now();
-        let again = remote
-            .folded_at
-            .is_none_or(|at| now.saturating_duration_since(at) >= NOTICE_SPAN);
-        if again {
-            remote.folded_at = Some(now);
-        }
-        again
+        self.remote_mut(id)
+            .is_some_and(|remote| remote.requests_budget.fold(Instant::now()))
     }
 
     /// A new request of home's, a wait here. Skipped when its block has no viewer here, or it
@@ -2080,11 +2237,178 @@ impl Workspace {
         }
     }
 
+    /// A notice of home's about its workspace (a task's end, a watch, an agent that waits): a
+    /// notification titled by the workspace and the computer, whose click shows the block it is
+    /// about or else the workspace. At most [`MOST_NOTICES`] a [`NOTICE_SPAN`]; the rest are
+    /// counted for `fold_notices`. One about another workspace of home's is not this one's.
+    pub(super) fn remote_notice(
+        &mut self,
+        id: &str,
+        notice: templum_api::model::Notice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(space) = self.space_named(id) else {
+            return;
+        };
+        let Some(remote) = space.remote.as_deref() else {
+            return;
+        };
+        if notice.workspace.is_none() || notice.workspace != remote.entry.home {
+            return;
+        }
+        let title = format!("{} on {}", space.name, crate::mirror::computer_of(remote));
+        let text = super::bus::clean_to(&notice.text, templum_api::client::NOTICE_CHARS);
+        if !self
+            .remote_mut(id)
+            .is_some_and(|remote| remote.notice_budget.tell(Instant::now()))
+        {
+            if let Some(remote) = self.remote_mut(id) {
+                remote.notices_folded += 1;
+            }
+            return;
+        }
+        #[cfg(test)]
+        self.said.push(format!("{title}: {text}"));
+        let (ws, space, block) = (cx.entity().downgrade(), id.to_string(), notice.block);
+        let notification = Notification::new()
+            .title(title)
+            .message(text)
+            .delivery(self.delivery(window))
+            .on_click(move |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let local = block.as_ref().and_then(|block| {
+                        ws.space_named(&space)?
+                            .remote
+                            .as_deref()?
+                            .homes
+                            .get(block)
+                            .copied()
+                    });
+                    match local {
+                        Some(local) => ws.reveal(&space, local, window, cx),
+                        None => {
+                            if let Some(to) = ws.order().iter().position(|s| s.id == space) {
+                                ws.switch_to(to, window, cx);
+                            }
+                        }
+                    }
+                })
+                .ok();
+            });
+        show_notification(window, cx, notification);
+    }
+
+    /// The notices past the budget become one notification of how many more, at most one a
+    /// [`NOTICE_SPAN`].
+    pub(super) fn fold_notices(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(space) = self.space_named(id) else {
+            return;
+        };
+        let Some(remote) = space.remote.as_deref().filter(|r| r.notices_folded > 0) else {
+            return;
+        };
+        let (title, computer, count) = (
+            format!("{} on {}", space.name, crate::mirror::computer_of(remote)),
+            crate::mirror::computer_of(remote),
+            remote.notices_folded,
+        );
+        if !self
+            .remote_mut(id)
+            .is_some_and(|remote| remote.notice_budget.fold(Instant::now()))
+        {
+            return;
+        }
+        if let Some(remote) = self.remote_mut(id) {
+            remote.notices_folded = 0;
+        }
+        let text = match count {
+            1 => format!("1 more notice from {computer}"),
+            n => format!("{n} more notices from {computer}"),
+        };
+        #[cfg(test)]
+        self.said.push(format!("{title}: {text}"));
+        show_notification(
+            window,
+            cx,
+            Notification::new()
+                .title(title)
+                .message(text)
+                .delivery(self.delivery(window)),
+        );
+    }
+
     /// Tells remote `id` something; nothing without a client.
     pub(crate) fn mirror_send(&self, id: &str, command: Command) {
         if let Some(mirror) = &self.mirror {
             mirror.send(id, command);
         }
+    }
+
+    /// Calls a tool of remote `space`'s home. `then` runs on the UI thread with home's answer,
+    /// when it comes: the UI never waits for it, and a refusal's sentence is cleaned first. With
+    /// no client the answer is "Not connected." (tests keep the call in `calls` to answer it).
+    pub(crate) fn remote_call(
+        &mut self,
+        space: &str,
+        call: Call,
+        then: Then,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mirror) = &self.mirror else {
+            #[cfg(test)]
+            return self.calls.push((space.into(), call, then));
+            #[cfg(not(test))]
+            return self.answered_later(
+                std::future::ready(Err(client::Refusal {
+                    sentence: "Not connected.".into(),
+                })),
+                then,
+                cx,
+            );
+        };
+        let answer = mirror.call(space, call);
+        self.answered_later(answer, then, cx);
+    }
+
+    fn answered_later(
+        &mut self,
+        answer: impl std::future::Future<Output = Answered> + 'static,
+        then: Then,
+        cx: &mut Context<Self>,
+    ) {
+        let window = self.window_handle;
+        cx.spawn(async move |ws, cx| {
+            let mut answered = answer.await;
+            if let Err(refusal) = &mut answered {
+                refusal.sentence = super::bus::clean_to(&refusal.sentence, 200);
+            }
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| then(ws, answered, window, cx)).ok();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The `then` of a call whose only result is its refusal, said.
+    fn warn_refusal(&mut self, answered: Answered, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(refusal) = answered {
+            self.warn(refusal.sentence, window, cx);
+        }
+    }
+
+    /// Test: answers the call `n` that was kept for want of a client.
+    #[cfg(test)]
+    pub(crate) fn answer_call(
+        &mut self,
+        n: usize,
+        answer: Answered,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (_, _, then) = self.calls.remove(n);
+        then(self, answer, window, cx);
     }
 }
 
@@ -2305,7 +2629,7 @@ mod tests {
     }
 
     #[test]
-    fn the_nearest_twelve_stream_and_the_focused_one_always() {
+    fn the_nearest_eleven_stream_and_the_focused_one_always() {
         let blocks = line(15);
         // The center is the 8th block's (index 7).
         let center = Point::new(7.0 * 100.0 + 25.0, 25.0);
@@ -2361,6 +2685,64 @@ mod tests {
         });
         remote.status = status;
         remote
+    }
+
+    #[test]
+    fn the_one_rule_says_why_in_its_order() {
+        let mut remote = remote_at(
+            "https://winx-desktop.example.com",
+            Status::Reconnecting {
+                attempt: 1,
+                next: Duration::from_secs(1),
+                live_at: None,
+            },
+        );
+        let words = |r: &RemoteSpace, d| r.why_not(d).map(|n| n.words("winx-desktop"));
+        assert_eq!(
+            words(&remote, Deed::AddTerminal).as_deref(),
+            Some("Not on a mirrored workspace yet")
+        );
+        assert_eq!(
+            words(&remote, Deed::Move).as_deref(),
+            Some("Not connected.")
+        );
+        remote.status = Status::Live;
+        remote.me = Some(MeView {
+            scope: Scope::Control,
+            ..MeView::default()
+        });
+        assert_eq!(
+            remote.why_not(Deed::Move),
+            None,
+            "tools unknown: nothing is older"
+        );
+        assert_eq!(
+            words(&remote, Deed::Type).as_deref(),
+            Some("Needs a Full share: share again on winx-desktop.")
+        );
+        assert_eq!(remote.why_not(Deed::Answer(Scope::Control)), None);
+        assert_eq!(
+            remote.why_not(Deed::Answer(Scope::Full)),
+            Some(Nay::NeedsFull)
+        );
+        remote.tools = Some(Tools::read(&serde_json::json!([{ "name": "show" }])));
+        assert_eq!(
+            words(&remote, Deed::Move).as_deref(),
+            Some("winx-desktop's Templum is older: update it to do this from here.")
+        );
+        assert_eq!(remote.why_not(Deed::Start), None);
+    }
+
+    #[test]
+    fn every_deed_home_runs_has_a_scope_in_the_registry() {
+        let scope = |deed: Deed| {
+            let (tool, args) = deed.call().expect("a call");
+            templum_api::registry::scope(tool, &args).expect("parses")
+        };
+        assert_eq!(scope(Deed::Type), Scope::Full);
+        assert_eq!(scope(Deed::Move), Scope::Control);
+        assert_eq!(scope(Deed::Start), Scope::Control);
+        assert_eq!(scope(Deed::Answer(Scope::Control)), Scope::Control);
     }
 
     #[test]

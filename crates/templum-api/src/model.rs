@@ -6,22 +6,23 @@ use crate::store::{Scope, Token, Way};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Everything the API shows. Times are Unix seconds.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
     pub app: App,
-    pub workspaces: Vec<WorkspaceView>,
-    pub blocks: Vec<BlockView>,
-    pub wires: Vec<WireView>,
-    pub requests: Vec<RequestView>,
-    pub boards: Vec<BoardView>,
-    pub cards: Vec<CardView>,
-    pub automations: Vec<AutomationView>,
+    pub workspaces: Vec<Arc<WorkspaceView>>,
+    pub blocks: Vec<Arc<BlockView>>,
+    pub wires: Vec<Arc<WireView>>,
+    pub requests: Vec<Arc<RequestView>>,
+    pub boards: Vec<Arc<BoardView>>,
+    pub cards: Vec<Arc<CardView>>,
+    pub automations: Vec<Arc<AutomationView>>,
     /// The shares of workspaces: a token for all workspaces sees every one, a limited token only
     /// the share it is. Left out by homes older than shares.
     #[serde(default)]
-    pub shares: Vec<ShareView>,
+    pub shares: Vec<Arc<ShareView>>,
     pub usage: Option<UsageView>,
     /// What the shown workspace's canvas shows; None before its first paint.
     pub view: Option<ViewView>,
@@ -487,7 +488,7 @@ impl State {
         if caller.workspaces.is_none() {
             return self.clone();
         }
-        let blocks: Vec<BlockView> = self
+        let blocks: Vec<Arc<BlockView>> = self
             .blocks
             .iter()
             .filter(|block| caller.sees(Some(&block.workspace)))
@@ -658,9 +659,10 @@ impl State {
                 // At most one, with the id `usage`.
                 let one = Edit::<UsageView>::read(event, data, |_| "usage".into())?;
                 Ok(Box::new(move |state| {
-                    let mut items: Vec<UsageView> = state.usage.take().into_iter().collect();
+                    let mut items: Vec<Arc<UsageView>> =
+                        state.usage.take().map(Arc::new).into_iter().collect();
                     let changed = one.run(&mut items, |_| "usage".into());
-                    state.usage = items.pop();
+                    state.usage = items.pop().map(Arc::unwrap_or_clone);
                     changed
                 }))
             }
@@ -727,7 +729,8 @@ impl<T: serde::de::DeserializeOwned + PartialEq> Edit<T> {
         Ok(Edit { id, put })
     }
 
-    fn run(self, items: &mut Vec<T>, id: impl Fn(&T) -> String) -> Result<bool, ApplyError> {
+    /// Keeps the `Arc` of an item a put equals, so a take shares what didn't change.
+    fn run(self, items: &mut Vec<Arc<T>>, id: impl Fn(&T) -> String) -> Result<bool, ApplyError> {
         let Some(item) = self.put else {
             let before = items.len();
             items.retain(|old| id(old) != self.id);
@@ -735,14 +738,14 @@ impl<T: serde::de::DeserializeOwned + PartialEq> Edit<T> {
         };
         let full = items.len() >= COLLECTION_MOST;
         match items.iter_mut().find(|old| id(old) == self.id) {
-            Some(old) if *old == item => Ok(false),
+            Some(old) if **old == item => Ok(false),
             Some(old) => {
-                *old = item;
+                *old = Arc::new(item);
                 Ok(true)
             }
             None if full => Err(ApplyError::TooLarge),
             None => {
-                items.push(item);
+                items.push(Arc::new(item));
                 Ok(true)
             }
         }
@@ -753,7 +756,7 @@ impl<T: serde::de::DeserializeOwned + PartialEq> Edit<T> {
 fn edit<T: serde::de::DeserializeOwned + PartialEq + 'static>(
     event: &str,
     data: &Value,
-    items: fn(&mut State) -> &mut Vec<T>,
+    items: fn(&mut State) -> &mut Vec<Arc<T>>,
     id: fn(&T) -> String,
 ) -> Result<Change, ApplyError> {
     let edit = Edit::read(event, data, id)?;
@@ -786,7 +789,7 @@ pub fn diff(old: &State, new: &State) -> Vec<Delta> {
         |b| b.id.clone(),
         &mut out,
     );
-    compare("wire", &old.wires, &new.wires, WireView::id, &mut out);
+    compare("wire", &old.wires, &new.wires, |w| w.id(), &mut out);
     compare(
         "request",
         &old.requests,
@@ -832,6 +835,11 @@ pub fn diff(old: &State, new: &State) -> Vec<Delta> {
     out
 }
 
+/// Whether two collections are the same items: as many, each the very same `Arc`, in order.
+pub fn same<T>(a: &[Arc<T>], b: &[Arc<T>]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| Arc::ptr_eq(x, y))
+}
+
 /// One collection's deletes (ids gone), then its puts (ids new or changed).
 fn compare<T: PartialEq + Serialize>(
     kind: &'static str,
@@ -870,44 +878,44 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn block(id: &str, workspace: &str, kind: &str) -> BlockView {
-        BlockView {
+    fn block(id: &str, workspace: &str, kind: &str) -> Arc<BlockView> {
+        Arc::new(BlockView {
             id: id.into(),
             workspace: workspace.into(),
             kind: kind.into(),
             title: id.into(),
             ..Default::default()
-        }
+        })
     }
 
-    fn request(id: &str, kind: &str, block: &str) -> RequestView {
-        RequestView {
+    fn request(id: &str, kind: &str, block: &str) -> Arc<RequestView> {
+        Arc::new(RequestView {
             id: id.into(),
             kind: kind.into(),
             block: (!block.is_empty()).then(|| block.into()),
             ..Default::default()
-        }
+        })
     }
 
-    fn automation(id: u64, workspace: Option<&str>) -> AutomationView {
-        AutomationView {
+    fn automation(id: u64, workspace: Option<&str>) -> Arc<AutomationView> {
+        Arc::new(AutomationView {
             id,
             workspace: workspace.map(Into::into),
             ..Default::default()
-        }
+        })
     }
 
     /// w3: `b1` (a terminal with a working agent) and `k1` (a kanban showing board 3, card 40);
     /// w4: `b2`; a wire b1–k1; requests r1 (of b1), r2 (of b2), approval a1; boards 3 and 5 (shown
     /// by none); automations for w3, w4 and all workspaces; a usage.
     fn two_workspaces() -> State {
-        let mut b1 = block("b1", "w3", "terminal");
+        let mut b1 = BlockView::clone(&block("b1", "w3", "terminal"));
         b1.agent = Some(AgentView {
             agent: "claude".into(),
             state: "working".into(),
             ..Default::default()
         });
-        let mut k1 = block("k1", "w3", "kanban");
+        let mut k1 = BlockView::clone(&block("k1", "w3", "kanban"));
         k1.board = Some(3);
         State {
             app: App {
@@ -916,36 +924,40 @@ mod tests {
                 shown: Some("w4".into()),
             },
             workspaces: ["w3", "w4"]
-                .map(|id| WorkspaceView {
-                    id: id.into(),
-                    name: id.into(),
-                    ..Default::default()
+                .map(|id| {
+                    Arc::new(WorkspaceView {
+                        id: id.into(),
+                        name: id.into(),
+                        ..Default::default()
+                    })
                 })
                 .into(),
-            blocks: vec![b1, k1, block("b2", "w4", "terminal")],
-            wires: vec![WireView {
+            blocks: vec![Arc::new(b1), Arc::new(k1), block("b2", "w4", "terminal")],
+            wires: vec![Arc::new(WireView {
                 a: "b1".into(),
                 b: "k1".into(),
                 label: None,
-            }],
+            })],
             requests: vec![
                 request("r1", "question", "b1"),
                 request("r2", "question", "b2"),
                 request("a1", "approval", ""),
             ],
             boards: [3, 5]
-                .map(|id| BoardView {
-                    id,
-                    name: format!("B{id}"),
-                    columns: vec![],
+                .map(|id| {
+                    Arc::new(BoardView {
+                        id,
+                        name: format!("B{id}"),
+                        columns: vec![],
+                    })
                 })
                 .into(),
-            cards: vec![CardView {
+            cards: vec![Arc::new(CardView {
                 id: 40,
                 board: 3,
                 column: 7,
                 ..Default::default()
-            }],
+            })],
             automations: vec![
                 automation(1, Some("w3")),
                 automation(2, Some("w4")),
@@ -994,7 +1006,7 @@ mod tests {
         let mut s = two_workspaces();
         let rect = |s: &State, id: &str| s.blocks.iter().find(|b| b.id == id).unwrap().rect.x;
 
-        let mut moved = s.blocks[0].clone();
+        let mut moved = BlockView::clone(&s.blocks[0]);
         moved.rect.x = 77.0;
         let put = json!({"op": "put", "id": "b1", "value": moved});
         assert_eq!(s.apply("block", &put), Ok(true));
@@ -1027,7 +1039,7 @@ mod tests {
             s.apply("share", &json!({"op": "put", "id": "s4", "value": share})),
             Ok(true)
         );
-        assert_eq!(s.shares, [share]);
+        assert_eq!(s.shares, [Arc::new(share)]);
 
         assert_eq!(
             s.apply("usage", &json!({"op": "delete", "id": "usage"})),
@@ -1130,7 +1142,7 @@ mod tests {
 
     #[test]
     fn a_state_past_the_caps_is_too_large() {
-        let blocks = |n: usize| -> Vec<BlockView> {
+        let blocks = |n: usize| -> Vec<Arc<BlockView>> {
             (0..n)
                 .map(|i| block(&format!("b{i}"), "w3", "note"))
                 .collect()
@@ -1163,18 +1175,18 @@ mod tests {
     fn applying_a_diff_onto_the_old_state_makes_the_new_one() {
         let old = two_workspaces();
         let mut new = old.clone();
-        new.blocks[0].rect.x = 50.0;
+        Arc::make_mut(&mut new.blocks[0]).rect.x = 50.0;
         new.blocks.remove(2);
         new.blocks.push(block("b9", "w4", "note"));
         new.wires.clear();
         new.cards.clear();
         new.requests.remove(0);
-        new.automations[1].on = true;
+        Arc::make_mut(&mut new.automations[1]).on = true;
         new.usage = None;
-        new.workspaces.push(WorkspaceView {
+        new.workspaces.push(Arc::new(WorkspaceView {
             id: "w9".into(),
             ..Default::default()
-        });
+        }));
         let mut mirror = old.clone();
         for delta in diff(&old, &new) {
             let (event, data) = framed(delta);
@@ -1187,7 +1199,7 @@ mod tests {
     fn diff_puts_what_changed_and_deletes_what_went() {
         let old = two_workspaces();
         let mut new = old.clone();
-        new.blocks[0].rect.x = 50.0;
+        Arc::make_mut(&mut new.blocks[0]).rect.x = 50.0;
         new.cards.clear();
         let deltas = diff(&old, &new);
         assert_eq!(
@@ -1227,11 +1239,11 @@ mod tests {
     fn a_wire_is_named_by_its_sorted_ends() {
         let old = two_workspaces();
         let mut new = old.clone();
-        new.wires.push(WireView {
+        new.wires.push(Arc::new(WireView {
             a: "k1".into(),
             b: "b2".into(),
             label: Some("x".into()),
-        });
+        }));
         let deltas = diff(&old, &new);
         assert_eq!(said(&deltas), [("wire", "b2-k1", true)]);
         assert_eq!(old.wires[0].id(), "b1-k1");
@@ -1278,7 +1290,7 @@ mod tests {
             ["b1", "k1"]
         );
         assert_eq!(
-            seen.wires.iter().map(WireView::id).collect::<Vec<_>>(),
+            seen.wires.iter().map(|w| w.id()).collect::<Vec<_>>(),
             ["b1-k1"]
         );
         assert_eq!(
@@ -1315,11 +1327,11 @@ mod tests {
     #[test]
     fn a_limited_caller_sees_a_wire_only_when_it_sees_both_ends() {
         let mut state = two_workspaces();
-        state.wires.push(WireView {
+        state.wires.push(Arc::new(WireView {
             a: "b1".into(),
             b: "b2".into(),
             label: None,
-        });
+        }));
         let seen = state.visible(&caller(&["w3"]));
         assert_eq!(seen.wires.len(), 1);
     }
@@ -1328,7 +1340,7 @@ mod tests {
     fn a_block_that_leaves_a_limited_view_is_a_delete() {
         let old = two_workspaces();
         let mut new = old.clone();
-        new.blocks[0].workspace = "w4".into();
+        Arc::make_mut(&mut new.blocks[0]).workspace = "w4".into();
         let w3 = caller(&["w3"]);
         assert_eq!(
             said(&diff(&old.visible(&w3), &new.visible(&w3))),
@@ -1356,13 +1368,13 @@ mod tests {
         assert_eq!(deltas[0].value.as_ref().unwrap()["workspace"], "w4");
     }
 
-    fn share(id: &str) -> ShareView {
-        ShareView {
+    fn share(id: &str) -> Arc<ShareView> {
+        Arc::new(ShareView {
             id: id.into(),
             workspace: "w3".into(),
             name: "Another computer".into(),
             ..Default::default()
-        }
+        })
     }
 
     #[test]
@@ -1374,7 +1386,7 @@ mod tests {
                 .visible(caller)
                 .shares
                 .into_iter()
-                .map(|s| s.id)
+                .map(|s| s.id.clone())
                 .collect()
         };
         assert_eq!(
@@ -1405,7 +1417,7 @@ mod tests {
         new.shares = vec![share("s1")];
         assert_eq!(said(&diff(&old, &new)), [("share", "s1", true)]);
         let mut added = new.clone();
-        added.shares[0].mirrored = true;
+        Arc::make_mut(&mut added.shares[0]).mirrored = true;
         added.shares.push(share("s2"));
         assert_eq!(
             said(&diff(&new, &added)),
@@ -1419,7 +1431,7 @@ mod tests {
 
     #[test]
     fn new_fields_serialize_only_when_they_say_something() {
-        let mut b = block("b1", "w3", "terminal");
+        let mut b = BlockView::clone(&block("b1", "w3", "terminal"));
         assert!(serde_json::to_value(&b).unwrap().get("read_only").is_none());
         b.read_only = true;
         assert_eq!(serde_json::to_value(&b).unwrap()["read_only"], true);
@@ -1487,7 +1499,7 @@ mod tests {
 
     #[test]
     fn the_state_says_do_not_act() {
-        let mut view = automation(1, None);
+        let mut view = AutomationView::clone(&automation(1, None));
         view.act = json!({"notify": {"text": "x"}});
         let value = serde_json::to_value(&view).unwrap();
         assert_eq!(value["do"], json!({"notify": {"text": "x"}}));

@@ -123,6 +123,10 @@ impl Workspace {
     ) {
         let kind = task.map_or(NoticeKind::Other, |_| NoticeKind::Task(level));
         let about = task.map(|id| (terminal.to_string(), id));
+        // The API's asker hears it as an event that names the terminal it is about, task or not.
+        if to == templum_api::ASKER {
+            return self.api_notice_about(text, Some(terminal));
+        }
         if to != templum_agent::ASKER {
             return self.push_notice(to, text, kind, about, cx);
         }

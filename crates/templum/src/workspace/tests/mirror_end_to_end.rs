@@ -11,7 +11,7 @@ use templum_api::client::{Keys, SERVICE_DEV, Status, Why};
 use templum_api::code;
 use templum_api::store::{Scope, Way};
 
-use super::api::{port, state, turn_on, with_data, with_token};
+use super::api::{port, state, tool, turn_on, with_data, with_token};
 use super::bus::{call_later, me};
 use super::remote::{pump_home, remote_of};
 use super::templum_agent::control;
@@ -307,5 +307,53 @@ fn what_home_s_shell_prints_shows_on_the_mirror_and_keys_reach_it(cx: &mut TestA
     pump_home(&ws, cx, "the answer on the mirror", |cx| {
         draw(handle, cx);
         shown(&ws, cx, viewer).contains("from-mirror")
+    });
+}
+
+/// A watch set at home through its API (`wait_for` with `wait: false`) names its block and
+/// workspace, so the share the mirror holds hears it: it shows on the mirror as a notification.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_watch_set_at_home_through_the_api_shows_its_notice_on_the_mirror(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_as(
+        cx,
+        Some(("sh".into(), Vec::new())),
+        None,
+        Some(dir.path().to_path_buf()),
+    );
+    let terminal = first_id(&ws, cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    ws.update(cx, |ws, _| ws.space.pristine = false);
+    let (_first, _store) = mirrored(handle, &ws, cx, dir.path());
+    let uid = ws.read_with(cx, |ws, _| {
+        ws.spaces().find(|s| s.id == first).unwrap().uids[&terminal].clone()
+    });
+    let token = with_token(&ws, cx, Scope::Control, None);
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &token,
+        "wait_for",
+        json!({ "block": uid, "pattern": "DEPLOYED", "wait": false, "timeout": 300 }),
+    );
+    assert!(line["result"]["isError"] != true, "{line}");
+    ws.read_with(cx, |ws, _| {
+        let home = ws.spaces().find(|s| s.id == first).unwrap();
+        home.terminal(terminal)
+            .unwrap()
+            .term
+            .text("printf 'DEP%s\\n' LOYED\r");
+    });
+    let name = ws.read_with(cx, |ws, _| ws.space.name.clone());
+    pump_home(&ws, cx, "the watch's notice on the mirror", |cx| {
+        super::bus::after(cx, 250);
+        ws.read_with(cx, |ws, _| {
+            ws.said.iter().any(|told| {
+                told.starts_with(&format!("{name} on "))
+                    && told.contains("a line matches \"DEPLOYED\"")
+            })
+        })
     });
 }

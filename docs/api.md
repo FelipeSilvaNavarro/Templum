@@ -266,8 +266,10 @@ data: {"op":"delete","id":"r12"}
 
 A client mirrors the state by applying puts and deletes to the snapshot. A block that moves to another workspace is one
 `put` with its new `workspace`; to a token that doesn't see the new one it is a `delete`. `event: notice` is the one
-happening that isn't state: `{"text":…,"block":…,"workspace":…}`. Templum compares the state about four times a second
-(ten while a block is dragged or resized, or the canvas is panned, zoomed or flown), only while a stream is open.
+happening that isn't state: `{"text":…,"block":…,"workspace":…}`. A watch set through the API (`wait_for` with
+`wait: false`) names the watched block and its workspace, so a token limited to that workspace hears it. Templum
+compares the state about four times a second (ten while a block is dragged or resized, or the canvas is panned, zoomed
+or flown), only while a stream is open.
 
 `GET /v1/events?view=true` also sends `event: view` each time the shown workspace's camera changes: `data` is
 `{"workspace":"w3","x":120,"y":40,"w":1280,"h":720,"zoom":1.0}`, the world rectangle its canvas shows (its camera, and
@@ -467,8 +469,10 @@ Edit…) were checked headlessly, and **not** with two `--dev` instances on a di
 On the computer that has the workspace: right-click its tile ▸ **Edit…** ▸ **Share…** (or the tool `share_workspace`).
 
 - **Name:** what the share is called on this computer ("Another computer").
-- **Can:** **Full** watches, moves blocks, answers requests and types into terminals (anyone holding the code can run
-  commands on this computer); **Control** watches, moves blocks and answers requests, and does not type.
+- **Can:** **Control** watches and works with blocks, cards, checklists, Git and automations, opens agents and hands
+  them tasks, and answers requests; it does not type into terminals, and agents it opens can run commands. **Full** also
+  types and clicks into terminals, discards Git changes, and deletes branches, stashes and automations (anyone holding
+  the code can run commands on this computer).
 - **Expires:** 30 days by default; shorter is safer. Three days before, the mirror's banner says so.
 - **The other computer reaches this one:** *Through a tunnel or proxy* (a public `https://` address, for
   [cloudflared](#2-cloudflared) and the like; the API stays on this computer only) or *Directly* (`host:port` of this

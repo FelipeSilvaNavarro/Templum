@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use keyring_core::mock;
 use serde_json::json;
-use templum_api::client::{About, Keys, SERVICE_DEV, Secrets, Status, Why, entry_name};
+use templum_api::client::{Keys, SERVICE_DEV, Secrets, Status, Why, entry_name};
 use templum_api::code::{self, Code};
 use templum_api::model::{AgentView, BlockView, Rect as ApiRect, State, WorkspaceView};
 use templum_api::store::{Scope, Way};
@@ -423,6 +423,16 @@ pub(super) fn pump_home(
     });
 }
 
+/// The shown remote is live on a share of `scope`, as home's `GET /v1/me` said.
+fn live(ws: &mut Workspace, scope: Scope) {
+    let remote = ws.space.remote.as_mut().unwrap();
+    remote.status = Status::Live;
+    remote.me = Some(templum_api::model::MeView {
+        scope,
+        ..Default::default()
+    });
+}
+
 /// The remote workspace `r1` as a `Space`.
 fn space_of(ws: &Workspace) -> &crate::workspace::Space {
     ws.spaces().find(|s| s.id == "r1").expect("a space r1")
@@ -445,13 +455,13 @@ fn apply(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContex
 
 fn terminal_of_home(agent: Option<AgentView>) -> State {
     State {
-        workspaces: vec![WorkspaceView {
+        workspaces: vec![Arc::new(WorkspaceView {
             id: "w1".into(),
             name: "API".into(),
             shown: true,
             ..WorkspaceView::default()
-        }],
-        blocks: vec![BlockView {
+        })],
+        blocks: vec![Arc::new(BlockView {
             id: "abcde".into(),
             workspace: "w1".into(),
             kind: "terminal".into(),
@@ -464,7 +474,7 @@ fn terminal_of_home(agent: Option<AgentView>) -> State {
             },
             agent,
             ..BlockView::default()
-        }],
+        })],
         ..State::default()
     }
 }
@@ -686,7 +696,7 @@ fn a_remote_workspace_paints_its_blocks_and_its_agent_s_dot(cx: &mut TestAppCont
         state: "needs_you".into(),
         ..AgentView::default()
     }));
-    state.blocks.push(BlockView {
+    state.blocks.push(Arc::new(BlockView {
         id: "fghij".into(),
         workspace: "w1".into(),
         kind: "note".into(),
@@ -699,7 +709,7 @@ fn a_remote_workspace_paints_its_blocks_and_its_agent_s_dot(cx: &mut TestAppCont
         },
         z: 1,
         ..BlockView::default()
-    });
+    }));
     apply(handle, &ws, cx, state);
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| ws.switch_to(1, window, cx));
@@ -1333,6 +1343,7 @@ fn terminals_of_home(ids: &[&str]) -> State {
             },
             ..BlockView::default()
         })
+        .map(Arc::new)
         .collect();
     state
 }
@@ -1530,12 +1541,213 @@ fn a_rename_at_home_shows_on_a_terminal_that_isnt_streamed(cx: &mut TestAppConte
     let (handle, ws, _dir) = offline(cx);
     apply(handle, &ws, cx, terminal_of_home(None));
     let mut renamed = terminal_of_home(None);
-    renamed.blocks[0].title = "builds".into();
+    Arc::make_mut(&mut renamed.blocks[0]).title = "builds".into();
     apply(handle, &ws, cx, renamed);
     ws.read_with(cx, |ws, cx| {
         let body = space_of(ws).blocks.values().next().unwrap();
         assert_eq!(crate::block::title(ws, body, cx).to_string(), "builds");
     });
+}
+
+/// A take whose blocks, wires, requests and workspaces are the last take's own leaves the canvas alone.
+#[gpui_kit::test]
+fn a_take_with_home_s_blocks_unchanged_rebuilds_none(cx: &mut TestAppContext) {
+    let remote_title = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| match space_of(ws).blocks.values().next() {
+            Some(Body::Terminal(pane)) => pane.remote.as_ref().map(|r| r.title.clone()),
+            _ => None,
+        })
+    };
+    let (handle, ws, _dir) = offline(cx);
+    let state = terminal_of_home(None);
+    apply(handle, &ws, cx, state.clone());
+    assert_eq!(remote_title(&ws, cx).as_deref(), Some("claude"));
+    ws.update(cx, |ws, _| {
+        let space = ws.space_by_id_mut("r1").unwrap();
+        let Some(Body::Terminal(pane)) = space.blocks.values_mut().next() else {
+            panic!("a terminal");
+        };
+        pane.remote.as_mut().unwrap().title = "local".into();
+    });
+    // A card alone is nothing to rebuild.
+    let mut with_card = state.clone();
+    with_card.cards.push(Arc::new(templum_api::model::CardView {
+        id: 40,
+        board: 3,
+        title: "Ship".into(),
+        ..Default::default()
+    }));
+    apply(handle, &ws, cx, with_card);
+    assert_eq!(remote_title(&ws, cx).as_deref(), Some("local"));
+    // A block that is another `Arc` is home's again.
+    let mut retitled = state;
+    Arc::make_mut(&mut retitled.blocks[0]).title = "builds".into();
+    apply(handle, &ws, cx, retitled);
+    assert_eq!(remote_title(&ws, cx).as_deref(), Some("builds"));
+}
+
+#[gpui_kit::test]
+fn start_it_asks_home_to_show_its_workspace(cx: &mut TestAppContext) {
+    use crate::workspace::remote::Act;
+    use templum_api::client::Refusal;
+    let (handle, ws, _dir) = offline(cx);
+    show_remote(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.remote.as_mut().unwrap().entry.home = Some("w3".into());
+        live(ws, Scope::Control);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.remote_act("r1", Act::StartIt, window, cx);
+            assert_eq!(ws.calls.len(), 1);
+            assert_eq!(ws.calls[0].1.tool, "show");
+            assert_eq!(ws.calls[0].1.args, json!({"workspace": "w3"}));
+            ws.answer_call(
+                0,
+                Err(Refusal {
+                    sentence: "No.".into(),
+                }),
+                window,
+                cx,
+            );
+            assert_eq!(ws.said.last().map(String::as_str), Some("No."));
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_toolbar_dims_a_remote_s_controls_with_the_rule_s_words(cx: &mut TestAppContext) {
+    use crate::workspace::remote::Deed;
+    let (handle, ws, _dir) = offline(cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            crate::toolbar::gated(ws, Deed::AddTerminal, "Terminal"),
+            ("Terminal".into(), false),
+            "a local workspace"
+        );
+    });
+    show_remote(handle, &ws, cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            crate::toolbar::gated(ws, Deed::AddTerminal, "Terminal"),
+            ("Not on a mirrored workspace yet".into(), true)
+        );
+    });
+}
+
+/// A notice of home's about its workspace `w1` (the remote's own), and a block if given.
+fn notice(text: &str, block: Option<&str>) -> templum_api::model::Notice {
+    templum_api::model::Notice {
+        text: text.into(),
+        block: block.map(Into::into),
+        workspace: Some("w1".into()),
+    }
+}
+
+/// A shown, live mirror of home's workspace `w1` with a terminal in it, and the title its notices
+/// carry.
+fn offline_noticed(
+    cx: &mut TestAppContext,
+) -> (
+    AnyWindowHandle,
+    Entity<Workspace>,
+    String,
+    tempfile::TempDir,
+) {
+    let (handle, ws, dir) = offline(cx);
+    show_remote(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        live(ws, Scope::Control);
+        ws.space.remote.as_mut().unwrap().entry.home = Some("w1".into());
+    });
+    apply(handle, &ws, cx, terminal_of_home(None));
+    let title = ws.read_with(cx, |ws, _| {
+        format!(
+            "{} on {}",
+            ws.space.name,
+            crate::mirror::computer_of(remote_of(ws))
+        )
+    });
+    (handle, ws, title, dir)
+}
+
+fn hear(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    notice: templum_api::model::Notice,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.heard(
+                "r1",
+                templum_api::client::Update::Notice(notice),
+                window,
+                cx,
+            )
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn home_s_notices_are_notifications_titled_by_the_workspace_and_its_computer(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, title, _dir) = offline_noticed(cx);
+    hear(handle, &ws, cx, notice("[task t7 done] Green.", None));
+    assert_eq!(
+        said(&ws, cx).last().map(String::as_str),
+        Some(format!("{title}: [task t7 done] Green.").as_str())
+    );
+    // One about another workspace of home's is not this one's.
+    let before = said(&ws, cx);
+    let elsewhere = templum_api::model::Notice {
+        workspace: Some("w9".into()),
+        ..notice("[task t8 done] Elsewhere.", None)
+    };
+    hear(handle, &ws, cx, elsewhere);
+    assert_eq!(said(&ws, cx), before);
+}
+
+#[gpui_kit::test]
+fn a_burst_of_notices_is_three_and_one_of_how_many_more(cx: &mut TestAppContext) {
+    let (handle, ws, title, _dir) = offline_noticed(cx);
+    for n in 0..5 {
+        hear(handle, &ws, cx, notice(&format!("[task t{n} done]"), None));
+    }
+    let told = said(&ws, cx);
+    assert_eq!(told.len(), 3, "{told:?}");
+    let computer = ws.read_with(cx, |ws, _| crate::mirror::computer_of(remote_of(ws)));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.fold_notices("r1", window, cx))
+    })
+    .unwrap();
+    let told = said(&ws, cx);
+    assert_eq!(
+        told.last().map(String::as_str),
+        Some(format!("{title}: 2 more notices from {computer}").as_str()),
+        "{told:?}"
+    );
+    // Two more, and the fold at once: one fold a span.
+    hear(handle, &ws, cx, notice("[task t5 done]", None));
+    hear(handle, &ws, cx, notice("[task t6 done]", None));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.fold_notices("r1", window, cx))
+    })
+    .unwrap();
+    assert_eq!(said(&ws, cx).len(), told.len());
+}
+
+#[gpui_kit::test]
+fn a_notice_about_a_block_not_drawn_here_still_shows(cx: &mut TestAppContext) {
+    let (handle, ws, title, _dir) = offline_noticed(cx);
+    hear(handle, &ws, cx, notice("[watch w1 matched]", Some("zzzzz")));
+    assert_eq!(
+        said(&ws, cx).last().map(String::as_str),
+        Some(format!("{title}: [watch w1 matched]").as_str())
+    );
 }
 
 #[gpui_kit::test]
@@ -1597,8 +1809,8 @@ fn forgetting_the_last_workspace_makes_a_local_one(cx: &mut TestAppContext) {
 fn the_index_leaves_home_s_look_out(cx: &mut TestAppContext) {
     let (handle, ws, _dir) = offline(cx);
     let mut state = terminal_of_home(None);
-    state.workspaces[0].icon = Some("git-branch".into());
-    state.workspaces[0].color = Some("red".into());
+    Arc::make_mut(&mut state.workspaces[0]).icon = Some("git-branch".into());
+    Arc::make_mut(&mut state.workspaces[0]).color = Some("red".into());
     apply(handle, &ws, cx, state);
     ws.read_with(cx, |ws, _| {
         let space = space_of(ws);
@@ -1662,11 +1874,11 @@ fn below_full_detail_only_the_focused_terminal_streams(cx: &mut TestAppContext) 
 fn wire_labels_are_kept_by_home_s_ids(cx: &mut TestAppContext) {
     let (handle, ws, _dir) = offline(cx);
     let mut state = terminals_of_home(&["aaaaa", "bbbbb"]);
-    state.wires = vec![templum_api::model::WireView {
+    state.wires = vec![Arc::new(templum_api::model::WireView {
         a: "bbbbb".into(),
         b: "aaaaa".into(),
         label: Some("builds".into()),
-    }];
+    })];
     apply(handle, &ws, cx, state);
     ws.read_with(cx, |ws, _| {
         let space = space_of(ws);
@@ -1679,24 +1891,28 @@ fn wire_labels_are_kept_by_home_s_ids(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn home_s_wires_are_capped_and_each_kept_once(cx: &mut TestAppContext) {
     let (handle, ws, _dir) = offline(cx);
-    let wire = |a: &str, b: &str| templum_api::model::WireView {
-        a: a.into(),
-        b: b.into(),
-        label: Some(format!("{a}-{b}")),
+    let wire = |a: &str, b: &str| {
+        Arc::new(templum_api::model::WireView {
+            a: a.into(),
+            b: b.into(),
+            label: Some(format!("{a}-{b}")),
+        })
     };
     let mut state = terminals_of_home(&["aaaaa", "bbbbb"]);
-    state.blocks.extend((0..250).map(|n| BlockView {
-        id: format!("n{n}"),
-        workspace: "w1".into(),
-        kind: "note".into(),
-        z: n + 2,
-        rect: ApiRect {
-            x: n as f32 * 10.0,
-            y: 400.0,
-            w: 400.0,
-            h: 300.0,
-        },
-        ..BlockView::default()
+    state.blocks.extend((0..250).map(|n| {
+        Arc::new(BlockView {
+            id: format!("n{n}"),
+            workspace: "w1".into(),
+            kind: "note".into(),
+            z: n + 2,
+            rect: ApiRect {
+                x: n as f32 * 10.0,
+                y: 400.0,
+                w: 400.0,
+                h: 300.0,
+            },
+            ..BlockView::default()
+        })
     }));
     // 10,000 copies of one wire (in both directions), then more wires than are kept.
     state.wires = (0..10_000)
@@ -1725,7 +1941,7 @@ fn home_s_wires_are_capped_and_each_kept_once(cx: &mut TestAppContext) {
 fn a_viewer_starts_small_whatever_rectangle_home_sends(cx: &mut TestAppContext) {
     let (handle, ws, _dir) = offline(cx);
     let mut state = terminal_of_home(None);
-    state.blocks[0].rect = ApiRect {
+    Arc::make_mut(&mut state.blocks[0]).rect = ApiRect {
         x: 0.0,
         y: 0.0,
         w: 1e7,
@@ -1835,9 +2051,9 @@ fn a_drawing_tool_picked_before_switching_to_a_mirror_draws_nothing_there(cx: &m
 fn a_rectangle_of_home_s_that_isnt_sane_leaves_the_index_readable(cx: &mut TestAppContext) {
     let (handle, ws, _dir) = offline(cx);
     let mut state = terminals_of_home(&["aaaaa", "bbbbb", "ccccc"]);
-    state.blocks[0].rect.x = f32::INFINITY;
-    state.blocks[1].rect.y = f32::MAX;
-    state.blocks[2].rect.w = f32::NAN;
+    Arc::make_mut(&mut state.blocks[0]).rect.x = f32::INFINITY;
+    Arc::make_mut(&mut state.blocks[1]).rect.y = f32::MAX;
+    Arc::make_mut(&mut state.blocks[2]).rect.w = f32::NAN;
     apply(handle, &ws, cx, state);
     ws.read_with(cx, |ws, _| {
         let space = space_of(ws);
@@ -1850,7 +2066,7 @@ fn a_rectangle_of_home_s_that_isnt_sane_leaves_the_index_readable(cx: &mut TestA
     });
     // A block with a size nobody could draw is kept, clamped.
     let mut state = terminals_of_home(&["aaaaa"]);
-    state.blocks[0].rect.w = 1e30;
+    Arc::make_mut(&mut state.blocks[0]).rect.w = 1e30;
     apply(handle, &ws, cx, state);
     ws.read_with(cx, |ws, _| {
         let rect = space_of(ws).canvas.blocks()[0].rect;
@@ -1867,21 +2083,21 @@ fn home_s_words_are_one_short_line_wherever_they_reach(cx: &mut TestAppContext) 
         asks: Some(format!("run this?\n\x1b[31m{}", "z".repeat(1000))),
         ..AgentView::default()
     }));
-    state.workspaces[0].name = format!("a\nb{}", "n".repeat(200));
-    state.workspaces[0].color = Some("#ff0000\n".into());
-    state.wires = vec![templum_api::model::WireView {
+    Arc::make_mut(&mut state.workspaces[0]).name = format!("a\nb{}", "n".repeat(200));
+    Arc::make_mut(&mut state.workspaces[0]).color = Some("#ff0000\n".into());
+    state.wires = vec![Arc::new(templum_api::model::WireView {
         a: "abcde".into(),
         b: "fghij".into(),
         label: Some(format!("li\nne{}", "l".repeat(1000))),
-    }];
-    state.blocks[0].title = "tit\x07le\nsecond".into();
-    state.blocks.push(BlockView {
+    })];
+    Arc::make_mut(&mut state.blocks[0]).title = "tit\x07le\nsecond".into();
+    state.blocks.push(Arc::new(BlockView {
         id: "fghij".into(),
         workspace: "w1".into(),
         kind: "no\nte".into(),
         title: "my\nnote".into(),
         ..BlockView::default()
-    });
+    }));
     apply(handle, &ws, cx, state);
     ws.read_with(cx, |ws, _| {
         let space = space_of(ws);
@@ -1949,6 +2165,7 @@ fn a_mirror_takes_the_front_blocks_of_a_huge_canvas_and_finds_them_by_home_s_id(
             },
             ..BlockView::default()
         })
+        .map(Arc::new)
         .collect();
     apply(handle, &ws, cx, state);
     ws.read_with(cx, |ws, _| {
@@ -2323,7 +2540,7 @@ fn home_rect(home: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> 
 /// The mirror shows a state of its own making: home's terminal `abcde` at `rect`.
 fn home_at(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext, rect: Rect) {
     let mut state = terminal_of_home(None);
-    state.blocks[0].rect = ApiRect {
+    Arc::make_mut(&mut state.blocks[0]).rect = ApiRect {
         x: rect.x,
         y: rect.y,
         w: rect.w,
@@ -2342,14 +2559,28 @@ fn a_moved_block_goes_to_home_once_and_home_s_state_ends_the_hold(cx: &mut TestA
     drag_by(&ws, cx, viewer, (100.0, 0.0));
     let moved = Rect::new(before.x + 100.0, before.y, before.w, before.h);
     ws.read_with(cx, |ws, _| {
-        assert!(ws.space.remote.as_ref().unwrap().held.contains_key(&viewer));
+        assert!(
+            ws.space
+                .remote
+                .as_ref()
+                .unwrap()
+                .held
+                .get(&viewer)
+                .is_some()
+        );
     });
     pump_home(&home, cx, "home's block to move", |cx| {
         home_rect(&home, cx, terminal) == moved
     });
     pump_home(&home, cx, "home's state to end the hold", |cx| {
         ws.read_with(cx, |ws, _| {
-            ws.space.remote.as_ref().unwrap().held.is_empty()
+            ws.space
+                .remote
+                .as_ref()
+                .unwrap()
+                .held
+                .get(&viewer)
+                .is_none()
         })
     });
     assert_eq!(rect_on(&ws, cx, viewer), moved);
@@ -2362,15 +2593,13 @@ fn a_moved_block_goes_to_home_once_and_home_s_state_ends_the_hold(cx: &mut TestA
 
 #[gpui_kit::test]
 fn a_moved_block_stands_until_home_shows_it(cx: &mut TestAppContext) {
-    use crate::workspace::remote::HOLD;
+    use crate::workspace::holds::HOLD;
     let (handle, ws, _dir) = offline(cx);
     show_remote(handle, &ws, cx);
     let home = Rect::new(0.0, 0.0, 400.0, 300.0);
     home_at(handle, &ws, cx, home);
     let viewer = viewer_of(&ws, cx);
-    ws.update(cx, |ws, _| {
-        ws.space.remote.as_mut().unwrap().status = Status::Live
-    });
+    ws.update(cx, |ws, _| live(ws, Scope::Control));
     drag_by(&ws, cx, viewer, (100.0, 0.0));
     let moved = Rect::new(100.0, 0.0, 400.0, 300.0);
     // Home still says the old rectangle: the person's stands.
@@ -2379,7 +2608,15 @@ fn a_moved_block_stands_until_home_shows_it(cx: &mut TestAppContext) {
     // Home shows it: the hold goes.
     home_at(handle, &ws, cx, moved);
     ws.read_with(cx, |ws, _| {
-        assert!(ws.space.remote.as_ref().unwrap().held.is_empty())
+        assert!(
+            ws.space
+                .remote
+                .as_ref()
+                .unwrap()
+                .held
+                .get(&viewer)
+                .is_none()
+        )
     });
     // Home moved it again: its rectangle wins.
     home_at(handle, &ws, cx, home);
@@ -2447,9 +2684,7 @@ fn a_refused_move_goes_back(cx: &mut TestAppContext) {
     let home = Rect::new(0.0, 0.0, 400.0, 300.0);
     home_at(handle, &ws, cx, home);
     let viewer = viewer_of(&ws, cx);
-    ws.update(cx, |ws, _| {
-        ws.space.remote.as_mut().unwrap().status = Status::Live
-    });
+    ws.update(cx, |ws, _| live(ws, Scope::Control));
     drag_by(&ws, cx, viewer, (100.0, 0.0));
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
@@ -2463,7 +2698,15 @@ fn a_refused_move_goes_back(cx: &mut TestAppContext) {
     .unwrap();
     assert_eq!(rect_on(&ws, cx, viewer), home);
     ws.read_with(cx, |ws, _| {
-        assert!(ws.space.remote.as_ref().unwrap().held.is_empty());
+        assert!(
+            ws.space
+                .remote
+                .as_ref()
+                .unwrap()
+                .held
+                .get(&viewer)
+                .is_none()
+        );
         assert_eq!(ws.said, ["No."]);
     });
 }
@@ -2481,7 +2724,13 @@ fn nothing_is_moved_while_not_live(cx: &mut TestAppContext) {
     });
     pump_home(&home, cx, "home's state to end the hold", |cx| {
         ws.read_with(cx, |ws, _| {
-            ws.space.remote.as_ref().unwrap().held.is_empty()
+            ws.space
+                .remote
+                .as_ref()
+                .unwrap()
+                .held
+                .get(&viewer)
+                .is_none()
         })
     });
     ws.update(cx, |ws, _| {
@@ -2754,13 +3003,11 @@ fn a_mirrored_request_is_never_a_local_one(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_request_the_share_cant_answer_is_dim_and_answers_nothing(cx: &mut TestAppContext) {
-    use templum_api::client::{About, Update};
-    let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) =
+    let ((home_handle, home), (_, ws), (_, _, terminal), _keep) =
         shown_mirror_as(cx, Scope::Control);
     let _answers = home_asks(home_handle, &home, cx, terminal, 17);
     until_listed(&home, &ws, cx, 1);
     let key = first_key(&ws, cx);
-    // A question is a Control one: it goes. A refusal shows it again.
     ws.update(cx, |ws, cx| {
         ws.waits[0].remote.as_mut().unwrap().scope = Scope::Full;
         let wait = &ws.waits[0];
@@ -2783,21 +3030,85 @@ fn a_request_the_share_cant_answer_is_dim_and_answers_nothing(cx: &mut TestAppCo
         );
         ws.space.remote.as_mut().unwrap().status = Status::Live;
     });
+}
+
+#[gpui_kit::test]
+fn an_answer_home_refuses_shows_its_request_again(cx: &mut TestAppContext) {
+    use templum_api::client::Refusal;
+    let (handle, ws, _dir) = offline_asked(
+        cx,
+        vec![home_allows("r3", "connect", 100, "connect to a note")],
+    );
+    let key = first_key(&ws, cx);
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.answer_question(key, vec![vec!["SQLite".into()]], "", window, cx);
-            assert!(ws.inbox().is_empty());
-            let request = ws.waits[0].remote.as_ref().unwrap().request.clone();
-            let refused = Update::Refused {
-                about: About::Answer(request),
+            ws.answer_allow(key, true, cx);
+            assert!(ws.inbox().is_empty(), "sent");
+            assert_eq!(ws.calls.len(), 1);
+            let (space, call, _) = &ws.calls[0];
+            assert_eq!(
+                (space.as_str(), call.tool.as_str(), call.slow),
+                ("r1", "answer_request", false)
+            );
+            assert_eq!(call.args["request"], "r3");
+            let refused = Refusal {
                 sentence: "Already answered.".into(),
             };
-            ws.heard("r1", refused, window, cx);
+            ws.answer_call(0, Err(refused), window, cx);
             assert_eq!(ws.inbox().len(), 1, "it shows again");
             assert_eq!(
                 ws.said.last().map(String::as_str),
                 Some("Already answered.")
             );
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn an_answer_after_its_request_left_changes_nothing(cx: &mut TestAppContext) {
+    use templum_api::client::Refusal;
+    let (handle, ws, _dir) = offline_asked(
+        cx,
+        vec![home_allows("r3", "connect", 100, "connect to a note")],
+    );
+    let key = first_key(&ws, cx);
+    ws.update(cx, |ws, cx| ws.answer_allow(key, true, cx));
+    // Home's next state drops the request: the wait goes.
+    apply(handle, &ws, cx, state_asking(Vec::new()));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let late = Refusal {
+                sentence: "Couldn't reach the other computer.".into(),
+            };
+            let before = ws.said.clone();
+            ws.answer_call(0, Err(late), window, cx);
+            assert!(ws.waits.is_empty());
+            assert_eq!(ws.said, before, "nobody waits for the words");
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_refusal_after_its_remote_is_forgotten_is_not_said(cx: &mut TestAppContext) {
+    use crate::workspace::remote::Act;
+    use templum_api::client::Refusal;
+    let (handle, ws, _dir) = offline(cx);
+    show_remote(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.remote.as_mut().unwrap().entry.home = Some("w3".into());
+        live(ws, Scope::Control);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.remote_act("r1", Act::StartIt, window, cx);
+            ws.forget_remote("r1", false, window, cx);
+            let late = Refusal {
+                sentence: "Couldn't reach the other computer.".into(),
+            };
+            ws.answer_call(0, Err(late), window, cx);
+            assert!(ws.said.is_empty(), "{:?}", ws.said);
         })
     })
     .unwrap();
@@ -2948,14 +3259,14 @@ fn offline_asked(
         });
     });
     let mut state = terminal_of_home(None);
-    state.requests = requests;
+    state.requests = requests.into_iter().map(Arc::new).collect();
     apply(handle, &ws, cx, state);
     (handle, ws, dir)
 }
 
 fn state_asking(requests: Vec<templum_api::model::RequestView>) -> State {
     let mut state = terminal_of_home(None);
-    state.requests = requests;
+    state.requests = requests.into_iter().map(Arc::new).collect();
     state
 }
 
@@ -3109,7 +3420,6 @@ fn home_s_requests_are_capped_and_an_id_must_be_short_and_plain(cx: &mut TestApp
 
 #[gpui_kit::test]
 fn an_answer_lost_with_the_connection_shows_its_request_again(cx: &mut TestAppContext) {
-    use templum_api::client::Update;
     let (handle, ws, _dir) = offline_asked(
         cx,
         vec![home_allows("r3", "connect", 100, "connect to a note")],
@@ -3120,15 +3430,10 @@ fn an_answer_lost_with_the_connection_shows_its_request_again(cx: &mut TestAppCo
             ws.answer_allow(key, true, cx);
             assert!(ws.inbox().is_empty(), "sent");
             // The connection dropped during the round trip: the client refuses the answer it lost.
-            ws.heard(
-                "r1",
-                Update::Refused {
-                    about: About::Answer("r3".into()),
-                    sentence: "Couldn't reach the other computer.".into(),
-                },
-                window,
-                cx,
-            );
+            let lost = templum_api::client::Refusal {
+                sentence: "Couldn't reach the other computer.".into(),
+            };
+            ws.answer_call(0, Err(lost), window, cx);
         })
     })
     .unwrap();
@@ -3147,15 +3452,13 @@ fn an_answer_lost_with_the_connection_shows_its_request_again(cx: &mut TestAppCo
 
 #[gpui_kit::test]
 fn a_block_grabbed_again_isn_t_taken_back_by_the_old_hold(cx: &mut TestAppContext) {
-    use crate::workspace::remote::HOLD;
+    use crate::workspace::holds::HOLD;
     let (handle, ws, _dir) = offline(cx);
     show_remote(handle, &ws, cx);
     let home = Rect::new(0.0, 0.0, 400.0, 300.0);
     home_at(handle, &ws, cx, home);
     let viewer = viewer_of(&ws, cx);
-    ws.update(cx, |ws, _| {
-        ws.space.remote.as_mut().unwrap().status = Status::Live
-    });
+    ws.update(cx, |ws, _| live(ws, Scope::Control));
     drag_by(&ws, cx, viewer, (100.0, 0.0));
     // Grabbed again before home showed the first move; the hold runs out in the hand.
     ws.update(cx, |ws, _| {
@@ -3175,8 +3478,8 @@ fn saving_edit_with_home_s_look_unchanged_keeps_it_home_s(cx: &mut TestAppContex
     use crate::space_dialog::Look;
     let (handle, ws, _dir) = offline(cx);
     let mut state = terminal_of_home(None);
-    state.workspaces[0].icon = Some("rocket".into());
-    state.workspaces[0].color = Some("blue".into());
+    Arc::make_mut(&mut state.workspaces[0]).icon = Some("rocket".into());
+    Arc::make_mut(&mut state.workspaces[0]).color = Some("blue".into());
     apply(handle, &ws, cx, state);
     let opened = ws.read_with(cx, |ws, _| {
         assert!(remote_of(ws).home_look);
@@ -3193,8 +3496,8 @@ fn saving_edit_with_home_s_look_unchanged_keeps_it_home_s(cx: &mut TestAppContex
     ws.read_with(cx, |ws, _| assert!(remote_of(ws).home_look));
     // Home changes its color: it still shows.
     let mut state = terminal_of_home(None);
-    state.workspaces[0].icon = Some("rocket".into());
-    state.workspaces[0].color = Some("red".into());
+    Arc::make_mut(&mut state.workspaces[0]).icon = Some("rocket".into());
+    Arc::make_mut(&mut state.workspaces[0]).color = Some("red".into());
     apply(handle, &ws, cx, state);
     ws.read_with(cx, |ws, _| {
         assert_eq!(space_of(ws).look.color.as_deref(), Some("red"));

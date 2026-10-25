@@ -18,7 +18,7 @@ use crate::prompt;
 use crate::session;
 use crate::space_dialog::{self, Look};
 
-use super::remote::RemoteSpace;
+use super::remote::{Deed, RemoteSpace};
 use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Space, Tool, Workspace, show_notification};
 
 /// How long a workspace's processes have, once hung up, before what is left is killed.
@@ -384,7 +384,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.on_remote() {
+        if self.why_not(Deed::MoveToWorkspace).is_some() {
             return;
         }
         let to = match to {

@@ -15,6 +15,7 @@ use crate::git_block::{self, Found, Git, Read};
 use crate::launcher;
 use crate::prompt;
 
+use super::remote::Deed;
 use super::{Body, GitAt, Workspace, git_error_message, remember, show_notification};
 
 impl Workspace {
@@ -22,7 +23,7 @@ impl Workspace {
     /// or closes. A workspace without one yet gets one on the folder it works in; with no folder
     /// known, the folder dialog asks.
     pub(crate) fn toggle_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.on_remote() {
+        if self.why_not(Deed::Git).is_some() {
             return;
         }
         // Open in a workspace that has no Git yet (another one opened it): it opens here.
@@ -44,7 +45,7 @@ impl Workspace {
 
     /// Shows the popup on the workspace's Git, with the keyboard, read afresh.
     pub(crate) fn open_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.on_remote() {
+        if self.why_not(Deed::Git).is_some() {
             return;
         }
         let Some(git) = self.space.git() else {

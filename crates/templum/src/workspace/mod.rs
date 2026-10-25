@@ -30,6 +30,7 @@ mod git_ops;
 mod git_switch;
 mod git_sync;
 mod history;
+mod holds;
 pub(crate) mod inbox;
 mod input;
 mod note_tabs;
@@ -1660,6 +1661,9 @@ pub struct Workspace {
     /// Test: what a remote workspace warned the person of.
     #[cfg(test)]
     pub(crate) said: Vec<String>,
+    /// Test: the calls a remote workspace made with no client to make them, to answer by hand.
+    #[cfg(test)]
+    pub(crate) calls: Vec<(String, templum_api::client::Call, remote::Then)>,
     connect_done: Option<Result<(), String>>,
     /// The code as the clipboard may still hold it: cleared after a success, dropped otherwise.
     connect_clip: Option<String>,
@@ -2059,6 +2063,8 @@ impl Workspace {
             pending_connect: None,
             #[cfg(test)]
             said: Vec::new(),
+            #[cfg(test)]
+            calls: Vec::new(),
             connect_done: None,
             connect_clip: None,
             keyring: None,

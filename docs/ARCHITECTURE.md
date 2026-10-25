@@ -99,8 +99,14 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   (`templum_terminal::key_name`) and goes to the client's typing queue (`remote_type`); a released drag sends one
   `move_block` per block and the mirror's rectangle stands until home's state shows it or 2 s (`remote_moved`,
   `held`); home's requests become waits marked `remote` (`remote_requests`) and are answered with `answer_request`
-  (`remote_answer`), never by a local tool. `--bench-mirror` measures all of it: the mixed cockpit mirrored by the
-  same Templum over loopback.
+  (`remote_answer`), never by a local tool. Any other tool of home's is an answered call: `Mirror::call` returns a
+  future the glue awaits in a task (`remote_call`), through a queue of 64 per remote that keeps a block's newest move
+  and two lanes, the calls connection and a slow one for minutes-long calls. Home's tools are read at each connect and
+  its notices come as `Update::Notice` (notifications with a cap, `remote_notice`). The state is `Vec<Arc<T>>`, so
+  taking it copies pointers and `apply_remote` rebuilds only when blocks, wires, requests or workspaces changed. What
+  the person may do on a remote is one rule (`Deed`, `RemoteSpace::why_not`: not yet, not connected, home's Templum is
+  older, needs a Full share); what is shown ahead of home is a `Holds<K, V>` (`workspace/holds.rs`).
+  `--bench-mirror` measures all of it: the mixed cockpit mirrored by the same Templum over loopback.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera
@@ -225,8 +231,10 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   swapped for that block before a run.
 - `workspace/remote.rs`, `mirror.rs`, `connect_dialog.rs`: the remote workspaces
   ([specs/templum-to-templum.md](specs/templum-to-templum.md)). `remote.rs` has `RemoteSpace`, the client's drain,
-  `apply_remote` (home's blocks, wires and camera), the stream set and `fit_zoom`, `banner_words`, the guards'
-  `on_remote`; `mirror.rs` draws the banner, the veil, the stopped card, the tile's mark and the Forget… dialog;
+  `apply_remote` (home's blocks, wires and camera), the stream set and `fit_zoom`, `banner_words`, `Deed`/`why_not`
+  (the one rule), `remote_call`, `remote_notice`, the guards' `on_remote`;
+  `holds.rs` is the generic hold; `mirror.rs` draws the banner, the veil, the stopped card, the tile's mark and the
+  Forget… dialog;
   `connect_dialog.rs` is Connect to a Templum… and Paste a new code… (`replace_code`); a remote's Edit… is
   `space_dialog.rs`'s.
 - `workspace/api.rs`, `workspace/api_state.rs`, `settings/api.rs`: the Templum API's glue

@@ -2295,14 +2295,16 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **A frame is fed on the client's thread under the viewer's fair lock,** which may wait for a paint's copy.
   (`crates/templum-api/src/client/frames.rs`, `Painter::paint`; `templum-terminal`'s `Feeder::feed`.) Fix: if
   `--bench-mirror` shows it, feed with `try_lock` and keep one merged pending frame per terminal.
-- [ ] **A key that can't be saved to its file says it as a refusal "about Show".**
-  (`crates/templum-api/src/client/remote.rs`, `prepare`.) `About` has no variant for the key; a key that doesn't match
-  its address (the index was rewritten) and an address that doesn't fit its way in are told the same way. Fix:
-  `About::Key`.
-- [ ] **The calls channel of a remote is unbounded.** (`crates/templum-api/src/client/remote.rs`, `Attempt::calls`,
-  `Life::call`.) Only the person's commands feed it, but a home that answers slowly while a block is dragged queues a
-  `move_block` per mouse move, each sent in turn (up to 10 × 30 s each). Fix: keep one pending `Move` per block, the
-  newest, and send that.
+- [ ] **Notices folded past the cap are told only at the next wake.** (`workspace/remote.rs`, `fold_notices`.) It runs
+  at a drain, so a quiet home's "N more notices from …" waits for its next update, which can be a while after the
+  minute. Fix: a one-shot timer at `notice_budget.folded_at + NOTICE_SPAN`.
+- [ ] **The Edit… row "The share can" and the Share… invitation keep batch 1's words.**
+  (`space_dialog.rs`, line ~246; `share_dialog.rs`, `INVITE`.) They still say "type into terminals" while the Share…
+  dialog's two scopes now say what a share does. Fix: the same words, when 2h makes the mirror do all of it.
+- [ ] **A share whose `GET /v1/me` lists no workspace hears no notice.** (`workspace/remote.rs`, `remote_notice`.) A
+  notice is shown only when its workspace is the remote's `entry.home`, which `Update::Me` sets from the first
+  workspace the share lists; a Me with `workspaces: None` leaves it unset. Shares are always limited, so nothing
+  reaches this today. Fix: none unless a share can be unlimited.
 - [ ] **An event stream waiting for a fresh `Last-Event-ID` is advisory.** (`crates/templum-api/src/client/remote.rs`.)
   Home answers every resume with a snapshot, so the id only tells it the mirror is the same client. Nothing to fix
   unless home learns to replay.
@@ -2373,11 +2375,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   mirror shown, Automations > New makes a rule for it, and at its time the rule fails with a misleading error (the
   guards hold: nothing runs on the mirror). Fix: default to the first local workspace and leave remote workspaces out
   of "Where".
-- [ ] **The whole `State` is cloned on each wake of a mirror.** (`workspace/remote.rs`, the wake that reads
-  `Mirror::state`; `crates/templum-api/src/client/mod.rs`, `Mirror::state` clones under the lock.) Home may keep up to
-  64 MB, mostly in collections (notes, checklists, boards) the mirror never reads; a tiny change every few ms makes the
-  UI thread clone all of it on each wake, so a big home's mirror stutters. Fix: have a mirror drop (or not weigh) the
-  collections it doesn't read, or hand the state out through an `Arc`.
 - [ ] **A selection of several blocks moved on the mirror is one Ctrl+Z step per block at home.**
   (`workspace/remote.rs`, `remote_moved`; `workspace/history.rs`, `end_placing`.) One `move_block` is sent per block
   (the spec's known limit). Fix: a `move_block` taking several blocks.
