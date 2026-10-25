@@ -382,6 +382,7 @@ impl Workspace {
         let dt = scrolled.map_or(0.0, |at| now.duration_since(at).as_secs_f32().min(0.05));
         *scrolled = Some(now);
         self.space.pristine = false;
+        self.api.moved_at = Some(now);
         self.space
             .canvas
             .camera

@@ -693,15 +693,6 @@ fn clients_uses_and_disconnect() {
     assert_eq!(fake.call(req("GET", "/v1/state").token(&text)).status, 200);
 }
 
-/// The calls' log and the noise's, one after the other.
-fn logs(dir: &std::path::Path) -> String {
-    let folder = templum_api::store::folder(dir);
-    ["audit.log", "noise.log"]
-        .iter()
-        .map(|name| std::fs::read_to_string(folder.join(name)).unwrap_or_default())
-        .collect()
-}
-
 #[test]
 fn the_audit_log_names_calls_but_no_secrets() {
     let (text, token) = token(Scope::Control, None);

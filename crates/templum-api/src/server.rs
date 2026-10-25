@@ -8,7 +8,8 @@ use crate::events::{self, Hub, Ids, StreamBody};
 use crate::model::{Caller, Notice, State};
 use crate::registry::{self, Does, Resource};
 use crate::store::{Listen, Settings, Tls, Token, Use, folder, hash, random_text, verify};
-use crate::{CLIENT, CLIENTS, STATE, WATCH, codes, openapi, tls};
+use crate::terminals::{self, FRAME_EVERY, Screens, TerminalRef};
+use crate::{CLIENT, CLIENTS, STATE, TERMINAL, WATCH, codes, openapi, tls};
 use bytes::Bytes;
 use futures::channel::mpsc::UnboundedSender;
 use http_body_util::combinators::BoxBody;
@@ -204,6 +205,10 @@ struct Shared {
     options: Options,
     inner: Mutex<Inner>,
     hub: Mutex<Hub>,
+    /// The terminal streams, and the terminals lent for them.
+    screens: Mutex<Screens>,
+    /// A terminal stream opened: the reader wakes (it sleeps while there are none).
+    looking: Notify,
     ids: Ids,
     tx: UnboundedSender<Message>,
     audit: Audit,
@@ -230,6 +235,16 @@ impl Shared {
 
     fn hub(&self) -> MutexGuard<'_, Hub> {
         self.hub.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn screens(&self) -> MutexGuard<'_, Screens> {
+        self.screens.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Whether a connection streams anything, events or a terminal.
+    fn streams_on(&self, conn: u64) -> bool {
+        let events = self.hub().on_conn(conn);
+        events || self.screens().on_conn(conn)
     }
 
     /// Ends what belongs to a token that is gone or expired: its connections, its streams, its
@@ -260,11 +275,13 @@ impl Shared {
             }
             lists
         };
-        self.hub().cut(|caller| {
+        let dead = |caller: &Caller| {
             !lists
                 .iter()
                 .any(|(id, workspaces)| *id == caller.token && *workspaces == caller.workspaces)
-        });
+        };
+        self.hub().cut(dead);
+        self.screens().cut(dead);
     }
 }
 
@@ -311,6 +328,8 @@ pub fn start(
             ..Default::default()
         }),
         hub: Mutex::new(Hub::default()),
+        screens: Mutex::new(Screens::default()),
+        looking: Notify::new(),
         ids: Ids::new(),
         tx,
         stop: Notify::new(),
@@ -330,6 +349,7 @@ pub fn start(
                 };
                 tokio::spawn(publisher(served.clone()));
                 tokio::spawn(heartbeat(served.clone()));
+                tokio::spawn(reader(served.clone()));
                 let accepting = accept(listener, served.clone());
                 let stopped = served.stop.notified();
                 futures::pin_mut!(accepting, stopped);
@@ -439,6 +459,18 @@ impl Server {
     pub fn streams(&self) -> usize {
         self.shared.hub().len()
     }
+
+    /// The terminals now, as the UI thread lends them (see [`TerminalRef`]). Ignored while no
+    /// terminal stream is open: the server keeps no terminal then. A stream whose block is not
+    /// among them, or whose token no longer sees its workspace, ends.
+    pub fn set_terminals(&self, terminals: Vec<TerminalRef>) {
+        self.shared.screens().set(terminals);
+    }
+
+    /// How many terminal streams are open (those still being opened included).
+    pub fn terminal_streams(&self) -> usize {
+        self.shared.screens().len()
+    }
 }
 
 impl Drop for Server {
@@ -485,6 +517,21 @@ async fn heartbeat(shared: Arc<Shared>) {
         tick.tick().await;
         shared.sweep(unix());
         shared.hub().ping();
+        shared.screens().ping();
+    }
+}
+
+/// Reads the terminals that changed, [`FRAME_EVERY`] apart, while a terminal stream is open;
+/// asleep while there is none.
+async fn reader(shared: Arc<Shared>) {
+    let mut tick = tokio::time::interval(FRAME_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        if shared.screens().len() == 0 {
+            shared.looking.notified().await;
+        }
+        tick.tick().await;
+        terminals::look(&shared.screens, &shared.ids);
     }
 }
 
@@ -974,8 +1021,10 @@ fn credentials(request: &Request<RequestBody>, query: &[(String, String)]) -> Cr
     if let Some(token) = bearer {
         return Credentials::Bearer(token);
     }
+    // A ticket opens a stream, the event stream or a terminal's, and nothing else.
     if request.method() == hyper::Method::GET
-        && request.uri().path() == "/v1/events"
+        && registry::find("GET", request.uri().path())
+            .is_some_and(|(found, _)| matches!(found.does, Does::Events | Does::Frames))
         && let Some((_, ticket)) = query.iter().find(|(key, _)| key == "ticket")
     {
         return Credentials::Ticket(ticket.clone());
@@ -1237,7 +1286,23 @@ async fn dispatch(
         return match route.does {
             Does::Tools => json_response(200, &json!(registry::listed())),
             Does::OpenApi => json_response(200, &openapi::document()),
-            Does::Events => stream(shared, peer, token, last_event).await,
+            Does::Events => {
+                let view = match query.iter().find(|(key, _)| key == "view") {
+                    None => false,
+                    Some((_, value)) if value == "true" => true,
+                    Some((_, value)) if value == "false" => false,
+                    Some(_) => return error(400, "invalid", "\"view\" is true or false."),
+                };
+                stream(shared, peer, token, last_event, view).await
+            }
+            Does::Frames => {
+                let block = params
+                    .iter()
+                    .find(|(k, _)| *k == "block")
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or_default();
+                terminal_stream(shared, peer, token, block).await
+            }
             Does::Read(resource) => read(shared, token, resource, &params, &query).await,
             Does::Tool(name) => tool(shared, token, name, &params, &query, None).await,
             Does::Ticket => unreachable!("a ticket is a POST"),
@@ -1452,6 +1517,13 @@ async fn tool(
         }
         Ok(_) => {}
     }
+    // The API's own tools are checked here too, so a call the UI thread would refuse for its
+    // arguments never reaches it.
+    if registry::own(name)
+        && let Err(why) = registry::parse_own(name, &args)
+    {
+        return error(400, "invalid", &why);
+    }
     match ask(
         shared,
         token,
@@ -1578,6 +1650,7 @@ async fn stream(
     peer: Peer,
     token: &Token,
     last_event: Option<String>,
+    view: bool,
 ) -> Response<Body> {
     if shared.hub().of_token(token.id) >= events::STREAMS_PER_TOKEN {
         return slow_down(
@@ -1592,9 +1665,15 @@ async fn stream(
     let after = last_event.as_deref().and_then(|id| shared.ids.parse(id));
     let snapshot = events::snapshot(&shared.ids, &state);
     let caller = Caller::of(token);
-    let opened = shared
-        .hub()
-        .open(caller, state, peer.conn, snapshot, after, Instant::now());
+    let opened = shared.hub().open(
+        caller,
+        state,
+        peer.conn,
+        snapshot,
+        after,
+        Instant::now(),
+        view,
+    );
     let Ok(opened) = opened else {
         return slow_down(
             Duration::from_secs(1),
@@ -1625,15 +1704,17 @@ async fn stream(
     let (id, conn) = (opened.id, peer.conn);
     let ended = shared.clone();
     let body = StreamBody::new(opened.cell, move || {
-        let more = {
-            let mut hub = ended.hub();
-            hub.close(id);
-            hub.on_conn(conn)
-        };
+        ended.hub().close(id);
+        let more = ended.streams_on(conn);
         if let Some(conn) = ended.inner().conns.get_mut(&conn) {
             conn.streaming = more;
         }
     });
+    event_stream(body)
+}
+
+/// A response that streams `body` as server-sent events.
+fn event_stream(body: StreamBody) -> Response<Body> {
     let mut response = Response::new(BodyExt::boxed(body));
     let headers = response.headers_mut();
     headers.insert(
@@ -1643,6 +1724,56 @@ async fn stream(
     headers.insert(header::CONNECTION, HeaderValue::from_static("close"));
     headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
     response
+}
+
+/// `GET /v1/terminals/{block}/stream`: a terminal's screen, whole and then the rows that change.
+/// The stream is opened first, so the terminals are kept while the UI thread checks the block
+/// and lends them.
+async fn terminal_stream(
+    shared: &Arc<Shared>,
+    peer: Peer,
+    token: &Token,
+    block: &str,
+) -> Response<Body> {
+    /// Takes the stream out of the table however the request ends: refused, dropped by the
+    /// client while the UI thread answers, or the body's end.
+    struct Opened {
+        shared: Arc<Shared>,
+        id: u64,
+        conn: u64,
+    }
+    impl Drop for Opened {
+        fn drop(&mut self) {
+            self.shared.screens().close(self.id);
+            let more = self.shared.streams_on(self.conn);
+            if let Some(conn) = self.shared.inner().conns.get_mut(&self.conn) {
+                conn.streaming = more;
+            }
+        }
+    }
+    let (id, cell) = shared.screens().open(Caller::of(token), block, peer.conn);
+    let opened = Opened {
+        shared: shared.clone(),
+        id,
+        conn: peer.conn,
+    };
+    shared.looking.notify_one();
+    match ask(shared, token, TERMINAL, json!({ "block": block })).await {
+        Ok(answer) => {
+            if answer.get("error").is_some() || answer["result"]["isError"] == true {
+                return tool_answer(&answer);
+            }
+        }
+        Err(response) => return response,
+    }
+    // The UI thread lent the terminals; the stream may have ended since (its block closed).
+    if !shared.screens().admits(id) {
+        return missing("block", block);
+    }
+    if let Some(conn) = shared.inner().conns.get_mut(&peer.conn) {
+        conn.streaming = true;
+    }
+    event_stream(StreamBody::new(cell, move || drop(opened)))
 }
 
 #[cfg(test)]

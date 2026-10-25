@@ -8,8 +8,8 @@ use gpui_kit::App;
 use templum_api::model::{
     AgentView, App as AppView, Assignee, AttachmentView, AutomationView, BlockView, BoardView,
     CardRef, CardView, ColumnView, CommentView, ItemView, LimitsView, OptionView, PlanView,
-    QuestionView, Rect, RequestView, SessionView, State, UsageView, Why, WindowView, WireView,
-    WorkspaceView,
+    QuestionView, Rect, RequestView, SessionView, State, UsageView, ViewView, Why, WindowView,
+    WireView, WorkspaceView,
 };
 use templum_api::store::Scope;
 
@@ -88,6 +88,7 @@ impl Workspace {
                 })
                 .collect(),
             automations: self.automation_views(cx),
+            view: self.view_of_shown(),
             usage: (!self.limits.is_empty()).then(|| UsageView {
                 limits: self
                     .limits
@@ -109,6 +110,24 @@ impl Workspace {
                     .collect(),
             }),
         }
+    }
+
+    /// What the shown workspace's canvas shows: the world rectangle at its camera and the canvas's
+    /// size at the last paint; None before the first, and in grid mode (tiles, not the canvas).
+    fn view_of_shown(&self) -> Option<ViewView> {
+        let (viewport, camera) = (self.api.viewport, &self.space.canvas.camera);
+        if viewport.w <= 0.0 || viewport.h <= 0.0 || self.space.grid.is_some() {
+            return None;
+        }
+        let zoom = camera.zoom();
+        Some(ViewView {
+            workspace: self.space.id.clone(),
+            x: camera.origin.x,
+            y: camera.origin.y,
+            w: viewport.w / zoom,
+            h: viewport.h / zoom,
+            zoom,
+        })
     }
 
     /// The blocks of a workspace, back to front.

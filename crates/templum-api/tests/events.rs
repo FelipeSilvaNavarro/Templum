@@ -3,134 +3,11 @@
 mod common;
 
 use common::*;
-use serde_json::{Value, json};
-use std::io::{BufRead, BufReader};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use templum_api::Notice;
 use templum_api::model::State;
 use templum_api::store::Scope;
-
-/// An open `GET /v1/events`: its status and headers, and its lines as they arrive.
-struct Stream {
-    status: u16,
-    headers: ureq::http::HeaderMap,
-    lines: Receiver<String>,
-}
-
-#[derive(Debug)]
-struct Event {
-    id: String,
-    event: String,
-    data: Value,
-}
-
-enum Auth<'a> {
-    Bearer(&'a str),
-    Ticket(&'a str),
-}
-
-fn open(fake: &Fake, auth: Auth, last_event_id: Option<&str>) -> Stream {
-    let request = match auth {
-        Auth::Bearer(token) => req("GET", "/v1/events").token(token),
-        Auth::Ticket(ticket) => req("GET", &format!("/v1/events?ticket={ticket}")),
-    };
-    let request = match last_event_id {
-        Some(id) => request.header("Last-Event-ID", id),
-        None => request,
-    };
-    let built = request.build(&fake.base);
-    let (lines, receiver) = channel();
-    let (head, heads) = channel();
-    std::thread::spawn(move || {
-        // No overall limit: a stream lasts. The test's reads are what time out.
-        let config = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(None)
-            .build();
-        let agent: ureq::Agent = config.into();
-        let response = agent.run(built).unwrap();
-        let _ = head.send((response.status().as_u16(), response.headers().clone()));
-        let mut reader = BufReader::new(response.into_body().into_reader());
-        loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    if lines.send(line).is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
-    let (status, headers) = heads
-        .recv_timeout(Duration::from_secs(10))
-        .expect("response headers");
-    Stream {
-        status,
-        headers,
-        lines: receiver,
-    }
-}
-
-impl Stream {
-    fn line(&self) -> Option<String> {
-        match self.lines.recv_timeout(Duration::from_secs(10)) {
-            Ok(line) => Some(line.trim_end_matches('\n').to_string()),
-            Err(RecvTimeoutError::Disconnected) => None,
-            Err(RecvTimeoutError::Timeout) => panic!("timed out waiting for a line"),
-        }
-    }
-
-    /// The next event, heartbeats skipped; None when the stream has ended.
-    fn next(&self) -> Option<Event> {
-        let (mut id, mut event, mut data) = (String::new(), String::new(), Value::Null);
-        loop {
-            let line = self.line()?;
-            if line.is_empty() {
-                if !event.is_empty() {
-                    return Some(Event { id, event, data });
-                }
-            } else if line.starts_with(':') {
-                // a comment
-            } else if let Some(v) = line.strip_prefix("id: ") {
-                id = v.into();
-            } else if let Some(v) = line.strip_prefix("event: ") {
-                event = v.into();
-            } else if let Some(v) = line.strip_prefix("data: ") {
-                data = serde_json::from_str(v).unwrap();
-            }
-        }
-    }
-
-    fn event(&self) -> Event {
-        self.next().expect("the stream ended")
-    }
-
-    /// The next heartbeat: any line that is a comment, before an event.
-    fn ping(&self) -> bool {
-        loop {
-            match self.line() {
-                Some(line) if line == ": ping" => return true,
-                Some(line) if line.is_empty() => {}
-                Some(_) => return false,
-                None => return false,
-            }
-        }
-    }
-
-    /// The stream ended (its body is over).
-    fn ended(&self) -> bool {
-        loop {
-            match self.lines.recv_timeout(Duration::from_secs(10)) {
-                Ok(_) => {}
-                Err(RecvTimeoutError::Disconnected) => return true,
-                Err(RecvTimeoutError::Timeout) => return false,
-            }
-        }
-    }
-}
 
 fn now() -> u64 {
     SystemTime::now()
@@ -152,7 +29,7 @@ fn setup() -> (Fake, String) {
 #[test]
 fn a_stream_starts_with_a_snapshot() {
     let (fake, text) = setup();
-    let stream = open(&fake, Auth::Bearer(&text), None);
+    let stream = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     assert_eq!(stream.status, 200);
     let header = |name: &str| {
         stream
@@ -190,7 +67,7 @@ fn a_stream_starts_with_a_snapshot() {
 #[test]
 fn a_published_change_is_a_put_or_a_delete() {
     let (fake, text) = setup();
-    let stream = open(&fake, Auth::Bearer(&text), None);
+    let stream = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     assert_eq!(stream.event().event, "snapshot");
     let mut moved = sample();
     moved.blocks[0].rect.x = 50.0;
@@ -224,7 +101,7 @@ fn a_limited_token_hears_only_its_workspaces() {
     let fake = fake(vec![token], |options| {
         options.heartbeat = Duration::from_millis(100)
     });
-    let stream = open(&fake, Auth::Bearer(&text), None);
+    let stream = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     assert_eq!(stream.event().event, "snapshot");
     // A new block in w4 is not heard.
     let mut elsewhere = sample();
@@ -310,10 +187,10 @@ fn a_ticket_opens_one_stream_once() {
     let value = made.json["ticket"].as_str().unwrap().to_string();
     assert!(value.starts_with("tkt_") && value.len() == 36, "{value}");
     assert_eq!(made.json["expires_in"], 0, "400 ms is under a second");
-    let stream = open(&fake, Auth::Ticket(&value), None);
+    let stream = open(&fake, "/v1/events", Auth::Ticket(&value), None);
     assert_eq!(stream.status, 200);
     assert_eq!(stream.event().event, "snapshot");
-    let again = open(&fake, Auth::Ticket(&value), None);
+    let again = open(&fake, "/v1/events", Auth::Ticket(&value), None);
     assert_eq!(again.status, 401, "a ticket is single use");
     // A ticket opens a stream and nothing else.
     let other = ticket(&fake).json["ticket"].as_str().unwrap().to_string();
@@ -330,7 +207,7 @@ fn a_ticket_opens_one_stream_once() {
     // The state call above didn't spend it, but time does.
     std::thread::sleep(Duration::from_millis(600));
     assert_eq!(
-        open(&fake, Auth::Ticket(&other), None).status,
+        open(&fake, "/v1/events", Auth::Ticket(&other), None).status,
         401,
         "a stale ticket"
     );
@@ -352,7 +229,7 @@ fn a_ticket_opens_one_stream_once() {
 #[test]
 fn resuming_gets_a_snapshot_and_the_missed_notices() {
     let (fake, text) = setup();
-    let first = open(&fake, Auth::Bearer(&text), None);
+    let first = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     let x = first.event().id;
     drop(first);
     wait_for("the stream to close", || fake.server.streams() == 0);
@@ -361,7 +238,7 @@ fn resuming_gets_a_snapshot_and_the_missed_notices() {
         block: Some("b7k2m".into()),
         workspace: Some("w3".into()),
     });
-    let back = open(&fake, Auth::Bearer(&text), Some(&x));
+    let back = open(&fake, "/v1/events", Auth::Bearer(&text), Some(&x));
     assert_eq!(back.event().event, "snapshot");
     let notice = back.event();
     assert_eq!(
@@ -369,14 +246,14 @@ fn resuming_gets_a_snapshot_and_the_missed_notices() {
         ("notice", Some("t1 ended"))
     );
     // From another run: the snapshot alone, then only heartbeats.
-    let strange = open(&fake, Auth::Bearer(&text), Some("00000000-5"));
+    let strange = open(&fake, "/v1/events", Auth::Bearer(&text), Some("00000000-5"));
     assert_eq!(strange.event().event, "snapshot");
     assert!(
         strange.ping(),
         "the next thing is a heartbeat, not a notice"
     );
     // A notice from before the id isn't sent again.
-    let later = open(&fake, Auth::Bearer(&text), Some(&notice.id));
+    let later = open(&fake, "/v1/events", Auth::Bearer(&text), Some(&notice.id));
     assert_eq!(later.event().event, "snapshot");
     assert!(later.ping());
 }
@@ -384,7 +261,7 @@ fn resuming_gets_a_snapshot_and_the_missed_notices() {
 #[test]
 fn a_heartbeat_comes_while_nothing_changes() {
     let (fake, text) = setup();
-    let stream = open(&fake, Auth::Bearer(&text), None);
+    let stream = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     assert_eq!(stream.event().event, "snapshot");
     assert!(stream.ping() && stream.ping());
 }
@@ -393,7 +270,7 @@ fn a_heartbeat_comes_while_nothing_changes() {
 fn a_stream_ends_when_its_tokens_workspaces_change() {
     let (text, token) = token(Scope::Read, Some(vec!["w3", "w4"]));
     let fake = fake(vec![token.clone()], |_| {});
-    let stream = open(&fake, Auth::Bearer(&text), None);
+    let stream = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     assert_eq!(stream.event().event, "snapshot");
     // The same list again: the stream stays.
     fake.server.set_tokens(vec![token.clone()]);
@@ -404,7 +281,9 @@ fn a_stream_ends_when_its_tokens_workspaces_change() {
     assert!(stream.ended(), "the body ends");
     wait_for("no stream", || fake.server.streams() == 0);
     assert_eq!(
-        open(&fake, Auth::Bearer(&text), None).event().event,
+        open(&fake, "/v1/events", Auth::Bearer(&text), None)
+            .event()
+            .event,
         "snapshot"
     );
 }
@@ -415,19 +294,22 @@ fn revoking_cuts_the_stream_and_its_tickets() {
     let fake = fake(vec![token.clone()], |options| {
         options.heartbeat = Duration::from_millis(100)
     });
-    let stream = open(&fake, Auth::Bearer(&text), None);
+    let stream = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     assert_eq!(stream.event().event, "snapshot");
     let ticket = fake.call(req("POST", "/v1/tickets").token(&text).json(&json!({})));
     let ticket = ticket.json["ticket"].as_str().unwrap().to_string();
     fake.server.set_tokens(vec![]);
     assert!(stream.ended(), "the body ends");
     wait_for("no stream", || fake.server.streams() == 0);
-    assert_eq!(open(&fake, Auth::Ticket(&ticket), None).status, 401);
+    assert_eq!(
+        open(&fake, "/v1/events", Auth::Ticket(&ticket), None).status,
+        401
+    );
     // An expiry, with no set_tokens: the heartbeat finds it.
     let (text, mut token) = self::token(Scope::Read, None);
     token.expires = Some(now() + 2);
     fake.server.set_tokens(vec![token]);
-    let stream = open(&fake, Auth::Bearer(&text), None);
+    let stream = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     assert_eq!(stream.event().event, "snapshot");
     assert!(stream.ended(), "its stream ends at its expiry");
     assert_eq!(fake.call(req("GET", "/v1/state").token(&text)).status, 401);
@@ -441,7 +323,7 @@ fn an_expired_tokens_stream_ends_at_the_next_publish_not_the_next_heartbeat() {
     let fake = fake(vec![token], |options| {
         options.heartbeat = Duration::from_secs(60)
     });
-    let stream = open(&fake, Auth::Bearer(&text), None);
+    let stream = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     assert_eq!(stream.event().event, "snapshot");
     let ticker = std::thread::scope(|scope| {
         let handle = scope.spawn(|| {
@@ -466,20 +348,23 @@ fn eight_streams_per_token() {
         options.heartbeat = Duration::from_millis(100)
     });
     let streams: Vec<Stream> = (0..8)
-        .map(|_| open(&fake, Auth::Bearer(&text), None))
+        .map(|_| open(&fake, "/v1/events", Auth::Bearer(&text), None))
         .collect();
     assert!(streams.iter().all(|s| s.status == 200));
     wait_for("8 streams", || fake.server.streams() == 8);
-    let ninth = open(&fake, Auth::Bearer(&text), None);
+    let ninth = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     assert_eq!(ninth.status, 429);
     assert_eq!(
-        open(&fake, Auth::Bearer(&other_text), None).status,
+        open(&fake, "/v1/events", Auth::Bearer(&other_text), None).status,
         200,
         "another token still opens one"
     );
     drop(streams);
     wait_for("room again", || fake.server.streams() <= 1);
-    assert_eq!(open(&fake, Auth::Bearer(&text), None).status, 200);
+    assert_eq!(
+        open(&fake, "/v1/events", Auth::Bearer(&text), None).status,
+        200
+    );
 }
 
 #[test]
@@ -489,12 +374,12 @@ fn the_first_stream_asks_for_the_tick() {
         fake.notifications(templum_api::WATCH).is_empty(),
         "nothing before a stream"
     );
-    let first = open(&fake, Auth::Bearer(&text), None);
+    let first = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     first.event();
     wait_for("the watch", || {
         fake.notifications(templum_api::WATCH).len() == 1
     });
-    let second = open(&fake, Auth::Bearer(&text), None);
+    let second = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     second.event();
     assert_eq!(
         fake.notifications(templum_api::WATCH).len(),
@@ -503,9 +388,32 @@ fn the_first_stream_asks_for_the_tick() {
     );
     drop((first, second));
     wait_for("no stream", || fake.server.streams() == 0);
-    let third = open(&fake, Auth::Bearer(&text), None);
+    let third = open(&fake, "/v1/events", Auth::Bearer(&text), None);
     third.event();
     wait_for("the watch again", || {
         fake.notifications(templum_api::WATCH).len() == 2
     });
+}
+
+#[test]
+fn a_stream_with_view_hears_the_camera() {
+    let (fake, text) = setup();
+    let follower = open(&fake, "/v1/events?view=true", Auth::Bearer(&text), None);
+    let plain = open(&fake, "/v1/events", Auth::Bearer(&text), None);
+    let snapshot = follower.event();
+    assert_eq!(snapshot.event, "snapshot");
+    assert_eq!(snapshot.data["view"]["zoom"], 1.0);
+    assert_eq!(plain.event().event, "snapshot");
+    let mut state = sample();
+    state.view.as_mut().unwrap().zoom = 2.0;
+    fake.server.publish(state);
+    let event = follower.event();
+    assert_eq!(event.event, "view");
+    assert_eq!(event.data["zoom"], 2.0);
+    assert_eq!(event.data["workspace"], "w3");
+    assert!(plain.ping(), "the other stream hears no camera");
+    let bad = fake.call(req("GET", "/v1/events?view=maybe").token(&text));
+    assert_eq!(bad.status, 400);
+    assert_eq!(bad.code(), "invalid");
+    assert_eq!(bad.message(), "\"view\" is true or false.");
 }

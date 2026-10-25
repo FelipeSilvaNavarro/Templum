@@ -5,13 +5,16 @@
 
 use futures::StreamExt;
 use serde_json::Value;
+use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use templum_api::model::*;
 use templum_api::store::{Scope, Settings, Store, Token};
-use templum_api::{Options, Server, start};
+use templum_api::{Options, Server, TerminalRef, codes, registry, start};
 use templum_mcp::{Incoming, Reply, rpc, tools};
+use templum_terminal::{Palette, TermOptions, Terminal};
 
 /// A token with the given scope and workspaces, and its text. Ids are unique in the process.
 pub fn token(scope: Scope, workspaces: Option<Vec<&str>>) -> (String, Token) {
@@ -103,6 +106,14 @@ pub fn sample() -> State {
             ..Default::default()
         }],
         usage: Some(UsageView::default()),
+        view: Some(ViewView {
+            workspace: "w3".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 800.0,
+            h: 600.0,
+            zoom: 1.0,
+        }),
     }
 }
 
@@ -118,9 +129,11 @@ pub struct Seen {
 }
 
 pub struct Fake {
-    pub server: Server,
+    pub server: Arc<Server>,
     pub base: String,
     pub seen: Arc<Mutex<Vec<Seen>>>,
+    /// The terminals the fake UI thread lends when a terminal stream opens.
+    pub terminals: Arc<Mutex<Vec<TerminalRef>>>,
     pub dir: tempfile::TempDir,
 }
 
@@ -175,7 +188,7 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
     tweak(&mut options);
     let tls = options.tls.is_some();
     let (tx, mut rx) = futures::channel::mpsc::unbounded();
-    let server = start(options, tokens, tx).unwrap();
+    let server = Arc::new(start(options, tokens, tx).unwrap());
     let base = format!(
         "{}://127.0.0.1:{}",
         if tls { "https" } else { "http" },
@@ -183,6 +196,10 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
     );
     let seen = Arc::new(Mutex::new(Vec::new()));
     let record = seen.clone();
+    let terminals: Arc<Mutex<Vec<TerminalRef>>> = Arc::default();
+    let lent = terminals.clone();
+    // A weak hold, so that dropping the fake still drops the server.
+    let lender = Arc::downgrade(&server);
     std::thread::spawn(move || {
         // Calls that never get an answer keep their repliers, as a waiting task does.
         let mut held = Vec::new();
@@ -206,6 +223,20 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
             let name = params["name"].as_str().unwrap_or_default();
             let line = match method.as_str() {
                 templum_api::STATE => rpc::result(&id, serde_json::to_value(sample()).unwrap()),
+                templum_api::TERMINAL => {
+                    let block = params["block"].as_str().unwrap_or_default();
+                    let all = lent.lock().unwrap().clone();
+                    if block == "n0te" {
+                        tools::tool_result(&id, &Reply::err("n0te isn't a terminal."))
+                    } else if all.iter().any(|t| t.block == block) {
+                        if let Some(server) = lender.upgrade() {
+                            server.set_terminals(all);
+                        }
+                        tools::tool_result(&id, &Reply::ok("Streaming."))
+                    } else {
+                        rpc::error(&id, codes::NOT_FOUND, &registry::no("block", block))
+                    }
+                }
                 "tools/call" if name == "close_block" => {
                     tools::tool_result(&id, &Reply::err("No."))
                 }
@@ -225,7 +256,163 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
         server,
         base,
         seen,
+        terminals,
         dir,
+    }
+}
+
+/// The calls' log and the noise's, one after the other.
+pub fn logs(dir: &std::path::Path) -> String {
+    let folder = templum_api::store::folder(dir);
+    ["audit.log", "noise.log"]
+        .iter()
+        .map(|name| std::fs::read_to_string(folder.join(name)).unwrap_or_default())
+        .collect()
+}
+
+/// A terminal that runs nothing: feed it bytes (`Terminal::feed`) and it shows them.
+pub fn viewer(cols: u16, rows: u16) -> Terminal {
+    Terminal::viewer(
+        "v",
+        (cols, rows),
+        Palette::default(),
+        TermOptions::default(),
+        Arc::new(|| {}),
+    )
+}
+
+/// Lends `term` to the fake's next terminal streams, as the block `block` of `workspace`.
+pub fn lend(fake: &Fake, block: &str, workspace: &str, term: &Terminal) {
+    fake.terminals.lock().unwrap().push(TerminalRef {
+        block: block.into(),
+        workspace: workspace.into(),
+        term: term.shared().clone(),
+    });
+}
+
+/// How a stream is opened: with a token, or with a ticket (`?ticket=` after the path).
+pub enum Auth<'a> {
+    Bearer(&'a str),
+    Ticket(&'a str),
+}
+
+/// An open stream: its status and headers, and its lines as they arrive.
+pub struct Stream {
+    pub status: u16,
+    pub headers: ureq::http::HeaderMap,
+    lines: Receiver<String>,
+}
+
+#[derive(Debug)]
+pub struct Event {
+    pub id: String,
+    pub event: String,
+    pub data: Value,
+}
+
+/// `GET path` (with its query, if any) as a stream.
+pub fn open(fake: &Fake, path: &str, auth: Auth, last_event_id: Option<&str>) -> Stream {
+    let request = match auth {
+        Auth::Bearer(token) => req("GET", path).token(token),
+        Auth::Ticket(ticket) => {
+            let joint = if path.contains('?') { '&' } else { '?' };
+            req("GET", &format!("{path}{joint}ticket={ticket}"))
+        }
+    };
+    let request = match last_event_id {
+        Some(id) => request.header("Last-Event-ID", id),
+        None => request,
+    };
+    let built = request.build(&fake.base);
+    let (lines, receiver) = channel();
+    let (head, heads) = channel();
+    std::thread::spawn(move || {
+        // No overall limit: a stream lasts. The test's reads are what time out.
+        let config = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(None)
+            .build();
+        let agent: ureq::Agent = config.into();
+        let response = agent.run(built).unwrap();
+        let _ = head.send((response.status().as_u16(), response.headers().clone()));
+        let mut reader = BufReader::new(response.into_body().into_reader());
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if lines.send(line).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let (status, headers) = heads
+        .recv_timeout(Duration::from_secs(10))
+        .expect("response headers");
+    Stream {
+        status,
+        headers,
+        lines: receiver,
+    }
+}
+
+impl Stream {
+    fn line(&self) -> Option<String> {
+        match self.lines.recv_timeout(Duration::from_secs(10)) {
+            Ok(line) => Some(line.trim_end_matches('\n').to_string()),
+            Err(RecvTimeoutError::Disconnected) => None,
+            Err(RecvTimeoutError::Timeout) => panic!("timed out waiting for a line"),
+        }
+    }
+
+    /// The next event, heartbeats skipped; None when the stream has ended.
+    pub fn next(&self) -> Option<Event> {
+        let (mut id, mut event, mut data) = (String::new(), String::new(), Value::Null);
+        loop {
+            let line = self.line()?;
+            if line.is_empty() {
+                if !event.is_empty() {
+                    return Some(Event { id, event, data });
+                }
+            } else if line.starts_with(':') {
+                // a comment
+            } else if let Some(v) = line.strip_prefix("id: ") {
+                id = v.into();
+            } else if let Some(v) = line.strip_prefix("event: ") {
+                event = v.into();
+            } else if let Some(v) = line.strip_prefix("data: ") {
+                data = serde_json::from_str(v).unwrap();
+            }
+        }
+    }
+
+    pub fn event(&self) -> Event {
+        self.next().expect("the stream ended")
+    }
+
+    /// The next heartbeat: any line that is a comment, before an event.
+    pub fn ping(&self) -> bool {
+        loop {
+            match self.line() {
+                Some(line) if line == ": ping" => return true,
+                Some(line) if line.is_empty() => {}
+                Some(_) => return false,
+                None => return false,
+            }
+        }
+    }
+
+    /// The stream ended (its body is over).
+    pub fn ended(&self) -> bool {
+        loop {
+            match self.lines.recv_timeout(Duration::from_secs(10)) {
+                Ok(_) => {}
+                Err(RecvTimeoutError::Disconnected) => return true,
+                Err(RecvTimeoutError::Timeout) => return false,
+            }
+        }
     }
 }
 

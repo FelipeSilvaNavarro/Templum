@@ -37,6 +37,9 @@ pub(crate) struct Shared {
     /// and by the UI calls that change the grid; cleared by [`crate::Snapshot::refresh`] under
     /// the lock.
     pub(crate) dirty: AtomicBool,
+    /// Counts every time `dirty` was set: a reader that keeps the count it last read at knows
+    /// whether the grid may differ (see [`SharedTerm::changes`]).
+    changes: AtomicU64,
     title: Mutex<Option<String>>,
     /// When the terminal was made, and when its shell ended: how long the shell lived.
     born: Instant,
@@ -67,6 +70,7 @@ impl Shared {
             notify,
             pending: AtomicBool::new(false),
             dirty: AtomicBool::new(true),
+            changes: AtomicU64::new(0),
             title: Mutex::new(None),
             born: Instant::now(),
             exited: OnceLock::new(),
@@ -120,8 +124,14 @@ impl Shared {
         }
     }
 
-    fn wake(&self) {
+    /// The grid may differ from what was last copied out of it.
+    fn mark_dirty(&self) {
         self.dirty.store(true, Ordering::Release);
+        self.changes.fetch_add(1, Ordering::Release);
+    }
+
+    fn wake(&self) {
+        self.mark_dirty();
         if !self.pending.swap(true, Ordering::AcqRel) {
             (self.notify)();
         }
@@ -130,7 +140,7 @@ impl Shared {
     /// Wakes the UI even before the next re-arm: a hidden workspace's terminals are never re-armed,
     /// and a command's end or a call for attention must still reach the sidebar.
     pub(crate) fn wake_now(&self) {
-        self.dirty.store(true, Ordering::Release);
+        self.mark_dirty();
         (self.notify)();
     }
 
@@ -150,7 +160,7 @@ impl Shared {
     }
 
     /// The last OSC 0/2 title, unless blank.
-    fn title(&self) -> Option<String> {
+    pub(crate) fn title(&self) -> Option<String> {
         self.title
             .lock()
             .unwrap()
@@ -331,7 +341,19 @@ impl SharedTerm {
 
     /// The UI changed the grid (a scroll, the selection, a resize): the next refresh reads it.
     pub(crate) fn touched(&self) {
-        self.1.dirty.store(true, Ordering::Release);
+        self.1.mark_dirty();
+    }
+
+    /// How many times the grid may have changed (output, a scroll, the selection, a resize, a
+    /// title): equal counts, equal screens. Read it before the grid, so a change during the read
+    /// is counted again.
+    pub fn changes(&self) -> u64 {
+        self.1.changes.load(Ordering::Acquire)
+    }
+
+    /// Whether both are the same terminal.
+    pub fn same(&self, other: &SharedTerm) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     /// False while a wake-up waits to be re-armed (tests).

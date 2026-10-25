@@ -8,11 +8,13 @@ pub mod openapi;
 pub mod registry;
 pub mod server;
 pub mod store;
+mod terminals;
 pub mod tls;
 
 pub use model::{Caller, Notice, State};
 pub use server::{Client, Options, Server, start};
 pub use store::{Scope, Store, Token};
+pub use terminals::TerminalRef;
 
 /// The asker of the API's tasks: a terminal id is `<pid>-<n>`, never `api`.
 pub const ASKER: &str = "api";
@@ -22,6 +24,10 @@ pub const CLIENT: &str = "api";
 pub const STATE: &str = "templum/state";
 /// The method of the notification that says a stream opened: the UI thread starts its tick.
 pub const WATCH: &str = "templum/watch";
+/// The method of the request a terminal stream's opening sends the UI thread, params
+/// `{"block": …}`: the glue checks the block for the token, lends every terminal and answers as a
+/// tool does (ok, `isError` with its sentence, or an error code).
+pub const TERMINAL: &str = "templum/terminal";
 /// The method of the notification that says a client connected or left: the pill counts them.
 pub const CLIENTS: &str = "templum/clients";
 

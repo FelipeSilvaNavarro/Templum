@@ -19,6 +19,19 @@ pub struct State {
     pub cards: Vec<CardView>,
     pub automations: Vec<AutomationView>,
     pub usage: Option<UsageView>,
+    /// What the shown workspace's canvas shows; None before its first paint.
+    pub view: Option<ViewView>,
+}
+
+/// The world rectangle a workspace's canvas shows, and its zoom (docs/specs/api.md, Batch 2).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ViewView {
+    pub workspace: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub zoom: f32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -39,6 +52,74 @@ pub struct WorkspaceView {
     pub color: Option<String>,
     pub shown: bool,
     pub stopped: bool,
+}
+
+/// A terminal's screen, as a terminal stream's `frame` event carries it (docs/specs/api.md,
+/// Batch 2): clients decode it, a mirror draws it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrameView {
+    pub size: SizeView,
+    /// None while the program hides it.
+    pub cursor: Option<CursorView>,
+    /// The program's own title (OSC 0/2).
+    pub title: Option<String>,
+    /// Every row is here; otherwise only the rows that changed.
+    pub whole: bool,
+    pub rows: Vec<RowView>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SizeView {
+    pub cols: usize,
+    pub rows: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CursorView {
+    pub row: usize,
+    pub col: usize,
+    /// `block`, `underline` or `beam`.
+    pub shape: String,
+    pub blinking: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RowView {
+    pub y: usize,
+    /// Trailing blanks trimmed; an empty row has none.
+    pub runs: Vec<RunView>,
+}
+
+fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
+/// Text of one style. A color is absent for the theme's default.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunView {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fg: Option<Color>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bg: Option<Color>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bold: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dim: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub italic: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub underline: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub inverse: bool,
+}
+
+/// A palette slot 0–255, which the viewer's palette draws, or `"#rrggbb"`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Color {
+    Index(u8),
+    Rgb(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -366,6 +447,10 @@ impl State {
                 .cloned()
                 .collect(),
             usage: None,
+            view: self
+                .view
+                .clone()
+                .filter(|view| caller.sees(Some(&view.workspace))),
             blocks,
         }
     }
@@ -556,6 +641,14 @@ mod tests {
                 automation(3, None),
             ],
             usage: Some(UsageView::default()),
+            view: Some(ViewView {
+                workspace: "w3".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+                zoom: 1.0,
+            }),
         }
     }
 
@@ -636,6 +729,21 @@ mod tests {
             .id(),
             "b1-k1"
         );
+    }
+
+    #[test]
+    fn a_limited_caller_sees_the_view_only_of_its_workspaces() {
+        let state = two_workspaces();
+        let caller = |workspaces: Option<&[&str]>| Caller {
+            token: 1,
+            name: "t".into(),
+            scope: Scope::Read,
+            workspaces: workspaces.map(|w| w.iter().map(|s| s.to_string()).collect()),
+        };
+        let seen = state.visible(&caller(Some(&["w3"])));
+        assert_eq!(seen.view.as_ref().map(|v| v.zoom), Some(1.0));
+        assert_eq!(state.visible(&caller(Some(&["w4"]))).view, None);
+        assert_eq!(state.visible(&caller(None)), state);
     }
 
     #[test]

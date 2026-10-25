@@ -335,6 +335,7 @@ fn a_rectangle_held_near_the_edge_moves_the_camera_to_blocks_beyond_it(cx: &mut 
     })
     .unwrap();
     // The pointer stays still at the edge: frames keep moving the camera.
+    ws.update(cx, |ws, _| ws.api.moved_at = None);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !ws.read_with(cx, |ws, _| ws.space.selected.contains(&far)) {
         assert!(std::time::Instant::now() < deadline, "never reached");
@@ -342,6 +343,10 @@ fn a_rectangle_held_near_the_edge_moves_the_camera_to_blocks_beyond_it(cx: &mut 
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin.x) > 0.0);
+    assert!(
+        ws.read_with(cx, |ws, _| ws.api.moved_at.is_some()),
+        "the API's tick follows the edge scroll"
+    );
     // Let go: the camera stops.
     cx.update_window(handle, |_, window, cx| {
         window.dispatch_event(

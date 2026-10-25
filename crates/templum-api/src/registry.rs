@@ -5,14 +5,17 @@
 use crate::store::Scope;
 use serde_json::{Map, Value, json};
 use templum_mcp::control::{self, Rule};
+use templum_mcp::tools::{MAX_KEYS, MAX_TEXT};
+use templum_terminal::{KEY_NAMES, named_key};
 
 /// The tools only the API serves: automations are the person's, not an agent's.
-const OWN: [&str; 5] = [
+const OWN: [&str; 6] = [
     "answer_request",
     "save_automation",
     "set_automation",
     "run_automation",
     "delete_automation",
+    "terminal_input",
 ];
 
 /// The arguments that name something a workspace-limited token must see: a block, a workspace, a
@@ -144,6 +147,24 @@ pub fn tools() -> Vec<Value> {
             json!({ "automation": automation }),
             &["automation"],
         ),
+        tool(
+            "terminal_input",
+            "Types into a terminal as the person's keyboard does: text as a paste (bracketed when \
+             its program asked), or keys by send_keys' names (a character is a key; at most 16, \
+             50 ms apart). Answers once they are in.",
+            json!({
+                "block": { "type": "string", "description": "A terminal block's id, as the state shows it." },
+                "text": { "type": "string", "description": "Pasted whole; at most 256 KiB. Give text or keys." },
+                "keys": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "minItems": 1,
+                    "maxItems": MAX_KEYS,
+                    "description": "Key names (enter, escape, ctrl+c, a character…), 1 to 16.",
+                },
+            }),
+            &["block"],
+        ),
     ]);
     all
 }
@@ -190,7 +211,7 @@ pub fn scope(name: &str, args: &Value) -> Result<Scope, String> {
     if own(name) {
         return Ok(match name {
             "save_automation" if args["automation"]["do"].get("command").is_some() => Scope::Full,
-            "delete_automation" => Scope::Full,
+            "delete_automation" | "terminal_input" => Scope::Full,
             _ => Scope::Control,
         });
     }
@@ -249,6 +270,8 @@ pub enum Does {
     Tool(&'static str),
     Read(Resource),
     Events,
+    /// A terminal's screen, live (`GET /v1/terminals/{block}/stream`).
+    Frames,
     Ticket,
     Tools,
     OpenApi,
@@ -284,7 +307,7 @@ const fn route(method: &'static str, path: &'static str, does: Does) -> Route {
     Route { method, path, does }
 }
 
-use Does::{Events, OpenApi, Read, Ticket, Tool, Tools};
+use Does::{Events, Frames, OpenApi, Read, Ticket, Tool, Tools};
 use Resource as R;
 
 /// Every route (docs/specs/api.md, Resources and REST aliases). A path parameter is a tool's
@@ -310,6 +333,7 @@ pub const ROUTES: &[Route] = &[
     route("GET", "/v1/tools", Tools),
     route("GET", "/v1/openapi.json", OpenApi),
     route("GET", "/v1/events", Events),
+    route("GET", "/v1/terminals/{block}/stream", Frames),
     route("POST", "/v1/tickets", Ticket),
     route("POST", "/v1/tools/{name}", Tool("")),
     route("POST", "/v1/workspaces", Tool("create_workspace")),
@@ -329,6 +353,11 @@ pub const ROUTES: &[Route] = &[
         Tool("send_to_terminal"),
     ),
     route("POST", "/v1/terminals/{block}/keys", Tool("send_keys")),
+    route(
+        "POST",
+        "/v1/terminals/{block}/input",
+        Tool("terminal_input"),
+    ),
     route(
         "POST",
         "/v1/requests/{request}/answer",
@@ -502,6 +531,29 @@ pub enum Own {
     DeleteAutomation {
         id: u64,
     },
+    TerminalInput {
+        block: String,
+        input: Input,
+    },
+}
+
+/// What `terminal_input` types.
+#[derive(Clone, PartialEq)]
+pub enum Input {
+    /// A paste.
+    Text(String),
+    /// Keys by `send_keys`' names.
+    Keys(Vec<String>),
+}
+
+/// Never the text or the keys: a password typed through the API must not reach a log by `{:?}`.
+impl std::fmt::Debug for Input {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Input::Text(text) => write!(f, "Text({} bytes)", text.len()),
+            Input::Keys(keys) => write!(f, "Keys({})", keys.len()),
+        }
+    }
 }
 
 /// How a request is answered.
@@ -594,6 +646,41 @@ pub fn parse_own(name: &str, args: &Value) -> Result<Own, String> {
         "delete_automation" => Own::DeleteAutomation {
             id: number("automation")?,
         },
+        "terminal_input" => {
+            let block = args["block"]
+                .as_str()
+                .ok_or("terminal_input needs \"block\", a string")?
+                .to_string();
+            let (text, keys) = (&args["text"], &args["keys"]);
+            if text.is_null() == keys.is_null() {
+                return Err("terminal_input takes text or keys.".into());
+            }
+            let input = if text.is_null() {
+                let keys = keys.as_array().ok_or("\"keys\" is a list of key names.")?;
+                if !(1..=MAX_KEYS).contains(&keys.len()) {
+                    return Err(format!("\"keys\" holds 1 to {MAX_KEYS} keys."));
+                }
+                let keys = keys
+                    .iter()
+                    .map(|k| k.as_str().map(str::to_string))
+                    .collect::<Option<Vec<String>>>()
+                    .ok_or("\"keys\" is a list of key names.")?;
+                // The position, not the key: what was typed may be a secret.
+                if let Some(at) = keys.iter().position(|k| named_key(k).is_none()) {
+                    return Err(format!(
+                        "keys[{at}] isn't a key Templum knows. Keys: {KEY_NAMES}."
+                    ));
+                }
+                Input::Keys(keys)
+            } else {
+                let text = text.as_str().ok_or("\"text\" is a string.")?;
+                if text.len() > MAX_TEXT {
+                    return Err(format!("\"text\" is at most {} KiB.", MAX_TEXT / 1024));
+                }
+                Input::Text(text.to_string())
+            };
+            Own::TerminalInput { block, input }
+        }
         _ => return Err(format!("Unknown tool: {name}")),
     })
 }
@@ -916,6 +1003,86 @@ mod tests {
                 Some(json!({"automation": rule, "id": 2}))
             ),
             Ok(json!({"automation": rule, "id": 2}))
+        );
+    }
+
+    #[test]
+    fn terminal_input_parses_text_or_keys() {
+        assert_eq!(
+            parse_own("terminal_input", &json!({"block": "b", "text": "ls\n"})),
+            Ok(Own::TerminalInput {
+                block: "b".into(),
+                input: Input::Text("ls\n".into())
+            })
+        );
+        assert_eq!(
+            parse_own(
+                "terminal_input",
+                &json!({"block": "b", "keys": ["escape", "j"]})
+            ),
+            Ok(Own::TerminalInput {
+                block: "b".into(),
+                input: Input::Keys(vec!["escape".into(), "j".into()])
+            })
+        );
+        let err = |args: Value| parse_own("terminal_input", &args).unwrap_err();
+        let one = "terminal_input takes text or keys.";
+        assert_eq!(err(json!({"block": "b"})), one);
+        assert_eq!(err(json!({"block": "b", "text": "x", "keys": ["y"]})), one);
+        assert_eq!(
+            err(json!({"block": "b", "keys": vec!["y"; MAX_KEYS + 1]})),
+            "\"keys\" holds 1 to 16 keys."
+        );
+        assert_eq!(
+            err(json!({"block": "b", "keys": []})),
+            "\"keys\" holds 1 to 16 keys."
+        );
+        assert!(
+            err(json!({"block": "b", "keys": ["F13"]}))
+                .starts_with("keys[0] isn't a key Templum knows. Keys: enter")
+        );
+        // The position is named, never the key: it may be a password.
+        let refused = err(json!({"block": "b", "keys": ["enter", "hunter2"]}));
+        assert!(refused.starts_with("keys[1] isn't a key Templum knows."));
+        assert!(!refused.contains("hunter2"));
+        assert_eq!(
+            err(json!({"block": "b", "keys": "y"})),
+            "\"keys\" is a list of key names."
+        );
+        assert_eq!(
+            err(json!({"block": "b", "keys": [1]})),
+            "\"keys\" is a list of key names."
+        );
+        assert_eq!(
+            err(json!({"block": "b", "text": "x".repeat(MAX_TEXT + 1)})),
+            "\"text\" is at most 256 KiB."
+        );
+        assert_eq!(
+            err(json!({"block": "b", "text": 3})),
+            "\"text\" is a string."
+        );
+        assert!(
+            parse_own(
+                "terminal_input",
+                &json!({"block": "b", "text": "x".repeat(MAX_TEXT)})
+            )
+            .is_ok()
+        );
+        assert!(err(json!({"text": "x"})).contains("\"block\""));
+        let typed = parse_own("terminal_input", &json!({"block": "b", "text": "s3cr3t"}));
+        assert!(
+            !format!("{typed:?}").contains("s3cr3t"),
+            "Debug never shows what is typed"
+        );
+        assert_eq!(scope("terminal_input", &json!({})), Ok(Scope::Full));
+        assert_eq!(nominal("terminal_input"), "full");
+        let (route, params) = find("POST", "/v1/terminals/b7k2m/input").unwrap();
+        assert_eq!(
+            (route.does, params),
+            (
+                Does::Tool("terminal_input"),
+                vec![("block", "b7k2m".to_string())]
+            )
         );
     }
 

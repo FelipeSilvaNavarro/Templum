@@ -2503,3 +2503,501 @@ fn a_path_on_a_share_of_another_computer_is_refused_unless_a_folder_is_on_it() {
     assert!(!refuses_share(Some(VerbatimDisk(b'C')), &[]));
     assert!(!refuses_share(None, &[]), "a path with no prefix");
 }
+
+// Terminal streams: the terminals lent to the server, and the tick that lends them again.
+
+#[gpui_kit::test]
+fn the_terminals_are_lent_with_their_workspaces(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let (first, uid, kanban_uid, note_uid) = ws.read_with(cx, |ws, _| {
+        (
+            ws.space.id.clone(),
+            ws.space.uids[&terminal].clone(),
+            ws.space.uids[&kanban].clone(),
+            ws.space.uids[&note].clone(),
+        )
+    });
+    let (second, other) = another_workspace(handle, &ws, cx);
+    let lent = ws.read_with(cx, |ws, _| ws.api_terminals());
+    let mut found: Vec<(&str, &str)> = lent
+        .iter()
+        .map(|t| (t.block.as_str(), t.workspace.as_str()))
+        .collect();
+    found.sort_unstable();
+    let mut wanted = vec![
+        (uid.as_str(), first.as_str()),
+        (other.as_str(), second.as_str()),
+    ];
+    wanted.sort_unstable();
+    assert_eq!(found, wanted, "the terminals and no other block");
+    assert!(
+        !found
+            .iter()
+            .any(|(b, _)| *b == kanban_uid || *b == note_uid)
+    );
+    // What is lent is the pane's own grid.
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space_named(&first).unwrap().terminal(terminal).unwrap();
+        let lent = lent.iter().find(|t| t.block == uid).unwrap();
+        assert!(lent.term.same(pane.term.shared()));
+    });
+}
+
+#[gpui_kit::test]
+fn a_terminal_stream_is_checked_on_the_ui_thread(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, note, terminal) = three_blocks(handle, &ws, cx);
+    let (first, uid, note_uid) = ws.read_with(cx, |ws, _| {
+        (
+            ws.space.id.clone(),
+            ws.space.uids[&terminal].clone(),
+            ws.space.uids[&note].clone(),
+        )
+    });
+    let (_, far) = another_workspace(handle, &ws, cx);
+    let token = with_token(&ws, cx, Scope::Read, None);
+    let ask = |cx: &mut TestAppContext, token: &Token, block: &str| {
+        api_call(
+            handle,
+            &ws,
+            cx,
+            token,
+            templum_api::TERMINAL,
+            json!({ "block": block }),
+        )
+    };
+    let line = ask(cx, &token, &uid);
+    assert_eq!(said(&line), (false, format!("Streaming {uid}.")));
+    let line = ask(cx, &token, &note_uid);
+    assert_eq!(said(&line), (true, format!("{note_uid} isn't a terminal.")));
+    let line = ask(cx, &token, "zzzzz");
+    assert_eq!(
+        refused(&line),
+        (
+            Some(i64::from(codes::NOT_FOUND)),
+            "There's no block zzzzz: GET /v1/blocks lists them.".to_string()
+        )
+    );
+    // A block outside the token's workspaces is answered as one that isn't there.
+    let limited = with_token(&ws, cx, Scope::Read, Some(vec![first.as_str()]));
+    let line = ask(cx, &limited, &far);
+    assert_eq!(
+        refused(&line),
+        (
+            Some(i64::from(codes::NOT_FOUND)),
+            format!("There's no block {far}: GET /v1/blocks lists them.")
+        )
+    );
+    assert!(
+        !said(&ask(cx, &limited, &uid)).0,
+        "its own terminal is fine"
+    );
+    ws.update(cx, |ws, _| ws.api.store.as_mut().unwrap().revoke_all());
+    let line = ask(cx, &token, &uid);
+    assert_eq!(line["error"]["code"].as_i64(), Some(i64::from(codes::AUTH)));
+}
+
+#[gpui_kit::test]
+fn the_tick_lends_terminals_while_a_terminal_stream_is_open(cx: &mut TestAppContext) {
+    use std::io::{Read, Write};
+    let (handle, ws, _dir) = with_data(cx);
+    turn_on(&ws, cx);
+    let (_, _, terminal) = three_blocks(handle, &ws, cx);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&terminal].clone());
+    ws.update(cx, |ws, cx| {
+        ws.mint_token("phone", Scope::Read, None, None, cx)
+    })
+    .unwrap();
+    let text = ws.read_with(cx, |ws, _| ws.api.shown.clone()).unwrap();
+    let port = port(&ws, cx);
+    let (done, ended) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        write!(
+            stream,
+            "GET /v1/terminals/{uid}/stream HTTP/1.1\r\nHost: x\r\n\
+             Authorization: Bearer {text}\r\n\r\n"
+        )
+        .unwrap();
+        let mut all = String::new();
+        let _ = stream.read_to_string(&mut all);
+        let _ = done.send(all);
+    });
+    let streams = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.api.server.as_ref().unwrap().terminal_streams()
+        })
+    };
+    // The stream counts before the UI thread answers, so wait for the answer: it starts the tick.
+    wait_until(cx, "the UI thread to lend the terminals", |cx| {
+        ws.read_with(cx, |ws, _| ws.api.ticking)
+    });
+    assert_eq!(streams(cx), 1);
+    assert!(ws.update(cx, |ws, cx| ws.api_tick_once(cx)));
+    assert_eq!(streams(cx), 1, "the terminal is still there");
+    // The person closes the block: the tick lends the terminals without it, and the stream ends.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.close_now(
+                &[terminal],
+                crate::workspace::history::Then::New,
+                window,
+                cx,
+            )
+        })
+    })
+    .unwrap();
+    assert!(
+        ws.update(cx, |ws, cx| ws.api_tick_once(cx)),
+        "it lent the table, which no longer has the block"
+    );
+    wait_until(cx, "the stream to end", |cx| streams(cx) == 0);
+    let answer = ended
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the client reads the end of the stream");
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    assert!(
+        !ws.update(cx, |ws, cx| ws.api_tick_once(cx)),
+        "no stream of either kind: the tick is over"
+    );
+    ws.read_with(cx, |ws, _| assert!(!ws.api.ticking));
+}
+
+// Input: `terminal_input` is the person's keyboard.
+
+#[gpui_kit::test]
+fn terminal_input_pastes_and_presses_as_the_keyboard(cx: &mut TestAppContext) {
+    use crate::workspace::delegate::KEY_GAP;
+    let (handle, ws) = open(cx);
+    let (_, note, terminal) = three_blocks(handle, &ws, cx);
+    let (first, uid, note_uid) = ws.read_with(cx, |ws, _| {
+        (
+            ws.space.id.clone(),
+            ws.space.uids[&terminal].clone(),
+            ws.space.uids[&note].clone(),
+        )
+    });
+    let token = with_token(&ws, cx, Scope::Full, None);
+    let inputs = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminal(terminal).unwrap().term.inputs()
+        })
+    };
+    let n = inputs(cx);
+    let input = |cx: &mut TestAppContext, token: &Token, arguments: Value| {
+        tool(handle, &ws, cx, token, "terminal_input", arguments)
+    };
+    let line = input(cx, &token, json!({ "block": uid, "text": "echo hi" }));
+    assert_eq!(said(&line), (false, format!("Pasted into {uid}.")));
+    assert_eq!(inputs(cx), n + 1, "one paste");
+    // Esc and the key after it come KEY_GAP apart, and the answer after the last.
+    let answers = api_later(
+        handle,
+        &ws,
+        cx,
+        &token,
+        901,
+        "tools/call",
+        json!({ "name": "terminal_input", "arguments": { "block": uid, "keys": ["escape", "j"] } }),
+    );
+    cx.run_until_parked();
+    assert!(
+        answers.try_recv().is_err(),
+        "no answer before the clock moves"
+    );
+    assert_eq!(inputs(cx), n + 2, "Esc pressed at once, alone");
+    cx.executor()
+        .advance_clock(KEY_GAP + Duration::from_millis(1));
+    cx.run_until_parked();
+    let line: Value = serde_json::from_str(&answers.try_recv().expect("answered")).unwrap();
+    assert_eq!(said(&line), (false, format!("Pressed 2 keys in {uid}.")));
+    assert_eq!(inputs(cx), n + 3);
+    let by = ws.read_with(cx, |ws, _| {
+        ws.space.terminal(terminal).unwrap().keys_from.clone()
+    });
+    assert_eq!(by.map(|(by, _)| by).as_deref(), Some("API · phone"));
+    // One key says so.
+    let answers = api_later(
+        handle,
+        &ws,
+        cx,
+        &token,
+        902,
+        "tools/call",
+        json!({ "name": "terminal_input", "arguments": { "block": uid, "keys": ["enter"] } }),
+    );
+    cx.run_until_parked();
+    let line: Value = serde_json::from_str(&answers.try_recv().expect("answered")).unwrap();
+    assert_eq!(said(&line), (false, format!("Pressed 1 key in {uid}.")));
+    // What isn't a terminal, a Control token, and a block out of the token's sight.
+    let line = input(cx, &token, json!({ "block": note_uid, "text": "x" }));
+    assert_eq!(said(&line), (true, format!("{note_uid} isn't a terminal.")));
+    let control = with_token(&ws, cx, Scope::Control, None);
+    let line = input(cx, &control, json!({ "block": uid, "text": "x" }));
+    assert_eq!(
+        refused(&line),
+        (
+            Some(i64::from(codes::SCOPE)),
+            "terminal_input needs a Full token.".to_string()
+        )
+    );
+    let (second, _) = another_workspace(handle, &ws, cx);
+    assert_ne!(second, first);
+    let limited = with_token(&ws, cx, Scope::Full, Some(vec![second.as_str()]));
+    let line = input(cx, &limited, json!({ "block": uid, "text": "x" }));
+    assert_eq!(
+        refused(&line),
+        (
+            Some(i64::from(codes::NOT_FOUND)),
+            format!("There's no block {uid}: GET /v1/blocks lists them.")
+        )
+    );
+    assert_eq!(inputs(cx), n + 4, "none of those reached the terminal");
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn input_to_an_ended_shell_is_refused(cx: &mut TestAppContext) {
+    // A shell that ends at its first line.
+    let ends = Some(("sh".to_string(), vec!["-c".into(), "read line".into()]));
+    let (handle, ws) = open_as(cx, ends, None, None);
+    let id = first_id(&ws, cx);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&id].clone());
+    let token = with_token(&ws, cx, Scope::Full, None);
+    // Typed past the API: the draw that ends every update would close the block of an ended
+    // shell.
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(id).unwrap().term.write(&b"\n"[..])
+    });
+    // `read_with` never draws: the block stays until the shell is seen to have ended.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.exited()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the shell never ended"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &token,
+        "terminal_input",
+        json!({ "block": uid, "text": "ls" }),
+    );
+    assert_eq!(
+        said(&line),
+        (
+            true,
+            format!("{uid}'s shell has ended: nothing typed reaches it.")
+        )
+    );
+}
+
+/// What the API's `terminal_input` does to the agent in `theirs`, as the person's own typing
+/// does: a draft, and no notice typed over it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn terminal_input_keys_are_the_persons_typing_for_the_draft(cx: &mut TestAppContext) {
+    let (handle, ws, _, theirs) = super::delegate::two_agents(cx);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&theirs].clone());
+    let token = with_token(&ws, cx, Scope::Full, None);
+    let state = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let pane = ws.space.terminal(theirs).unwrap();
+            (pane.has_draft(), pane.takes_notice())
+        })
+    };
+    assert_eq!(state(cx), (false, Some(true)));
+    let mut conn = 910;
+    let mut press = |cx: &mut TestAppContext, key: &str| {
+        conn += 1;
+        api_later(
+            handle,
+            &ws,
+            cx,
+            &token,
+            conn,
+            "tools/call",
+            json!({ "name": "terminal_input", "arguments": { "block": uid, "keys": [key] } }),
+        );
+        cx.run_until_parked();
+    };
+    press(cx, "a");
+    assert_eq!(state(cx), (true, Some(false)), "half a message is typed");
+    // Another agent's Enter sends the draft.
+    press(cx, "enter");
+    assert!(!state(cx).0);
+    // A key that types nothing leaves a draft as it was.
+    press(cx, "a");
+    press(cx, "left");
+    assert!(state(cx).0);
+}
+
+/// The paste is the person's text too, and it says who typed it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn terminal_input_text_is_the_persons_and_says_who(cx: &mut TestAppContext) {
+    let (handle, ws, _, theirs) = super::delegate::two_agents(cx);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&theirs].clone());
+    let token = with_token(&ws, cx, Scope::Full, None);
+    tool(
+        handle,
+        &ws,
+        cx,
+        &token,
+        "terminal_input",
+        json!({ "block": uid, "text": "please also ch" }),
+    );
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(theirs).unwrap();
+        assert!(pane.has_draft());
+        assert_eq!(
+            pane.keys_from.as_ref().map(|(by, _)| by.as_str()),
+            Some("API · phone")
+        );
+        assert_eq!(pane.takes_notice(), Some(false));
+    });
+}
+
+// The finer canvas: the camera in the state, and the tick that follows a drag.
+
+#[gpui_kit::test]
+fn the_state_has_the_shown_workspaces_view(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let token = with_token(&ws, cx, Scope::Read, None);
+    // Before the first paint the canvas has no size: no view.
+    ws.update(cx, |ws, _| {
+        ws.api.viewport = templum_canvas::Size::default()
+    });
+    assert_eq!(state(handle, &ws, cx, &token).view, None);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.camera = Camera::at(Point::new(100.0, 50.0), 2.0);
+        ws.api.viewport = templum_canvas::Size::new(800.0, 600.0);
+    });
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    assert_eq!(
+        state(handle, &ws, cx, &token).view,
+        Some(templum_api::model::ViewView {
+            workspace: first.clone(),
+            x: 100.0,
+            y: 50.0,
+            w: 400.0,
+            h: 300.0,
+            zoom: 2.0,
+        })
+    );
+    // A token that doesn't see the shown workspace doesn't see its camera either.
+    let (second, _) = another_workspace(handle, &ws, cx);
+    let shown = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let hidden = if shown == second { first } else { second };
+    let other = with_token(&ws, cx, Scope::Read, Some(vec![hidden.as_str()]));
+    assert_eq!(state(handle, &ws, cx, &other).view, None);
+    // The paint sets the size.
+    ws.update(cx, |ws, _| {
+        ws.api.viewport = templum_canvas::Size::default()
+    });
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let size = ws.read_with(cx, |ws, _| ws.api.viewport);
+    assert!(size.w > 0.0 && size.h > 0.0, "{size:?}");
+}
+
+#[gpui_kit::test]
+fn the_state_has_no_view_in_grid_mode(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let token = with_token(&ws, cx, Scope::Read, None);
+    let id = first_id(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.api.viewport = templum_canvas::Size::new(800.0, 600.0)
+    });
+    assert!(state(handle, &ws, cx, &token).view.is_some());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.enter_grid(vec![id], window, cx))
+    })
+    .unwrap();
+    assert!(ws.read_with(cx, |ws, _| ws.space.grid.is_some()));
+    assert_eq!(
+        state(handle, &ws, cx, &token).view,
+        None,
+        "tiles, not a camera"
+    );
+}
+
+#[gpui_kit::test]
+fn the_tick_is_fast_for_a_moment_after_the_camera_moves_without_a_drag(cx: &mut TestAppContext) {
+    use crate::workspace::api::MOVED_FOR;
+    let (_, ws) = open(cx);
+    let (slow, fast) = (Duration::from_millis(250), Duration::from_millis(100));
+    // The clock is the test's: a stalled machine can't make a moment pass.
+    let wait = |cx: &mut TestAppContext, later: Duration| {
+        ws.read_with(cx, |ws, _| ws.api_tick(ws.api.moved_at.unwrap() + later))
+    };
+    let now = std::time::Instant::now();
+    assert_eq!(
+        (
+            ws.read_with(cx, |ws, _| ws.api_tick(now)),
+            ws.read_with(cx, |ws, _| ws.drag.is_none())
+        ),
+        (slow, true)
+    );
+    // A touchpad pan: no drag.
+    ws.update(cx, |ws, _| ws.api.moved_at = None);
+    ws.update(cx, |ws, _| ws.pan_by(Point::new(5.0, 5.0)));
+    assert_eq!(wait(cx, Duration::ZERO), fast);
+    assert_eq!(wait(cx, MOVED_FOR - Duration::from_millis(1)), fast);
+    // A while later it is slow again.
+    assert_eq!(wait(cx, MOVED_FOR), slow);
+    // A zoom (the wheel, a pinch) moves it too.
+    ws.update(cx, |ws, _| ws.api.moved_at = None);
+    let to = ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    let to = Camera::at(Point::new(to.origin.x + 50.0, to.origin.y), to.zoom());
+    ws.update(cx, |ws, cx| ws.fly(to, Point::new(0.0, 0.0), cx));
+    assert_eq!(wait(cx, Duration::ZERO), fast);
+}
+
+#[gpui_kit::test]
+fn the_tick_is_faster_while_the_canvas_moves(cx: &mut TestAppContext) {
+    use crate::workspace::Drag;
+    use templum_canvas::{Edges, Gesture, Size};
+    let (_, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let wait = |cx: &mut TestAppContext, drag: Option<Drag>| {
+        ws.update(cx, |ws, _| {
+            ws.drag = drag;
+            ws.api_tick(std::time::Instant::now())
+        })
+    };
+    let (slow, fast) = (Duration::from_millis(250), Duration::from_millis(100));
+    assert_eq!(wait(cx, None), slow);
+    let resize = Gesture::Resize {
+        id,
+        edges: Edges::RIGHT,
+        grab: Point::new(0.0, 0.0),
+        min: Size::new(10.0, 10.0),
+    };
+    assert_eq!(wait(cx, Some(Drag::Canvas(resize))), fast);
+    let pan = Gesture::Pan {
+        last: Point::new(0.0, 0.0),
+    };
+    assert_eq!(wait(cx, Some(Drag::Canvas(pan))), fast);
+    let held = Drag::Held {
+        gesture: Gesture::Move {
+            id,
+            grab: Point::new(0.0, 0.0),
+        },
+        from: Point::new(0.0, 0.0),
+        pointer: Point::new(0.0, 0.0),
+        scrolled: None,
+        picks: None,
+        carried: false,
+    };
+    assert_eq!(wait(cx, Some(held)), fast);
+    assert_eq!(wait(cx, Some(Drag::Select(id))), slow);
+    wait(cx, None);
+}

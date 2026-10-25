@@ -58,6 +58,7 @@ fn schemas() -> Value {
             ("boards", array(r("BoardView"))),
             ("cards", array(r("CardView"))),
             ("automations", array(r("AutomationView"))),
+            ("view", nullable(r("View"))),
             ("usage", nullable(r("UsageView"))),
         ]),
         "App": view(&[
@@ -204,6 +205,59 @@ fn schemas() -> Value {
     })
 }
 
+/// `components.schemas` of the camera and of a terminal stream's frames (apart from `schemas`:
+/// a `json!` that big hits the macro's recursion limit).
+fn view_schemas() -> Value {
+    let (s, i, n, b) = (
+        || kind("string"),
+        || kind("integer"),
+        || kind("number"),
+        || kind("boolean"),
+    );
+    json!({
+        "View": view(&[
+            ("workspace", s()),
+            ("x", n()),
+            ("y", n()),
+            ("w", n()),
+            ("h", n()),
+            ("zoom", n()),
+        ]),
+        "Frame": view(&[
+            ("size", view(&[("cols", i()), ("rows", i())])),
+            ("cursor", nullable(view(&[
+                ("row", i()),
+                ("col", i()),
+                ("shape", json!({ "type": "string", "enum": ["block", "underline", "beam"] })),
+                ("blinking", b()),
+            ]))),
+            ("title", maybe("string")),
+            ("whole", b()),
+            ("rows", array(r("FrameRow"))),
+        ]),
+        "FrameRow": view(&[("y", i()), ("runs", array(r("FrameRun")))]),
+        "FrameRun": json!({
+            "type": "object",
+            "description": "Text of one style. A color is absent for the theme's default; a flag is present only when true.",
+            "properties": {
+                "text": s(),
+                "fg": r("Paint"),
+                "bg": r("Paint"),
+                "bold": b(),
+                "dim": b(),
+                "italic": b(),
+                "underline": b(),
+                "inverse": b(),
+            },
+            "required": ["text"],
+        }),
+        "Paint": json!({
+            "type": ["integer", "string"],
+            "description": "A palette slot 0-255 (the viewer's palette draws it) or \"#rrggbb\".",
+        }),
+    })
+}
+
 /// The errors a route can answer, with the spec's codes.
 fn error(status: &str) -> (&'static str, &'static str) {
     match status {
@@ -313,19 +367,42 @@ fn operation(route: &registry::Route) -> Value {
             op["description"] = json!(
                 "Server-Sent Events: a `snapshot` of the state, then a `put` or `delete` per change of a \
                  collection (workspace, block, wire, request, board, card, automation, usage) and `notice` \
-                 happenings; `: ping` comments keep it alive. Resumes with Last-Event-ID. A browser's \
-                 EventSource can't set headers: it opens with a ticket from POST /v1/tickets."
+                 happenings; `: ping` comments keep it alive. With `view=true`, a `view` event (the \
+                 shown workspace's camera, or null) each time it changes. Resumes with Last-Event-ID. \
+                 A browser's EventSource can't set headers: it opens with a ticket from POST \
+                 /v1/tickets."
             );
             op["security"] = json!([{ "bearer": [] }, { "ticket": [] }]);
-            op["parameters"] = json!([]);
+            parameters.push(json!({
+                "name": "view",
+                "in": "query",
+                "schema": { "type": "boolean" },
+                "description": "true: the stream also carries `event: view` (the camera of the shown workspace, schema View, or null)."
+            }));
             (
                 "Streams the state's changes.".to_string(),
                 "read".to_string(),
                 json!({ "description": "An event stream.", "content": { "text/event-stream": { "schema": kind("string") } } }),
             )
         }
+        Does::Frames => {
+            op["description"] = json!(
+                "Server-Sent Events: a terminal's live screen as `event: frame` (the schema \
+                 `#/components/schemas/Frame`): first the whole screen, then only the rows that \
+                 changed, at most 20 a second; a client that falls behind gets the newest screen \
+                 whole. The stream ends when the block closes or leaves the token's workspaces. \
+                 `: ping` comments keep it alive. A browser's EventSource can't set headers: it \
+                 opens with a ticket from POST /v1/tickets."
+            );
+            op["security"] = json!([{ "bearer": [] }, { "ticket": [] }]);
+            (
+                "Streams a terminal's screen.".to_string(),
+                "read".to_string(),
+                json!({ "description": "An event stream.", "content": { "text/event-stream": { "schema": kind("string") } } }),
+            )
+        }
         Does::Ticket => (
-            "Makes a ticket: a key for one GET /v1/events, 30 seconds, once.".to_string(),
+            "Makes a ticket: a key for one GET /v1/events or GET /v1/terminals/{block}/stream, 30 seconds, once.".to_string(),
             "read".to_string(),
             json_ok(view(&[
                 ("ticket", kind("string")),
@@ -382,6 +459,9 @@ fn operation(route: &registry::Route) -> Value {
         op["parameters"] = Value::Array(parameters);
     }
     let mut statuses = vec!["401", "404", "429", "503"];
+    if matches!(route.does, Does::Frames) {
+        statuses.push("422");
+    }
     if matches!(route.does, Does::Tool(_)) {
         statuses.splice(0..0, ["400", "403"]);
         if body {
@@ -391,6 +471,15 @@ fn operation(route: &registry::Route) -> Value {
     }
     op["responses"] = responses(ok, &statuses);
     op
+}
+
+/// Every schema: the state's and the errors', then the camera's and the frames'.
+fn schemas_with_views() -> Value {
+    let mut all = schemas();
+    if let (Some(all), Value::Object(more)) = (all.as_object_mut(), view_schemas()) {
+        all.extend(more);
+    }
+    all
 }
 
 /// The document.
@@ -432,9 +521,9 @@ pub fn document() -> Value {
         "components": {
             "securitySchemes": {
                 "bearer": { "type": "http", "scheme": "bearer" },
-                "ticket": { "type": "apiKey", "in": "query", "name": "ticket", "description": "From POST /v1/tickets; opens one GET /v1/events." },
+                "ticket": { "type": "apiKey", "in": "query", "name": "ticket", "description": "From POST /v1/tickets; opens one GET /v1/events or GET /v1/terminals/{block}/stream." },
             },
-            "schemas": schemas(),
+            "schemas": schemas_with_views(),
         },
     })
 }
@@ -469,6 +558,10 @@ mod tests {
         assert_eq!(
             doc["paths"]["/v1/tools/answer_request"]["post"]["x-templum-scope"],
             "control or full"
+        );
+        assert_eq!(
+            doc["paths"]["/v1/terminals/{block}/input"]["post"]["x-templum-scope"],
+            "full"
         );
         assert_eq!(doc["paths"]["/v1/state"]["get"]["x-templum-scope"], "read");
         assert_eq!(doc["security"], json!([{ "bearer": [] }]));
@@ -719,6 +812,14 @@ mod tests {
                 next: Some(10),
                 sentence: "Every day".into(),
             }],
+            view: Some(ViewView {
+                workspace: "w3".into(),
+                x: 1.0,
+                y: 2.0,
+                w: 800.0,
+                h: 600.0,
+                zoom: 1.5,
+            }),
             usage: Some(UsageView {
                 limits: vec![LimitsView {
                     agent: "claude".into(),
@@ -732,6 +833,36 @@ mod tests {
                 }],
             }),
         }
+    }
+
+    #[test]
+    fn the_frame_schema_matches_a_frame() {
+        use std::sync::Arc;
+        use templum_terminal::{Palette, TermOptions, Terminal};
+        let doc = document();
+        let v = Terminal::viewer(
+            "v",
+            (20, 3),
+            Palette::default(),
+            TermOptions::default(),
+            Arc::new(|| {}),
+        );
+        v.feed(b"\x1b]2;vim\x07\x1b[1;2;3;4;7;31;48;2;1;2;3mstyled\x1b[0m\x1b[38;5;200mx\x1b[6 q");
+        let frame =
+            serde_json::to_value(crate::terminals::whole(&v.shared().screen().unwrap())).unwrap();
+        assert_eq!(frame["title"], "vim");
+        check(&r("Frame"), &frame, &doc, "frame").unwrap();
+        let mut bare = frame.clone();
+        bare["cursor"] = Value::Null;
+        bare["title"] = Value::Null;
+        check(&r("Frame"), &bare, &doc, "frame").unwrap();
+        let mut blink = frame;
+        blink["rows"][0]["runs"][0]["blink"] = json!(true);
+        assert!(
+            check(&r("Frame"), &blink, &doc, "frame")
+                .unwrap_err()
+                .contains("blink")
+        );
     }
 
     #[test]

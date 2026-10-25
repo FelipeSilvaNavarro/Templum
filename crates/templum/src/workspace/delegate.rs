@@ -45,7 +45,7 @@ pub(super) const NOTICE_GAP: Duration = CONFIRM
 pub(super) const TYPING: Duration = Duration::from_secs(3);
 /// Between two keys `send_keys` presses: an Esc and the key after it in one burst read as
 /// Alt+key.
-const KEY_GAP: Duration = Duration::from_millis(50);
+pub(super) const KEY_GAP: Duration = Duration::from_millis(50);
 /// How long after its last key `send_keys` reads the screen it answers with.
 const KEYS_SETTLE: Duration = Duration::from_millis(300);
 /// The last lines of a screen Templum answers with (`send_keys`, a task not taken).
@@ -795,16 +795,18 @@ impl Workspace {
     }
 
     /// Presses `keys` in the terminal `worker`, KEY_GAP apart, as keys `by` pressed (the person's,
-    /// for the screen's looks); then `said` and its screen, KEYS_SETTLE after the last. The
-    /// terminal is found again before each key: one closed meanwhile ends the call there.
-    pub(super) fn press_keys(
+    /// for the screen's looks). `person`: they come from the person's own device (the API's
+    /// `terminal_input`), so they count as typing as local keys do (`person_keyed`,
+    /// `person_wrote`); an agent's (`send_keys`) don't. The terminal is found again before each
+    /// key: one closed meanwhile ends it there, and the answer is false.
+    pub(super) fn press_each(
         &self,
         worker: String,
         by: String,
         keys: Vec<String>,
-        said: String,
+        person: bool,
         cx: &mut Context<Self>,
-    ) -> Task<Reply> {
+    ) -> Task<bool> {
         cx.spawn(async move |ws, cx| {
             for (i, key) in keys.iter().enumerate() {
                 if i > 0 {
@@ -817,21 +819,51 @@ impl Workspace {
                     // The person's keys, for the screen's looks: a dialog they answer ends.
                     pane.typed.set(true);
                     pane.keys_from = Some((by.clone(), Instant::now()));
+                    if person {
+                        pane.person_keyed(&key);
+                        // As locally, a key that types a character is text.
+                        if key.key_char.is_some() && !key.ctrl && !key.alt {
+                            pane.person_wrote();
+                        }
+                    }
                     pane.term.press(&key);
                     if i + 1 == keys.len() {
-                        // "answered by" goes with no other frame to take it.
-                        cx.spawn(async move |ws, cx| {
-                            cx.background_executor().timer(ANSWERED_FOR).await;
-                            let _ = ws.update(cx, |_, cx| cx.notify());
-                        })
-                        .detach();
+                        ws.repaint_after_answered(cx);
                     }
                     cx.notify();
                     true
                 });
                 if !pressed.unwrap_or(false) {
-                    return Reply::err("Its block was closed before every key was pressed.");
+                    return false;
                 }
+            }
+            true
+        })
+    }
+
+    /// Repaints once ANSWERED_FOR has passed: "answered by" goes with no other frame to take it.
+    pub(super) fn repaint_after_answered(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |ws, cx| {
+            cx.background_executor().timer(ANSWERED_FOR).await;
+            let _ = ws.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
+    /// Presses `keys` as `press_each` does; then `said` and its screen, KEYS_SETTLE after the
+    /// last.
+    pub(super) fn press_keys(
+        &self,
+        worker: String,
+        by: String,
+        keys: Vec<String>,
+        said: String,
+        cx: &mut Context<Self>,
+    ) -> Task<Reply> {
+        let pressed = self.press_each(worker.clone(), by, keys, false, cx);
+        cx.spawn(async move |ws, cx| {
+            if !pressed.await {
+                return Reply::err("Its block was closed before every key was pressed.");
             }
             cx.background_executor().timer(KEYS_SETTLE).await;
             let lines = ws

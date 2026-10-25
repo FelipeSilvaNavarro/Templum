@@ -245,6 +245,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   two other agents built in their worktrees: the reply's end notice wasn't there yet, `told` was `[]`; it passed alone
   five times and on the next full run of the crate.) A person sees nothing; a contributor may see CI fail once. Fix:
   wait for the notice with a deadline (frames until `notices` has it, as `until` does), not one `after(cx, 1000)`.
+- [ ] **`the_engine_chip_picks_the_model` failed once in a full reduced-env run.**
+  (`crates/templum/src/workspace/tests/templum_agent.rs:3047`, "the field keeps the keyboard", seen at ec70b59 plus
+  card 171 batch 2 in `env -i … cargo test --workspace -j 4`; the module passed three times alone in the same env.)
+  A person sees nothing; a contributor may see CI fail once. Fix: find which step loses the field's focus under load
+  (the `blur` then the menu's click) and wait for the focus with frames rather than one `render_frame`.
 
 ## Release and benches
 
@@ -2243,4 +2248,14 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **A certificate or key edited on disk is read at the next start of the server only.** Settings ▸ API ▸ My
   certificate reads the files when the server starts; replacing them (a renewal) needs a toggle of the switch. Fix: a
   *Reload* button, or a look at their modified times.
-
+- [ ] **Terminal input takes `send_keys`' names only.** `terminal_input` (`crates/templum-api/src/registry.rs`,
+  `crates/templum/src/workspace/api.rs`) presses the keys `named_key` knows: a mirror on a phone can't send F-keys,
+  Alt+key or Ctrl+arrows. Fix: more names in `named_key` (`templum-terminal`'s `input.rs`), shared with `send_keys`.
+- [ ] **No mouse input through the API.** A mirror can't click in a program that asked for the mouse. Fix: a `mouse`
+  argument on `terminal_input`, through `Terminal::mouse`.
+- [ ] **Under nonstop output a terminal stream may skip many looks in a row.** The reader (`terminals.rs`, `look`) reads
+  with `try_lock_unfair` and skips a terminal whose lock is held, which the PTY thread does while it parses; a mirror of
+  a terminal that prints nonstop sees fewer frames. Fix: after a second of skips, wait for the lock unfairly once, on a
+  blocking thread.
+- [ ] **Settings ▸ API says "listening to events" for a connection that streams a terminal.** (`settings/api.rs`, the
+  client row's `streaming`.) Fix: "streaming" or the stream's kind.

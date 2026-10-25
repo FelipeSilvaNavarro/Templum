@@ -2,27 +2,33 @@
 //! with the token's scope and workspaces checked, the store and the server's life, and the tick
 //! that hands the state to the event streams while any is open.
 
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{AppContext as _, Context, Window};
 use serde_json::{Value, json};
 use templum_agent::Target;
-use templum_api::registry::{self, Answer as Picked, Own};
+use templum_api::registry::{self, Answer as Picked, Input, Own};
 use templum_api::store::{self, Scope, Settings, Tls};
-use templum_api::{Caller, Notice, Server, Store, codes};
+use templum_api::{Caller, Notice, Server, Store, TerminalRef, codes};
 use templum_mcp::control;
 use templum_mcp::{Hello, Incoming, Replier, Reply, rpc, tools};
 
 use super::bus::Outcome;
 use super::control::Actor;
 use super::waits::{Asked, Waiting};
-use super::{Workspace, show_notification};
+use super::{Drag, Workspace, show_notification};
 use crate::automations::{Automation, Do};
 use crate::chat::Answer as Approve;
 
-/// How often the state is handed to the streams while any is open.
+/// How often the state is handed to the streams, and the terminals lent to the terminal streams,
+/// while any is open.
 const TICK: Duration = Duration::from_millis(250);
+/// The tick while the pointer moves a block or the canvas, or the camera moved a moment ago (a
+/// touchpad pan, the wheel, a pinch), so a mirror follows.
+const FAST_TICK: Duration = Duration::from_millis(100);
+/// How long after the camera moved the tick stays fast.
+pub(super) const MOVED_FOR: Duration = Duration::from_millis(250);
 /// How often the tokens' last uses are written.
 const USES_EVERY: Duration = Duration::from_secs(60);
 
@@ -48,6 +54,12 @@ pub(crate) struct Api {
     saved: Option<std::time::Instant>,
     /// The tick that hands the state to the streams is running.
     pub(crate) ticking: bool,
+    /// The canvas's size in screen pixels at the last paint (zero before the first): with the
+    /// camera it makes the state's `view`.
+    pub(super) viewport: templum_canvas::Size,
+    /// When the camera last moved without a drag (`pan_by`, `fly`, a marquee's edge scroll): the
+    /// tick follows it.
+    pub(super) moved_at: Option<std::time::Instant>,
     /// Calls to `delegate` with `wait` still waiting, by connection: if their client leaves, the
     /// task is no longer handed to it.
     delegated: Vec<u64>,
@@ -159,9 +171,65 @@ impl Workspace {
                     Err((code, why)) => rpc::error(&id, code, &why),
                 }
             }
+            templum_api::TERMINAL => {
+                let block = params["block"].as_str().unwrap_or_default();
+                match self.api_terminal(&caller, block, cx) {
+                    Ok(done) => answer_line(&id, &done, None),
+                    Err((code, why)) => rpc::error(&id, code, &why),
+                }
+            }
             _ => rpc::error(&id, rpc::METHOD, &format!("Method not found: {method}")),
         };
         let _ = reply.send(line);
+    }
+
+    /// Every terminal block of every workspace, as the server is lent them for the terminal
+    /// streams: its uid, its workspace's id and its grid.
+    pub(crate) fn api_terminals(&self) -> Vec<TerminalRef> {
+        self.order()
+            .into_iter()
+            .flat_map(|space| {
+                space.terminals().filter_map(move |(id, pane)| {
+                    Some(TerminalRef {
+                        block: space.uids.get(&id)?.clone(),
+                        workspace: space.id.clone(),
+                        term: pane.term.shared().clone(),
+                    })
+                })
+            })
+            .collect()
+    }
+
+    /// A terminal stream opens: the block is the token's to see and a terminal, or it is refused
+    /// as a tool refuses (the server answers `404`, `422`); the terminals are lent, and the tick
+    /// lends them again while the stream is open, so a closed or moved block ends it.
+    fn api_terminal(
+        &mut self,
+        caller: &Caller,
+        block: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<Reply, Refusal> {
+        self.api_allows(
+            caller,
+            templum_api::TERMINAL,
+            &json!({ "block": block }),
+            cx,
+        )?;
+        let Some((space, id)) = self.find_block(block) else {
+            return Err(not_found("block", block));
+        };
+        if self
+            .space_named(&space)
+            .and_then(|s| s.terminal(id))
+            .is_none()
+        {
+            return Ok(Reply::err(format!("{block} isn't a terminal.")));
+        }
+        if let Some(server) = &self.api.server {
+            server.set_terminals(self.api_terminals());
+        }
+        self.start_api_tick(cx);
+        Ok(Reply::ok(format!("Streaming {block}.")))
     }
 
     /// A tool call: its scope and targets checked, then run. Ok(None): it waits, and its reply
@@ -200,13 +268,34 @@ impl Workspace {
             {
                 return Err((codes::SCOPE, format!("{name} needs a Full token.")));
             }
+            // The person's keyboard, not an agent's: no task check, no screen read back.
+            if let Own::TerminalInput { block, input } = own {
+                let outcome = self.api_input(&caller, &block, input, cx)?;
+                return Ok(self.api_answer(outcome, None, conn, id, reply, name, window, cx));
+            }
             let done = self.api_own(&caller, own, window, cx)?;
             return Ok(Some(answer_line(id, &done, None)));
         }
         let parsed = control::parse(name, args).map_err(params)?;
         let actor = Actor::Api(caller);
         let (outcome, target) = self.control_call(&actor, parsed, args, window, cx);
-        Ok(match outcome {
+        Ok(self.api_answer(outcome, target, conn, id, reply, name, window, cx))
+    }
+
+    /// The reply line of a call's outcome: now, or None while it waits and replies later.
+    #[allow(clippy::too_many_arguments)]
+    fn api_answer(
+        &mut self,
+        outcome: Outcome,
+        target: Option<Target>,
+        conn: u64,
+        id: &Value,
+        reply: &Replier,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        match outcome {
             Outcome::Now(done) => Some(answer_line(id, &done, target.as_ref())),
             Outcome::Later(job) => {
                 let (id, reply) = (id.clone(), reply.clone());
@@ -238,6 +327,62 @@ impl Workspace {
                 };
                 self.wait(asked, *what, seconds, window, cx);
                 None
+            }
+        }
+    }
+
+    /// `terminal_input`: `input` typed into the terminal `block` as the person's keyboard does.
+    /// Text is one paste, answered now; keys are pressed KEY_GAP apart and the answer comes after
+    /// the last, so the client's next input cannot overtake them.
+    fn api_input(
+        &mut self,
+        caller: &Caller,
+        block: &str,
+        input: Input,
+        cx: &mut Context<Self>,
+    ) -> Result<Outcome, Refusal> {
+        let Some((space, id)) = self.find_block(block) else {
+            return Err(not_found("block", block));
+        };
+        let Some(pane) = self.space_named(&space).and_then(|s| s.terminal(id)) else {
+            return Ok(Outcome::Now(Reply::err(format!(
+                "{block} isn't a terminal."
+            ))));
+        };
+        if let Err(refused) = pane.read_only(block) {
+            return Ok(Outcome::Now(refused));
+        }
+        if pane.term.exited() {
+            return Ok(Outcome::Now(Reply::err(format!(
+                "{block}'s shell has ended: nothing typed reaches it."
+            ))));
+        }
+        let worker = pane.term.id().to_string();
+        let by = format!("API · {}", caller.name);
+        Ok(match input {
+            Input::Text(text) => {
+                if let Some(pane) = self.pane_mut(&worker) {
+                    pane.person_wrote();
+                    pane.keys_from = Some((by, Instant::now()));
+                    pane.term.paste(&text);
+                }
+                self.repaint_after_answered(cx);
+                cx.notify();
+                Outcome::Now(Reply::ok(format!("Pasted into {block}.")))
+            }
+            Input::Keys(keys) => {
+                let said = match keys.len() {
+                    1 => format!("Pressed 1 key in {block}."),
+                    n => format!("Pressed {n} keys in {block}."),
+                };
+                let pressed = self.press_each(worker, by, keys, true, cx);
+                Outcome::Later(cx.spawn(async move |_, _| {
+                    if pressed.await {
+                        Reply::ok(said)
+                    } else {
+                        Reply::err("Its block was closed before every key was pressed.")
+                    }
+                }))
             }
         })
     }
@@ -622,6 +767,10 @@ impl Workspace {
                 self.delete_automation(id, cx);
                 Reply::ok(format!("Deleted automation {id}."))
             }
+            // Typed on the person's keyboard's path (`api_input`), which `api_call` takes first.
+            Own::TerminalInput { block, .. } => Reply::err(format!(
+                "terminal_input to {block} must go through api_input."
+            )),
         })
     }
 
@@ -1059,8 +1208,50 @@ impl Workspace {
         }
     }
 
-    /// While at least one event stream is open, hands the server the state every TICK; ends at
-    /// the first look with none (the server asks again when one opens).
+    /// One round of the tick: hands the event streams the state, and the terminal streams the
+    /// terminals as they are now. False (and the tick over) when no stream of either kind is open.
+    pub(crate) fn api_tick_once(&mut self, cx: &mut Context<Self>) -> bool {
+        let (events, terminals) = self.api.server.as_ref().map_or((false, false), |s| {
+            (s.streams() > 0, s.terminal_streams() > 0)
+        });
+        if events {
+            let state = self.api_state(cx);
+            if let Some(server) = &self.api.server {
+                server.publish(state);
+            }
+        }
+        if terminals && let Some(server) = &self.api.server {
+            server.set_terminals(self.api_terminals());
+        }
+        if !events && !terminals {
+            self.api.ticking = false;
+        }
+        events || terminals
+    }
+
+    /// How long the tick waits: FAST_TICK while a block is dragged or resized, the canvas panned
+    /// by the pointer, or the camera moved in the last `MOVED_FOR`, else TICK.
+    pub(super) fn api_tick(&self, now: Instant) -> Duration {
+        use templum_canvas::Gesture;
+        let moving = match &self.drag {
+            Some(Drag::Canvas(gesture)) | Some(Drag::Held { gesture, .. }) => matches!(
+                gesture,
+                Gesture::Move { .. }
+                    | Gesture::MoveGroup { .. }
+                    | Gesture::Resize { .. }
+                    | Gesture::Pan { .. }
+            ),
+            _ => false,
+        };
+        let moved = self
+            .api
+            .moved_at
+            .is_some_and(|at| now.saturating_duration_since(at) < MOVED_FOR);
+        if moving || moved { FAST_TICK } else { TICK }
+    }
+
+    /// While at least one stream is open, event or terminal, runs `api_tick_once` every
+    /// `api_tick()`; ends at the first look with none (the server asks again when one opens).
     fn start_api_tick(&mut self, cx: &mut Context<Self>) {
         if self.api.ticking || self.api.server.is_none() {
             return;
@@ -1068,20 +1259,12 @@ impl Workspace {
         self.api.ticking = true;
         cx.spawn(async move |ws, cx| {
             loop {
-                cx.background_executor().timer(TICK).await;
+                let wait = ws
+                    .update(cx, |ws, _| ws.api_tick(Instant::now()))
+                    .unwrap_or(TICK);
+                cx.background_executor().timer(wait).await;
                 let more = ws
-                    .update(cx, |ws, cx| {
-                        let open = ws.api.server.as_ref().is_some_and(|s| s.streams() > 0);
-                        if open {
-                            let state = ws.api_state(cx);
-                            if let Some(server) = &ws.api.server {
-                                server.publish(state);
-                            }
-                        } else {
-                            ws.api.ticking = false;
-                        }
-                        open
-                    })
+                    .update(cx, |ws, cx| ws.api_tick_once(cx))
                     .unwrap_or(false);
                 if !more {
                     break;

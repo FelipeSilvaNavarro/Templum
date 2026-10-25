@@ -1,9 +1,9 @@
 # The Templum API: your Templum, from anywhere
 
 - **Date:** 2026-10-24
-- **Status:** Batch 1 implemented (kanban card 171, "the Templum ecosystem API"; plan:
-  [2026-10-24-api.md](../plans/2026-10-24-api.md)); batch 2 and Templum to Templum are designed here for
-  later plans. For people: [docs/api.md](../api.md).
+- **Status:** Batches 1 and 2 implemented (kanban card 171, "the Templum ecosystem API"; plans:
+  [2026-10-24-api.md](../plans/2026-10-24-api.md), [2026-10-24-api-batch-2.md](../plans/2026-10-24-api-batch-2.md));
+  Templum to Templum is designed here for a later plan. For people: [docs/api.md](../api.md).
 - **Builds on:** [connections.md](connections.md) (the bus, block ids, the tools, the `templum` command line),
   [templum-agent.md](templum-agent.md) (the control server: a tool for every hand action, and their danger),
   [agents-view.md](agents-view.md) (an agent's state), [ask-inbox.md](ask-inbox.md) (the requests),
@@ -739,3 +739,37 @@ What the builder chose where the design left it open, and what differs:
   and the API saves event rules (`when.agent`, `when.command`) as the file keeps them.
 - **Unfinished, in [minors.md](../minors.md#api):** an approval's `since` is when it first showed, and a changed
   certificate on disk is read at the next start.
+
+### Batch 2
+
+What the builder chose where the design left it open, and what differs:
+
+- **Code:** `crates/templum-terminal/src/screen.rs` (`SharedTerm::screen`, `changes`, `same`; `Screen`, `Styled`,
+  `Paint`), `crates/templum-api/src/terminals.rs` (the frame, the table of lent terminals, the reader),
+  `server.rs` (the route, tickets, `Server::{set_terminals, terminal_streams}`, the reader task), `events.rs` (a queue
+  of its own size, the `view` event), `registry.rs` (`terminal_input`), and in the glue `workspace/api.rs`
+  (`api_terminals`, `api_terminal`, `api_input`, `api_tick`) and `api_state.rs` (`view`). `Pane`'s keys loop is
+  `press_each` (`delegate.rs`), shared by `send_keys` and `terminal_input`.
+- **The server keeps only the terminals a stream names** (not every terminal the glue lends): a block's grid is held
+  from its first stream's opening to its last stream's end, and a closed block's is let go at the tick after it.
+- **A held lock skips that terminal for the round** (nothing is recorded, so the next look reads it); a stream that
+  is behind, or just opened on a terminal that hasn't changed, is sent the stored screen whole without a read.
+- **A behind stream is resynced by the next look**, so a client never sees `behind` for more than a look (50 ms): its
+  queue holds the one whole frame when it next reads.
+- **`terminal_input` is parsed by the server too** (every own tool is, now): a call the UI thread would refuse for its
+  arguments (`{}`, an unknown key, 17 keys) is `400` and never reaches it.
+- **`view` is null before the first paint** (the canvas has no size yet); the server filters it for a limited token as
+  it filters the rest of the state; it is null in grid mode too (the camera stays put there, the canvas shows tiles).
+  The tick is also 100 ms while the canvas is panned by the pointer, and for 250 ms after the camera moves any other
+  way (touchpad pan, wheel or pinch zoom, a flight).
+- **The `view` event is sent after the deltas of the same publish**, once per change and per kind of caller (they
+  share the frame); a stream that is behind gets it in its snapshot.
+- **A subagent's transcript is lent like any terminal.** `api_terminals` (`workspace/api.rs`) lends every terminal
+  block, so a stream of a Claude Code subagent's read-only block works (it shows the transcript, as `read_terminal`
+  does); only input refuses it. A mirror can't tell them apart: the state's `kind` says `terminal` for both.
+- **A terminal stream's queue is bounded in bytes too:** 20 frames or 8 MiB, whichever comes first; past either the
+  stream is behind and the next look sends one whole frame.
+- **A queue ignores what is pushed after its stream ended**, so a late frame can't outlive a cut stream.
+- **Verified:** the integration tests run the real server over HTTP (`tests/terminals.rs`, `tests/events.rs`), the glue's
+  tests run it against a headless GPUI workspace (`workspace/tests/api.rs`). The curl lines of `docs/api.md` were not
+  tried against a window of the dev build (the builder had no display to turn the API on in).

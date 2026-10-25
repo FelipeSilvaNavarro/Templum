@@ -73,6 +73,9 @@ curl -H "$H" -H "$J" -d '{"column":"Done"}' $B/v1/cards/40/move
 curl -H "$H" -H "$J" -X PATCH -d '{"x":120,"y":80,"w":640,"h":400}' $B/v1/blocks/b7k2m
 curl -H "$H" -H "$J" -X POST -d '{}' $B/v1/automations/1/run
 curl -H "$H" -H "$J" -d '{"board":"Sprint","title":"Login"}' $B/v1/tools/create_card   # any tool, by name
+curl -N -H "$H" $B/v1/terminals/b7k2m/stream                            # a terminal's screen, live
+curl -H "$H" -H "$J" -d '{"keys":["l","s","enter"]}' $B/v1/terminals/b7k2m/input   # needs a Full token
+curl -N -H "$H" "$B/v1/events?view=true"                                # also the canvas's camera
 ```
 
 A POST, PUT or PATCH with a body must say `Content-Type: application/json`; one with no body needs no type.
@@ -159,9 +162,9 @@ token '<token name>', was turned off." A rule the token had turned off itself is
 Until the sweep (every few seconds) turns it off, a run of a revoked or expired token's rule is Skipped "Target missing:
 its token was revoked". Saving it yourself in the editor (or deleting it) makes it yours: it stays.
 
-A **ticket** (`POST /v1/tickets` → `{"ticket":"tkt_…","expires_in":30}`) opens one `GET /v1/events?ticket=…` within 30
-seconds, once, with its token's scope and workspaces. It is the only key a URL may carry, and only on that route.
-Revoking a token voids its tickets.
+A **ticket** (`POST /v1/tickets` → `{"ticket":"tkt_…","expires_in":30}`) opens one `GET /v1/events?ticket=…` or one
+`GET /v1/terminals/{block}/stream?ticket=…` within 30 seconds, once, with its token's scope and workspaces. It is
+the only key a URL may carry, and only on those two routes. Revoking a token voids its tickets.
 
 ### Scopes
 
@@ -169,7 +172,7 @@ Revoking a token voids its tickets.
 |---|---|
 | **read** | Every GET, the event stream, and the tools that only read (`overview`, `list_agents`, `read_terminal`, `list_cards`, `read_note`, `read_checklist`, `wait_for`) |
 | **control** | Also every other tool that doesn't type for you: opening agents, handing and interrupting tasks, blocks, wires, cards, notes, checklists, showing; answering questions, plans and requests to connect; running, switching and saving automations that run no command |
-| **full** | Also `send_to_terminal`, `send_keys`, saving an automation that runs a command, deleting an automation, answering a request to delete or merge a worktree, and answering the Templum Agent's approvals |
+| **full** | Also `send_to_terminal`, `send_keys`, `terminal_input`, saving an automation that runs a command, deleting an automation, answering a request to delete or merge a worktree, and answering the Templum Agent's approvals |
 
 Too low a scope: `403` `{"error":{"code":"scope","message":"send_to_terminal needs a Full token."}}`. A call through the
 API never shows the Templum Agent's approval: the token is your own hand, and its scope says how far it reaches.
@@ -183,11 +186,12 @@ They can't make a workspace, and save automations only for their own workspaces.
 
 | Path | Answers |
 |---|---|
-| `GET /v1/state` | The whole state: `app`, `workspaces`, `blocks`, `wires`, `requests`, `boards`, `cards`, `automations`, `usage` |
+| `GET /v1/state` | The whole state: `app`, `workspaces`, `blocks`, `wires`, `requests`, `boards`, `cards`, `automations`, `usage`, `view` |
 | `GET /v1/workspaces`, `/{workspace}` | Workspaces in the sidebar's order |
 | `GET /v1/blocks`, `/{block}` | Blocks, back to front; `?workspace=w3` filters |
 | `GET /v1/agents` | The blocks running an agent, with its state |
 | `GET /v1/terminals/{block}/text` | `read_terminal`: `?lines=200&last_command=true` |
+| `GET /v1/terminals/{block}/stream` | A terminal's screen, live ([Terminals, live](#terminals-live)) |
 | `GET /v1/notes/{block}/text`, `/v1/checklists/{block}` | `read_note`, `read_checklist` |
 | `GET /v1/requests`, `/{request}` | What waits for you: questions, plans, requests to connect or delete a worktree, approvals |
 | `GET /v1/boards`, `/{board}`, `/v1/cards/{card}` | Boards with their columns' card ids; a card whole |
@@ -205,7 +209,7 @@ automation numbers; a request is `r<n>` (the inbox's) or `a<n>` (the Templum Age
 `POST /v1/tools/{name}` runs any tool with its arguments as the JSON body; the answer is
 `{"text":"Created card 40.","workspace":"w3","block":"b7k2m"}` (the tool's words, and what it touched when known). The
 tool refusing is `422` `refused` with its sentence; a malformed argument is `400` `invalid`. `GET /v1/tools` lists them,
-with the five only the API has:
+with the six only the API has:
 
 | Tool | Arguments | Scope |
 |---|---|---|
@@ -214,6 +218,7 @@ with the five only the API has:
 | `set_automation` | `automation` (its number), `on` | control |
 | `run_automation` | `automation` | control |
 | `delete_automation` | `automation` | full |
+| `terminal_input` | `block`, then `text` (a paste) or `keys` (1 to 16, `send_keys`' names) | full |
 
 REST aliases name the common calls; path parameters and the body become the tool's arguments, and the path wins:
 
@@ -224,6 +229,7 @@ REST aliases name the common calls; path parameters and the body become the tool
 | `POST /v1/wires`, `DELETE /v1/wires/{a}/{b}` | `connect`, `disconnect` |
 | `POST /v1/agents`, `/v1/agents/{block}/task`, `/interrupt`, `/stop` | `open_agent`, `delegate`, `interrupt`, `stop_agent` |
 | `POST /v1/terminals/{block}/text`, `/keys` | `send_to_terminal`, `send_keys` |
+| `POST /v1/terminals/{block}/input` | `terminal_input` |
 | `POST /v1/requests/{request}/answer` | `answer_request` |
 | `POST /v1/boards/{board}/cards`, `PATCH /v1/cards/{card}`, `POST /v1/cards/{card}/move`, `/comments` | `create_card`, `edit_card`, `move_card`, `comment_card` |
 | `POST /v1/automations`, `PUT /v1/automations/{automation}` | `save_automation` (the body is the automation) |
@@ -253,8 +259,13 @@ data: {"op":"delete","id":"r12"}
 
 A client mirrors the state by applying puts and deletes to the snapshot. A block that moves to another workspace is one
 `put` with its new `workspace`; to a token that doesn't see the new one it is a `delete`. `event: notice` is the one
-happening that isn't state: `{"text":…,"block":…,"workspace":…}`. Templum compares the state about four times a second,
-only while a stream is open.
+happening that isn't state: `{"text":…,"block":…,"workspace":…}`. Templum compares the state about four times a second
+(ten while a block is dragged or resized, or the canvas is panned, zoomed or flown), only while a stream is open.
+
+`GET /v1/events?view=true` also sends `event: view` each time the shown workspace's camera changes: `data` is
+`{"workspace":"w3","x":120,"y":40,"w":1280,"h":720,"zoom":1.0}`, the world rectangle its canvas shows (its camera, and
+the canvas's size at the last paint) and its zoom, or `null` when the shown workspace isn't one the token sees. The
+state has the same `view` (null before the first paint, and in grid mode, where the canvas shows tiles). `view=false` or none leaves it out; any other value is `400`.
 
 - **Ids** are `<run>-<n>`; `run` is random at each start of the server. `Last-Event-ID` (EventSource sends it by itself)
   of this run gets a fresh `snapshot`, then the notices after it that Templum still keeps (the last 256, at most an hour
@@ -264,6 +275,70 @@ only while a stream is open.
   when it catches up.
 - **Cut:** revoking the token, its expiry (checked at each heartbeat), *Disconnect*, turning the API off and
   quitting end its streams. Eight streams per token.
+
+### Terminals, live
+
+`GET /v1/terminals/{block}/stream` (read scope) is Server-Sent Events of a terminal's screen: what a viewer needs to
+draw it, not the bytes of its program. Each `event: frame` has the terminal's size, cursor and title, and rows:
+
+```
+id: 8f3a1c20-1050
+event: frame
+data: {"size":{"cols":120,"rows":40},"cursor":{"row":3,"col":10,"shape":"block","blinking":false},
+       "title":"vim main.rs","whole":true,
+       "rows":[{"y":0,"runs":[{"text":"main","fg":4,"bg":"#1e1e2e","bold":true},{"text":" fn"}]}, …]}
+```
+
+- **A run** carries its own text, so no client counts bytes. `fg` and `bg` are absent for the theme's default, a number
+  0–255 for a palette slot (your palette draws it, as zoom draws with your fonts), or `"#rrggbb"`; a slot the program
+  set itself (OSC 4, 10, 11) comes as its RGB. `bold`, `dim`, `italic`, `underline` (any kind) and `inverse` are there
+  only when true. Hidden text comes as blanks; the second cell of a wide character is left out (draw the character over
+  its two columns); combining marks follow their character; trailing blanks with the default background are trimmed,
+  and a blank row has no runs.
+- **Whole and changed rows.** The first frame has `"whole":true` and every row. After it a frame holds only the rows
+  that changed (each with its `y`), and is sent when anything changed: a frame with no rows is the cursor or the title
+  moving. Size, `cursor` and `title` are in every frame; `cursor` is `null` while the program hides it, `shape` is
+  `block`, `underline` or `beam`, `title` is the program's own (OSC 0/2) or `null` (the block's title is in the state).
+- **The live screen.** The frame is what the program drew, never the scrollback the person scrolled to or their
+  selection: `read_terminal` reads the scrollback.
+- **At most 20 frames a second** per terminal. Each stream queues 20 frames or 8 MiB; a client that falls further behind loses
+  them and gets one `whole` frame of the newest screen, never a backlog. A terminal stream doesn't resume: it always
+  opens whole, and `Last-Event-ID` is ignored.
+- **Tickets.** A browser's `EventSource` opens it with `?ticket=` as it opens the event stream.
+- **It ends** when the block is closed or moves out of the token's workspaces (opening it again is `404`, with the words
+  of a block that doesn't exist), and as the event stream does: a revoked or expired token, *Disconnect*, the API turned
+  off, quitting. A block that isn't a terminal is `422` `refused` ("k9x1d isn't a terminal."). A terminal stream holds
+  a connection: it counts in the 64 and in its token's 16 (a 17th is `429`), and opening one is a call (the token's 20 a
+  second). There is no cap of its own: a client streams the terminals it shows.
+- **A mirror draws** a `whole` frame by replacing its screen; a frame's rows by replacing those rows by `y` (each row's
+  runs, left to right, from column 0); then it places the cursor and sets the title. Palette numbers take your own
+  colors; `inverse` swaps foreground and background where you draw it. A resize arrives as a `whole` frame with the new
+  size: a viewer scales the frame (it never resizes the terminal).
+
+```js
+const t = await (await fetch(`${base}/v1/tickets`, { method: 'POST', headers, body: '{}' })).json();
+const screen = [];                                   // y → [runs]
+const source = new EventSource(`${base}/v1/terminals/${id}/stream?ticket=${t.ticket}`);
+source.addEventListener('frame', e => {
+  const f = JSON.parse(e.data);
+  if (f.whole) screen.length = 0;
+  for (const row of f.rows) screen[row.y] = row.runs;
+  pre.replaceChildren(...screen.map(runs => {
+    const line = document.createElement('div');
+    for (const r of runs ?? []) line.appendChild(document.createElement('span')).textContent = r.text;
+    return line;
+  }));                                                // (colors, flags and the cursor: your own styling)
+});
+```
+
+**Input.** `POST /v1/terminals/{block}/input` (the tool `terminal_input`, full scope) types as your keyboard does:
+`{"text":"ls\n"}` pastes (at most 256 KiB; bracketed when the program asked for it), `{"keys":["escape","j"]}` presses
+`send_keys`' names, 1 to 16, 50 ms apart (an Esc and the key after it in one burst would read as Alt+key). The answer
+(`Pasted into b7k2m.`, `Pressed 2 keys in b7k2m.`) comes once they are in, so send the next input after it and they keep
+their order. Type with `keys`: a character is a key, and a dialog that ignores pastes takes keys. Paste with `text`
+for long text. The block shows "answered by API · <token name>". A block that isn't a terminal, a subagent's transcript
+(read-only) and a shell that has ended ("b7k2m's shell has ended: nothing typed reaches it.") are `422`; a block the
+token doesn't see is `404`. The audit log names the call, never what was typed. No resize, and no mouse.
 
 ### Errors and limits
 
@@ -280,6 +355,8 @@ Every error is `{"error":{"code":"…","message":"…"}}`.
 | 422 | `refused` | The tool refused; its sentence says what to do next |
 | 429 | `slow_down` | Too many failed authentications from the address, calls from the token, or streams; `Retry-After` |
 | 503 | `busy` | Too many connections (64), or Templum is quitting |
+
+A terminal stream holds a connection like an event stream: 16 per token, 64 in all (`429`, then `503`).
 
 Request headers within 10 s and 16 KiB; 20 calls a second per token, bursts of 40. Every answer carries
 `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`,

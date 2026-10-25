@@ -64,34 +64,58 @@ impl Ids {
     }
 }
 
-/// The frames waiting for one client. Past [`QUEUE`] it drops them all and is `behind` until a
-/// snapshot replaces them.
-#[derive(Default)]
+/// The frames waiting for one client. Past `cap` frames, or `max_bytes` of them, it drops them all
+/// and is `behind` until a snapshot replaces them.
 pub(crate) struct Queue {
     frames: VecDeque<Bytes>,
     pub behind: bool,
+    cap: usize,
+    max_bytes: usize,
+    bytes: usize,
+}
+
+impl Default for Queue {
+    fn default() -> Self {
+        Queue::new(QUEUE, usize::MAX)
+    }
 }
 
 impl Queue {
+    pub fn new(cap: usize, max_bytes: usize) -> Queue {
+        Queue {
+            frames: VecDeque::new(),
+            behind: false,
+            cap,
+            max_bytes,
+            bytes: 0,
+        }
+    }
+
     pub fn push(&mut self, frame: Bytes) {
         if self.behind {
             return;
         }
-        if self.frames.len() >= QUEUE {
+        if self.frames.len() >= self.cap || self.bytes.saturating_add(frame.len()) > self.max_bytes
+        {
             self.frames.clear();
+            self.bytes = 0;
             self.behind = true;
             return;
         }
+        self.bytes += frame.len();
         self.frames.push_back(frame);
     }
 
     pub fn take(&mut self) -> Option<Bytes> {
-        self.frames.pop_front()
+        let frame = self.frames.pop_front()?;
+        self.bytes -= frame.len();
+        Some(frame)
     }
 
     /// The client caught up: only `snapshot` is queued, and it is no longer behind.
     pub fn resync(&mut self, snapshot: Bytes) {
         self.frames.clear();
+        self.bytes = snapshot.len();
         self.frames.push_back(snapshot);
         self.behind = false;
     }
@@ -110,10 +134,27 @@ struct CellInner {
 }
 
 /// A stream's queue, shared by the hub that fills it and the body that sends it.
-#[derive(Default)]
 pub(crate) struct Cell(Mutex<CellInner>);
 
+impl Default for Cell {
+    fn default() -> Self {
+        Cell::new(QUEUE, usize::MAX, false)
+    }
+}
+
 impl Cell {
+    /// A queue of `cap` frames and `max_bytes`; `behind` from the start, so that its first frame is
+    /// a resync.
+    pub fn new(cap: usize, max_bytes: usize, behind: bool) -> Cell {
+        let mut queue = Queue::new(cap, max_bytes);
+        queue.behind = behind;
+        Cell(Mutex::new(CellInner {
+            queue,
+            waker: None,
+            ended: false,
+        }))
+    }
+
     fn with(&self, f: impl FnOnce(&mut CellInner)) {
         let waker = {
             let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -126,17 +167,25 @@ impl Cell {
     }
 
     pub fn push(&self, frame: Bytes) {
-        self.with(|c| c.queue.push(frame));
+        self.with(|c| {
+            if !c.ended {
+                c.queue.push(frame)
+            }
+        });
     }
 
     pub fn resync(&self, snapshot: Bytes) {
-        self.with(|c| c.queue.resync(snapshot));
+        self.with(|c| {
+            if !c.ended {
+                c.queue.resync(snapshot)
+            }
+        });
     }
 
     /// The stream is over: its body finishes at once, whatever is queued.
     pub fn end(&self) {
         self.with(|c| {
-            c.queue = Queue::default();
+            c.queue = Queue::new(c.queue.cap, c.queue.max_bytes);
             c.ended = true;
         });
     }
@@ -164,6 +213,16 @@ impl Cell {
     #[cfg(test)]
     pub fn queued(&self) -> usize {
         self.0.lock().unwrap().queue.len()
+    }
+
+    #[cfg(test)]
+    pub fn take(&self) -> Option<Bytes> {
+        self.0.lock().unwrap().queue.take()
+    }
+
+    #[cfg(test)]
+    pub fn ended(&self) -> bool {
+        self.0.lock().unwrap().ended
     }
 }
 
@@ -213,6 +272,8 @@ pub(crate) struct Entry {
     /// The state as this stream's caller last saw it.
     pub last: Arc<State>,
     pub conn: u64,
+    /// It follows the shown workspace's camera (`?view=true`): a `view` event at each change.
+    pub view: bool,
 }
 
 struct Kept {
@@ -249,7 +310,9 @@ impl Hub {
     }
 
     /// Takes in a stream whose first frames are `snapshot` and then the kept notices after
-    /// `after` its caller sees. Err when its token holds too many already.
+    /// `after` its caller sees; `view_events` makes it hear the camera too. Err when its token
+    /// holds too many already.
+    #[allow(clippy::too_many_arguments)] // one call site and the tests; a struct would only rename them
     pub fn open(
         &mut self,
         caller: Caller,
@@ -258,6 +321,7 @@ impl Hub {
         snapshot: Bytes,
         after: Option<u64>,
         now: Instant,
+        view_events: bool,
     ) -> Result<Opened, ()> {
         if self.of_token(caller.token) >= STREAMS_PER_TOKEN {
             return Err(());
@@ -284,6 +348,7 @@ impl Hub {
             caller,
             last: Arc::new(view),
             conn,
+            view: view_events,
         };
         self.streams.insert(id, entry);
         Ok(Opened { id, cell, first })
@@ -407,10 +472,18 @@ impl Publisher {
 /// for a comparison.
 pub(crate) fn publish(hub: &Mutex<Hub>, ids: &Ids, state: &State) {
     let lock = || hub.lock().unwrap_or_else(|e| e.into_inner());
-    let work: Vec<(u64, Caller, Arc<State>, bool)> = lock()
+    let work: Vec<(u64, Caller, Arc<State>, bool, bool)> = lock()
         .streams
         .iter()
-        .map(|(id, e)| (*id, e.caller.clone(), e.last.clone(), e.cell.behind()))
+        .map(|(id, e)| {
+            (
+                *id,
+                e.caller.clone(),
+                e.last.clone(),
+                e.cell.behind(),
+                e.view,
+            )
+        })
         .collect();
     type Key = Option<Vec<String>>;
     enum Out {
@@ -419,15 +492,17 @@ pub(crate) fn publish(hub: &Mutex<Hub>, ids: &Ids, state: &State) {
     }
     let mut views: HashMap<Key, Arc<State>> = HashMap::new();
     let mut snapshots: HashMap<Key, Bytes> = HashMap::new();
+    let mut view_frames: HashMap<Key, Bytes> = HashMap::new();
     let mut diffs: Vec<(Key, Arc<State>, Vec<Bytes>)> = Vec::new();
     let mut done: Vec<(u64, Arc<State>, Out)> = Vec::new();
-    for (id, caller, last, behind) in work {
+    for (id, caller, last, behind, follows) in work {
         let key = caller.workspaces.clone();
         let view = views
             .entry(key.clone())
             .or_insert_with(|| Arc::new(state.visible(&caller)))
             .clone();
-        let out = if behind {
+        let view_changed = follows && view.view != last.view;
+        let mut out = if behind {
             let frame = snapshots
                 .entry(key)
                 .or_insert_with(|| snapshot(ids, &view))
@@ -446,6 +521,18 @@ pub(crate) fn publish(hub: &Mutex<Hub>, ids: &Ids, state: &State) {
             diffs.push((key, last, frames.clone()));
             Out::Deltas(frames)
         };
+        // A stream that follows the camera hears it after the deltas, once per change. (A resync's
+        // snapshot already holds it.)
+        if view_changed && let Out::Deltas(frames) = &mut out {
+            let frame = view_frames
+                .entry(caller.workspaces.clone())
+                .or_insert_with(|| {
+                    let data = serde_json::to_value(&view.view).unwrap_or(Value::Null);
+                    frame(&ids.next().1, "view", &data)
+                })
+                .clone();
+            frames.push(frame);
+        }
         done.push((id, view, out));
     }
     let mut hub = lock();
@@ -537,8 +624,16 @@ mod tests {
     fn a_hub_keeps_notices_for_the_streams_that_see_them_and_for_a_return() {
         let (ids, mut hub, now) = (Ids::new(), Hub::default(), Instant::now());
         let open = |hub: &mut Hub, c: Caller, after: Option<u64>| {
-            hub.open(c, State::default(), 1, Bytes::from("snap"), after, now)
-                .unwrap()
+            hub.open(
+                c,
+                State::default(),
+                1,
+                Bytes::from("snap"),
+                after,
+                now,
+                false,
+            )
+            .unwrap()
         };
         let all = open(&mut hub, caller(1, None), None);
         let w3 = open(&mut hub, caller(2, Some(&["w3"])), None);
@@ -594,6 +689,7 @@ mod tests {
                 Bytes::from("s"),
                 Some(0),
                 later,
+                false,
             )
             .unwrap();
         assert_eq!(opened.cell.queued(), 1, "an hour on, none is kept");
@@ -610,6 +706,7 @@ mod tests {
                 Bytes::new(),
                 None,
                 now,
+                false,
             )
             .unwrap();
         }
@@ -620,7 +717,8 @@ mod tests {
                 1,
                 Bytes::new(),
                 None,
-                now
+                now,
+                false
             )
             .is_err()
         );
@@ -631,7 +729,8 @@ mod tests {
                 1,
                 Bytes::new(),
                 None,
-                now
+                now,
+                false
             )
             .is_ok()
         );
@@ -652,10 +751,26 @@ mod tests {
             let mut h = hub.lock().unwrap();
             let now = Instant::now();
             let a = h
-                .open(caller(1, None), old.clone(), 1, Bytes::new(), None, now)
+                .open(
+                    caller(1, None),
+                    old.clone(),
+                    1,
+                    Bytes::new(),
+                    None,
+                    now,
+                    false,
+                )
                 .unwrap();
             let b = h
-                .open(caller(2, None), old.clone(), 2, Bytes::new(), None, now)
+                .open(
+                    caller(2, None),
+                    old.clone(),
+                    2,
+                    Bytes::new(),
+                    None,
+                    now,
+                    false,
+                )
                 .unwrap();
             (a, b)
         };
@@ -710,6 +825,7 @@ mod tests {
                         Bytes::new(),
                         None,
                         now,
+                        false,
                     )
                     .unwrap()
                 })
@@ -762,10 +878,62 @@ mod tests {
                 Bytes::new(),
                 None,
                 Instant::now(),
+                false,
             )
             .unwrap();
         assert!(publisher.publish(&hub, &ids, moved.clone()));
         assert!(!publisher.publish(&hub, &ids, moved));
+    }
+
+    #[test]
+    fn the_view_goes_only_to_streams_that_follow_it() {
+        use crate::model::ViewView;
+        let (ids, hub) = (Ids::new(), Mutex::new(Hub::default()));
+        let view = |x: f32| ViewView {
+            workspace: "w3".into(),
+            x,
+            y: 0.0,
+            w: 800.0,
+            h: 600.0,
+            zoom: 1.0,
+        };
+        let old = State {
+            view: Some(view(0.0)),
+            ..State::default()
+        };
+        let now = Instant::now();
+        let (follower, other) = {
+            let mut h = hub.lock().unwrap();
+            let mut open = |conn, follows| {
+                h.open(
+                    caller(1, None),
+                    old.clone(),
+                    conn,
+                    Bytes::from("snap"),
+                    None,
+                    now,
+                    follows,
+                )
+                .unwrap()
+            };
+            (open(1, true), open(2, false))
+        };
+        let _ = (follower.cell.take(), other.cell.take());
+        let mut new = old.clone();
+        new.view = Some(view(5.0));
+        publish(&hub, &ids, &new);
+        assert_eq!((follower.cell.queued(), other.cell.queued()), (1, 0));
+        let frame = text(follower.cell.take().unwrap());
+        assert!(
+            frame.contains("event: view\n") && frame.contains("\"x\":5.0"),
+            "{frame}"
+        );
+        publish(&hub, &ids, &new);
+        assert_eq!((follower.cell.queued(), other.cell.queued()), (0, 0));
+        // The view going away is told too, as null.
+        new.view = None;
+        publish(&hub, &ids, &new);
+        assert!(text(follower.cell.take().unwrap()).contains("data: null"));
     }
 
     #[test]
@@ -789,5 +957,38 @@ mod tests {
         );
         drop(body);
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_few_big_frames_trip_the_byte_cap_before_the_count() {
+        let mut q = Queue::new(20, 1000);
+        for _ in 0..3 {
+            q.push(Bytes::from(vec![b'x'; 400]));
+        }
+        assert!(
+            q.behind && q.len() == 0,
+            "the third frame passes 1000 bytes"
+        );
+        q.resync(Bytes::from(vec![b'x'; 900]));
+        assert!(!q.behind);
+        assert_eq!(q.take().map(|f| f.len()), Some(900));
+        // What is taken is no longer counted.
+        q.push(Bytes::from(vec![b'x'; 900]));
+        assert!(!q.behind);
+    }
+
+    #[test]
+    fn an_ended_cell_takes_nothing_and_its_body_finishes() {
+        let cell = Arc::new(Cell::default());
+        let mut body = StreamBody::new(cell.clone(), || {});
+        cell.end();
+        cell.push(Bytes::from("late"));
+        cell.resync(Bytes::from("snapshot"));
+        assert_eq!(cell.queued(), 0);
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            Pin::new(&mut body).poll_frame(&mut cx),
+            Poll::Ready(None)
+        ));
     }
 }

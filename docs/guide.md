@@ -285,7 +285,7 @@ and then it answers only to the **tokens** you make there (read, control or full
 workspaces). It serves every tool the Templum Agent has, the things a dashboard lists and a live stream of what changes.
 Templum runs no server of its own: point a tunnel (cloudflared), a VPN or a proxy at its port, 7411. Off this computer
 it needs HTTPS (Templum's certificate, with a fingerprint to pin, or yours). A title-bar pill shows while it is on, and
-Settings lists who is connected. See [api.md](api.md).
+Settings lists who is connected. A terminal can be watched live (its screen, as it changes) and typed into through the API, and the canvas's camera follows too. See [api.md](api.md).
 
 ## Automations
 

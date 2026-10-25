@@ -6975,6 +6975,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "templum-mcp",
+ "templum-terminal",
  "tokio",
  "tokio-rustls",
  "ureq",

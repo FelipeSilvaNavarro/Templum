@@ -329,6 +329,7 @@ impl Render for Workspace {
         self.drop_orphans(cx);
 
         let vp = self.viewport(window);
+        self.api.viewport = vp;
         // Grid mode's tiles fill the area as it is now: the window or the sidebar may have changed.
         if let Some(grid) = &mut self.space.grid {
             grid.area = super::tiling::grid_area(vp);
