@@ -962,6 +962,16 @@ mod tests {
             ),
             ("close_block", json!({"block": "b"}), Scope::Control),
             (
+                "edit_item",
+                json!({"block": "c", "item": 13, "text": "x"}),
+                Scope::Control,
+            ),
+            (
+                "delete_item",
+                json!({"block": "c", "item": 13}),
+                Scope::Control,
+            ),
+            (
                 "send_to_terminal",
                 json!({"block": "b", "text": "ls"}),
                 Scope::Full,

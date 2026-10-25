@@ -100,22 +100,22 @@ fn a_workspace_mirrors_itself_over_loopback(cx: &mut TestAppContext) {
     let answers = call_later(handle, &ws, cx, &term_id, 31, "ask_user", asked);
     let (first, _store) = mirrored(handle, &ws, cx, dir.path());
 
-    // 1. r1 shows the first workspace's blocks at its rectangles: one viewer, one card, one live kanban.
+    // 1. r1 shows the first workspace's blocks at its rectangles: one viewer, one live note, one live kanban.
     pump_home(&ws, cx, "r1's blocks", |cx| {
         ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len() == 3)
     });
     ws.read_with(cx, |ws, _| {
         let remote = ws.space.remote.as_ref().unwrap();
-        let (mut viewers, mut cards, mut kanbans) = (0, 0, 0);
+        let (mut viewers, mut notes, mut kanbans) = (0, 0, 0);
         for body in ws.space.blocks.values() {
             match body {
                 Body::Terminal(pane) if pane.remote.is_some() => viewers += 1,
-                Body::Mirrored(_) => cards += 1,
+                Body::Note(n) if n.remote => notes += 1,
                 Body::Kanban(k) if k.remote => kanbans += 1,
                 _ => panic!("a block that isn't home's"),
             }
         }
-        assert_eq!((viewers, cards, kanbans), (1, 1, 1));
+        assert_eq!((viewers, notes, kanbans), (1, 1, 1));
         for (home, uid) in [terminal, note, kanban].iter().zip(&uids) {
             let id = remote.homes[uid];
             let want = rect_at(ws, &first, *home);
@@ -900,5 +900,138 @@ fn a_column_added_and_renamed_on_the_mirror_is_at_home(cx: &mut TestAppContext) 
     );
     pump_home(&ws, cx, "the rename at home", |cx| {
         last_title(&ws, cx).1 == "Review"
+    });
+}
+
+// Batch 2e: checklists, notes and ink, live.
+
+#[gpui_kit::test]
+fn an_item_checked_added_edited_and_deleted_on_the_mirror_is_at_home(cx: &mut TestAppContext) {
+    use crate::workspace::ChecklistAct;
+    let (handle, ws, dir) = with_data(cx);
+    let (block, list) = checklist_block(handle, &ws, cx, "Release", &["Tag it", "Ship"]);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&block].clone());
+    let (tag, ship) = ws.read_with(cx, |ws, _| {
+        let items = &ws.checklists.get(list).unwrap().items;
+        (items[0].id, items[1].id)
+    });
+    mirrored(handle, &ws, cx, dir.path());
+    pump_home(&ws, cx, "r1 to copy the list", |cx| {
+        ws.read_with(cx, |ws, _| remote_of(ws).checklists.get(list).is_some())
+    });
+    let c1 = ws.read_with(cx, |ws, _| remote_of(ws).homes[&uid]);
+    let act = |cx: &mut TestAppContext, act: ChecklistAct| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.act_on_checklist("r1", c1, act, window, cx))
+        })
+        .unwrap();
+    };
+    let home = |ws: &Entity<Workspace>, cx: &mut TestAppContext| -> Vec<(String, bool)> {
+        ws.read_with(cx, |ws, _| {
+            let items = &ws.checklists.get(list).unwrap().items;
+            items.iter().map(|i| (i.text.clone(), i.done)).collect()
+        })
+    };
+    act(cx, ChecklistAct::Toggle { item: tag });
+    pump_home(&ws, cx, "Tag it checked at home", |cx| home(&ws, cx)[0].1);
+    act(
+        cx,
+        ChecklistAct::Add {
+            text: "Notes".into(),
+        },
+    );
+    pump_home(&ws, cx, "Notes added at home", |cx| {
+        home(&ws, cx).last().is_some_and(|i| i.0 == "Notes")
+    });
+    act(
+        cx,
+        ChecklistAct::Edit {
+            item: ship,
+            text: "Ship it".into(),
+        },
+    );
+    pump_home(&ws, cx, "Ship edited at home", |cx| {
+        home(&ws, cx)[1].0 == "Ship it"
+    });
+    act(cx, ChecklistAct::Delete { item: tag });
+    pump_home(&ws, cx, "Tag it gone at home", |cx| {
+        home(&ws, cx).len() == 2
+    });
+    assert_eq!(
+        home(&ws, cx),
+        [("Ship it".to_string(), false), ("Notes".to_string(), false)]
+    );
+    // r1's copy agrees, and no hold is left.
+    pump_home(&ws, cx, "r1's copy to agree", |cx| {
+        ws.read_with(cx, |ws, _| {
+            let remote = remote_of(ws);
+            let copy: Vec<(String, bool)> = remote
+                .checklists
+                .get(list)
+                .unwrap()
+                .items
+                .iter()
+                .map(|i| (i.text.clone(), i.done))
+                .collect();
+            copy == [("Ship it".to_string(), false), ("Notes".to_string(), false)]
+                && remote.items_checked.keys().is_empty()
+                && remote.items_edited.keys().is_empty()
+                && remote.items_deleted.keys().is_empty()
+        })
+    });
+}
+
+#[gpui_kit::test]
+fn a_note_typed_at_home_shows_on_the_mirror(cx: &mut TestAppContext) {
+    let (handle, ws, dir) = with_data(cx);
+    let (_, note, _) = three_blocks(handle, &ws, cx);
+    let (first, uid) = ws.read_with(cx, |ws, _| {
+        (ws.space.id.clone(), ws.space.uids[&note].clone())
+    });
+    mirrored(handle, &ws, cx, dir.path());
+    // Home's note editor takes the text, and its change writes the notes, as typing does.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.note_replace(&first, note, "hello there", None, window, cx)
+        })
+    })
+    .unwrap()
+    .expect("replaced");
+    pump_home(&ws, cx, "r1's note to read it", |cx| {
+        ws.read_with(cx, |ws, cx| {
+            let remote = remote_of(ws);
+            let shown = remote
+                .homes
+                .get(&uid)
+                .and_then(|id| ws.space.blocks.get(id))
+                .and_then(Body::note_view)
+                .and_then(|n| n.tab())
+                .map(|t| t.editor.read(cx).value().to_string());
+            shown.as_deref() == Some("hello there")
+                && remote.notes.notes.iter().any(|n| n.text == "hello there")
+        })
+    });
+}
+
+#[gpui_kit::test]
+fn a_stroke_drawn_at_home_shows_on_the_mirror(cx: &mut TestAppContext) {
+    use templum_canvas::{Color, Drawing};
+    let (handle, ws, dir) = with_data(cx);
+    let (first, _) = mirrored(handle, &ws, cx, dir.path());
+    let stroke = Drawing::Stroke {
+        points: vec![Point::new(0.0, 0.0), Point::new(80.0, 40.0)],
+        width: 4.0,
+        color: Color::Blue,
+        highlight: false,
+    };
+    ws.update(cx, |ws, _| {
+        ws.in_space(&first, |ws| ws.space.ink.push(stroke.clone()));
+    });
+    pump_home(&ws, cx, "r1 to paint the stroke", |cx| {
+        ws.read_with(cx, |ws, _| ws.space.ink == [stroke.clone()])
+    });
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.id, "r1");
+        assert_eq!(ws.ink_at(Point::new(40.0, 20.0)), None, "it is not picked");
     });
 }

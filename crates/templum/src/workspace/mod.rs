@@ -40,6 +40,7 @@ mod preferences;
 mod questions;
 pub(crate) mod remote;
 mod remote_boards;
+mod remote_content;
 mod render;
 mod schedules;
 mod selection;
@@ -57,6 +58,7 @@ mod worktrees;
 
 pub(crate) use blocks::BoardAct;
 pub(crate) use bus::templum_in;
+pub(crate) use checklist_blocks::ChecklistAct;
 pub(crate) use find::FindBar;
 pub(crate) use git_message::TryIt;
 pub(crate) use waits::{Approved, Wait, Waiting};
@@ -583,14 +585,32 @@ impl Body {
         }
     }
 
+    /// A checklist of this computer's: a mirrored workspace's has home's ids, which no local
+    /// lookup by checklist id may meet (`checklist_view` answers any).
     pub fn checklist(&self) -> Option<&Checklist> {
+        match self {
+            Body::Checklist(checklist) if !checklist.remote => Some(checklist),
+            _ => None,
+        }
+    }
+
+    pub fn checklist_mut(&mut self) -> Option<&mut Checklist> {
+        match self {
+            Body::Checklist(checklist) if !checklist.remote => Some(checklist),
+            _ => None,
+        }
+    }
+
+    /// Any checklist block, a mirrored workspace's too: for what only draws it and acts on its
+    /// own copy.
+    pub fn checklist_view(&self) -> Option<&Checklist> {
         match self {
             Body::Checklist(checklist) => Some(checklist),
             _ => None,
         }
     }
 
-    pub fn checklist_mut(&mut self) -> Option<&mut Checklist> {
+    pub fn checklist_view_mut(&mut self) -> Option<&mut Checklist> {
         match self {
             Body::Checklist(checklist) => Some(checklist),
             _ => None,
@@ -609,14 +629,31 @@ impl Body {
         }
     }
 
+    /// A note block of this computer's: a mirrored workspace's has home's note ids, which no local
+    /// lookup by note id may meet (`note_view` answers any).
     pub fn note(&self) -> Option<&Note> {
+        match self {
+            Body::Note(note) if !note.remote => Some(note),
+            _ => None,
+        }
+    }
+
+    pub fn note_mut(&mut self) -> Option<&mut Note> {
+        match self {
+            Body::Note(note) if !note.remote => Some(note),
+            _ => None,
+        }
+    }
+
+    /// Any note block, a mirrored workspace's too.
+    pub fn note_view(&self) -> Option<&Note> {
         match self {
             Body::Note(note) => Some(note),
             _ => None,
         }
     }
 
-    pub fn note_mut(&mut self) -> Option<&mut Note> {
+    pub fn note_view_mut(&mut self) -> Option<&mut Note> {
         match self {
             Body::Note(note) => Some(note),
             _ => None,
@@ -1229,6 +1266,20 @@ impl Space {
 
     pub fn checklist_mut(&mut self, id: BlockId) -> Option<&mut Checklist> {
         self.blocks.get_mut(&id)?.checklist_mut()
+    }
+
+    /// The checklist block `id`, a mirrored workspace's too.
+    pub fn checklist_view(&self, id: BlockId) -> Option<&Checklist> {
+        self.blocks.get(&id)?.checklist_view()
+    }
+
+    pub fn checklist_view_mut(&mut self, id: BlockId) -> Option<&mut Checklist> {
+        self.blocks.get_mut(&id)?.checklist_view_mut()
+    }
+
+    /// The note block `id`, a mirrored workspace's too.
+    pub fn note_view_mut(&mut self, id: BlockId) -> Option<&mut Note> {
+        self.blocks.get_mut(&id)?.note_view_mut()
     }
 
     pub fn kanban(&self, id: BlockId) -> Option<&Kanban> {

@@ -2425,9 +2425,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **The board's dimmed controls and its menus on a remote were checked headlessly only.** (`kanban.rs`, `gated`;
   `menu/build.rs`.) Their dimming, tooltips and the confirm dialogs of Delete card, Delete and Delete board… were not
   looked at on a display. Fix: look at them with two `--dev` instances, one a Control share, one an older home.
-- [ ] **A kanban's header button All boards isn't dimmed on a mirror that can't show boards.**
-  (`block.rs`, `header_button`.) Its menu item is, with the rule's words; the button opens the dialog, whose acts say
-  the words once. Fix: `header_button` takes the deed's words as its tooltip and dims.
 - [ ] **A comment deleted on a mirror has no Undo.** (`kanban.rs`, the thread.) Home's Ctrl+Z on its kanban brings it
   back; putting it back from here would change its author and time. Fix: `comment_card` of the text, or a restore at
   home.
@@ -2441,3 +2438,23 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **A mirror's comment pencil and trash aren't dimmed, only refused.** (`kanban.rs`, `refused`.) A card whose home
   refuses `edit_comment` or `delete_comment` says the rule's words when they are clicked, once; the buttons look
   alive. Fix: read the two deeds once a frame, as Done's, and dim them.
+- [ ] **A remote note's scroll may move when home's text changes.** (`workspace/remote_content.rs`, `remote_notes`.)
+  `set_value` keeps the selection (clipped), not the scroll. Fix: keep the editor's scroll offset across the set.
+- [ ] **A remote note, a remote checklist and home's ink were checked headlessly only.** (`note.rs`, `checklist.rs`,
+  `ink.rs`.) The read-only note, the dimmed + and × of its tabs, the dimmed check boxes and header buttons, the new
+  item's field and home's strokes painted above a mirror's blocks were not looked at on a display. Fix: look at them
+  with two `--dev` instances, one an older home.
+- [ ] **A mirrored checklist's item text and name aren't dimmed, only refused.** (`checklist.rs`, `row`.) A click on an
+  item's text while the remote isn't live says the rule's words once; the text looks alive (the check box, the × and
+  + Add an item are dimmed). Fix: read `Deed::EditItem` once a frame in `Why`, dim the text and give it the words as
+  its tooltip.
+- [ ] **Notes of a mirrored workspace are cleaned and capped, then drawn whole.** (`workspace/remote_content.rs`,
+  `note_of`.) A hostile home's 1,000 notes of 256 KiB are 1,000 editors; the cap bounds memory but not the cost of
+  opening them. Fix: make an editor for the note on screen of each block only, the rest when a tab is shown.
+- [ ] **Home's state copies every note's text and converts all the ink on each API tick.** (`workspace/api_state.rs`,
+  `note_views`, `drawing_views`.) While an event stream is open, each tick (250 ms; 100 ms while dragging) copies the
+  text of every shown note (up to 256 KiB each) and converts every local workspace's ink twice (`InkItem::of`, then
+  `DrawingView::from`), changed or not; a person with many large notes or much ink sees stalls of a few ms on the UI
+  thread. Fix: cache an `Arc<DrawingsView>` per space keyed by an ink revision (bumped on push, remove, retain, undo
+  and redo) and an `Arc<NoteView>` per note keyed by a revision of its text (`Entry.changed` is in seconds: too coarse),
+  so an unchanged tick reuses its `Arc`s and the publisher's comparison becomes a pointer check.

@@ -8,15 +8,20 @@ use std::time::{Instant, SystemTime};
 use gpui_kit::App;
 use templum_api::model::{
     AgentView, App as AppView, Assignee, AttachmentView, AutomationView, BlockView, BoardView,
-    CardRef, CardView, ColumnView, CommentView, ItemView, LastView, LimitsView, OptionView,
+    CardRef, CardView, ChecklistView, ColumnView, CommentView, DrawingView, DrawingsView, ItemView,
+    LastView, LimitsView, NOTE_TEXT_MOST, NOTES_TEXT_MOST, NoteView, NotesShown, OptionView,
     PlanView, QuestionView, Rect, RequestView, SessionView, ShareView, State, UsageView, ViewView,
-    Why, WindowView, WireView, WorkspaceView,
+    Why, WindowView, WireView, WorkspaceView, json_len, newest_drawings,
 };
 use templum_api::store::Scope;
 
+use templum_canvas::Drawing;
+
 use super::agents_view::Doing;
 use super::waits::{Approved, Waiting};
-use super::{Space, Workspace};
+use super::{Body, Space, Workspace};
+use crate::note::Note;
+use crate::session::InkItem;
 
 /// Unix seconds for an instant of the executor's clock, given the clock's `now` and the time.
 fn unix_of(at: Instant, now: Instant, wall: i64) -> i64 {
@@ -30,6 +35,16 @@ fn some(text: &str) -> Option<String> {
 impl Workspace {
     /// Everything the API shows, as of now.
     pub(crate) fn api_state(&self, cx: &App) -> State {
+        self.state_of(cx, true)
+    }
+
+    /// The state without the notes, checklists and ink (empty): what a rule over blocks,
+    /// workspaces, boards and automations reads, without copying the content.
+    pub(super) fn api_scope(&self, cx: &App) -> State {
+        self.state_of(cx, false)
+    }
+
+    fn state_of(&self, cx: &App, content: bool) -> State {
         let (now, wall) = (
             cx.background_executor().now(),
             super::automations::unix(SystemTime::now()),
@@ -104,6 +119,21 @@ impl Workspace {
                 })
                 .map(Arc::new)
                 .collect(),
+            notes: arcs(if content {
+                self.note_views(&spaces)
+            } else {
+                Vec::new()
+            }),
+            checklists: arcs(if content {
+                self.checklist_views(&spaces)
+            } else {
+                Vec::new()
+            }),
+            drawings: arcs(if content {
+                drawing_views(&spaces)
+            } else {
+                Vec::new()
+            }),
             automations: arcs(self.automation_views(cx)),
             shares: arcs(self.share_views()),
             view: self.view_of_shown(),
@@ -128,6 +158,63 @@ impl Workspace {
                     .collect(),
             }),
         }
+    }
+
+    /// The notes a note block of this computer shows, each once, in the order of the workspaces and
+    /// the tabs; a text past `NOTE_TEXT_MOST` bytes is cut at a character's boundary, and once the
+    /// texts sent reach `NOTES_TEXT_MOST` (as JSON) the rest come with `cut` and no text.
+    fn note_views(&self, spaces: &[&Space]) -> Vec<NoteView> {
+        let mut left = NOTES_TEXT_MOST;
+        let mut seen = std::collections::HashSet::new();
+        let ids = bodies(spaces)
+            .filter_map(Body::note)
+            .flat_map(Note::ids)
+            .filter(|id| seen.insert(*id));
+        ids.filter_map(|id| self.notes.get(id))
+            .map(|entry| {
+                let mut end = entry.text.len().min(NOTE_TEXT_MOST);
+                while !entry.text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let mut text = &entry.text[..end];
+                let size = json_len(text);
+                if size > left {
+                    text = "";
+                } else {
+                    left -= size;
+                }
+                NoteView {
+                    id: entry.id,
+                    name: entry.name.clone(),
+                    text: text.to_string(),
+                    color: entry.color.map(|label| label.name().to_string()),
+                    cut: text.len() < entry.text.len(),
+                }
+            })
+            .collect()
+    }
+
+    /// The checklists a checklist block of this computer shows, each once.
+    fn checklist_views(&self, spaces: &[&Space]) -> Vec<ChecklistView> {
+        let mut seen = std::collections::HashSet::new();
+        bodies(spaces)
+            .filter_map(Body::checklist)
+            .filter_map(|checklist| self.checklists.get(checklist.list?))
+            .filter(|list| seen.insert(list.id))
+            .map(|list| ChecklistView {
+                id: list.id,
+                name: list.name_shown().to_string(),
+                items: list
+                    .items
+                    .iter()
+                    .map(|item| ItemView {
+                        id: item.id,
+                        text: item.text.clone(),
+                        done: item.done,
+                    })
+                    .collect(),
+            })
+            .collect()
     }
 
     /// The shares: the tokens that were made by sharing a workspace, oldest first, with whether an
@@ -212,6 +299,14 @@ impl Workspace {
                     z,
                     opened_by: pane.and_then(|p| p.opened_by.clone()),
                     board: space.kanban(block.id).and_then(|k| k.board),
+                    notes: body.note().map(|note| NotesShown {
+                        tabs: note.ids(),
+                        shown: note.tab().map(|tab| tab.id),
+                    }),
+                    checklist: body
+                        .checklist()
+                        .and_then(|c| c.list)
+                        .filter(|list| self.checklists.get(*list).is_some()),
                     read_only: pane.is_some_and(|p| p.follows.is_some()),
                     agent: pane
                         .filter(|p| p.agent().is_some() && p.follows.is_none())
@@ -403,6 +498,37 @@ impl Workspace {
 /// Home hands out its state as `Arc` items, so a mirror takes it by pointer.
 fn arcs<T>(items: Vec<T>) -> Vec<Arc<T>> {
     items.into_iter().map(Arc::new).collect()
+}
+
+/// The blocks' bodies of each workspace, back to front.
+fn bodies<'a>(spaces: &'a [&Space]) -> impl Iterator<Item = &'a Body> {
+    spaces.iter().flat_map(|space| {
+        space
+            .canvas
+            .blocks()
+            .iter()
+            .filter_map(|block| space.blocks.get(&block.id))
+    })
+}
+
+/// The ink of each workspace of this computer that has some, the newest within the caps.
+fn drawing_views(spaces: &[&Space]) -> Vec<DrawingsView> {
+    let points = |drawing: &Drawing| match drawing {
+        Drawing::Stroke { points, .. } => points.len(),
+        Drawing::Shape { .. } => 2,
+    };
+    spaces
+        .iter()
+        .filter(|space| !space.is_remote() && !space.ink.is_empty())
+        .map(|space| DrawingsView {
+            id: space.id.clone(),
+            drawings: newest_drawings(&space.ink, points)
+                .iter()
+                .map(|drawing| DrawingView::from(&InkItem::of(drawing)))
+                .collect(),
+        })
+        .filter(|view| !view.drawings.is_empty())
+        .collect()
 }
 
 fn wire_views(space: &Space) -> Vec<WireView> {

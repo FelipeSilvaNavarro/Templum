@@ -178,7 +178,8 @@ Too low a scope: `403` `{"error":{"code":"scope","message":"send_to_terminal nee
 API never shows the Templum Agent's approval: the token is your own hand, and its scope says how far it reaches.
 
 **Workspace-limited tokens** see only those workspaces, their blocks and wires, the requests of their blocks, the boards
-a kanban block of theirs shows (with those boards' cards) and the automations for those workspaces; no usage, no
+a kanban block of theirs shows (with those boards' cards), the notes and checklists a note or checklist block of
+theirs shows, the drawings of those workspaces and the automations for those workspaces; no usage, no
 approvals. A block, workspace, board, card, request or automation outside them is answered as one that doesn't exist.
 They can't make a workspace, and save automations only for their own workspaces.
 
@@ -186,7 +187,7 @@ They can't make a workspace, and save automations only for their own workspaces.
 
 | Path | Answers |
 |---|---|
-| `GET /v1/state` | The whole state: `app`, `workspaces`, `blocks`, `wires`, `requests`, `boards`, `cards`, `automations`, `shares`, `usage`, `view` |
+| `GET /v1/state` | The whole state: `app`, `workspaces`, `blocks`, `wires`, `requests`, `boards`, `cards`, `notes`, `checklists`, `drawings`, `automations`, `shares`, `usage`, `view` |
 | `GET /v1/workspaces`, `/{workspace}` | Workspaces in the sidebar's order |
 | `GET /v1/blocks`, `/{block}` | Blocks, back to front; `?workspace=w3` filters |
 | `GET /v1/agents` | The blocks running an agent, with its state |
@@ -261,6 +262,16 @@ true`, alone). `show_board` (`block`, then `board` or `new`; control) shows a bo
 step of the kanban's Ctrl+Z; a limited token reaches only the boards its workspaces' kanbans show. `edit_comment`
 and `delete_comment` (`card`, `comment`, and `text`) act as you: edit a comment by `you`, delete any.
 
+**Notes, checklists and ink.** `notes` holds the notes a note block shows, its `text` cut at 256 KiB (`cut` true
+then); all the texts together take at most 8 MiB as JSON (a control character takes up to 6 bytes), and the notes
+past that come with `cut` true and an empty `text`; a note block has `notes`: `{"tabs": [7, 9], "shown": 7}`. `checklists` holds the checklists a checklist block
+shows; a checklist block that shows one has `checklist`: its id. `drawings` holds one item per workspace with ink, its
+id the workspace's: its drawings in paint order, as the canvas file keeps them (`kind` `stroke` with `points`, or
+`line`, `arrow`, `rect`, `ellipse` with `from` and `to`; `color` by name; `width`; `highlight`), at most 2,000
+drawings and 100,000 points (a shape counts 2), the oldest left out past either. `edit_item` (`block`, `item`, `text`)
+and `delete_item` (`block`, `item`; control) change or delete an item of the checklist a checklist block shows, any
+block your token sees; each is one step of the checklist's Ctrl+Z.
+
 **Who acts.** A call acts as you: no approval, comments by `you`. Tasks it hands (`delegate`, `open_agent`'s prompt) are
 typed as `[from API · <token name>, task t7]`, and their end, a `wait_for` with `wait: false` and every other notice
 Templum would type into an asker's terminal come as `notice` events. **Tools that wait** (`delegate` with `wait`,
@@ -271,7 +282,8 @@ response that sends nothing for 100 seconds:** through it, hand the task without
 
 `GET /v1/events` is Server-Sent Events (`text/event-stream`). It opens with `event: snapshot` (the state, as the token
 sees it), then one event per change, named for the collection, singular (`workspace`, `block`, `wire` with the id `a-b`
-(its two block ids sorted), `request`, `board`, `card`, `automation`, `share` (`s4`), `usage` with the id `usage`):
+(its two block ids sorted), `request`, `board`, `card`, `note`, `checklist`, `drawing` (the workspace's id),
+`automation`, `share` (`s4`), `usage` with the id `usage`):
 
 ```
 id: 8f3a1c20-1042
@@ -584,17 +596,21 @@ What the banner says, what it means, and whether it tries again by itself:
 
 ### 7. What a mirror can't do yet
 
-Not mirrored: a note's, checklist's and editor's content (a card names each), ink and shapes. Scrolling back in
-a mirrored shell (the wheel, Shift+PageUp, Find) reads home's last 2000 lines, without colors, and again after it
-changed; the mouse reaches a program that asked for it, with a Full share. Not on a mirrored workspace: editors, adding
-notes (notes are read-only on a mirror for now), drawing, grid mode, Move to workspace, Copy and Paste of blocks, Stop,
-the Git popup. The banner's ⓘ lists them. Adding, closing and wiring blocks, naming wires, opening home's agents and handing them tasks work from the
-mirror, each done at home through its API; a block you close or a wire you make shows at once and home's state wins
-after two seconds. Ctrl+Z there undoes moves only: it stops once at each of those acts and says to undo the rest on
-home. A selection of several blocks moved on the mirror is one Ctrl+Z step per block on home. A kanban is live:
-dragging cards and columns, adding, renaming and deleting columns and boards, the card dialog and Send to work from
-the mirror, each done at home; a card you move, edit or delete shows at once and home's state wins after two
-seconds; a card's attachments show by name (open them on home), and a card has no drafts on a mirror.
+Not mirrored: an editor's content (a card names it). Scrolling back in a mirrored shell (the wheel, Shift+PageUp,
+Find) reads home's last 2000 lines, without colors, and again after it changed; the mouse reaches a program that asked
+for it, with a Full share. Not on a mirrored workspace: editors, editing notes (a note is read-only and live there:
+select, copy and find in it, send it to a terminal), renaming a checklist and moving its items, drawing, grid mode, Move
+to workspace, Copy and Paste of blocks, Stop, the Git popup. The banner's ⓘ lists them. Adding, closing and wiring
+blocks, naming wires, opening home's agents and handing them tasks work from the mirror, each done at home through its
+API; a block you close or a wire you make shows at once and home's state wins after two seconds. Ctrl+Z there undoes
+moves only: it stops once at each of those acts and says to undo the rest on home. A selection of several blocks moved
+on the mirror is one Ctrl+Z step per block on home. A kanban is live: dragging cards and columns, adding, renaming and
+deleting columns and boards, the card dialog and Send to work from the mirror, each done at home; a card you move,
+edit or delete shows at once and home's state wins after two seconds; a card's attachments show by name (open them on
+home), and a card has no drafts on a mirror. A checklist is live: its items are checked, added, edited and deleted from
+the mirror, each done at home (an item's text goes when you press Enter or leave it); a check, an edit or a delete
+shows at once and home's state wins after two seconds. Renaming a checklist and moving its items stay on home. Home's
+ink and shapes are drawn, not picked: draw on home.
 
 ### 8. Safety
 

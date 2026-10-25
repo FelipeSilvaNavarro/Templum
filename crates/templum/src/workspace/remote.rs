@@ -8,8 +8,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use futures::StreamExt;
 use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::input::EditorState;
 use gpui_kit::component::notification::Notification;
-use gpui_kit::{AppContext as _, ClipboardItem, Context, Window};
+use gpui_kit::{AppContext as _, ClipboardItem, Context, Entity, Window};
 use templum_api::client::{
     self, About, Answered, Call, Command, Inherit, Kept, KeySource, Mirror, Secrets, Status, Tools,
     Update, Why,
@@ -28,7 +29,11 @@ use super::{
     show_notification,
 };
 use crate::board::{Boards, Draft};
+use crate::checklist::Checklist;
+use crate::checklists::Checklists;
 use crate::kanban::Kanban;
+use crate::note::Note;
+use crate::notes::Notes;
 use crate::session::{Keeping, RemoteEntry};
 
 /// The most blocks a mirror takes from home, the front ones: a canvas of home's is not trusted to
@@ -223,6 +228,22 @@ pub(crate) struct RemoteSpace {
     /// The cards the last copy of the boards laid an edit over: they are cleaned again from home's
     /// state at the next copy, not moved over.
     pub(super) laid: HashSet<u64>,
+    /// The copies of home's notes and checklists, kept from its state and never saved: a note
+    /// block and a checklist block of this workspace draw them (`remote_content.rs`).
+    pub notes: Notes,
+    pub checklists: Checklists,
+    /// The editor of each note a note block of home's workspace shows (read-only, with no
+    /// subscription): made where a window is, laid into the blocks' tabs without one.
+    pub note_editors: HashMap<u64, Entity<EditorState>>,
+    /// The items checked, edited and deleted here and not yet shown by home (by checklist and
+    /// item): they stand over the copy until home's state shows it, a refusal ends them, or
+    /// [`holds::HOLD`] passes.
+    pub items_checked: Holds<(u64, u64), bool>,
+    pub items_edited: Holds<(u64, u64), String>,
+    pub items_deleted: Holds<(u64, u64), bool>,
+    /// The checklists the last copy laid an item hold over: cleaned again from home's state at
+    /// the next copy, not moved over.
+    pub(super) lists_laid: HashSet<u64>,
     /// The block home was asked to add or open and has not shown yet: it gets the keyboard when
     /// it comes, if the person has not moved on.
     pub awaited: Option<Awaited>,
@@ -394,6 +415,13 @@ impl RemoteSpace {
             cards_deleted: Holds::default(),
             cards_edited: Holds::default(),
             laid: HashSet::new(),
+            notes: Notes::default(),
+            checklists: Checklists::default(),
+            note_editors: HashMap::new(),
+            items_checked: Holds::default(),
+            items_edited: Holds::default(),
+            items_deleted: Holds::default(),
+            lists_laid: HashSet::new(),
             awaited: None,
             shortcuts_told: HashSet::new(),
             next_id: u64::MAX,
@@ -441,8 +469,11 @@ impl RemoteSpace {
     /// remote isn't live, home's Templum lacks the tool (once its tools were read: unknown ones
     /// dim nothing), or the share is below the scope the call takes.
     pub(crate) fn why_not(&self, deed: Deed) -> Option<Nay> {
-        if deed == Deed::AddNote {
+        if matches!(deed, Deed::AddNote | Deed::EditNote) {
             return Some(Nay::NotesReadOnly);
+        }
+        if deed == Deed::Draw {
+            return Some(Nay::Drawing);
         }
         let Some((tool, args)) = deed.call() else {
             return Some(Nay::NotYet);
@@ -708,6 +739,8 @@ pub(crate) enum Deed {
     Start,
     AddTerminal,
     AddNote,
+    /// A key typed in a note, its tabs' + and ×, its Rename, Color and All notes.
+    EditNote,
     AddChecklist,
     AddKanban,
     AddEditor,
@@ -737,6 +770,16 @@ pub(crate) enum Deed {
     EditComment,
     DeleteComment,
     DeleteCard,
+    /// An item of a checklist checked or unchecked.
+    CheckItem,
+    /// New items at the end of a checklist.
+    AddItems,
+    /// An item's text changed.
+    EditItem,
+    /// An item taken out of a checklist.
+    DeleteItem,
+    /// A checklist renamed, or its items moved.
+    EditChecklist,
     /// A column added, renamed, moved or deleted.
     EditColumn,
     /// A board renamed or deleted.
@@ -775,6 +818,10 @@ impl Deed {
                 "add_block",
                 json!({ "workspace": "w", "kind": "checklist" }),
             ),
+            Deed::CheckItem => ("check_item", json!({ "block": "b", "item": 1 })),
+            Deed::AddItems => ("add_items", json!({ "block": "b", "text": "t" })),
+            Deed::EditItem => ("edit_item", json!({ "block": "b", "item": 1, "text": "t" })),
+            Deed::DeleteItem => ("delete_item", json!({ "block": "b", "item": 1 })),
             Deed::MoveCard => ("move_card", json!({ "card": 1, "column": "1" })),
             Deed::CreateCard => ("create_card", json!({ "title": "t" })),
             Deed::EditCard => ("edit_card", json!({ "card": 1, "title": "t" })),
@@ -810,6 +857,8 @@ impl Deed {
 pub(crate) enum Nay {
     /// No call of home's does it yet.
     NotYet,
+    /// Drawing is on home for now.
+    Drawing,
     /// A note is only read on a mirror for now.
     NotesReadOnly,
     NotConnected,
@@ -824,6 +873,7 @@ impl Nay {
     pub(crate) fn words(self, computer: &str) -> String {
         match self {
             Nay::NotYet => NOT_YET.into(),
+            Nay::Drawing => format!("Drawing on a mirror isn't there yet: draw on {computer}."),
             Nay::NotesReadOnly => format!(
                 "Notes are read-only on a mirror for now: add and edit notes on {computer}."
             ),
@@ -1133,10 +1183,10 @@ fn session_of(agent: &AgentView) -> Option<templum_usage::Session> {
 }
 
 /// The banner's ⓘ: what a mirror doesn't have yet.
-pub(crate) const NOT_MIRRORED: &str = "Not mirrored yet: notes', checklists' and editors' \
-     content (a card shows each), ink and shapes. Not on a mirrored workspace yet: editors, \
-     adding notes, drawing, grid mode, Move to workspace, Copy and Paste of blocks, Stop, the \
-     Git popup, a card's attachments.";
+pub(crate) const NOT_MIRRORED: &str = "Not mirrored yet: editors' content (a card shows each). \
+     Not on a mirrored workspace yet: editors, editing notes, renaming a checklist and moving its \
+     items, drawing, grid mode, Move to workspace, Copy and Paste of blocks, Stop, the Git popup, \
+     a card's attachments.";
 
 /// The tooltip of a control a mirrored workspace doesn't have yet.
 pub(crate) const NOT_YET: &str = "Not on a mirrored workspace yet";
@@ -1321,6 +1371,9 @@ impl Space {
                 }
                 Some(Body::Mirrored(card)) => card.title.clone_from(&b.title),
                 Some(Body::Kanban(kanban)) if kanban.remote => kanban.board = b.board,
+                Some(Body::Checklist(checklist)) if checklist.remote => {
+                    checklist.list = b.checklist
+                }
                 _ => {}
             }
         }
@@ -1443,6 +1496,20 @@ fn remote_body(b: &BlockView, rect: Rect, make: &Viewers) -> Body {
     if b.kind == "kanban" {
         return Body::Kanban(Kanban {
             board: b.board,
+            remote: true,
+        });
+    }
+    if b.kind == "note" {
+        return Body::Note(Note {
+            remote: true,
+            ..Note::default()
+        });
+    }
+    if b.kind == "checklist" {
+        return Body::Checklist(Checklist {
+            list: b.checklist,
+            editing: None,
+            scroll: Default::default(),
             remote: true,
         });
     }
@@ -1782,6 +1849,9 @@ impl Workspace {
         let (moved, moved_due) = remote.cards_moved.expire(now, |_| false);
         let (deleted, deleted_due) = remote.cards_deleted.expire(now, |_| false);
         let (edited, edited_due) = remote.cards_edited.expire(now, |_| false);
+        let (checked, checked_due) = remote.items_checked.expire(now, |_| false);
+        let (typed, typed_due) = remote.items_edited.expire(now, |_| false);
+        let (unlisted, unlisted_due) = remote.items_deleted.expire(now, |_| false);
         // What was done here that home's state never showed ends: home's last state is drawn
         // again (a block closed here that home still lists comes back, a card moved here goes
         // where home has it).
@@ -1790,6 +1860,9 @@ impl Workspace {
             || !moved.is_empty()
             || !deleted.is_empty()
             || !edited.is_empty()
+            || !checked.is_empty()
+            || !typed.is_empty()
+            || !unlisted.is_empty()
         {
             let id = self.space.id.clone();
             self.remirror(&id, now);
@@ -1801,6 +1874,9 @@ impl Workspace {
             moved_due,
             deleted_due,
             edited_due,
+            checked_due,
+            typed_due,
+            unlisted_due,
         ]
         .into_iter()
         .flatten()
@@ -1836,6 +1912,9 @@ impl Workspace {
         let home = remote.home.as_ref().map(|h| h.id.clone());
         space.mirror_state(&mut remote, &state, home.as_deref(), &make, (now, &dragged));
         remote.mirror_boards(&state, now);
+        remote.mirror_checklists(&state, now);
+        // The editors are made where a window is; the tabs of a block brought back are laid here.
+        space.lay_note_tabs(&remote, &state);
         space.remote = Some(remote);
     }
 
@@ -1921,11 +2000,28 @@ impl Workspace {
         if !same(&state.boards, &remote.state.boards) || !same(&state.cards, &remote.state.cards) {
             remote.mirror_boards(&state, now);
         }
+        let notes_changed = changed || !same(&state.notes, &remote.state.notes);
+        let made = if same(&state.notes, &remote.state.notes) {
+            HashSet::new()
+        } else {
+            remote.mirror_notes(&state)
+        };
+        if !same(&state.checklists, &remote.state.checklists) {
+            remote.mirror_checklists(&state, now);
+        }
+        if !same(&state.drawings, &remote.state.drawings)
+            || !same(&state.workspaces, &remote.state.workspaces)
+        {
+            space.mirror_drawings(&state, home.as_ref().map(|h| h.id.as_str()));
+        }
         let home_id = home.as_ref().map(|h| h.id.clone());
         remote.home = home;
         let requests = changed.then(|| state.requests.clone());
         remote.state = state;
         space.remote = Some(remote);
+        if notes_changed {
+            self.remote_notes(id, &made, window, cx);
+        }
         if let Some(requests) = requests {
             self.remote_requests(id, home_id.as_deref(), &requests, window, cx);
         }
@@ -2446,7 +2542,7 @@ impl Workspace {
         let computer = crate::mirror::computer_of(remote);
         let (said, sentence) = match remote.why_not(Deed::Type) {
             None => return Some((space, block)),
-            Some(Nay::NotConnected | Nay::NotYet | Nay::NotesReadOnly) => {
+            Some(Nay::NotConnected | Nay::NotYet | Nay::Drawing | Nay::NotesReadOnly) => {
                 (NOT_LIVE, NOT_CONNECTED.to_string())
             }
             Some(Nay::NeedsFull) => (
@@ -3821,6 +3917,10 @@ mod tests {
             Deed::EditColumn,
             Deed::EditBoard,
             Deed::ShowBoard,
+            Deed::CheckItem,
+            Deed::AddItems,
+            Deed::EditItem,
+            Deed::DeleteItem,
         ] {
             assert_eq!(scope(control), Scope::Control, "{control:?}");
         }

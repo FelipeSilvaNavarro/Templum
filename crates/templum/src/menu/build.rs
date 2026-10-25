@@ -548,10 +548,11 @@ impl Items {
                     .item(checklists)
             }
             Items::Mirrored => menu,
-            Items::Checklist { block } => menu.item(item(
+            Items::Checklist { block, gates } => menu.item(gated_item(
                 ws,
                 "All checklists…",
                 Some(IconName::ListChecks),
+                gates.why(Deed::OpenChecklist),
                 move |_, window, cx| crate::checklist::open_checklists(Some(block), window, cx),
             )),
             Items::Terminal {
@@ -1349,32 +1350,41 @@ impl Items {
                 color,
                 rename,
                 send,
+                gates,
             } => menu
-                .item(item(
+                .item(gated_item(
                     ws,
                     "All notes…",
                     Some(IconName::NotebookText),
+                    gates.why(Deed::EditNote),
                     move |_, window, cx| crate::note::open_notes(Some(block), window, cx),
                 ))
                 .when_some(rename, |menu, (note, name)| {
-                    menu.item(item(ws, "Rename…", None, move |_, window, cx| {
-                        let ws = cx.entity();
-                        prompt::ask_text(
-                            "Rename note",
-                            "Rename",
-                            name.clone(),
-                            move |text, _, cx| {
-                                ws.update(cx, |ws, cx| ws.rename_note(note, &text, cx));
-                                true
-                            },
-                            window,
-                            cx,
-                        )
-                    }))
+                    menu.item(gated_item(
+                        ws,
+                        "Rename…",
+                        None,
+                        gates.why(Deed::EditNote),
+                        move |_, window, cx| {
+                            let ws = cx.entity();
+                            prompt::ask_text(
+                                "Rename note",
+                                "Rename",
+                                name.clone(),
+                                move |text, _, cx| {
+                                    ws.update(cx, |ws, cx| ws.rename_note(note, &text, cx));
+                                    true
+                                },
+                                window,
+                                cx,
+                            )
+                        },
+                    ))
                 })
                 .item(
                     item(ws, "Copy all", Some(IconName::Copy), move |ws, _, cx| {
-                        if let Some(note) = ws.space.blocks.get(&block).and_then(|b| b.note()) {
+                        if let Some(note) = ws.space.blocks.get(&block).and_then(|b| b.note_view())
+                        {
                             let text = note.text(cx);
                             cx.write_to_clipboard(ClipboardItem::new_string(text));
                         }
@@ -1383,6 +1393,15 @@ impl Items {
                 )
                 .map(|menu| send_to(ws, menu, send, window, cx))
                 .when_some(color, |menu, color| {
+                    if let Some(why) = gates.why(Deed::EditNote) {
+                        return menu.item(gated_item(
+                            ws,
+                            "Color",
+                            Some(IconName::Palette),
+                            Some(why),
+                            |_, _, _| {},
+                        ));
+                    }
                     let ws = ws.clone();
                     menu.submenu_with_icon(
                         Some(Icon::new(IconName::Palette)),

@@ -10,7 +10,7 @@ use crate::tools::{self, Call, Spawn};
 pub const SERVER: &str = "templum-control";
 
 /// The block server's tools the control server serves as they are, on any block or board.
-pub const SHARED: [&str; 20] = [
+pub const SHARED: [&str; 22] = [
     "read_terminal",
     "list_cards",
     "read_note",
@@ -24,6 +24,8 @@ pub const SHARED: [&str; 20] = [
     "append_note",
     "add_items",
     "check_item",
+    "edit_item",
+    "delete_item",
     "send_to_terminal",
     "send_keys",
     "notify",
@@ -852,6 +854,8 @@ pub fn title(name: &str) -> &'static str {
         "append_note" => "Writing in a note",
         "add_items" => "Adding items",
         "check_item" => "Checking an item",
+        "edit_item" => "Editing an item",
+        "delete_item" => "Deleting an item",
         "open_agent" => "Opening an agent",
         "connect" => "Connecting blocks",
         "disconnect" => "Disconnecting blocks",
@@ -883,7 +887,10 @@ pub fn rule(call: &ControlCall) -> Rule {
         // asks when it would reach a terminal that isn't the Templum Agent's own. A task runs as
         // the person's agent's mode lets it: in bypass or auto, whatever the task says.
         ControlCall::Block(
-            Call::Interrupt { .. } | Call::StopAgent { .. } | Call::Delegate { .. },
+            Call::Interrupt { .. }
+            | Call::StopAgent { .. }
+            | Call::Delegate { .. }
+            | Call::DeleteItem { .. },
         )
         | ControlCall::Connect { .. }
         | ControlCall::DeleteCard { .. }
@@ -1124,24 +1131,38 @@ mod tests {
     }
 
     #[test]
-    fn the_two_servers_share_the_comment_tools() {
-        assert_eq!(SHARED.len(), 20);
-        for (name, args, said) in [
+    fn the_two_servers_share_the_comment_and_item_tools() {
+        assert_eq!(SHARED.len(), 22);
+        for (name, args, said, want) in [
             (
                 "edit_comment",
                 json!({"card": 4, "comment": 9, "text": "x"}),
                 "Editing a comment",
+                Rule::Free,
             ),
             (
                 "delete_comment",
                 json!({"card": 4, "comment": 9}),
                 "Deleting a comment",
+                Rule::Free,
+            ),
+            (
+                "edit_item",
+                json!({"block": "c1", "item": 13, "text": "x"}),
+                "Editing an item",
+                Rule::Free,
+            ),
+            (
+                "delete_item",
+                json!({"block": "c1", "item": 13}),
+                "Deleting an item",
+                Rule::AskOwn,
             ),
         ] {
             assert!(known(name) && crate::tools::known(name), "{name}");
             let parsed = parse(name, &args).unwrap();
             assert!(matches!(parsed.call, ControlCall::Block(_)), "{name}");
-            assert_eq!(rule(&parsed.call), Rule::Free);
+            assert_eq!(rule(&parsed.call), want, "{name}");
             assert_eq!(title(name), said);
         }
     }
@@ -1228,6 +1249,8 @@ mod tests {
             ("append_note", json!({"block": "n1", "text": "ok"})),
             ("add_items", json!({"block": "c1", "text": "a\nb"})),
             ("check_item", json!({"block": "c1", "item": 2})),
+            ("edit_item", json!({"block": "c1", "item": 13, "text": "x"})),
+            ("delete_item", json!({"block": "c1", "item": 13})),
             ("notify", json!({"text": "done"})),
             ("delegate", json!({"block": "b7k2m", "task": "Take card 4"})),
             ("wait_for", json!({"block": "b7k2m", "event": "idle"})),

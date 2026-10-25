@@ -3,9 +3,9 @@
 - **Date:** 2026-10-25
 - **Status:** Batch 1 implemented (kanban card 171, part 2; plans 2026-10-25-t2t-batch-1a…1d: home's side; the
   mirror's client; the remote workspace on the canvas; acting from the mirror, Edit…, the end-to-end test and
-  `--bench-mirror`). Batch 2: parts 2a, 2b, 2c and 2d built (plans 2026-10-25-t2t-batch-2a-footing,
-  2026-10-25-t2t-batch-2b-canvas, 2026-10-25-t2t-batch-2c-terminals and 2026-10-25-t2t-batch-2d-boards); parts
-  2e–2h designed, not built
+  `--bench-mirror`). Batch 2: parts 2a–2e built (plans 2026-10-25-t2t-batch-2a-footing,
+  2026-10-25-t2t-batch-2b-canvas, 2026-10-25-t2t-batch-2c-terminals, 2026-10-25-t2t-batch-2d-boards and
+  2026-10-25-t2t-batch-2e-checklists-notes-ink); parts 2f–2h designed, not built
   ([Batch 2](#batch-2-the-whole-workspace-live)). Later batches (see [Later batches](#later-batches)) are sketched.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
@@ -1011,8 +1011,9 @@ Additions to `/v1`; every field and tool below ships its lines in docs/api.md in
                   "every": 600, "until": 1762166800 }] }
 ```
 
-- **`notes`:** the notes a note block shows (its tabs), `text` cut at 256 KiB with `cut` true past it. A note block
-  gains `"notes": {"tabs": [7, 9], "shown": 7}`.
+- **`notes`:** the notes a note block shows (its tabs), `text` cut at 256 KiB with `cut` true past it; all the
+  texts of a state together take at most 8 MiB as JSON (a snapshot is one event, and a client takes 16 MiB of it), the
+  notes past it sent with `cut` true and no text. A note block gains `"notes": {"tabs": [7, 9], "shown": 7}`.
 - **`checklists`:** the checklists a checklist block shows. A checklist block gains `"checklist": 12` (null: none).
 - **`drawings`:** one item per workspace (its id), its ink and shapes in paint order as the canvas file keeps them;
   at most 2000 drawings and 100,000 points, the oldest left out past either (*the designer's call*: drawings have no
@@ -1886,3 +1887,60 @@ the headless tests drive column moves, renames, deletes and the Boards dialog's 
 buttons and prompts call those acts), and the comment field of a mirror's tall dialog through the work, since it
 leaves the test window; `Card::text(None)` is `menu/mod.rs`'s choice for a remote card; `Gates` and `gated_item` serve
 the kanban's body as the plan says, and `kanban::open_boards` takes the workspace's id as its first argument.
+
+### Batch 2e (checklists, notes and ink, live)
+
+Plan: [2026-10-25-t2t-batch-2e-checklists-notes-ink.md](../plans/2026-10-25-t2t-batch-2e-checklists-notes-ink.md). The
+plan's "Open for the orchestrator" items were settled as it recommended: a remote note and checklist are
+`Body::Note(Note { remote: true, .. })` and `Body::Checklist(Checklist { remote: true, .. })`, which `Body::note()`,
+`note_mut()`, `checklist()` and `checklist_mut()` skip (`note_view()` and `checklist_view()` answer any), so no local
+lookup by id meets home's; home's `notes` and `checklists` hold only what a block shows; `checklist` is left out on a
+checklist block that shows none and `notes` is on every note block; an older home is told by its tools (no `edit_item`);
+a check, an edit and a delete of an item are held over home's state (2 s), added items show a round trip later; + Add
+an item opens a field for a new item (Enter sends `add_items` and opens the next, blank closes, blur sends, Esc drops);
+a blank edit sends nothing; item acts leave an undo mark; a cut note ends "… The rest is on {computer}."; home's
+drawings are the remote `Space::ink`, painted unchanged and never picked (`ink_at` is None on a mirror); a shape counts
+2 of the 100,000 points; a note is in one tab at most across the workspace; `DrawingView` mirrors `session::InkItem`
+field for field. What the builder chose or changed:
+
+- **Home:** `State.{notes, checklists, drawings}`, `BlockView.{notes, checklist}`, the events `note`, `checklist` and
+  `drawing` (`keeps_items`, `parse`, `diff`, the crowded list), `NOTE_TEXT_MOST`, `DRAWINGS_MOST`, `POINTS_MOST`,
+  `newest_drawings`, the OpenAPI schemas (`NoteView`, `ChecklistView`, `DrawingsView`, `Drawing`, `NotesShown`); a
+  limited token sees the notes and checklists its visible blocks show and the drawings of its workspaces.
+  `NOTES_TEXT_MOST` (8 MiB as JSON, counted by `json_len`, a control character taking 6 bytes) is the budget of all the
+  notes' texts of `api_state`, in the order of the workspaces and the tabs: the first notes that fit keep their text,
+  the rest are `cut` with an empty text (a limited token's share of it is counted before its filter, so a note it sees
+  may be among them). `api_scope` is the same state without notes, checklists and drawings, which `api_allows` and the
+  other rules over blocks, workspaces and requests read, so a tool call copies none of the content.
+  `api_state` builds them from `Body::note()`/`checklist()` and `!is_remote()` spaces only, so the mirror's API never
+  relays. The control server shares `edit_item` and `delete_item` (`SHARED` is 22): their bodies are
+  `Workspace::item_text` and `item_delete`, which the block server calls after its wire check; `delete_item` is
+  Ask own, with its own words (`Delete item 13 of "Release"`, the item's text) and facts holding the text.
+- **The mirror's copies:** `workspace/remote_content.rs`: `RemoteSpace::{notes, checklists}` (`mirror_notes`,
+  `mirror_checklists`: cleaned and capped, an item whose `Arc` didn't change moved over as it was, never saved;
+  `mirror_notes` answers the ids it made anew, and `remote_notes` compares and sets an editor's text only for those,
+  so a state that changed home's blocks alone copies no text) and
+  `Space::mirror_drawings` (through `InkItem::drawing`, then ±10⁷ and home's caps again). The note editors are
+  `RemoteSpace::note_editors`, made in `apply_remote` where a window is (`Workspace::remote_notes`) and laid into the
+  blocks' tabs by `Space::lay_note_tabs`, which `remirror` calls too; each is read-only with no subscription.
+- **The door:** every write of a checklist's items is `ChecklistAct` through `Workspace::act_on_checklist`; on a
+  mirrored workspace `remote_checklist_act` asks the deed (`CheckItem`, `AddItems`, `EditItem`, `DeleteItem`) first,
+  lays the hold (`items_checked`, `items_edited`, `items_deleted`, by `lay_item_holds`; a checklist one was laid over is
+  cleaned again at the next copy) and calls home's tool. A mirrored field's events carry the workspace it was opened on.
+- **The views:** `Note::title`, the strip, the tint, `Checklist::title` and the body read `notes_of` and
+  `checklists_of`; the tab strip takes `locked`, `header_button` takes `why` (dimmed, the words its tooltip),
+  `block::Gates` gains `boards`, `notes` and `checklists` (the minor about All boards closes), and `mirrored_card` takes
+  its kind, title and sentence (and an element id) for an older home's note and checklist.
+- **Benchmarks:** `--bench-mirror` gains the ink bench's 200 strokes on home's workspace, which the mirror paints.
+
+Departures from the plan: `Editing` does not carry the workspace (the field's subscription captures it); no
+`notes_in` (nothing needed it; `checklists_in` serves `edit_field`); `tab_strip`'s only caller is the note block, so
+`editor.rs` passes nothing; `would_type` is platform-aware (the secondary key is Ctrl off macOS); the remote note's
+menu is tested through the rule's words and the tabs' clicks and by clicking its All notes… and Rename… items (round
+1); `Body` and `Space` both gain the `*_view` accessors the plan names on `Space` only.
+
+Round 1 of the review: the notes' total budget and `api_scope` (above); `mirror_notes`' made ids; `rename_note` refuses on
+a mirror itself (home's note id is a note of this computer's too), as `new_note_tab` and `move_item` do, and
+`live_content`'s mirror has its own note 7 and list 12 (items 13 and 14), so a write made with home's ids shows in
+`untouched`; the Templum Agent's `delete_item` of an item that isn't there (or on a block with no list) runs at once and
+says so, with no approval to click. Not done, in `minors.md`: caching the `Arc`s of drawings and notes between API ticks.

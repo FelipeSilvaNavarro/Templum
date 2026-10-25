@@ -1253,3 +1253,70 @@ fn a_press_in_a_long_checklists_field_keeps_editing(cx: &mut TestAppContext) {
     .unwrap();
     assert!(editing(&long.ws, cx, long.block).is_some(), "still editing");
 }
+
+#[gpui_kit::test]
+fn every_item_act_is_one_ctrl_z_step_through_one_door(cx: &mut TestAppContext) {
+    use crate::workspace::ChecklistAct;
+    let (handle, ws) = open(cx);
+    let block = new_checklist(handle, &ws, cx);
+    let (list, a) = two_items(&ws, cx, block);
+    let b = ws.read_with(cx, |ws, _| ws.checklists.get(list).unwrap().items[1].id);
+    let space = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let act = |cx: &mut TestAppContext, act: ChecklistAct| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.act_on_checklist(&space, block, act, window, cx)
+            })
+        })
+        .unwrap();
+    };
+    let items = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.checklists
+                .get(list)
+                .unwrap()
+                .items
+                .iter()
+                .map(|i| (i.text.clone(), i.done))
+                .collect::<Vec<_>>()
+        })
+    };
+    let steps = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.checklists_undo.len())
+    };
+    let start = steps(&ws, cx);
+    act(cx, ChecklistAct::Toggle { item: a });
+    assert!(done(&ws, cx, list, a));
+    act(cx, ChecklistAct::Delete { item: b });
+    act(
+        cx,
+        ChecklistAct::Edit {
+            item: a,
+            text: "A".into(),
+        },
+    );
+    act(
+        cx,
+        ChecklistAct::Add {
+            text: "c\n[x] d".into(),
+        },
+    );
+    assert_eq!(
+        items(&ws, cx),
+        [
+            ("A".to_string(), true),
+            ("c".to_string(), false),
+            ("d".to_string(), true)
+        ]
+    );
+    assert_eq!(steps(&ws, cx), start + 4, "one step each");
+    for want in [
+        vec![("A".to_string(), true)],
+        vec![("a".to_string(), true)],
+        vec![("a".to_string(), true), ("b".to_string(), false)],
+        vec![("a".to_string(), false), ("b".to_string(), false)],
+    ] {
+        ws.update(cx, |ws, cx| assert!(ws.undo_checklists(cx)));
+        assert_eq!(items(&ws, cx), want);
+    }
+}

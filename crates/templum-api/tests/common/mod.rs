@@ -101,6 +101,9 @@ pub fn sample() -> State {
             title: "Login".into(),
             ..Default::default()
         })],
+        notes: vec![],
+        checklists: vec![],
+        drawings: vec![],
         automations: vec![Arc::new(AutomationView {
             id: 1,
             name: "Morning".into(),

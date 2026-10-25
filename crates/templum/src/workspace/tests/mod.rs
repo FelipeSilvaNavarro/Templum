@@ -671,6 +671,35 @@ pub(super) fn three_blocks(
     .unwrap()
 }
 
+/// A checklist block "name" with `items` (a leading `[x] ` checks one) in the shown workspace:
+/// (block, checklist).
+pub(super) fn checklist_block(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    name: &str,
+    items: &[&str],
+) -> (BlockId, u64) {
+    let items = crate::checklists::parse_items(&items.join("\n"));
+    let block = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let space = ws.space.id.clone();
+                let new = super::ops::NewBlock::Checklist {
+                    name: name.into(),
+                    items,
+                };
+                ws.add_block_in(&space, new, super::ops::Place::Free, None, window, cx)
+            })
+        })
+        .unwrap()
+        .unwrap();
+    let list = ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&block].checklist().unwrap().list.unwrap()
+    });
+    (block, list)
+}
+
 /// A kanban block on a new board with one card in its first column: (block, board, card).
 pub(super) fn board_with_a_card(
     handle: AnyWindowHandle,
@@ -780,6 +809,7 @@ mod notices;
 mod persistence;
 mod remote;
 mod remote_boards;
+mod remote_content;
 mod requests;
 mod screen;
 mod selection;

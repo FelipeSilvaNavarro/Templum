@@ -352,6 +352,7 @@ impl Workspace {
                     list,
                     editing: None,
                     scroll: Default::default(),
+                    remote: false,
                 };
                 Some(self.add_block(rect, Body::Checklist(checklist)))
             }

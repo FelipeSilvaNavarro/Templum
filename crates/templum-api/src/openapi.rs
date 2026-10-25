@@ -57,6 +57,9 @@ fn schemas() -> Value {
             ("requests", array(r("RequestView"))),
             ("boards", array(r("BoardView"))),
             ("cards", array(r("CardView"))),
+            ("notes", array(r("NoteView"))),
+            ("checklists", array(r("ChecklistView"))),
+            ("drawings", array(r("DrawingsView"))),
             ("automations", array(r("AutomationView"))),
             ("shares", array(r("Share"))),
             ("view", nullable(r("View"))),
@@ -157,6 +160,16 @@ fn schemas() -> Value {
             ("comments", array(r("CommentView"))),
             ("attachments", array(r("AttachmentView"))),
         ]),
+        "NoteView": view(&[
+            ("id", i()),
+            ("name", s()),
+            ("text", s()),
+            ("color", maybe("string")),
+            ("cut", b()),
+        ]),
+        "ChecklistView": view(&[("id", i()), ("name", s()), ("items", array(r("ItemView")))]),
+        "DrawingsView": view(&[("id", s()), ("drawings", array(r("Drawing")))]),
+        "NotesShown": view(&[("tabs", array(i())), ("shown", maybe("integer"))]),
         "Assignee": view(&[("block", maybe("string")), ("agent", maybe("string"))]),
         "ItemView": view(&[("id", i()), ("text", s()), ("done", b())]),
         "CommentView": view(&[
@@ -515,6 +528,16 @@ fn schemas_with_views() -> Value {
         "type": "boolean",
         "description": "A terminal that takes no input (a subagent's transcript); left out otherwise.",
     });
+    // Set only on a note block, and on a checklist block that shows a checklist.
+    all["BlockView"]["properties"]["notes"] = r("NotesShown");
+    all["BlockView"]["properties"]["checklist"] = i();
+    // A drawing is a stroke (`points`) or a shape (`from`, `to`); `highlight` is left out when false.
+    let point = || json!({ "type": "array", "items": { "type": "number" } });
+    all["Drawing"] = view(&[("kind", s()), ("color", s()), ("width", kind("number"))]);
+    all["Drawing"]["properties"]["highlight"] = b();
+    all["Drawing"]["properties"]["points"] = array(point());
+    all["Drawing"]["properties"]["from"] = point();
+    all["Drawing"]["properties"]["to"] = point();
     all["Remote"] = view(&[
         ("computer", maybe("string")),
         ("host", s()),
@@ -805,6 +828,11 @@ mod tests {
                 z: 3,
                 opened_by: Some("templum-agent".into()),
                 board: Some(3),
+                notes: Some(NotesShown {
+                    tabs: vec![7],
+                    shown: Some(7),
+                }),
+                checklist: Some(12),
                 agent: Some(AgentView {
                     agent: "claude".into(),
                     state: "needs_you".into(),
@@ -901,6 +929,45 @@ mod tests {
                     name: "shot.png".into(),
                     size: 48128,
                 }],
+            })],
+            notes: vec![Arc::new(NoteView {
+                id: 7,
+                name: "Plan".into(),
+                text: "first".into(),
+                color: Some("blue".into()),
+                cut: true,
+            })],
+            checklists: vec![Arc::new(ChecklistView {
+                id: 12,
+                name: "Release".into(),
+                items: vec![ItemView {
+                    id: 13,
+                    text: "Tag it".into(),
+                    done: true,
+                }],
+            })],
+            drawings: vec![Arc::new(DrawingsView {
+                id: "w3".into(),
+                drawings: vec![
+                    DrawingView {
+                        kind: "stroke".into(),
+                        color: "blue".into(),
+                        width: 2.0,
+                        highlight: true,
+                        points: vec![[0.0, 0.0], [1.0, 1.0]],
+                        from: None,
+                        to: None,
+                    },
+                    DrawingView {
+                        kind: "arrow".into(),
+                        color: "red".into(),
+                        width: 3.0,
+                        highlight: false,
+                        points: vec![],
+                        from: Some([0.0, 0.0]),
+                        to: Some([5.0, 5.0]),
+                    },
+                ],
             })],
             automations: vec![Arc::new(AutomationView {
                 id: 1,
@@ -1020,10 +1087,21 @@ mod tests {
             .remove("remote");
         check(&r("State"), &local, &doc, "state").unwrap();
         let mut quiet = state.clone();
-        quiet["blocks"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("read_only");
+        for key in ["read_only", "notes", "checklist"] {
+            quiet["blocks"][0].as_object_mut().unwrap().remove(key);
+        }
+        for key in ["highlight", "points"] {
+            quiet["drawings"][0]["drawings"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+        }
+        for key in ["from", "to"] {
+            quiet["drawings"][0]["drawings"][1]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+        }
         check(&r("State"), &quiet, &doc, "state").unwrap();
         let mut store = crate::store::Store::default();
         store

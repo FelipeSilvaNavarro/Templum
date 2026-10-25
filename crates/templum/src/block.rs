@@ -27,7 +27,7 @@ use crate::motion::{self, Look};
 use crate::note;
 use crate::workspace::agents_view::Doing;
 use crate::workspace::remote::Deed;
-use crate::workspace::{AgentState, Body, Copied, FindBar, Mirrored, Pane, Workspace};
+use crate::workspace::{AgentState, Body, Copied, FindBar, Pane, Workspace};
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
@@ -54,6 +54,10 @@ const MARK: f32 = 10.0;
 pub(crate) struct Gates {
     close: Option<String>,
     grid: Option<String>,
+    /// The header buttons to every board, note and checklist: they list this computer's own.
+    boards: Option<String>,
+    notes: Option<String>,
+    checklists: Option<String>,
 }
 
 impl Gates {
@@ -61,6 +65,9 @@ impl Gates {
         Gates {
             close: ws.why_not(Deed::Close),
             grid: ws.why_not(Deed::Grid),
+            boards: ws.why_not(Deed::ShowBoard),
+            notes: ws.why_not(Deed::EditNote),
+            checklists: ws.why_not(Deed::OpenChecklist),
         }
     }
 }
@@ -80,6 +87,8 @@ pub(crate) fn render(
 ) -> AnyElement {
     let id = block.id;
     let n = id.0 as usize;
+    // A note or checklist of a home before batch 2e is a card, as batch 1 drew it.
+    let older = ws.older_content();
     let z = ws.space.view.zoom() * look.scale;
     // Bodies with gpui-kit editors glide too, but on the zooms where their rows are exact (see
     // `exact_rows`): their rows and their letters grow together. At rest, the zoom itself.
@@ -161,7 +170,7 @@ pub(crate) fn render(
     let bg = match body {
         Body::Note(note) => note
             .tab()
-            .and_then(|t| ws.notes.get(t.id)?.color)
+            .and_then(|t| ws.notes_of(note)?.get(t.id)?.color)
             .map_or(ws.ui.surface, |color| ws.theme.note_bg(color)),
         _ => ws.ui.surface,
     };
@@ -484,6 +493,7 @@ pub(crate) fn render(
             ("boards", n).into(),
             IconName::LayoutDashboard,
             "All boards",
+            gates.boards.clone(),
             z,
             move |ws, window, cx| {
                 let space = ws.space.id.clone();
@@ -500,6 +510,7 @@ pub(crate) fn render(
             ("notes", n).into(),
             IconName::NotebookText,
             "All notes",
+            gates.notes.clone(),
             z,
             move |_, window, cx| note::open_notes(Some(id), window, cx),
             cx,
@@ -513,6 +524,7 @@ pub(crate) fn render(
             ("checklists", n).into(),
             IconName::ListChecks,
             "All checklists",
+            gates.checklists.clone(),
             z,
             move |_, window, cx| checklist::open_checklists(Some(id), window, cx),
             cx,
@@ -741,20 +753,32 @@ pub(crate) fn render(
         // A fading kanban block is drawn empty: its board is still live elsewhere.
         Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, window, cx))),
         // A fading checklist block is drawn empty too: its checklists are live elsewhere.
-        Body::Checklist(c) => frame.when(live, |el| el.child(checklist::body(ws, id, c, z, cx))),
+        Body::Checklist(c) => frame.when(live, |el| match older.as_ref().filter(|_| c.remote) {
+            Some(older) => el.child(mirrored_card(ws, n, "checklist", &c.title(ws), older, z)),
+            None => el.child(checklist::body(ws, id, c, z, cx)),
+        }),
         // A fading note is drawn empty, like a kanban block.
         // Below Full a note shown rendered is its tinted card, empty: gpui-kit's Markdown view
         // has no layout to draw bars from.
-        Body::Note(n) => frame.when(live, |el| {
-            el.child(settled_box(
+        Body::Note(note) => frame.when(live, |el| match older.as_ref().filter(|_| note.remote) {
+            Some(older) => el.child(mirrored_card(ws, n, "note", &note.title(ws), older, z)),
+            None => el.child(settled_box(
                 block,
                 settled,
                 pull,
-                note::body(ws, id, n, settled, level, cx),
-            ))
+                note::body(ws, id, note, settled, level, cx),
+            )),
         }),
         // A block of home's the mirror doesn't draw yet: a card in its place.
-        Body::Mirrored(card) => frame.when(live, |el| el.child(mirrored_card(ws, card, z))),
+        Body::Mirrored(card) => frame.when(live, |el| {
+            let computer = ws
+                .space
+                .remote
+                .as_deref()
+                .map_or("the other computer".to_string(), crate::mirror::computer_of);
+            let sentence = format!("Not mirrored yet: open it on {computer}.");
+            el.child(mirrored_card(ws, n, &card.kind, &card.title, &sentence, z))
+        }),
         // A fading editor is drawn empty, like a note.
         Body::Editor(e) => frame.when(live, |el| {
             el.child(settled_box(
@@ -899,30 +923,29 @@ fn read_only_footer(ws: &Workspace, z: f32) -> AnyElement {
 
 /// What a block of home's that is not mirrored yet shows in its place: its kind's icon, its title
 /// and where to open it.
-fn mirrored_card(ws: &Workspace, card: &Mirrored, z: f32) -> AnyElement {
+fn mirrored_card(
+    ws: &Workspace,
+    n: usize,
+    kind: &str,
+    title: &str,
+    sentence: &str,
+    z: f32,
+) -> AnyElement {
     let ui = ws.ui;
-    let icon = match card.kind.as_str() {
+    let icon = match kind {
         "kanban" => IconName::LayoutDashboard,
         "note" => IconName::NotebookText,
         "checklist" => IconName::ListChecks,
         "editor" => IconName::FileCode,
         _ => IconName::Box,
     };
-    let computer = ws
-        .space
-        .remote
-        .as_ref()
-        .and_then(|r| r.me.as_ref())
-        .map_or("the other computer", |me| me.computer.as_str());
-    let kind = if matches!(
-        card.kind.as_str(),
-        "kanban" | "note" | "checklist" | "editor"
-    ) {
+    let kind = if matches!(kind, "kanban" | "note" | "checklist" | "editor") {
         String::new()
     } else {
-        format!("{} · ", card.kind)
+        format!("{kind} · ")
     };
     div()
+        .id(("mirrored", n))
         .size_full()
         .flex()
         .flex_col()
@@ -939,7 +962,7 @@ fn mirrored_card(ws: &Workspace, card: &Mirrored, z: f32) -> AnyElement {
                 .text_center()
                 .text_size(px(13.0 * z))
                 .text_color(ui.title)
-                .child(format!("{kind}{}", card.title)),
+                .child(format!("{kind}{title}")),
         )
         .child(
             div()
@@ -949,8 +972,9 @@ fn mirrored_card(ws: &Workspace, card: &Mirrored, z: f32) -> AnyElement {
                 .text_center()
                 .text_size(px(11.0 * z))
                 .text_color(ui.title_dim)
-                .child(format!("Not mirrored yet: open it on {computer}.")),
+                .child(sentence.to_string()),
         )
+        .test_support()
         .into_any_element()
 }
 
@@ -1106,17 +1130,23 @@ fn copied_pill(ws: &Workspace, n: usize, c: &Copied, opacity: f32, r: Rect, z: f
     pill.test_support().into_any_element()
 }
 
-/// A button on the left of a block's header (over the title: no move), `tip` its tooltip.
+/// A button on the left of a block's header (over the title: no move), `tip` its tooltip. With a
+/// `why` (a mirrored workspace's rule) it is dimmed, the words its tooltip, and its click does
+/// nothing.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn header_button(
     ws: &Workspace,
     id: ElementId,
     icon: IconName,
     tip: &'static str,
+    why: Option<String>,
     z: f32,
     click: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
+    let dimmed = why.is_some();
+    let tip = why.unwrap_or_else(|| tip.to_string());
     div()
         .id(id)
         .absolute()
@@ -1130,11 +1160,16 @@ pub(crate) fn header_button(
         .cursor_pointer()
         .hover(move |s| s.bg(ui.hover))
         .child(Icon::new(icon).size(px(12.0 * z)).text_color(ui.title))
-        .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+        .when(dimmed, |el| el.opacity(0.4))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
             cx.stop_propagation()
         })
-        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| click(ws, window, cx)))
+        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+            if !dimmed {
+                click(ws, window, cx)
+            }
+        }))
         .test_support()
         .into_any_element()
 }
@@ -1149,7 +1184,7 @@ pub(crate) fn title(ws: &Workspace, body: &Body, _cx: &App) -> SharedString {
             None => SharedString::from(pane.term.title()),
         },
         Body::Kanban(k) => k.title(ws),
-        Body::Note(n) => n.title(&ws.notes),
+        Body::Note(n) => n.title(ws),
         Body::Checklist(c) => c.title(ws),
         Body::Editor(e) => e.title(),
         Body::Mirrored(m) => SharedString::from(m.title.clone()),

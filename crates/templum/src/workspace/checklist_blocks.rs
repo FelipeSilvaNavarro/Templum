@@ -16,6 +16,20 @@ use templum_mcp::control::Kind;
 use super::remote::Deed;
 use super::{Body, CHECKLIST_UNDO, Space, Workspace};
 
+/// What the person does to a checklist block's items: on this computer an edit of
+/// `Workspace::checklists` (one Ctrl+Z step each), on a mirrored workspace a call of home's.
+pub(crate) enum ChecklistAct {
+    /// The check box: checked, or unchecked.
+    Toggle { item: u64 },
+    /// A row's ×.
+    Delete { item: u64 },
+    /// An item's whole text (a mirror's field sends it once, on Enter or when it loses the
+    /// keyboard).
+    Edit { item: u64, text: String },
+    /// New items at the end, a line each (a mirror's + Add an item).
+    Add { text: String },
+}
+
 impl Workspace {
     /// A new checklist, its name being edited: in the checklist block `into` when it shows none,
     /// otherwise in a new block beside it, or at the viewport's center without one.
@@ -70,6 +84,7 @@ impl Workspace {
             list: Some(list),
             editing: None,
             scroll: Default::default(),
+            remote: false,
         };
         let id = self.add_block(rect, Body::Checklist(checklist));
         self.focus_block(id, window, cx);
@@ -214,7 +229,9 @@ impl Workspace {
     }
 
     /// Edits `field` of the checklist on screen in `block` in place, with the keyboard; a field
-    /// editing there stops first. Its every key is written to the checklist at once.
+    /// editing there stops first. Its every key is written to the checklist at once. On a
+    /// mirrored workspace nothing is written: the field starts with home's text, and Enter or
+    /// losing the keyboard sends it once (`remote_field`).
     pub(crate) fn edit_field(
         &mut self,
         block: BlockId,
@@ -223,35 +240,64 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.stop_editing(block, window, cx);
-        let Some(list) = self
+        let Some((list, remote)) = self
             .space
-            .blocks
-            .get(&block)
-            .and_then(|b| b.checklist()?.list)
+            .checklist_view(block)
+            .and_then(|c| Some((c.list?, c.remote)))
         else {
             return;
         };
-        let text = match (self.checklists.get(list), field) {
+        let text = match (
+            self.checklists_in(&self.space.id).and_then(|c| c.get(list)),
+            field,
+        ) {
             (Some(l), Field::Name) => l.name.clone(),
             (Some(l), Field::Item(item)) => match l.item(item) {
                 Some(item) => item.text.clone(),
                 None => return,
             },
+            (Some(_), Field::New) => String::new(),
             (None, _) => return,
         };
+        if remote {
+            // Home's list is renamed at home; the rest is the rule's to say.
+            let deed = match field {
+                Field::Name => return,
+                Field::Item(_) => Deed::EditItem,
+                Field::New => Deed::AddItems,
+            };
+            if let Some(words) = self.why_not(deed) {
+                return self.warn(words, window, cx);
+            }
+        }
         let input = cx.new(|cx| InputState::new(window, cx).default_value(text));
         // A name is selected, to be typed over; an item's caret goes at its end.
         input.update(cx, |input, cx| match field {
             Field::Name => input.select_all(window, cx),
-            Field::Item(_) => {
+            Field::Item(_) | Field::New => {
                 let end = input.value().len();
                 input.set_selected_range(end..end, cx);
             }
         });
+        // A mirrored field's events act on the workspace it was opened on, by id, whichever is
+        // shown by the time they come.
+        let space = self.space.id.clone();
         cx.subscribe_in(
             &input,
             window,
             move |ws, input, event: &InputEvent, window, cx| {
+                if remote {
+                    match event {
+                        InputEvent::PressEnter { .. } => {
+                            ws.remote_field(&space, block, input, true, window, cx)
+                        }
+                        InputEvent::Blur => {
+                            ws.remote_field(&space, block, input, false, window, cx)
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
                 match event {
                     InputEvent::Change => ws.field_changed(block, input, cx),
                     InputEvent::PressEnter { .. } => ws.field_enter(block, input, window, cx),
@@ -265,7 +311,7 @@ impl Workspace {
         )
         .detach();
         self.focus_block(block, window, cx);
-        if let Some(checklist) = self.space.checklist_mut(block) {
+        if let Some(checklist) = self.space.checklist_view_mut(block) {
             checklist.editing = Some(Editing {
                 field,
                 input: input.clone(),
@@ -274,6 +320,73 @@ impl Workspace {
         }
         input.update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
+    }
+
+    /// Esc in a field: on this computer it stops, keeping what was typed; on a mirrored workspace
+    /// it drops the field and sends nothing.
+    pub(crate) fn escape_field(
+        &mut self,
+        block: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.space.checklist_view(block).is_some_and(|c| c.remote) {
+            let space = self.space.id.clone();
+            self.close_remote_field(&space, block, None, window, cx);
+        } else {
+            self.stop_editing(block, window, cx);
+        }
+    }
+
+    /// The field of the mirrored `space`'s block `block` ends: Enter (`enter`), or the keyboard
+    /// leaving. What was typed goes home as `act_on_checklist` sends it; Enter in a new item's
+    /// field then opens the next. An event of a field already ended does nothing.
+    fn remote_field(
+        &mut self,
+        space: &str,
+        block: BlockId,
+        input: &Entity<InputState>,
+        enter: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(field) = self.close_remote_field(space, block, Some(input), window, cx) else {
+            return;
+        };
+        let text = input.read(cx).value().to_string();
+        let act = match field {
+            Field::Item(item) => ChecklistAct::Edit { item, text },
+            Field::New if !text.trim().is_empty() => ChecklistAct::Add { text },
+            Field::New | Field::Name => return,
+        };
+        let again = enter && field == Field::New;
+        self.act_on_checklist(space, block, act, window, cx);
+        if again && self.space.id == space {
+            self.edit_field(block, Field::New, window, cx);
+        }
+    }
+
+    /// Takes the field out of the mirrored `space`'s block `block` (when it is `input`, or any
+    /// without one) and gives the keyboard back to the canvas if it had it; the field it edited.
+    fn close_remote_field(
+        &mut self,
+        space: &str,
+        block: BlockId,
+        input: Option<&Entity<InputState>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Field> {
+        let shown = self.space.id == space;
+        let editing = self
+            .space_by_id_mut(space)?
+            .checklist_view_mut(block)?
+            .editing
+            .take_if(|e| input.is_none_or(|input| &e.input == input))?;
+        if shown && editing.input.read(cx).focus_handle(cx).is_focused(window) {
+            window.focus(&self.focus_handle, cx);
+        }
+        cx.notify();
+        Some(editing.field)
     }
 
     /// `block`'s field is `input`.
@@ -306,6 +419,8 @@ impl Workspace {
         let write = |c: &mut Checklists| match field {
             Field::Name => c.rename(list, &text, notes::now()),
             Field::Item(item) => c.set_text(list, item, &text, notes::now()),
+            // (A mirrored list's field writes nothing.)
+            Field::New => {}
         };
         if kept {
             write(&mut self.checklists);
@@ -352,6 +467,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Home adds it, from the field's text.
+        if self.space.checklist_view(block).is_some_and(|c| c.remote) {
+            return self.edit_field(block, Field::New, window, cx);
+        }
         self.stop_editing(block, window, cx);
         let Some(item) =
             self.edit_checklist(list, |c| c.add_item(list, after, "", false, notes::now()))
@@ -377,6 +496,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // (A mirrored list's block is not `checklist()`: its Backspace does nothing here.)
         let Some((list, editing)) = self
             .space
             .blocks
@@ -421,6 +541,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A mirrored workspace's field sends what it has, as the keyboard leaving does.
+        if self.space.checklist_view(block).is_some_and(|c| c.remote) {
+            let Some(input) = self
+                .space
+                .checklist_view(block)
+                .and_then(|c| Some(c.editing.as_ref()?.input.clone()))
+            else {
+                return;
+            };
+            let space = self.space.id.clone();
+            return self.remote_field(&space, block, &input, false, window, cx);
+        }
         let Some((list, editing)) = self
             .space
             .checklist_mut(block)
@@ -486,6 +618,51 @@ impl Workspace {
             c.set_done(list, item, !done, notes::now())
         });
         cx.notify();
+    }
+
+    /// What the person does to the items of the checklist block `block` of workspace `space`: on
+    /// this computer an edit of the checklists, one step of Ctrl+Z each; on a mirrored workspace
+    /// home's tool, asked of the rule first (`remote_checklist_act`). The one door of the items'
+    /// writes.
+    pub(crate) fn act_on_checklist(
+        &mut self,
+        space: &str,
+        block: BlockId,
+        act: ChecklistAct,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(checklist) = self
+            .space_named(space)
+            .and_then(|s| s.blocks.get(&block))
+            .and_then(Body::checklist_view)
+        else {
+            return;
+        };
+        if checklist.remote {
+            return self.remote_checklist_act(space, block, act, window, cx);
+        }
+        let Some(list) = checklist.list else {
+            return;
+        };
+        match act {
+            ChecklistAct::Toggle { item } => self.toggle_item(list, item, cx),
+            ChecklistAct::Delete { item } => self.delete_item(list, item, cx),
+            ChecklistAct::Edit { item, text } => {
+                self.item_edit(list, item, &text);
+                cx.notify();
+            }
+            ChecklistAct::Add { text } => {
+                let now = notes::now();
+                self.edit_checklist(list, |c| {
+                    for (text, done) in crate::checklists::parse_items(&text) {
+                        c.add_item(list, None, &text, done, now);
+                    }
+                });
+                self.agent_changed(list);
+                cx.notify();
+            }
+        }
     }
 
     /// A row's ×: deletes item `item` of checklist `list`.

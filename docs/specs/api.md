@@ -202,7 +202,8 @@ one WebSocket for input only).
 A token made for chosen workspaces (*the orchestrator's call*; the rules are *the designer's call*):
 
 - It sees those workspaces, their blocks and wires, the requests of their blocks, the boards a kanban block of theirs
-  shows (with those boards' cards), and the automations whose Where is one of them. It sees no usage (an account's,
+  shows (with those boards' cards), the notes and checklists a note or checklist block of theirs shows, the drawings of
+  those workspaces, and the automations whose Where is one of them. It sees no usage (an account's,
   not a workspace's), no automation for all workspaces and none of the Templum Agent's approvals.
 - It acts only there: every block, workspace, board, card, request and automation a call names must be one it sees;
   `create_workspace` is refused. A target it doesn't see is answered exactly as one that doesn't exist ("There's no
@@ -220,7 +221,7 @@ Every GET reads a fresh state from the UI thread (one round trip), filtered for 
 
 | Method and path | Answers | Scope |
 |---|---|---|
-| `GET /v1/state` | The whole state: `{app, workspaces, blocks, wires, requests, boards, cards, automations, usage}` | read |
+| `GET /v1/state` | The whole state: `{app, workspaces, blocks, wires, requests, boards, cards, notes, checklists, drawings, automations, usage}` | read |
 | `GET /v1/workspaces`, `/v1/workspaces/{workspace}` | Workspaces in the sidebar's order | read |
 | `GET /v1/blocks`, `/v1/blocks/{block}` | Blocks, back to front; `?workspace=w3` filters | read |
 | `GET /v1/agents` | The blocks running an agent, with its state | read |
@@ -258,6 +259,10 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
               "assignee": { "block": "b7k2m" }, "checklist": [{ "id": 41, "text": "Build", "done": false }],
               "comments": [{ "number": 51, "by": "b7k2m", "text": "…", "at": 1761550000, "edited": false }],
               "attachments": [{ "name": "shot.png", "size": 48128 }] }],
+  "notes": [{ "id": 7, "name": "Plan", "text": "first\nsecond", "color": "blue", "cut": false }],
+  "checklists": [{ "id": 12, "name": "Release", "items": [{ "id": 13, "text": "Tag it", "done": false }] }],
+  "drawings": [{ "id": "w3", "drawings": [{ "kind": "stroke", "color": "blue", "width": 2.0,
+                                            "points": [[0, 0], [100, 100]] }] }],
   "automations": [{ "id": 1, "name": "Morning review", "on": true, "workspace": "w3", "when": { "…": "…" },
                     "do": { "…": "…" }, "runs": 3, "last": { "at": 1761555600, "went": "ran", "about": "…" },
                     "next": 1761642000, "sentence": "Every weekday at 09:00, type into abc12" }],
@@ -276,6 +281,11 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
   holds a yes/no request's two words (`["Allow","Deny"]`); `scope` is what answering it takes; an approval carries
   `tool`, `said`, `details` and `facts` (Templum's words) and `reason` (the model's).
 - A card's attachments give names and sizes, never paths (*the designer's call*).
+- `notes` holds the notes a note block shows (a note block has `notes`: `{"tabs": [7, 9], "shown": 7}`), their
+  `text` cut at 256 KiB (`cut` true then); `checklists` the checklists a checklist block shows (that block has
+  `checklist`: the id); `drawings` one item per workspace with ink, its id the workspace's, in paint order as the
+  canvas file keeps them, at most 2,000 drawings and 100,000 points (a shape counts 2), the oldest left out past
+  either. A limited token sees the notes and checklists its visible blocks show, and the drawings of its workspaces.
 
 ### Tools
 
@@ -364,7 +374,8 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
   ```
 
 - **Event names** are the state's collections, singular: `workspace`, `block`, `wire` (id `a-b`, the two block ids
-  sorted), `request`, `board`, `card`, `automation`, `usage` (id `usage`); `put` carries the whole object, `delete` its
+  sorted), `request`, `board`, `card`, `note`, `checklist`, `drawing` (the workspace's id), `automation`, `usage`
+  (id `usage`); `put` carries the whole object, `delete` its
   id. A block that moves to another workspace is one `put` with its new `workspace`. Agents' states ride on their
   blocks. A client mirrors the state by applying puts and deletes to the snapshot.
 - **`notice`** is the one happening that isn't state: a task the API handed ended or its agent needs its person, a

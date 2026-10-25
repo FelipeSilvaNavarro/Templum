@@ -532,7 +532,7 @@ impl Workspace {
                 "A token limited to some workspaces names the board: {name} needs \"board\"."
             )));
         }
-        let seen = self.api_state(cx).visible(caller);
+        let seen = self.api_scope(cx).visible(caller);
         let mut args = args.clone();
         let text = |value: &Value| match value {
             Value::String(s) => Some(s.clone()),
@@ -808,7 +808,7 @@ impl Workspace {
                 // A limited token's rule is held to its folders each time it runs; one saved by a
                 // token that isn't limited is the person's own.
                 let roots = caller.workspaces.is_some().then(|| {
-                    let seen = self.api_state(cx).visible(caller);
+                    let seen = self.api_scope(cx).visible(caller);
                     self.confined_roots(&seen)
                 });
                 if let Some(store) = self.api.store.as_mut() {

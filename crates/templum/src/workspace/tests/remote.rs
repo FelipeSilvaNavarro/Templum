@@ -512,9 +512,9 @@ fn home_s_blocks_appear_move_and_go(cx: &mut TestAppContext) {
                 }
                 // A kanban is live: its own body, home's board, marked remote.
                 ("kanban", Body::Kanban(k)) => assert!(k.remote),
-                (kind @ ("note" | "checklist"), Body::Mirrored(card)) => {
-                    assert_eq!(card.kind, kind)
-                }
+                // A note is live too: its own body, home's tabs, marked remote.
+                ("note", Body::Note(n)) => assert!(n.remote),
+                ("checklist", Body::Checklist(c)) => assert!(c.remote),
                 _ => panic!("{kind} is drawn as the wrong body"),
             }
         }
@@ -557,19 +557,19 @@ fn home_s_blocks_appear_move_and_go(cx: &mut TestAppContext) {
         );
         assert!(space.ghosts.is_empty(), "no ghost for what home closed");
     });
-    // Home adds a checklist: a card for a kind the mirror doesn't draw yet.
+    // Home adds a checklist: a live checklist block, home's.
     cx.update_window(home_handle, |_, window, cx| {
         home.update(cx, |ws, cx| {
             ws.add_checklist_at(Point::new(700.0, 40.0), window, cx)
         })
     })
     .unwrap();
-    pump_home(&home, cx, "the checklist's card", |cx| {
+    pump_home(&home, cx, "the checklist's block", |cx| {
         ws.read_with(cx, |ws, _| {
             space_of(ws)
                 .blocks
                 .values()
-                .any(|b| matches!(b, Body::Mirrored(m) if m.kind == "checklist"))
+                .any(|b| matches!(b, Body::Checklist(c) if c.remote))
         })
     });
     ws.read_with(cx, |ws, _| {
@@ -1979,12 +1979,11 @@ fn the_banner_tooltips_say_the_real_round_trip_and_what_isnt_mirrored() {
     );
     let tip = crate::mirror::not_mirrored_tip();
     for word in [
-        "notes",
-        "checklists",
         "editors",
+        "editing notes",
+        "renaming a checklist",
         "attachments",
-        "ink",
-        "shapes",
+        "drawing",
         "Git popup",
         "500 blocks",
     ] {

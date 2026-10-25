@@ -84,11 +84,7 @@ fn a_new_note_takes_the_keyboard_and_keeps_every_key_in_the_notes(cx: &mut TestA
     assert_eq!(text_of(&ws, cx, note).as_deref(), Some("  Groceries\nmilk"));
     ws.read_with(cx, |ws, _| {
         assert_eq!(
-            ws.space.blocks[&id]
-                .note()
-                .unwrap()
-                .title(&ws.notes)
-                .as_ref(),
+            ws.space.blocks[&id].note().unwrap().title(ws).as_ref(),
             "Untitled",
             "typing never names a note"
         );
@@ -119,11 +115,7 @@ fn a_note_is_plain_text(cx: &mut TestAppContext) {
     );
     ws.read_with(cx, |ws, _| {
         assert_eq!(
-            ws.space.blocks[&id]
-                .note()
-                .unwrap()
-                .title(&ws.notes)
-                .as_ref(),
+            ws.space.blocks[&id].note().unwrap().title(ws).as_ref(),
             "Untitled"
         );
     });

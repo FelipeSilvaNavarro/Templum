@@ -150,6 +150,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Home's notes are read-only here: nothing is added to this computer's for its block.
+        if self.on_remote() {
+            return;
+        }
         let id = self.notes.add(String::new(), None, notes::now());
         if let Some(tab) = self.note_tab(id, window, cx) {
             self.add_tab(block, tab, window, cx);
@@ -165,7 +169,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.release_focus(block, window, cx);
-        if let Some(note) = self.space.blocks.get_mut(&block).and_then(Body::note_mut)
+        // (A mirrored note's shown tab is the mirror's own choice.)
+        if let Some(note) = self.space.note_view_mut(block)
             && index < note.tabs.len()
         {
             note.active = index;
@@ -318,6 +323,10 @@ impl Workspace {
 
     /// The menu's Rename: note `id` is called `name`.
     pub(crate) fn rename_note(&mut self, id: u64, name: &str, cx: &mut Context<Self>) {
+        // A mirrored note is home's, by home's id: this computer's note of that id is another.
+        if self.on_remote() {
+            return;
+        }
         self.notes.rename(id, name);
         cx.notify();
     }

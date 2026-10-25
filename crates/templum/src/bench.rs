@@ -17,7 +17,7 @@
 //! `templum --bench-mirror`: the mixed scenario's cockpit mirrored by the same Templum, over
 //! loopback (its API on, a Full share of its first workspace, connected as `r1`, which is shown
 //! and streams every terminal on screen while home's terminals redraw), driven as `--bench-mixed`
-//! is. It keeps its data in a temporary folder, removed at the end.
+//! is, with the ink bench's 200 strokes on home's workspace, which the mirror paints. It keeps its data in a temporary folder, removed at the end.
 //! Prints one JSON line (frame-interval percentiles, memory), then quits. Bar: p95 <= 16.7 ms.
 
 use std::path::{Path, PathBuf};
@@ -47,24 +47,7 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, mixed: bool, c
                 let rect = Rect::new(col * (size.w + 40.0), row * (size.h + 40.0), size.w, size.h);
                 ws.open(rect, window, cx);
             }
-            // 200 strokes of 50 points over the terminals: the spec's bar must hold with ink on
-            // screen.
-            for s in 0..200 {
-                let x0 = (s % 20) as f32 * 150.0;
-                let y0 = (s / 20) as f32 * 120.0;
-                let points = (0..50)
-                    .map(|i| {
-                        let t = i as f32;
-                        Point::new(x0 + t * 3.0, y0 + (t * 0.4).sin() * 20.0)
-                    })
-                    .collect();
-                ws.space.ink.push(Drawing::Stroke {
-                    points,
-                    width: 4.0,
-                    color: Color::Blue,
-                    highlight: s % 4 == 0,
-                });
-            }
+            strokes(ws);
         })
     });
     cx.spawn(async move |cx| {
@@ -194,6 +177,26 @@ pub(crate) fn run_mirror(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mu
     .detach();
 }
 
+/// 200 strokes of 50 points over the terminals: the spec's bar must hold with ink on screen.
+fn strokes(ws: &mut Workspace) {
+    for s in 0..200 {
+        let x0 = (s % 20) as f32 * 150.0;
+        let y0 = (s / 20) as f32 * 120.0;
+        let points = (0..50)
+            .map(|i| {
+                let t = i as f32;
+                Point::new(x0 + t * 3.0, y0 + (t * 0.4).sin() * 20.0)
+            })
+            .collect();
+        ws.space.ink.push(Drawing::Stroke {
+            points,
+            width: 4.0,
+            color: Color::Blue,
+            highlight: s % 4 == 0,
+        });
+    }
+}
+
 /// The mixed cockpit in the first workspace, its API on (loopback), a Full share of that
 /// workspace connected as `r1` (the key kept in memory: no keyring is touched), and `r1` shown
 /// with its camera on the middle of the blocks. The first workspace's id, or what went wrong.
@@ -209,6 +212,8 @@ fn mirror_set_up(
     ws.close_welcome(window, cx);
     ws.welcome = None;
     mixed_cockpit(ws, window, cx);
+    // The ink bench's strokes, which the mirror paints from home's state.
+    strokes(ws);
     // Its kanbans show a board each (12 cards): the mirror draws them live from home's boards.
     let kanbans: Vec<_> = ws
         .space

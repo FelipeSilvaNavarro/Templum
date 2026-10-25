@@ -4,23 +4,25 @@
 
 use std::cell::RefCell;
 
+use gpui_kit::Keystroke;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::component::input::{Editor, EditorState, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, ElementId, Entity, ScrollWheelEvent, SharedString,
-    TestSupportExt, Window, div, px, relative,
+    AnyElement, App, ClickEvent, Context, ElementId, Entity, KeyDownEvent, ScrollWheelEvent,
+    SharedString, TestSupportExt, Window, div, px, relative,
 };
 use templum_canvas::{BlockId, Level, Size, chrome};
 
 use crate::block::BORDER;
 use crate::grid::{BAR_OPACITY, hsla};
 use crate::list_dialog;
-use crate::notes::{self, Notes};
+use crate::notes;
 use crate::silhouette::{self, Far};
 use crate::tab_strip::{LABELS_IN, TABS_H, tab_strip};
 use crate::workspace::Workspace;
+use crate::workspace::remote::Deed;
 
 /// A new note's size, and the smallest one (world units).
 pub(crate) const SIZE: Size = Size { w: 360.0, h: 280.0 };
@@ -51,6 +53,9 @@ pub(crate) struct Note {
     pub active: usize,
     /// The tab whose name is being typed over, in place.
     pub renaming: Option<Renaming>,
+    /// Of a mirrored workspace: its ids are home's, its notes the copy in `RemoteSpace::notes`,
+    /// its editors read-only and unsubscribed. No local lookup by note id meets it.
+    pub remote: bool,
 }
 
 /// A tab's name being edited in its place: kept on Enter or when the keyboard leaves, dropped on
@@ -113,10 +118,10 @@ impl Note {
     }
 
     /// The note on screen's name; "Notes" without one.
-    pub fn title(&self, notes: &Notes) -> SharedString {
-        match self.tab() {
-            Some(tab) => notes.name(tab.id).to_string().into(),
-            None => "Notes".into(),
+    pub fn title(&self, ws: &Workspace) -> SharedString {
+        match (self.tab(), ws.notes_of(self)) {
+            (Some(tab), Some(notes)) => notes.name(tab.id).to_string().into(),
+            _ => "Notes".into(),
         }
     }
 
@@ -128,6 +133,28 @@ impl Note {
         tab.editor.update(cx, |editor, cx| editor.focus(window, cx));
         true
     }
+}
+
+/// Whether `keystroke` types into a text field, or pastes or cuts: a key with a character and no
+/// Ctrl, Alt or platform key, Enter, Backspace, Delete, Tab, and the platform's paste and cut.
+pub(crate) fn would_type(keystroke: &Keystroke) -> bool {
+    let m = &keystroke.modifiers;
+    let secondary = if cfg!(target_os = "macos") {
+        m.platform
+    } else {
+        m.control
+    };
+    if secondary && !m.alt {
+        return matches!(keystroke.key.as_str(), "v" | "x");
+    }
+    if m.control || m.alt || m.platform {
+        return false;
+    }
+    keystroke.key_char.is_some()
+        || matches!(
+            keystroke.key.as_str(),
+            "enter" | "backspace" | "delete" | "tab"
+        )
 }
 
 /// A note's editor: plain text, wrapped at the block's width.
@@ -159,12 +186,23 @@ pub(crate) fn body(
         .map_or(Size::default(), |b| chrome::content_rect(b.rect).size());
     // The text's area, below the tabs.
     let area = Size::new(content.w, (content.h - TABS_H).max(0.0));
+    // A mirrored note's tabs can't be added, closed or renamed: home's notes are read-only here.
+    let locked = note
+        .remote
+        .then(|| ws.why_not(Deed::EditNote))
+        .flatten()
+        .map(SharedString::from);
     // Far away the tabs' place stays, empty: the bars stay where the text was.
     let strip = if level == Level::Full {
         let titles = note
             .tabs
             .iter()
-            .map(|t| ws.notes.name(t.id).to_string().into())
+            .map(|t| {
+                ws.notes_of(note)
+                    .map_or(notes::UNTITLED, |notes| notes.name(t.id))
+                    .to_string()
+                    .into()
+            })
             .collect();
         let renaming = note.renaming.as_ref().and_then(|r| {
             let at = note.tabs.iter().position(|t| t.id == r.id)?;
@@ -183,12 +221,14 @@ pub(crate) fn body(
                 Workspace::rename_note_tab,
             ],
             Workspace::new_note_tab,
+            locked,
             cx,
         )
     } else {
         div().h(px(TABS_H * z)).into_any_element()
     };
     let inner = match note.tab() {
+        None if level == Level::Full && note.remote => remote_empty(ws, n, z),
         None if level == Level::Full => empty(ws, id, area, z, cx),
         None => div().into_any_element(),
         Some(tab) => {
@@ -202,7 +242,7 @@ pub(crate) fn body(
             };
             if level == Level::Full {
                 tab.far.borrow_mut().full = Some((z, taken));
-                editor_box(ws, n, &tab.editor, area, z, cx)
+                editor_box(ws, n, &tab.editor, area, z, note.remote, cx)
             } else {
                 // Its words as bars; the wheel moves the canvas.
                 silhouette::body(
@@ -214,7 +254,7 @@ pub(crate) fn body(
                     FONT,
                     silhouette::note_origin,
                     hsla(ws.theme.palette.foreground, BAR_OPACITY),
-                    |cx| editor_box(ws, n, &tab.editor, area, z, cx),
+                    |cx| editor_box(ws, n, &tab.editor, area, z, note.remote, cx),
                     cx,
                 )
             }
@@ -234,7 +274,22 @@ pub(crate) fn body(
             })
         })
         .child(strip)
-        .child(div().relative().flex_1().min_h(px(0.0)).child(inner))
+        .child(
+            div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.0))
+                // A key that would type in home's note is told once, here before the editor
+                // (which is read-only) takes it.
+                .when(note.remote, |el| {
+                    el.capture_key_down(cx.listener(move |ws, e: &KeyDownEvent, window, cx| {
+                        if would_type(&e.keystroke) {
+                            ws.tell_note_read_only(id, window, cx);
+                        }
+                    }))
+                })
+                .child(inner),
+        )
         .into_any_element()
 }
 
@@ -383,6 +438,28 @@ fn empty(
         .into_any_element()
 }
 
+/// A mirrored note block with no tab: home shows none there, and opening one is home's to do.
+fn remote_empty(ws: &Workspace, n: usize, z: f32) -> AnyElement {
+    let computer = ws
+        .space
+        .remote
+        .as_deref()
+        .map_or("the other computer".to_string(), crate::mirror::computer_of);
+    div()
+        .id(("note-empty", n))
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .px(px(12.0 * z))
+        .text_size(px(13.0 * z))
+        .text_color(ws.ui.title_dim)
+        .text_center()
+        .child(format!("No note open here: open one on {computer}."))
+        .test_support()
+        .into_any_element()
+}
+
 /// The note's editor as Full draws it, at zoom `z`, in the text's `area`. Its fixed parts would
 /// make the text start further in, wrap at other words and show fewer lines the further the
 /// canvas is zoomed out: the editor is as much larger (or smaller) and moved by its fixed left
@@ -395,6 +472,7 @@ fn editor_box(
     editor: &Entity<EditorState>,
     area: Size,
     z: f32,
+    readonly: bool,
     cx: &mut App,
 ) -> AnyElement {
     let (across, down) = (FIXED_LEFT + FIXED_RIGHT, FIXED_TOP + FIXED_BOTTOM);
@@ -416,6 +494,7 @@ fn editor_box(
                     // On the editor itself: it sets the theme's code size on itself, over a
                     // parent's.
                     Editor::new(editor)
+                        .readonly(readonly)
                         .appearance(false)
                         .bordered(false)
                         .text_size(px(FONT * z))
@@ -484,4 +563,39 @@ fn note_rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keystroke(text: &str) -> Keystroke {
+        Keystroke::parse(text).unwrap().with_simulated_ime()
+    }
+
+    #[test]
+    fn would_type_is_a_key_that_types_or_pastes() {
+        for typing in [
+            "a",
+            "shift-A",
+            "enter",
+            "backspace",
+            "tab",
+            "secondary-v",
+            "secondary-x",
+        ] {
+            assert!(would_type(&keystroke(typing)), "{typing}");
+        }
+        for not in [
+            "ctrl-t",
+            "alt-1",
+            "f5",
+            "escape",
+            "secondary-c",
+            "pageup",
+            "secondary-f",
+        ] {
+            assert!(!would_type(&keystroke(not)), "{not}");
+        }
+    }
 }

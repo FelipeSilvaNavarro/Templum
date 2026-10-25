@@ -4391,3 +4391,129 @@ fn the_pill_shows_at_its_width_and_grows_when_it_has_the_keyboard(cx: &mut TestA
     .unwrap();
     assert_eq!(width(cx), 640.0);
 }
+
+#[gpui_kit::test]
+fn a_delete_of_an_item_that_isn_t_there_runs_and_says_so_without_an_approval(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (block, _) = super::checklist_block(handle, &ws, cx, "Release", &["Tag it"]);
+    let terminal = super::first_id(&ws, cx);
+    let (uid, terminal) = ws.read_with(cx, |ws, _| {
+        (
+            ws.space.uids[&block].clone(),
+            ws.space.uids[&terminal].clone(),
+        )
+    });
+    for target in [&uid, &terminal] {
+        let (failed, said) = control(
+            handle,
+            &ws,
+            cx,
+            "delete_item",
+            json!({"block": target, "item": 999}),
+        );
+        assert!(failed, "{said}");
+        assert!(!said.is_empty());
+        ws.read_with(cx, |ws, _| assert!(ws.templum_agent.approvals.is_empty()));
+    }
+}
+
+#[gpui_kit::test]
+fn the_templum_agent_edits_and_deletes_items_of_any_checklist(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (block, list) = super::checklist_block(handle, &ws, cx, "Release", &["Tag it", "Ship"]);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&block].clone());
+    let (tag, ship) = ws.read_with(cx, |ws, _| {
+        let items = &ws.checklists.get(list).unwrap().items;
+        (items[0].id, items[1].id)
+    });
+    let text = |ws: &Entity<Workspace>, cx: &mut TestAppContext, item: u64| {
+        ws.read_with(cx, |ws, _| {
+            ws.checklists
+                .get(list)
+                .and_then(|l| l.item(item))
+                .map(|i| i.text.clone())
+        })
+    };
+    let steps = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.checklists_undo.len())
+    };
+    // The person's checklist, wired to nothing: an edit runs at once, one undo step.
+    let before = steps(&ws, cx);
+    let (failed, said) = control(
+        handle,
+        &ws,
+        cx,
+        "edit_item",
+        json!({"block": uid, "item": tag, "text": " Tag v1 "}),
+    );
+    assert_eq!(
+        (failed, said),
+        (false, format!("Item {tag} is now \"Tag v1\"."))
+    );
+    assert_eq!(text(&ws, cx, tag).as_deref(), Some("Tag v1"));
+    assert_eq!(steps(&ws, cx), before + 1);
+
+    // A delete of the person's checklist waits, in words that name the item.
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "delete_item",
+        json!({"block": uid, "item": ship}),
+    );
+    assert!(answers.try_recv().is_err(), "it waits for the person");
+    ws.read_with(cx, |ws, _| {
+        let approval = &ws.templum_agent.approvals[0];
+        assert_eq!(approval.said, format!("Delete item {ship} of \"Release\""));
+        assert_eq!(approval.details, "\"Ship\"");
+    });
+    // The item is edited before Allow: the approval is asked again.
+    ws.update(cx, |ws, cx| {
+        let space = ws.space.id.clone();
+        ws.item_text((&space, block), &uid, ship, "Ship it", cx);
+    });
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    assert!(answers.try_recv().is_err(), "it still waits");
+    ws.read_with(cx, |ws, _| {
+        let approval = &ws.templum_agent.approvals[0];
+        assert!(approval.changed);
+        assert_eq!(approval.details, "\"Ship it\"");
+    });
+    assert_eq!(text(&ws, cx, ship).as_deref(), Some("Ship it"));
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    let (failed, said) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert_eq!((failed, said), (false, format!("Deleted item {ship}.")));
+    assert_eq!(text(&ws, cx, ship), None);
+
+    // A checklist block the agent made is its own: a delete runs at once.
+    let space = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (_, made) = control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({"workspace": space, "kind": "checklist", "text": "Mine\nOne"}),
+    );
+    let mine = made
+        .trim_end_matches('.')
+        .rsplit(' ')
+        .next()
+        .unwrap()
+        .to_string();
+    let one = ws.read_with(cx, |ws, _| {
+        let (space, id) = ws.find_block(&mine).unwrap();
+        let list = ws.list_of((&space, id), &mine).ok().unwrap();
+        ws.checklists.get(list).unwrap().items[0].id
+    });
+    let (failed, said) = control(
+        handle,
+        &ws,
+        cx,
+        "delete_item",
+        json!({"block": mine, "item": one}),
+    );
+    assert_eq!((failed, said), (false, format!("Deleted item {one}.")));
+}

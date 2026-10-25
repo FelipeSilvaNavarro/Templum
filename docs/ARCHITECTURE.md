@@ -120,6 +120,13 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   capped, never saved) and the acts on it; every write of a kanban, local or remote, is `BoardAct` through
   `Workspace::act_on_boards`, the one door (on this computer an edit of `Workspace::boards`, on a mirror a call of
   home's, asked of `why_not` and held over the copy by `cards_moved`, `cards_deleted` and `cards_edited`).
+  `workspace/remote_content.rs` keeps a remote's copies of home's notes, checklists and drawings (`RemoteSpace::notes`,
+  `checklists`, the remote `Space::ink`, cleaned and capped where they enter, never saved), a read-only editor for each
+  note a note block of home's shows (`note_editors`, laid into the blocks' tabs by `Space::lay_note_tabs`) and the acts
+  on a checklist: every write of a checklist's items, local or remote, is `ChecklistAct` through
+  `Workspace::act_on_checklist`, the one door (on this computer an edit of `Workspace::checklists`, on a mirror a
+  call of home's held over the copy by `items_checked`, `items_edited` and `items_deleted`). A remote note and
+  checklist are `Body::Note`/`Body::Checklist` with `remote` set, which `Body::note()` and `checklist()` skip.
   `--bench-mirror` measures all of it: the mixed cockpit mirrored by the same Templum over loopback.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.

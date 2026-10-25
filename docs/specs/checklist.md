@@ -107,6 +107,26 @@ Opened by the header's button, **All checklists…** in the block's menu, **Chec
 - the trash deletes a checklist on its **second** click ("Click again to delete" shows after the first); the block that
   showed it shows none.
 
+## On a mirrored workspace (Templum to Templum, part 2e)
+
+A checklist block of a [mirrored workspace](templum-to-templum.md) is drawn from home's state by the same view, and
+what is done to it is done at home (`check_item`, `add_items`, `edit_item` and `delete_item`, each the rule's deed,
+asked of `why_not` first):
+
+- the check box and the × send their tool, and show at once: a check, an edit and a delete stand over home's state
+  until it shows them, a refusal, or two seconds;
+- an item's text is a field that starts with home's text and writes nothing as it is typed: **Enter** sends the whole
+  text once (nothing when it is blank or unchanged: the item stays, ✕ deletes), **Esc** drops it, and the keyboard
+  leaving sends what Enter would, to the remote the field was opened on, whichever workspace is shown by then;
+- **+ Add an item** opens a field for a new item: Enter sends `add_items` and opens the next, a blank Enter closes it,
+  and the keyboard leaving sends it too (the item appears with home's state);
+- the checklist's name is not editable and its rows can't be dragged (the tooltip says it isn't on a mirrored
+  workspace yet); All checklists… is dimmed, since the dialog lists this computer's;
+- a block that shows none says "No checklist open here: open one on winx-desktop."; the controls the share or home
+  can't do are dimmed with the rule's words as their tooltip; Ctrl+Z there stops at the mark and says to undo on home.
+
+Nothing local is written: the mirror's `checklists.json` stays as it was.
+
 ## Agents
 
 A checklist block wired to an agent ([connections.md](connections.md#tools)) gets five tools and their verbs. The

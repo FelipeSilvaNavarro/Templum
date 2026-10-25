@@ -251,6 +251,11 @@ Architecture: `templum-canvas/src/ink.rs` (pure: `Drawing`, `Stroke`, `Shape`, `
 tolerance)`, `bounds(drawing)`, `simplify(points, min_distance)`, `move_by`) and `templum/src/ink.rs` (the
 paint, the tool's pointer handling, the undo stack, serde in `session.rs`).
 
+**On a mirrored workspace** ([Templum to Templum](templum-to-templum.md), part 2e) home's ink and shapes are drawn
+above the blocks, in the order home keeps them, by the same painter; they can't be picked, moved, erased or have a
+menu (a right-click there opens the canvas menu), and the tools say "Drawing on a mirror isn't there yet: draw on
+winx-desktop." Home sends at most its newest 2,000 drawings and 100,000 points; nothing is saved here.
+
 ## 5. Notes
 
 Notes are plain text, kept app-wide like the kanban boards: closing a tab or a block never loses one. A **note block**
@@ -310,9 +315,16 @@ close, resize, move, focus, hover lift, pop-in and fade-out, menus, zoom.
   "notes": [3, 5], "active": 1 }`. A canvas from before `notes.json` held the note's `text` (and `color`) in the
   block: read once, it becomes a note in `notes.json`.
 
-Architecture: `notes.rs` (the notes, their names, `notes.json`), `note.rs` (`Note { tabs, active, renaming }`, the
-body, the tabs, the Notes dialog), `tab_strip.rs` (the tabs and the rename field), `workspace/note_tabs.rs` (opening,
-closing, renaming and deleting). An editor's Markdown preview lives in `markdown.rs`.
+Architecture: `notes.rs` (the notes, their names, `notes.json`), `note.rs` (`Note { tabs, active, renaming, remote }`,
+the body, the tabs, the Notes dialog), `tab_strip.rs` (the tabs and the rename field), `workspace/note_tabs.rs`
+(opening, closing, renaming and deleting). An editor's Markdown preview lives in `markdown.rs`.
+
+**On a mirrored workspace** ([Templum to Templum](templum-to-templum.md), part 2e) a note block shows the notes home's
+block shows, as tabs, in a read-only editor: select, Copy, Copy all, Find and Send to ▸ (home's terminals) work; a key
+that would type says "Notes are read-only on a mirror for now: edit them on winx-desktop." once per block and changes
+nothing. Which tab is shown is the mirror's own choice. The tabs' + and ×, a double click, Rename…, Color ▸ and All
+notes… are dimmed with "Notes are read-only on a mirror for now: add and edit notes on winx-desktop." A text home cut
+at 256 KiB ends with "… The rest is on winx-desktop." Home's text follows into the editor, the selection kept.
 
 ## 6. The workspaces screen
 

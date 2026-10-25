@@ -169,6 +169,7 @@ impl Workspace {
                         list: Some(list),
                         editing: None,
                         scroll: Default::default(),
+                        remote: false,
                     };
                     Some(ws.add_block(rect, Body::Checklist(shown)))
                 }
@@ -1389,6 +1390,55 @@ impl Workspace {
         cx.notify();
         let state = if done { "checked" } else { "unchecked" };
         Reply::ok(format!("Item {item} is {state}."))
+    }
+
+    /// The text of an item of the checklist a block shows becomes `text`, trimmed: one Ctrl+Z step.
+    pub(super) fn item_text(
+        &mut self,
+        at: (&str, BlockId),
+        block: &str,
+        item: u64,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let list = match self.list_of(at, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            return Reply::err("delete_item removes an item");
+        }
+        if !self.item_edit(list, item, text) {
+            return self.no_item(list, item);
+        }
+        cx.notify();
+        Reply::ok(format!("Item {item} is now {text:?}."))
+    }
+
+    /// Deletes an item of the checklist a block shows, as the row's × does: one Ctrl+Z step.
+    pub(super) fn item_delete(
+        &mut self,
+        at: (&str, BlockId),
+        block: &str,
+        item: u64,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let list = match self.list_of(at, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        if self
+            .checklists
+            .get(list)
+            .and_then(|l| l.item(item))
+            .is_none()
+        {
+            return self.no_item(list, item);
+        }
+        self.delete_item(list, item, cx);
+        self.agent_changed(list);
+        Reply::ok(format!("Deleted item {item}."))
     }
 
     /// Adds an item per line of `text` at the end of the checklist a block shows: one Ctrl+Z

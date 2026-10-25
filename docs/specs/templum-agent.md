@@ -423,6 +423,7 @@ conversation". `reason` is an optional string on every Ask tool, shown in the ap
 | `show_board` | `block`, then `board`, or `new` (a name, blank for "Board n") with `columns` | Shows a board in a kanban, or makes a new one there (To do, Doing and Done without `columns`) | – | 171 2d |
 | `append_note` | `block`, `text` | As the block server's | – | 1 |
 | `add_items`, `check_item` | as the block server's | As the block server's | – | 1 |
+| `edit_item`, `delete_item` | `block`, `item`, and `text` | As the block server's, on any checklist block | – for `edit_item`; Ask own for `delete_item` | 171 2e |
 | `open_agent` | `agent` (an id of `list_agents`), `workspace`, `folder`, `worktree`, `model`, `effort`, `prompt`, `connect` (blocks to wire it to), `near`, `x` and `y` (its top-left; both or neither, not with `near`) | Opens the agent as `spawn_agent` does ([connections.md](connections.md#spawning)), in that workspace, beside `near` or at its free spot, wired to `connect`, its `opened_by` `templum-agent`; its prompt typed once it is ready; its id | Asks when `connect` names a terminal not its own | 1 |
 | `connect`, `disconnect` | `a`, `b`; `connect` also `label` (one line, at most 60 characters; blank takes it off) | Wires or unwires two blocks of one workspace (a step of Ctrl+Z); `connect` with a label names the wire, or renames it when the blocks are wired already | `connect` asks when both are terminals and one isn't its own | 1 |
 | `close_block` | `block`, `reason` | Closes the block, a step of Ctrl+Z | Ask own when a program runs in it (an agent, a command); – otherwise | 1 |
@@ -438,7 +439,7 @@ conversation". `reason` is an optional string on every Ask tool, shown in the ap
 | `move_block` | `block`, `x`, `y`, `w`, `h` (built by card 171, the API); `workspace` (batch 3) | Moves or resizes it, a step of that workspace's Ctrl+Z (no block smaller than its kind's least), or moves it to another workspace | – | 1 (`workspace`: 3) |
 | `arrange` | `workspace`, `layout` (`grid`, `row`, `column`), `blocks` | Lays the blocks out without overlap, keeping their sizes | – | 3 |
 | `grid`, `fit` | `on` | Grid mode on or off; the camera to every block | – | 3 |
-| `replace_note`, `edit_item`, `delete_item`, `delete_note`, `delete_checklist` | … | Card 35's note and checklist edits, on any block | Ask own | 3 |
+| `replace_note`, `delete_note`, `delete_checklist` | … | Card 35's note and checklist edits, on any block | Ask own | 3 |
 | `run` | `workspace`, `folder`, `command`, `background`, `near`, `reason` | A terminal that runs a command (card 35's background terminal) | Ask | 3 |
 | `remove_worktree`, `merge_worktree` | … | Card 35's worktree tools | Ask each | 3 |
 | `read_settings` | — | `config.toml`'s text and where it is | – | 3 |
@@ -491,7 +492,8 @@ Whichever card lands first adds the method; the other calls it. Before a task ad
 | `add_block_in(space, NewBlock, Place)` → the block's id | A block of a kind (`NewBlock::{Terminal { folder, command, background }, Note { text }, Checklist { name, items }, Kanban { board }, Editor { folder }}`) at a place (`Place::{Near(BlockId), Free, At(Rect)}`) where it covers nothing | card 35's `create_block` | `add_block`, `run` | card 35 (note, checklist, terminal, a command, background); this card adds `Kanban` and `Editor` |
 | `open_agent_in(space, entry, folder, spawn, place, wire_to, opener)` | `spawn_agent`'s `open_agent` without a caller's block: its rect, its wires, `opened_by`, its model and effort, its prompt as a task of `opener` | `spawn_agent` (and card 35's fork) | `open_agent` | this card, from `spawn.rs` (card 35's fork passes through it) |
 | `stop_agent(block)` | Ends the agent in the block | card 35's `stop_agent` | `stop_agent` | card 35 |
-| `replace_note(block, text)`, `edit_item`, `delete_item` | Card 35's note and checklist edits | card 35 | batch 3 tools | card 35 |
+| `replace_note(block, text)` | Card 35's note edit | card 35 | batch 3 tools | card 35 |
+| `item_text(block, item, text)`, `item_delete(block, item)` | An item's text, an item deleted: one Ctrl+Z step each | `edit_item`, `delete_item` | `edit_item`, `delete_item` | card 35; 171 2e |
 | `remove_worktree`, `merge_worktree` | Card 35's worktree tools | card 35 | batch 3 tools | card 35 |
 | roles, `propose_plan`, schedules | Card 35's saved roles, plans and schedules | card 35 | `open_agent`'s `role`, the plan card and `schedule` ([Later ideas](#later-ideas)) | card 35 |
 | `cards_of(board, card, viewer)`, `card_new(board, NewCard, by)`, `card_edit(card, CardEdit, by)`, `card_move(card, column)`, `card_comment(card, text, by)` | `content.rs`'s card tools with the wire check taken out (`by`: a block's id or `templum-agent`) | the card tools | the card tools | this card (batch 1), unless card 35 did it first |

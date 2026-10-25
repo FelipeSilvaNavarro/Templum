@@ -61,8 +61,12 @@ impl Workspace {
         self.set_tool(Tool::Shape(kind), window, cx);
     }
 
-    /// The topmost drawing under a world point, within the eraser's reach.
+    /// The topmost drawing under a world point, within the eraser's reach. None on a mirrored
+    /// workspace: home's ink is painted there, never picked.
     pub(super) fn ink_at(&self, world: Point) -> Option<usize> {
+        if self.on_remote() {
+            return None;
+        }
         let tolerance = HIT_PX / self.space.canvas.camera.zoom();
         self.space.ink.iter().rposition(|d| d.hit(world, tolerance))
     }

@@ -16,6 +16,7 @@ use super::bus::{answered, call_later, me};
 use super::delegate::{agents_running, entered, prints};
 use super::*;
 use crate::workspace::AgentState;
+use templum_canvas::{Color, Drawing, ShapeKind};
 
 /// A token of `scope` (and `workspaces`) the workspace's store keeps, as Settings would make one.
 pub(super) fn with_token(
@@ -118,6 +119,194 @@ pub(super) fn state(
 ) -> templum_api::State {
     let line = api_call(handle, ws, cx, token, templum_api::STATE, Value::Null);
     serde_json::from_value(line["result"].clone()).unwrap_or_else(|_| panic!("{line}"))
+}
+
+#[gpui_kit::test]
+fn the_state_shows_notes_checklists_and_drawings(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, note, terminal) = three_blocks(handle, &ws, cx);
+    let big = "é".repeat(150_000);
+    let big_id = ws.update(cx, |ws, _| {
+        ws.notes
+            .add(big.clone(), Some(crate::board::Label::Blue), 0)
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let tab = ws.note_tab(big_id, window, cx).unwrap();
+            let note = ws
+                .space
+                .blocks
+                .get_mut(&note)
+                .and_then(|b| b.note_mut())
+                .unwrap();
+            note.tabs.push(tab);
+            note.active = 1;
+        })
+    })
+    .unwrap();
+    let (_, list) = checklist_block(handle, &ws, cx, "Release", &["Tag it", "[x] Ship"]);
+    ws.update(cx, |ws, _| {
+        ws.space.ink.push(Drawing::Stroke {
+            points: vec![Point::new(0.0, 0.0), Point::new(10.0, 10.0)],
+            width: 2.0,
+            color: Color::Blue,
+            highlight: false,
+        });
+    });
+    let token = with_token(&ws, cx, Scope::Read, None);
+    let seen = state(handle, &ws, cx, &token);
+    let uid = |id: BlockId| ws.read_with(cx, |ws, _| ws.space.uids[&id].clone());
+    let block = |uid: &str| seen.blocks.iter().find(|b| b.id == uid).unwrap();
+    let (hello_id, shown) = ws.read_with(cx, |ws, _| {
+        let note = ws.space.blocks[&note].note().unwrap();
+        (note.tabs[0].id, note.tab().map(|t| t.id))
+    });
+    assert_eq!(
+        block(&uid(note)).notes,
+        Some(templum_api::model::NotesShown {
+            tabs: vec![hello_id, big_id],
+            shown
+        })
+    );
+    assert_eq!(shown, Some(big_id));
+    assert_eq!(block(&uid(terminal)).notes, None);
+    assert_eq!(block(&uid(terminal)).checklist, None);
+    let checklist_uid = seen.blocks.iter().find(|b| b.kind == "checklist").unwrap();
+    assert_eq!(checklist_uid.checklist, Some(list));
+    assert_eq!(seen.notes.len(), 2);
+    let cut = seen.notes.iter().find(|n| n.id == big_id).unwrap();
+    assert!(cut.cut && cut.text.len() <= templum_api::model::NOTE_TEXT_MOST);
+    assert!(cut.text.chars().all(|c| c == 'é') && big.starts_with(&cut.text));
+    assert_eq!(cut.color.as_deref(), Some("blue"));
+    assert_eq!(seen.checklists.len(), 1);
+    let release = &seen.checklists[0];
+    assert_eq!(release.name, "Release");
+    assert_eq!(
+        release
+            .items
+            .iter()
+            .map(|i| (i.text.as_str(), i.done))
+            .collect::<Vec<_>>(),
+        [("Tag it", false), ("Ship", true)]
+    );
+    let id = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let want = ws.read_with(cx, |ws, _| {
+        templum_api::model::DrawingView::from(&crate::session::InkItem::of(&ws.space.ink[0]))
+    });
+    assert_eq!(seen.drawings.len(), 1);
+    assert_eq!(seen.drawings[0].id, id);
+    assert_eq!(seen.drawings[0].drawings, [want]);
+}
+
+#[gpui_kit::test]
+fn the_notes_texts_of_a_state_stay_within_a_total_budget(cx: &mut TestAppContext) {
+    use templum_api::model::{NOTE_TEXT_MOST, NOTES_TEXT_MOST, json_len};
+    let (handle, ws) = open(cx);
+    let (_, note, _) = three_blocks(handle, &ws, cx);
+    // A control character is six bytes as JSON: six notes of 1.5 MiB pass 8 MiB.
+    let text = "\u{1}".repeat(NOTE_TEXT_MOST);
+    let ids: Vec<u64> = (0..6)
+        .map(|_| ws.update(cx, |ws, _| ws.notes.add(text.clone(), None, 0)))
+        .collect();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            for id in &ids {
+                let tab = ws.note_tab(*id, window, cx).unwrap();
+                ws.space
+                    .blocks
+                    .get_mut(&note)
+                    .unwrap()
+                    .note_mut()
+                    .unwrap()
+                    .tabs
+                    .push(tab);
+            }
+        })
+    })
+    .unwrap();
+    let (full, scope) = ws.read_with(cx, |ws, cx| (ws.api_state(cx), ws.api_scope(cx)));
+    let mine: Vec<_> = full.notes.iter().filter(|n| ids.contains(&n.id)).collect();
+    assert_eq!(mine.len(), 6);
+    let sent: usize = full.notes.iter().map(|n| json_len(&n.text)).sum();
+    assert!(sent <= NOTES_TEXT_MOST, "{sent}");
+    let kept: Vec<_> = mine.iter().filter(|n| !n.text.is_empty()).collect();
+    let left: Vec<_> = mine.iter().filter(|n| n.text.is_empty()).collect();
+    assert_eq!((kept.len(), left.len()), (5, 1));
+    assert!(left[0].cut && kept.iter().all(|n| n.cut == (n.text.len() < text.len())));
+    // The rule over blocks and workspaces reads none of the content.
+    assert!(!scope.blocks.is_empty());
+    assert!(scope.notes.is_empty() && scope.checklists.is_empty() && scope.drawings.is_empty());
+}
+
+#[gpui_kit::test]
+fn a_limited_token_sees_no_note_shown_only_in_another_workspace(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (second, _) = another_workspace(handle, &ws, cx);
+    super::templum_agent::control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({ "workspace": &second, "kind": "note", "text": "elsewhere" }),
+    );
+    super::templum_agent::control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({ "workspace": &second, "kind": "checklist", "text": "Far\nOne" }),
+    );
+    ws.update(cx, |ws, _| {
+        ws.in_space(&second, |ws| {
+            ws.space.ink.push(Drawing::Shape {
+                kind: ShapeKind::Line,
+                from: Point::new(0.0, 0.0),
+                to: Point::new(5.0, 5.0),
+                width: 2.0,
+                color: Color::Red,
+            });
+        })
+    });
+    let limited = with_token(&ws, cx, Scope::Read, Some(vec![first.as_str()]));
+    let all = with_token(&ws, cx, Scope::Read, None);
+    let seen = state(handle, &ws, cx, &limited);
+    assert!(seen.notes.is_empty() && seen.checklists.is_empty() && seen.drawings.is_empty());
+    let everything = state(handle, &ws, cx, &all);
+    assert_eq!(everything.notes.len(), 1);
+    assert_eq!(everything.checklists.len(), 1);
+    assert_eq!(everything.drawings.len(), 1);
+    assert_eq!(everything.drawings[0].id, second);
+}
+
+#[gpui_kit::test]
+fn home_s_drawings_are_capped_at_the_newest(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let stroke = |n: usize, x: f32| Drawing::Stroke {
+        points: (0..n).map(|i| Point::new(x, i as f32)).collect(),
+        width: 2.0,
+        color: Color::Blue,
+        highlight: false,
+    };
+    ws.update(cx, |ws, _| {
+        ws.space.ink = (0..2_100).map(|i| stroke(2, i as f32)).collect();
+    });
+    let token = with_token(&ws, cx, Scope::Read, None);
+    let seen = state(handle, &ws, cx, &token);
+    let drawings = &seen.drawings[0].drawings;
+    assert_eq!(drawings.len(), 2_000);
+    assert_eq!(
+        drawings[0].points[0][0], 100.0,
+        "the oldest 100 are left out"
+    );
+    assert_eq!(drawings[1_999].points[0][0], 2_099.0, "in paint order");
+    ws.update(cx, |ws, _| {
+        ws.space.ink = (0..3).map(|i| stroke(40_000, i as f32)).collect();
+    });
+    let seen = state(handle, &ws, cx, &token);
+    let drawings = &seen.drawings[0].drawings;
+    assert_eq!(drawings.len(), 2);
+    assert_eq!(drawings[0].points[0][0], 1.0);
 }
 
 #[gpui_kit::test]
@@ -3982,4 +4171,122 @@ fn a_share_of_a_deleted_workspace_sees_nothing_and_can_still_be_revoked(cx: &mut
             .iter()
             .all(|t| t.id != token.id)
     }));
+}
+
+#[gpui_kit::test]
+fn edit_item_and_delete_item_act_as_you_on_any_checklist_block(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (block, list) = checklist_block(handle, &ws, cx, "Release", &["Tag it", "Ship"]);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&block].clone());
+    let terminal = ws.read_with(cx, |ws, _| {
+        let id = ws.space.canvas.blocks()[0].id;
+        ws.space.uids[&id].clone()
+    });
+    let tag = ws.read_with(cx, |ws, _| ws.checklists.get(list).unwrap().items[0].id);
+    let control = with_token(&ws, cx, Scope::Control, None);
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &control,
+        "edit_item",
+        json!({"block": uid, "item": tag, "text": "x"}),
+    );
+    assert_eq!(
+        said(&line),
+        (false, format!("Item {tag} is now \"x\".")),
+        "{line}"
+    );
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.checklists.get(list).unwrap().items[0]
+            .text
+            .clone()),
+        "x"
+    );
+    assert!(ws.read_with(cx, |ws, _| ws.templum_agent.approvals.is_empty()));
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &control,
+        "edit_item",
+        json!({"block": uid, "item": tag, "text": "  "}),
+    );
+    assert_eq!(
+        said(&line),
+        (true, "delete_item removes an item".to_string()),
+        "{line}"
+    );
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &control,
+        "delete_item",
+        json!({"block": uid, "item": 99}),
+    );
+    assert_eq!(
+        said(&line),
+        (
+            true,
+            "There's no item 99 in \"Release\". read_checklist shows its items.".to_string()
+        )
+    );
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &control,
+        "delete_item",
+        json!({"block": terminal, "item": 1}),
+    );
+    assert_eq!(
+        said(&line),
+        (true, format!("{terminal} isn't a checklist.")),
+        "{line}"
+    );
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &control,
+        "delete_item",
+        json!({"block": uid, "item": tag}),
+    );
+    assert_eq!(
+        said(&line),
+        (false, format!("Deleted item {tag}.")),
+        "{line}"
+    );
+    assert!(
+        ws.read_with(cx, |ws, _| ws.templum_agent.approvals.is_empty()),
+        "the token is your hand"
+    );
+
+    let (second, _) = another_workspace(handle, &ws, cx);
+    let limited = with_token(&ws, cx, Scope::Control, Some(vec![second.as_str()]));
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &limited,
+        "edit_item",
+        json!({"block": uid, "item": tag, "text": "y"}),
+    );
+    assert_eq!(
+        refused(&line).0,
+        Some(i64::from(codes::NOT_FOUND)),
+        "{line}"
+    );
+    let read = with_token(&ws, cx, Scope::Read, Some(vec![first.as_str()]));
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &read,
+        "edit_item",
+        json!({"block": uid, "item": tag, "text": "y"}),
+    );
+    assert_eq!(refused(&line).0, Some(i64::from(codes::SCOPE)), "{line}");
 }

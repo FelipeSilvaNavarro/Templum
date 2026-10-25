@@ -18,6 +18,15 @@ pub struct State {
     pub requests: Vec<Arc<RequestView>>,
     pub boards: Vec<Arc<BoardView>>,
     pub cards: Vec<Arc<CardView>>,
+    /// The notes a note block shows, and the checklists a checklist block shows, left out by homes
+    /// older than batch 2e.
+    #[serde(default)]
+    pub notes: Vec<Arc<NoteView>>,
+    #[serde(default)]
+    pub checklists: Vec<Arc<ChecklistView>>,
+    /// One item per workspace with ink, its id the workspace's.
+    #[serde(default)]
+    pub drawings: Vec<Arc<DrawingsView>>,
     pub automations: Vec<Arc<AutomationView>>,
     /// The shares of workspaces: a token for all workspaces sees every one, a limited token only
     /// the share it is. Left out by homes older than shares.
@@ -243,6 +252,12 @@ pub struct BlockView {
     pub opened_by: Option<String>,
     /// The board a kanban block shows.
     pub board: Option<u64>,
+    /// A note block's tabs and the one on screen; left out for any other block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<NotesShown>,
+    /// The checklist a checklist block shows; left out when it shows none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checklist: Option<u64>,
     pub agent: Option<AgentView>,
     /// A terminal that takes no input (a subagent's transcript); left out otherwise.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -406,6 +421,91 @@ pub struct AttachmentView {
     pub size: u64,
 }
 
+/// The most bytes of a note's text the state carries: past it the text is cut at a character's boundary.
+pub const NOTE_TEXT_MOST: usize = 256 * 1024;
+/// The most bytes, as JSON, all the notes' texts of one state carry together (a snapshot is one
+/// event, and a client takes at most 16 MiB of it): a note past it is sent with `cut` true and no text.
+pub const NOTES_TEXT_MOST: usize = 8 * 1024 * 1024;
+/// The most drawings, and the most points in them, the state carries per workspace.
+pub const DRAWINGS_MOST: usize = 2_000;
+pub const POINTS_MOST: usize = 100_000;
+
+/// A note a note block shows: its text cut at [`NOTE_TEXT_MOST`] bytes, `cut` true past it (or when
+/// all the notes' texts passed [`NOTES_TEXT_MOST`] before it: then its text is empty).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NoteView {
+    pub id: u64,
+    pub name: String,
+    pub text: String,
+    pub color: Option<String>,
+    pub cut: bool,
+}
+
+/// A checklist a checklist block shows.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChecklistView {
+    pub id: u64,
+    pub name: String,
+    pub items: Vec<ItemView>,
+}
+
+/// A note block's tabs (note ids) and the one on screen.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NotesShown {
+    pub tabs: Vec<u64>,
+    pub shown: Option<u64>,
+}
+
+/// One workspace's ink and shapes, in paint order: `id` is the workspace's.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DrawingsView {
+    pub id: String,
+    pub drawings: Vec<DrawingView>,
+}
+
+/// A drawing as the canvas file keeps it: a `stroke` with `points`, or a `line`, `arrow`, `rect`
+/// or `ellipse` with `from` and `to`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DrawingView {
+    pub kind: String,
+    pub color: String,
+    pub width: f32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub highlight: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<[f32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<[f32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<[f32; 2]>,
+}
+
+/// The bytes `text` takes as a JSON string, its quotes left out (a control character takes up to 6).
+pub fn json_len(text: &str) -> usize {
+    text.bytes()
+        .map(|b| match b {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 2,
+            0..=0x1f => 6,
+            _ => 1,
+        })
+        .sum()
+}
+
+/// The longest tail of `drawings` with at most [`DRAWINGS_MOST`] items whose `points` sum to at most
+/// [`POINTS_MOST`]: the newest are kept, and a drawing past the points cap leaves out everything
+/// older with it.
+pub fn newest_drawings<T>(drawings: &[T], points: impl Fn(&T) -> usize) -> &[T] {
+    let (mut kept, mut sum) = (0, 0usize);
+    for drawing in drawings.iter().rev().take(DRAWINGS_MOST) {
+        sum = sum.saturating_add(points(drawing));
+        if sum > POINTS_MOST {
+            break;
+        }
+        kept += 1;
+    }
+    &drawings[drawings.len() - kept..]
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AutomationView {
     pub id: u64,
@@ -498,6 +598,12 @@ impl State {
             .collect();
         let ids: HashSet<&str> = blocks.iter().map(|block| block.id.as_str()).collect();
         let shown_boards: HashSet<u64> = blocks.iter().filter_map(|block| block.board).collect();
+        let shown_notes: HashSet<u64> = blocks
+            .iter()
+            .filter_map(|block| block.notes.as_ref())
+            .flat_map(|notes| notes.tabs.iter().copied())
+            .collect();
+        let shown_lists: HashSet<u64> = blocks.iter().filter_map(|block| block.checklist).collect();
         State {
             app: App {
                 shown: self
@@ -541,6 +647,24 @@ impl State {
                 .cards
                 .iter()
                 .filter(|card| shown_boards.contains(&card.board))
+                .cloned()
+                .collect(),
+            notes: self
+                .notes
+                .iter()
+                .filter(|note| shown_notes.contains(&note.id))
+                .cloned()
+                .collect(),
+            checklists: self
+                .checklists
+                .iter()
+                .filter(|list| shown_lists.contains(&list.id))
+                .cloned()
+                .collect(),
+            drawings: self
+                .drawings
+                .iter()
+                .filter(|drawings| caller.sees(Some(&drawings.id)))
                 .cloned()
                 .collect(),
             automations: self
@@ -600,6 +724,9 @@ impl State {
             new.requests.len(),
             new.boards.len(),
             new.cards.len(),
+            new.notes.len(),
+            new.checklists.len(),
+            new.drawings.len(),
             new.automations.len(),
             new.shares.len(),
         ]
@@ -635,6 +762,9 @@ impl State {
                 | "request"
                 | "board"
                 | "card"
+                | "note"
+                | "checklist"
+                | "drawing"
                 | "automation"
                 | "share"
                 | "usage"
@@ -655,6 +785,9 @@ impl State {
             "request" => edit(event, data, |s| &mut s.requests, |r| r.id.clone()),
             "board" => edit(event, data, |s| &mut s.boards, |b| b.id.to_string()),
             "card" => edit(event, data, |s| &mut s.cards, |c| c.id.to_string()),
+            "note" => edit(event, data, |s| &mut s.notes, |n| n.id.to_string()),
+            "checklist" => edit(event, data, |s| &mut s.checklists, |c| c.id.to_string()),
+            "drawing" => edit(event, data, |s| &mut s.drawings, |d| d.id.clone()),
             "automation" => edit(event, data, |s| &mut s.automations, |a| a.id.to_string()),
             "share" => edit(event, data, |s| &mut s.shares, |s| s.id.clone()),
             "usage" => {
@@ -774,7 +907,7 @@ pub struct Delta {
 }
 
 /// What differs between two states, per collection (workspace, block, wire, request, board, card,
-/// automation, share, usage): the deletes, then the puts.
+/// note, checklist, drawing, automation, share, usage): the deletes, then the puts.
 pub fn diff(old: &State, new: &State) -> Vec<Delta> {
     let mut out = Vec::new();
     compare(
@@ -811,6 +944,27 @@ pub fn diff(old: &State, new: &State) -> Vec<Delta> {
         &old.cards,
         &new.cards,
         |c| c.id.to_string(),
+        &mut out,
+    );
+    compare(
+        "note",
+        &old.notes,
+        &new.notes,
+        |n| n.id.to_string(),
+        &mut out,
+    );
+    compare(
+        "checklist",
+        &old.checklists,
+        &new.checklists,
+        |c| c.id.to_string(),
+        &mut out,
+    );
+    compare(
+        "drawing",
+        &old.drawings,
+        &new.drawings,
+        |d| d.id.clone(),
         &mut out,
     );
     compare(
@@ -975,6 +1129,7 @@ mod tests {
                 h: 600.0,
                 zoom: 1.0,
             }),
+            ..Default::default()
         }
     }
 
@@ -1521,5 +1676,141 @@ mod tests {
             json!({"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0})
         );
         assert_eq!(value["requests"][0]["scope"], "read");
+    }
+
+    fn note(id: u64) -> Arc<NoteView> {
+        Arc::new(NoteView {
+            id,
+            name: format!("N{id}"),
+            ..Default::default()
+        })
+    }
+
+    fn drawings_of(id: &str) -> Arc<DrawingsView> {
+        Arc::new(DrawingsView {
+            id: id.into(),
+            drawings: vec![DrawingView {
+                kind: "stroke".into(),
+                color: "blue".into(),
+                width: 2.0,
+                points: vec![[0.0, 0.0], [1.0, 1.0]],
+                ..Default::default()
+            }],
+        })
+    }
+
+    #[test]
+    fn a_limited_caller_sees_the_notes_checklists_and_drawings_of_its_workspaces_only() {
+        let mut state = two_workspaces();
+        let mut n1 = BlockView::clone(&block("n1", "w1", "note"));
+        n1.notes = Some(NotesShown {
+            tabs: vec![7, 9],
+            shown: Some(9),
+        });
+        let mut c1 = BlockView::clone(&block("c1", "w1", "checklist"));
+        c1.checklist = Some(12);
+        let mut n2 = BlockView::clone(&block("n2", "w2", "note"));
+        n2.notes = Some(NotesShown {
+            tabs: vec![8],
+            shown: None,
+        });
+        let mut c2 = BlockView::clone(&block("c2", "w2", "checklist"));
+        c2.checklist = Some(13);
+        state.blocks = [n1, c1, n2, c2].map(Arc::new).into();
+        state.notes = [7, 8, 9].map(note).into();
+        state.checklists = [12, 13]
+            .map(|id| {
+                Arc::new(ChecklistView {
+                    id,
+                    ..Default::default()
+                })
+            })
+            .into();
+        state.drawings = ["w1", "w2"].map(drawings_of).into();
+        let seen = state.visible(&caller(&["w1"]));
+        assert_eq!(seen.notes.iter().map(|n| n.id).collect::<Vec<_>>(), [7, 9]);
+        assert_eq!(
+            seen.checklists.iter().map(|c| c.id).collect::<Vec<_>>(),
+            [12]
+        );
+        assert_eq!(
+            seen.drawings
+                .iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>(),
+            ["w1"]
+        );
+        let all = state.visible(&Caller {
+            workspaces: None,
+            ..caller(&[])
+        });
+        assert_eq!(
+            (all.notes.len(), all.checklists.len(), all.drawings.len()),
+            (3, 2, 2)
+        );
+    }
+
+    #[test]
+    fn note_checklist_and_drawing_events_put_and_delete() {
+        let mut s = State::default();
+        let put = json!({"op": "put", "id": "7", "value": note(7)});
+        assert_eq!(s.apply("note", &put), Ok(true));
+        let first = s.notes[0].clone();
+        assert_eq!(s.apply("note", &put), Ok(false));
+        assert!(Arc::ptr_eq(&first, &s.notes[0]));
+
+        let w1 = json!({"op": "put", "id": "w1", "value": drawings_of("w1")});
+        assert_eq!(s.apply("drawing", &w1), Ok(true));
+        assert_eq!(
+            s.apply("drawing", &json!({"op": "delete", "id": "w1"})),
+            Ok(true)
+        );
+        assert!(s.drawings.is_empty());
+
+        let wrong = json!({"op": "put", "id": "8", "value": note(7)});
+        assert!(matches!(
+            s.apply("note", &wrong),
+            Err(ApplyError::Malformed(_))
+        ));
+
+        let old = State {
+            checklists: vec![Arc::new(ChecklistView {
+                id: 12,
+                ..Default::default()
+            })],
+            ..Default::default()
+        };
+        let mut new = old.clone();
+        Arc::make_mut(&mut new.checklists[0]).name = "Release".into();
+        let deltas = diff(&old, &new);
+        assert_eq!(said(&deltas), [("checklist", "12", true)]);
+
+        let crowded = State {
+            notes: (0..=COLLECTION_MOST as u64).map(note).collect(),
+            ..Default::default()
+        };
+        let snapshot = serde_json::to_value(&crowded).unwrap();
+        assert_eq!(State::from_snapshot(&snapshot), Err(ApplyError::TooLarge));
+    }
+
+    #[test]
+    fn json_len_is_what_serde_json_writes() {
+        let text = "a\"b\\c\nd\u{1b}e\u{7f}é\u{8}";
+        assert_eq!(
+            json_len(text),
+            serde_json::to_string(text).unwrap().len() - 2
+        );
+    }
+
+    #[test]
+    fn the_newest_drawings_are_kept_within_both_caps() {
+        let ones = vec![1usize; 2_500];
+        assert_eq!(newest_drawings(&ones, |n| *n).len(), DRAWINGS_MOST);
+        assert_eq!(
+            newest_drawings(&[60_000, 30_000, 20_000], |n| *n),
+            [30_000, 20_000]
+        );
+        assert!(newest_drawings(&[150_000], |n| *n).is_empty());
+        assert_eq!(newest_drawings(&[10, 150_000, 10], |n| *n), [10]);
     }
 }

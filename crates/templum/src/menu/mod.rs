@@ -328,11 +328,22 @@ impl Workspace {
                     },
                     Body::Note(n) => Items::Note {
                         block,
-                        color: n.tab().map(|t| self.notes.get(t.id).and_then(|e| e.color)),
-                        rename: n.tab().map(|t| (t.id, self.notes.name(t.id).to_string())),
+                        color: n.tab().map(|t| {
+                            self.notes_of(n)
+                                .and_then(|notes| notes.get(t.id))
+                                .and_then(|e| e.color)
+                        }),
+                        rename: n.tab().map(|t| {
+                            let name = self.notes_of(n).map_or("", |notes| notes.name(t.id));
+                            (t.id, name.to_string())
+                        }),
                         send: self.send_to_menu(n.to_send(cx)),
+                        gates: Gates::of(self, &[Deed::EditNote]),
                     },
-                    Body::Checklist(_) => Items::Checklist { block },
+                    Body::Checklist(_) => Items::Checklist {
+                        block,
+                        gates: Gates::of(self, &[Deed::OpenChecklist]),
+                    },
                     Body::Mirrored(_) => Items::Mirrored,
                     Body::Editor(e) => Items::Editor {
                         block,
@@ -741,9 +752,13 @@ enum Items {
         /// The note on screen's id and name; None without one.
         rename: Option<(u64, String)>,
         send: SendTo,
+        /// Rename…, Color ▸ and All notes… on a mirror, whose notes are read-only.
+        gates: Gates,
     },
     Checklist {
         block: BlockId,
+        /// All checklists… on a mirror.
+        gates: Gates,
     },
     Editor {
         block: BlockId,

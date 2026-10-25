@@ -763,6 +763,35 @@ impl InkItem {
     }
 }
 
+/// The API's drawing is the canvas file's, field for field: the file's format stays the file's.
+impl From<&InkItem> for templum_api::model::DrawingView {
+    fn from(item: &InkItem) -> Self {
+        templum_api::model::DrawingView {
+            kind: item.kind.clone(),
+            color: item.color.clone(),
+            width: item.width,
+            highlight: item.highlight,
+            points: item.points.clone(),
+            from: item.from,
+            to: item.to,
+        }
+    }
+}
+
+impl From<&templum_api::model::DrawingView> for InkItem {
+    fn from(view: &templum_api::model::DrawingView) -> Self {
+        InkItem {
+            kind: view.kind.clone(),
+            color: view.color.clone(),
+            width: view.width,
+            highlight: view.highlight,
+            points: view.points.clone(),
+            from: view.from,
+            to: view.to,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct KanbanItem {
     /// The block's id for agents and wires (docs/specs/connections.md); a file from before has

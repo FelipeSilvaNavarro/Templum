@@ -73,6 +73,12 @@ impl Workspace {
         let (Some(level), false, Some((space, id))) = (level, granted, target) else {
             return Some((request, reply, parsed, args));
         };
+        // So does a delete of an item that isn't there (or of a block that holds no list).
+        if let ControlCall::Block(Call::DeleteItem { block, item }) = &parsed.call
+            && self.item_words((&space, id), block, *item).is_none()
+        {
+            return Some((request, reply, parsed, args));
+        }
         let (said, details) = self.approval_words(&parsed.call, (&space, id), losing, cx);
         let facts = self.facts(&parsed.call, cx);
         self.queue_approval(
@@ -275,7 +281,14 @@ impl Workspace {
                 }
                 None => {
                     let title = home.blocks.get(&id).map(|b| self.about(b, cx).1);
-                    format!("{title:?}\n{}", home.unsaved(Some(id)).join("\n"))
+                    // An item edited since is another to delete.
+                    let item = match call {
+                        ControlCall::Block(Call::DeleteItem { block, item }) => {
+                            self.item_words((&space, id), block, *item).map(|w| w.1)
+                        }
+                        _ => None,
+                    };
+                    format!("{title:?}\n{}\n{item:?}", home.unsaved(Some(id)).join("\n"))
                 }
             })
         };
@@ -357,6 +370,13 @@ impl Workspace {
         }
     }
 
+    /// The name of the checklist the checklist block `block` shows and the text of its item `item`.
+    fn item_words(&self, at: (&str, BlockId), block: &str, item: u64) -> Option<(String, String)> {
+        let list = self.checklists.get(self.list_of(at, block).ok()?)?;
+        let text = list.item(item)?.text.clone();
+        Some((list.name_shown().to_string(), text))
+    }
+
     /// What the approval says of a call, from the call and its target: the action, and exactly
     /// what will happen.
     fn approval_words(
@@ -402,6 +422,15 @@ impl Workspace {
             }
             ControlCall::Block(Call::Delegate { task, .. }) => {
                 (format!("Hand {title:?} a task"), typed(task).0)
+            }
+            ControlCall::Block(Call::DeleteItem { block, item }) => {
+                let (name, text) = self
+                    .item_words((space, id), block, *item)
+                    .unwrap_or_default();
+                (
+                    format!("Delete item {item} of {:?}", clean_title(&name)),
+                    format!("{text:?}"),
+                )
             }
             ControlCall::Block(Call::Interrupt { .. }) => (
                 format!("Interrupt {title:?}"),
@@ -627,7 +656,8 @@ fn called_block(call: &ControlCall) -> Option<&str> {
             | Call::SendKeys { block, .. }
             | Call::Delegate { block, .. }
             | Call::Interrupt { block }
-            | Call::StopAgent { block },
+            | Call::StopAgent { block }
+            | Call::DeleteItem { block, .. },
         ) => Some(block),
         _ => None,
     }

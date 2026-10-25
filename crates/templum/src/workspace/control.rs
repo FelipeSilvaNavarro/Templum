@@ -480,6 +480,12 @@ impl Workspace {
             ControlCall::Block(Call::CheckItem { block, item, done }) => {
                 return self.on_block(&block, |ws, at| ws.item_check(at, &block, item, done, cx));
             }
+            ControlCall::Block(Call::EditItem { block, item, text }) => {
+                return self.on_block(&block, |ws, at| ws.item_text(at, &block, item, &text, cx));
+            }
+            ControlCall::Block(Call::DeleteItem { block, item }) => {
+                return self.on_block(&block, |ws, at| ws.item_delete(at, &block, item, cx));
+            }
             ControlCall::Block(Call::Notify { text }) => {
                 let notification = Notification::new()
                     .title(actor.by())
@@ -830,7 +836,7 @@ impl Workspace {
         // lies inside their folders.
         let roots = match actor {
             Actor::Api(caller) if caller.workspaces.is_some() => {
-                let seen = self.api_state(cx).visible(caller);
+                let seen = self.api_scope(cx).visible(caller);
                 Some(self.confined_roots(&seen))
             }
             _ => None,
