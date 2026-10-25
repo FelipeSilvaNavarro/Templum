@@ -3,7 +3,8 @@
 - **Date:** 2026-10-25
 - **Status:** Batch 1 implemented (kanban card 171, part 2; plans 2026-10-25-t2t-batch-1a…1d: home's side; the
   mirror's client; the remote workspace on the canvas; acting from the mirror, Edit…, the end-to-end test and
-  `--bench-mirror`). Later batches (see [Later batches](#later-batches)) are designed, not built.
+  `--bench-mirror`). Batch 2 designed, not built ([Batch 2](#batch-2-the-whole-workspace-live), parts 2a–2h). Later
+  batches (see [Later batches](#later-batches)) are sketched.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
   [cockpit.md](cockpit.md#6-the-workspaces-screen) (the sidebar, the Edit… dialog), [ask-inbox.md](ask-inbox.md)
@@ -70,6 +71,16 @@ draw, its live deltas, terminal frames and typed input. Part 2 is the two ends t
 - A block of the remote workspace written into the mirror's notes, boards, checklists or canvas files.
 - Something on the mirror that looks like it works and does nothing at home.
 - A revoked share that keeps showing home live.
+- *(batch 2)* **A mirror that schedules, runs or re-runs any of home's automations,** or that offers a remote
+  workspace to its own automations ([the rule](#the-rule-homes-automations-run-only-at-home)).
+- *(batch 2)* **Home's content reaching the mirror's own agents, API or stores:** a remote note, card, diff or screen
+  sent to a local terminal, given to the mirror's commit-message agent, or pasted into a local workspace.
+- *(batch 2)* **A Git operation that takes arbitrary arguments,** or that reaches a repository outside the share's
+  workspace.
+- *(batch 2)* **An act that seems done on the mirror and isn't at home:** every act shows home's answer (a refusal in
+  its words); what the mirror shows ahead of home (a hold) lasts 2 s at most.
+- *(batch 2)* **A popup that waits on home:** every call is answered through a channel the UI drains, never awaited on
+  the UI thread.
 
 ## Words
 
@@ -562,6 +573,11 @@ keyring**, with a file only when there is none and the person asks for it.
 | **Home's certificate key stolen** (from home's data folder) | Pinned mirrors could be fooled until home makes a New certificate, which breaks the pins; the person shares again. |
 | **A mirror that floods** (a bug) | Home's limits per token (16 connections, 20 calls a second) and the mirror's own budget under them. |
 | **Two hands on one block** | Home is the truth: the last move home took wins; the mirror's own rectangle lasts 2 s after a release at most. |
+| *(batch 2)* **A mirror running home's automations** | Never: home's rules live only in home's `automations.json` and run only in home's look. The mirror draws them and edits them through the API; its own rules never offer or target a remote workspace, a stale one is Skipped, and its event rules never hear a remote agent. |
+| *(batch 2)* **Home's content reaching the mirror's agents** | Send to lists only the remote's terminals; Generate runs at home; Copy and Paste of blocks between a remote and a local workspace are off; the mirror's API, control server and block server see no remote content. |
+| *(batch 2)* **A Control share now reaching further** (commits, pushes, cards, agents) | It is the person's own hand, as a Control token always was (it could open agents); the Share… dialog says so. Everything that loses work needs Full: discards, deleted branches and stashes, aborted merges, deleted automations, command automations, typing and the mouse. |
+| *(batch 2)* **Git through a share** | Named operations only, never raw arguments; the repository confined to the workspace's folders (root and main tree, canonical, network shares refused); paths inside the repository; hooks run as at home. |
+| *(batch 2)* **A home gone wrong, with batch 2's state** | Every new collection capped and cleaned where it enters; drawings' points finite and bounded; `git` answers at most 8 MiB; one terminal's history at a time; the state still within 64 MiB. |
 
 ## Constraints
 
@@ -626,22 +642,611 @@ later batches only as far as batch 1 prepares for them.
     disabled actions; every state of [When it isn't live](#when-it-isnt-live), Start of a stopped workspace included;
     Edit…, Disconnect, Forget; the mirror's API state.
   - `--bench-mirror`, the tests above, docs/api.md.
-- **Batch 2: the rest of the canvas, live** (sketched only; its design comes with its plan):
-  - Boards drawn from the state and acted on (`move_card`, `create_card`, `edit_card`, `comment_card`); checklists
-    and notes' text (home's state gains them for the blocks that show them), checklists checked from the mirror;
-    ink and shapes (home's state gains them) shown.
-  - Adding and closing blocks, wires, handing a task, opening an agent at home from the mirror; the Agents popup with
-    remote agents.
-  - Scrolling back (`read_terminal` into the viewer's history) and the mouse (from `modes`).
-  - Batch 1 prepares it: the "not mirrored yet" card is the one `Body` arm these replace; the state and frames only
-    grow; a remote workspace is already a workspace.
+- **Batch 2: the whole workspace, live, with its popups:** designed in [Batch 2](#batch-2-the-whole-workspace-live)
+  below, built in parts 2a–2h.
+
+### Batch 2: the whole workspace, live
+
+The person, for this batch (PT-BR, translated): "now batch 2 … send an agent to do batch 2 completely … does batch 2
+include the integration with the Git tab, the inbox, automations and agents? A warning about automations: every run
+always happens on the main computer. It must never happen on the remote computer, it makes no sense; imagine the
+automations duplicated, everything would break. … Only come back when everything is ready and completely
+integrated." They asked not to be asked: every open question below is *the designer's call*, the one most
+recommended for the system.
+
+Batch 1 shows home's workspace and lets the person type, move blocks and answer requests. Batch 2 makes the remote
+workspace a whole workspace: every block home has is drawn live, everything a person does to a workspace is done at
+home through home's API, and the four popups that act on a workspace (Git, Requests, Agents, Automations) work on the
+remote one. Batch 1's rules stand unchanged: home is the truth; nothing of home's runs on the mirror; never a relay;
+everything home sends is capped and cleaned where it enters; the share's scope gates every act and the mirror says why
+in words; the UI thread never waits on the network; painting stays under the bench's bar; memory doesn't grow with what
+home sends.
+
+#### The rule: home's automations run only at home
+
+*The person's call, a hard rule.* Every run of one of home's automations (at its time, on its event, Run now) happens
+at home, in home's own look, and never on a mirror. A mirror that ran them would run each one twice.
+
+- **Home's automations live only in home's `automations.json`.** The mirror draws them from home's state and changes
+  them only through home's API (`save_automation`, `set_automation`, `run_automation`, `delete_automation`), each of
+  which acts at home. The mirror never copies one into its own `automations.json`, never schedules it, never runs it,
+  never fires it on an event.
+- **The mirror's own automations are for its local workspaces only.** Their **Where** never lists a remote workspace; a
+  new one starts on the first local workspace, not the one shown; none of their targets (an agent, a terminal, a
+  folder) can be a remote block. A rule saved before batch 2 whose Where is a remote workspace runs nothing: each of
+  its runs is Skipped "Target missing: API is a mirror of winx-desktop: its automations run there." (This fixes the
+  minor "Automations default to, and offer, a remote workspace".)
+- **The mirror's event rules never hear a remote agent.** A remote pane's state comes from home's state, never from
+  hooks or looks, and is never an event of the mirror's automations: a rule on "any Claude Code" fires for the
+  mirror's own Claude Codes only.
+- **An agent's schedule of home's is home's:** the mirror lists it and cancels it at home, never delivers it.
+
+Part 2h proves each line with a test.
+
+#### Goals
+
+1. **Everything on screen is live:** boards, checklists, notes, ink and shapes are drawn from home's state by the views
+   a local block uses. Only editors stay batch 1's card.
+2. **What a person does to a workspace works on a remote one,** done at home: adding and closing blocks, wires,
+   opening an agent, handing a task, cards and columns, checklist items, scrolling a terminal back, the mouse in a
+   terminal.
+3. **The four popups are integrated:** the Git popup works on home's repositories; the Requests inbox lists every
+   request of home's for the workspace; the Agents popup lists home's agents; the Automations popup shows and edits
+   home's rules, which run at home.
+4. **One rule says what the mirror can do,** and what it can't is dimmed with its reason: not connected, the share's
+   scope, a home whose Templum is older, or not on a mirror yet.
+5. **Every act the mirror needs is in home's API,** with its scope and its lines in docs/api.md (CLAUDE.md's rule).
+
+#### Left out of batch 2
+
+Each is its own kanban card (*the designer's call*):
+
+1. Editing notes from the mirror: their text, names, colors and tabs, opening and deleting notes. A note is read-only
+   and live on a mirror, and Add ▸ Note is dimmed there.
+2. Renaming a checklist, reordering its items, and showing another checklist in a block.
+3. Drawing from the mirror: drawing, erasing, moving and deleting ink and shapes (they are drawn live).
+4. An editor's files through the API: an editor stays a card.
+5. Following home's camera.
+6. Sealed through tunnels: Templum's pinned TLS inside one WebSocket.
+7. Undo on a mirror beyond moves: an undo at home that undoes the mirror's own steps, not the person's at home.
+8. A card's attachments from the mirror: thumbnails, opening and attaching (their names and sizes show).
+9. Kanban drafts on a mirror: a remote card's dialog has no Save draft.
+10. Grid mode, Move to workspace, and Copy and Paste of blocks on a remote workspace. (Copy and Paste of a block
+    between a remote and a local workspace stays off for good: it would write home's content into the mirror's stores,
+    batch 1's anti-goal.)
+11. In the Git popup on a remote: Clone a repository…, Choose another folder… (a picker of home's folders), the ⚙
+    beside Generate (home's Settings), Open in editor, and Run in a terminal on a failed command.
+12. Home's shells in Add ▸ Terminal ▸: a terminal added from a mirror opens home's default shell.
+13. In the Agents popup on a remote agent, each subagent's line (their count shows); the dot that travels along a wire
+    while a task is handed.
+14. A `move_block` for several blocks at once: the minor "a selection of several blocks moved on the mirror is one
+    Ctrl+Z step per block at home" stays.
+15. Stopping a remote workspace at home from the mirror (it would cut the mirror's own view; Start stays).
+
+Why these: the person named Git, the inbox, automations and agents, and "completely" is read as everything a person
+reads on a workspace, and every act they take on it that is one discrete change. Editing a note's text is not one: two
+computers typing into one text a round trip apart needs a design of its own for conflicts, and a half-done one loses
+text. Checklist items are discrete (an id and a value), so adding, editing, checking and deleting them are in batch 2.
+Items 2, 3, 12 and 13 are cheap but rare from another computer; 4 and 6 widen what crosses the network (files, a second
+TLS); 5, 7–11, 14 and 15 are conveniences whose absence the mirror says in words.
+
+Its anti-goals and threats are with batch 1's, marked *(batch 2)*: [Anti-goals](#anti-goals-a-failure-even-if-it-works)
+and the [threat model](#threat-model).
+
+#### What works on a remote workspace
+
+Every act below is a call to home's API through the mirror's client. The scope is the one home's registry gives the
+call; the mirror dims what its share can't do with the words of [One rule](#one-rule-for-what-the-mirror-can-do).
+
+| The person, on the mirror | Home runs | Share |
+|---|---|---|
+| Adds a terminal, a kanban or a checklist | `add_block` (with `x`, `y`) | Control |
+| Opens an agent | `open_agent` (with `x`, `y`) | Control |
+| Closes a block | `close_block` | Control |
+| Wires or unwires two blocks, names a wire | `connect` (with `label`), `disconnect` | Control |
+| Hands an agent a task | `delegate` | Control |
+| Types, pastes, clicks or scrolls in a program | `terminal_input` (`keys`, `text`, `mouse`) | Full |
+| Scrolls a terminal back | `read_terminal` | any |
+| Moves, makes, edits, comments on or deletes a card; edits columns and boards | `move_card`, `create_card`, `edit_card`, `comment_card`, `edit_comment`, `delete_comment`, `delete_card`, `edit_column`, `edit_board`, `show_board` | Control |
+| Checks, adds, edits or deletes a checklist item | `check_item`, `add_items`, `edit_item`, `delete_item` | Control |
+| Reads a repository in the Git popup | `git` (its reads) | any |
+| Stages, commits, pushes, switches and makes branches, stashes, reverts… | `git` | Control |
+| Discards changes, restores a version, deletes a branch, drops a stash, aborts a merge | `git` | Full |
+| Switches, runs, saves (no command) or duplicates an automation | `set_automation`, `run_automation`, `save_automation` | Control |
+| Saves an automation that runs a command; deletes one | `save_automation`, `delete_automation` | Full |
+| Cancels an agent's schedule | `cancel_schedule` | Control |
+| Answers a request | `answer_request` | Control; Full for a worktree's |
+
+#### The canvas
+
+- **Adding:** the toolbar's buttons, the canvas menu's **Add ▸** (Terminal, which opens home's default shell; Kanban
+  board; Checklist) and their shortcuts work on a remote workspace. The block goes where it would go locally (the menu's
+  click, else where a new block goes in the mirror's view), sent as `x` and `y`; home sizes it by its kind. A checklist
+  is added as the local Add adds one, named, through `add_block`'s `text`. **Note** is dimmed: "Notes are read-only on a
+  mirror for now: add and edit notes on winx-desktop."; **Editor** says "Not on a mirrored workspace yet".
+- **The new block** shows when home's state brings it, a round trip later; the mirror then gives it the keyboard, as a
+  local add does, unless the person focused something else meanwhile (or 5 s passed since home's answer). No
+  placeholder stands in for it (*the designer's call*: a round trip is short, and a ghost would be a block that isn't).
+- **Opening an agent:** **AI agent ▸** (the canvas menu, the toolbar) lists home's agents, from home's `list_agents`
+  (read when the remote connects, and again when the menu opens a minute or more after the last read; "Asking
+  winx-desktop…" until the first answer): installed ones first, the others greyed, as at home. Choosing one opens
+  "Open *Claude Code* on winx-desktop" with the workspace's folder (tagged "Workspace folder"), its terminals' folders
+  (from home's state, each once) and a path field ("A folder on winx-desktop: inside the workspace's folder, or whole");
+  **Open** sends `open_agent` with the agent, the folder and `x`, `y`. There is no Personal space, recent folders or
+  folder picker: home's are not known to the mirror, and a share's folder must lie inside the workspace's anyway. A
+  refusal ("That folder lies outside API's folder.") stays in the dialog.
+- **Closing:** ✕, the menu's Close and the shortcut. A terminal whose state shows an agent asks first and says why, as
+  locally (a command running at home can't be told from the state, so only agents ask); then `close_block`. The block
+  leaves the mirror at once (its fade, as locally) and comes back if home refuses, or still lists it 2 s later.
+- **Wires:** the Wire tool, **Connect to ▸** and **Disconnect from ▸**, a selected wire's Delete and its menu's
+  Disconnect, and **Rename wire…** (`connect` with `label`).
+- **Hand a task…** (*the designer's call*): the block menu of a remote terminal whose state shows an agent has it. A
+  dialog names the agent and its block, takes the task in a field of several lines (at most 256 KiB) and **Hand over**
+  (Ctrl+Enter) sends `delegate`. Home types it as `[from API · Another computer, task t7]`; its end comes back as a
+  [notice](#notices). A Control share can't type, so this is how it gives an agent work; the local canvas has no such
+  item (the person types).
+- **Menus** open on a remote workspace (the canvas's, a block's, a wire's), with every item that works there and the
+  others dimmed with their reason as tooltip (this fixes the minor "A remote terminal has no right-click menu").
+  **Shortcuts** that work act; the others say "Not on a mirrored workspace yet" once in a notification (this fixes the
+  minor about shortcuts that answer nothing).
+- **Undo:** on a remote workspace the mirror's Ctrl+Z still undoes moves (batch 1), and only moves. Any other act
+  leaves a mark in its undo stack: Ctrl+Z reaching it says "On a mirror, Ctrl+Z undoes moves only: undo the rest on
+  winx-desktop." and stops there, so it never undoes an older move by surprise.
+- **Holds** (one rule, batch 1's for moves made general): what the person changed and sees at once (a block moved or
+  closed, a card moved, an item checked, a wire made or removed) stands over home's state until home's state shows it
+  or 2 s pass (`HOLD`), then home's state wins; a refusal ends it at once and shows its sentence.
+
+#### Terminals
+
+**Scrolling back:**
+
+- The wheel up, Shift+PageUp or Find over a remote terminal whose frame's `modes` has neither `full_screen` nor `mouse`
+  reads home's history: `read_terminal` with 2000 lines (`MAX_LINES`). The client feeds those lines into the viewer's
+  scrollback, above the live screen, on its own thread (the UI thread never holds the text), then reopens the stream
+  for a whole frame. The wheel, selecting, copying and Find then work in it as locally. The once-said "Only the live
+  screen is mirrored for now." goes.
+- History lines have no colors: `read_terminal` serves text (*the designer's call*: history as frames would be a
+  second stream API; text is what home already serves). The live screen keeps its colors.
+- **Fresh at each look:** the history is read again each time the person starts scrolling back from the bottom, when
+  the terminal changed since the last read. Lines that scroll off home's screen while the person reads show at the
+  next scroll back.
+- **Memory:** one terminal's history at a time per remote (scrolling back in another drops the first's), at most 2000
+  lines; dropped when its stream ends.
+- While the history is read the wheel scrolls what the viewer has; nothing waits.
+
+**The mouse** (*the designer's call*: encoded at home, as keys are, because only home knows the program's mouse mode
+at the moment the event arrives):
+
+- While a frame's `modes` has `mouse`, a press, a release, a drag and the wheel over a remote terminal go to home's
+  program as `terminal_input`'s `mouse` events, at the cell under the pointer in home's grid. Shift held keeps the
+  mouse for selecting text, as locally.
+- Moves with no button held are sent only while `modes` has `mouse_moves` (new: the program asked for every motion,
+  `?1003`). A move goes only when its cell changes, and moves waiting in the queue merge into the newest, so a drag
+  never queues hundreds.
+- With `full_screen` and no `mouse`, the wheel is arrow keys, as locally, sent as keys.
+- Mouse events ride the terminal's typing queue (one call in flight), so they keep their order with keys.
+- With a Control share, the first press says once per terminal "Using the mouse in a terminal needs a Full share:
+  share again on winx-desktop."; the wheel then scrolls the history where it can.
+
+#### Boards, checklists, notes, ink
+
+A remote kanban, checklist or note block is the same `Body` as a local one, drawn by the same view, reading the
+remote's own copies of home's boards, cards, checklists and notes: kept in `RemoteSpace`, made from home's state,
+never saved, never in the app's stores (`boards.json`, `checklists.json`, `notes.json` never hold one). Its edits go to
+home as tools. Editors, and kinds the mirror doesn't know, stay batch 1's card.
+
+**Boards:**
+
+- Drawn as at home: the board the block shows (the state's `board`), its columns and cards' faces (number, labels,
+  title, priority, checklist, description mark, comments, the assignee by its remote block's title).
+- Dragging a card sends `move_card` with its column and `before` (held). Dragging a column's title sends
+  `edit_column` with `before`. **+ Add a column**, a column's **Rename…** and **Delete** (which asks first, as locally)
+  are `edit_column`.
+- **The card dialog** is the same dialog. Done sends what the person changed, as it applies only that locally:
+  `edit_card` with the title, description, priority, `for`, label toggles and checklist items they changed. A new
+  card's Done sends `create_card`, then its comments with `comment_card` once home answers the card's number. Comment
+  sends `comment_card` at once; editing and deleting a comment send `edit_comment` and `delete_comment` (the person's
+  own to edit, any to delete, as locally); **Delete card** (asks first) sends `delete_card`. The assignee's list is the
+  remote workspace's terminals.
+- **No drafts** on a mirror: leaving a changed card asks with **Save** and **Discard** only. **Attachments** show their
+  names and sizes; Attach and opening one are dimmed: "Attachments are on winx-desktop: open them there."
+- **The header's menu:** **All boards…** lists the boards the share sees (those its kanban blocks show) and **New
+  board** (`show_board` with `new`); a row sends `show_board` with that board; **Rename board…** and **Delete board…**
+  (asks first, counting its cards) send `edit_board`.
+- **A card's menu:** Open, **Send to ▸** (the remote workspace's terminals only; a paste, so Full), Delete card.
+
+**Checklists:**
+
+- Drawn from home's checklist (the state's `checklist`). Checking or unchecking an item sends `check_item` (held);
+  **Add an item** sends `add_items`; an item edited in place sends `edit_item` on Enter or when its field loses the
+  keyboard (locally every key is written; on a mirror the whole value goes once; Esc drops it); its ✕ sends
+  `delete_item`.
+- Renaming the checklist, dragging items and **All checklists…** are dimmed (left out). A remote block that shows no
+  checklist says "No checklist open here: open one on winx-desktop."
+
+**Notes:**
+
+- Home's tabs and notes' text, live. The tab shown is the mirror's own choice, starting on home's (*the designer's
+  call*: a view, as the camera is, not an edit).
+- Read-only: selecting, Copy, **Copy all** and Find work. A key that would type says once "Notes are read-only on a
+  mirror for now: edit them on winx-desktop."; Rename…, Color ▸, All notes… and the tabs' + and ✕ are dimmed.
+  **Send to ▸** lists the remote workspace's terminals only.
+- A note home cut (past 256 KiB) ends with "… The rest is on winx-desktop."
+
+**Ink and shapes:** home's drawings of the workspace, painted above the blocks by the local painter, their colors by
+name in the mirror's theme. The drawing tools stay dimmed ("Drawing on a mirror isn't there yet: draw on
+winx-desktop."), and a drawing can't be selected.
+
+#### The Git popup on a remote workspace
+
+- **The same popup** (Changes, History, Branches, Stashes, the diff panel, the commit area, compare, conflicts, blame,
+  file history, Recently discarded), opened by Ctrl+Shift+G and the Git button on a remote workspace. Everything it
+  reads and does runs at home, in home's repository, through the API's `git` tool
+  ([below](#the-git-tool)).
+- **The folder:** the focused remote terminal's (its `folder` in home's state), else another remote terminal's, else
+  the workspace's; home finds the repository from it. The folder menu lists the repositories of the workspace's
+  terminals and the workspace's folder (each once), **Refresh** and **Open a terminal here** (`add_block` at home, in
+  that folder). The header's terminal count lists the remote terminals whose folder lies in the repository.
+- **Reads:** the status every 2 s while the popup is open (one call each, as the local poll), the tab's list and the
+  diff panel as the tab asks. **Acts:** each an operation at home; the popup's rules stay (one command at a time per
+  Git, the queue, the busy buttons).
+- **Network operations** (Fetch, Pull, Push, Sync, Publish) and **Generate ✨** go on the client's slow connection and
+  wait up to 10 minutes. Through a tunnel that cuts an answer silent for 100 s (Cloudflare does), a long one says
+  "winx-desktop didn't answer in time: it may still be running there." and the popup reads the status again.
+- **Generate ✨ runs at home,** with home's commit-message agent and Settings ▸ Git: the mirror's own agent never sees
+  home's diff (never a relay). If home never asked its first-use question, the call is refused "Generate a message on
+  winx-desktop once first: it asks there whether the diff may go to the agent's provider." The ⚙ beside it is dimmed.
+- **Discard** keeps home's trash (in home's data folder): its notification's **Undo** and **Recently discarded…**
+  restore from it at home.
+- **Send to ▸** (a diff line) lists the remote workspace's terminals only. Open in editor and Run in a terminal aren't
+  offered; a failed command's notification has **Details** (home's whole stderr).
+- **Scope:** reads take any share. Operations that can lose work (Discard of a hunk, a file or all, Restore this
+  version…, Delete a branch, Drop a stash, Abort a merge or rebase) take a Full share; on a Control share their buttons
+  and items are dimmed with "Needs a Full share: share again on winx-desktop.". Every other act takes Control.
+- **Kept:** a remote's Git (folder, tab, the message being written) lives in memory only and is gone after a restart
+  (*the designer's call*: a remote has no canvas file, and its index entry holds no content).
+
+#### The Agents popup
+
+- **Remote agents listed:** every agent of every remote workspace, grouped under the remote's name ("API ·
+  winx-desktop"), with the same rows, order, chips, search and selection. A remote that isn't live lists its agents
+  dimmed, at their last state.
+- **State:** home's `agent.state`, as the remote block's dot already says it. **Done** is the mirror's own (*the
+  designer's call*): in memory, set when home's state goes from working, or waiting for subagents, to idle or done
+  while the person isn't looking at its block on the mirror, cleared when they look at it there. Home's own `done` is
+  home's person's mark and reads as idle on the mirror: looking on one computer doesn't clear the other's.
+- **Details:** From (the agent's title from home's `list_agents`; model, effort and role from the state), the state
+  and what it asks, **Task** (home's new `agent.task`), **Card** (the inbox's rule over home's cards), **Usage**
+  (home's), **Subagents** (their count), **Screen** (the viewer's screen when its terminal streams; else
+  `read_terminal` of 12 lines when it is selected, again every 2 s while it stays selected and the popup is open).
+- **Go to terminal** shows the remote workspace and gives the block the keyboard; **Open request** opens the remote's
+  inbox at it. The sidebar's badge counts remote Done agents too. A remote terminal's effort shows in its usage chip's
+  tooltip (this fixes the minor).
+- No controls in the list, as locally: Hand a task… is in the block's menu.
+
+#### The Automations popup
+
+- **The list:** the mirror's own automations first, then a group per remote workspace, "On winx-desktop · API", with
+  home's rules whose Where is that workspace (what the share sees), drawn as rows are, with home's switch, next and
+  last runs, and a dim line "Rules for all of winx-desktop's workspaces aren't shown here." A remote that isn't live
+  dims its group and its acts.
+- **On a home rule:** the switch sends `set_automation`; **Run now** sends `run_automation` (it runs at home);
+  **Duplicate** sends `save_automation` of the copy, off; **Delete** (asks first) sends `delete_automation` (Full).
+  The group's **+** starts a new rule for home, its Where fixed to that remote workspace.
+- **The editor** for a home rule is the same form, its lists filled from home: Who and Send a prompt's Agent from home's
+  agent blocks of the workspace (the state), Who's kinds and Start an agent's list from home's `list_agents`, A
+  terminal from home's terminals; a Folder is home's (inside the workspace's folder, or whole). Save checks the form's
+  own rules (times, dates, required fields), then sends `save_automation` (with `id` to replace); home's refusal shows
+  in the red line; until Save, Revert or a restart the draft is the mirror's, in memory only, never saved on the
+  mirror. Run a command
+  needs a Full share (Save dimmed with the words).
+- **Under a home rule's foot:** "Saved from another computer, it turns off when this share ends. Save it on
+  winx-desktop to keep it." (*the designer's call*: part 1's rule that a token's automations end with the token stays;
+  the person is told before it surprises them).
+- **Notify me** of a home rule notifies at home and, through a [notice](#notices), on the mirror.
+- **Asked by agents:** home's agents' schedules of the workspace's blocks (the state's new `schedules`), under the
+  remote's group, with **Cancel** (`cancel_schedule`).
+- **The badge** counts home's rules' failed, skipped and missed runs too, since the popup was last opened.
+- And [the rule](#the-rule-homes-automations-run-only-at-home) above.
+
+#### The Requests inbox
+
+Batch 1 lists and answers home's requests. Batch 2 finishes it (each fixes a minor):
+
+- A request's age is home's `since`, not when the mirror heard of it.
+- A request whose block the mirror doesn't draw (past the 500 blocks) is listed, without Go to terminal.
+- Past the 50 listed, the list ends with "And N more on winx-desktop."
+
+Nothing else belongs in the inbox. It holds requests only (questions, plans, requests to connect, worktree requests);
+the Templum Agent's approvals stay in its chat and a share never sees them (part 1); a task's end and a watch's match
+are not requests but [notices](#notices).
+
+#### Notices
+
+Home's `notice` events (a task handed through the API ended or its agent needs its person, a watch set through the API
+matched, and, new, an automation's Notify me) show on the mirror as notifications titled "API on winx-desktop", the
+text's first line as their body (cleaned, 300 characters); a click shows the remote workspace and its block. Every
+notice home sends for the workspace shows, whichever client of the person's handed the task (*the designer's call*:
+all of them are the person's). The requests' cap applies: 3 in 60 s per remote, the rest in one "N more notices from
+winx-desktop" a minute at most.
+
+#### One rule for what the mirror can do
+
+One function on the mirror answers, for an act on a remote workspace, whether it can be done now, else why; every
+button, item, shortcut and drag asks it, and a dimmed control shows its answer as its tooltip:
+
+1. "Not connected." while the remote isn't live.
+2. "winx-desktop's Templum is older: update it to do this from here." when home's `GET /v1/tools` (read at each
+   connect) lacks the tool. An argument home's schema lacks is left out when the act still does what the person meant
+   without it (a block placed by home, a card at its column's end), else the act is dimmed the same way. A state
+   without batch 2's fields shows notes and checklists as batch 1's card, "winx-desktop's Templum is older: update it
+   to see this here."
+3. "Needs a Full share: share again on winx-desktop." when the share's scope is below the call's. The mirror computes
+   it with the registry's own `scope` (the same crate as home's); home's `403` still wins if they differ.
+4. "Not on a mirrored workspace yet" for what batch 2 leaves out.
+
+This replaces batch 1's blanket `on_remote` refusals. The banner's ⓘ lists what is left (editors, editing notes,
+drawing, attachments, grid mode, Move to workspace, Copy and Paste of blocks).
+
+**The Share… dialog's words** follow what a share now does: **Control**: "Watch and work with blocks, cards,
+checklists, Git and automations, open agents and hand them tasks, answer requests. No typing into terminals; agents it
+opens can run commands." **Full**: "Also type and click into terminals, discard Git changes, delete branches, stashes
+and automations. Anyone with the code can run commands on this computer."
+
+#### What home's API gains
+
+Additions to `/v1`; every field and tool below ships its lines in docs/api.md in the part that adds it.
+
+**The state** (each a collection with its singular event name, `put` and `delete` as today):
+
+```json
+{ "notes": [{ "id": 7, "name": "Plan", "text": "…", "color": "blue", "cut": false }],
+  "checklists": [{ "id": 12, "name": "Release", "items": [{ "id": 13, "text": "Tag it", "done": false }] }],
+  "drawings": [{ "id": "w3", "drawings": [
+      { "kind": "stroke", "color": "red", "width": 4, "highlight": false, "points": [[10.0, 20.5], [12.0, 21.0]] },
+      { "kind": "arrow", "color": "foreground", "width": 2, "from": [0, 0], "to": [120, 40] }] }],
+  "schedules": [{ "id": "s3", "by": "b7k2m", "to": "k9x1d", "text": "Check the deploy", "next": 1761562000,
+                  "every": 600, "until": 1762166800 }] }
+```
+
+- **`notes`:** the notes a note block shows (its tabs), `text` cut at 256 KiB with `cut` true past it. A note block
+  gains `"notes": {"tabs": [7, 9], "shown": 7}`.
+- **`checklists`:** the checklists a checklist block shows. A checklist block gains `"checklist": 12` (null: none).
+- **`drawings`:** one item per workspace (its id), its ink and shapes in paint order as the canvas file keeps them;
+  at most 2000 drawings and 100,000 points, the oldest left out past either (*the designer's call*: drawings have no
+  ids, and a workspace's list changes as a whole when a stroke is erased).
+- **`schedules`:** agents' live schedules (`every` in seconds, null for once).
+- **An agent** gains `task`, `{"id":"t7","text":"…","by":"b7k2m","since":1761560000}` (`text` as home keeps it, 2000
+  characters; `by` the handing block, `"api"` for a task the API handed, null for one the token doesn't see) and `role`
+  (spawn_agent's, or null).
+- **A frame's `modes`** gains `mouse_moves` (the program asked for every motion).
+- **`notice`** gains the automations' Notify me: `{"text":"Morning review: …","workspace":"w3","automation":1}`.
+- **A limited token** sees a note when a note block of its workspaces shows it, a checklist likewise, the drawings of
+  its workspaces, and a schedule whose `to` block it sees (`by` is null when it doesn't see that one). An automation's
+  notice goes to the streams that see the rule's workspace (a rule for all workspaces: tokens for all workspaces).
+
+**New control tools** (in the control server, so the Templum Agent has them too and the registry serves them; each
+rule is the control server's danger, which gives the API's scope):
+
+| Tool | Arguments | Does | Danger → scope |
+|---|---|---|---|
+| `delete_card` | `card` | Deletes it; Ctrl+Z at home brings it back | Ask own → control |
+| `edit_board` | `board`, then `name` or `delete: true` | Renames it, or deletes it with its cards (Ctrl+Z brings them back) | Ask own for a delete with cards; – otherwise → control |
+| `edit_column` | `board`; `column` (left out: a new column), `title`, `before` (a column of the board, or `"end"`), `delete: true` | Adds, renames, moves or deletes (with its cards) a column | Ask own for a delete with cards; – otherwise → control |
+| `show_board` | `block` (a kanban), then `board` or `new` (a name, with `columns`) | Shows that board in the block, or a new board (always new, whatever names exist) | – → control |
+
+**Into the control server** from the block server: `edit_item` and `delete_item` (on any checklist block, as the
+person's acts are), `edit_comment` and `delete_comment` (through the API, the person's: edits a comment `by: "you"`,
+deletes any, as the card dialog does; through the control server, the Templum Agent's own). Danger: –, and Ask own
+for `delete_item`.
+
+**Grown arguments:**
+
+- `add_block`, `open_agent`: `x`, `y`, the block's top-left in canvas units, within ±10⁷ (as `move_block`): it goes
+  there, as a local add at a click does; without them, as today.
+- `connect`: `label` (one line, at most 60 characters; blank removes). On two blocks already wired it renames their
+  wire (one Ctrl+Z step), else wires them with it.
+- `create_card`: `labels` (the six colors' names).
+- `edit_card`: `title`, `description`, `labels` (`{"red": true, "blue": false}`: turned on, turned off; the rest
+  keep), `remove_items` (item ids).
+- `move_card`: `before` (a card of that column: it takes that card's place; left out: the end). A card of another
+  column: "Card 41 isn't in Doing."
+- `terminal_input`: `mouse`, 1 to 64 events,
+  `{"kind":"press","button":"left","row":3,"col":10,"ctrl":false,"alt":false,"shift":false}` (`kind` `press`,
+  `release` or `move`; `button` `left`, `middle`, `right`, `wheel_up`, `wheel_down`, or null for a move with none
+  held; `row` and `col` in the terminal's grid, clamped), encoded at home in the program's mode at that moment
+  (`Terminal::mouse`). One of `text`, `keys`, `mouse` per call; an event the program didn't ask for is dropped, and
+  the answer counts those taken ("Sent 3 mouse events to b7k2m."). Full.
+
+**The API's own new tools:** `cancel_schedule` (`schedule`; ends it as the Automations popup's Cancel does; control)
+and `git` (below). The registry's lists: `schedule` joins the targets (its `to` block must be one the token sees);
+every other new argument (`before`, `delete`, `new`, `labels`, `remove_items`, `label`, `mouse`, `op`, the `git`
+operations' own) joins the arguments that name nothing, and the test that classifies every argument keeps passing.
+
+##### The git tool
+
+*The designer's call:* one API tool, `git`, with named operations. It is the API's own, not the control server's: the
+Git popup is the person's, as automations are, and agents use git in their terminals.
+
+- **Arguments:** `workspace`; `folder` (a folder at home, whole or relative to the workspace's; the repository is
+  found from it); `op`; and the operation's own arguments.
+- **One operation per job the Git popup runs today.** `templum_git::ops` defines them as one enum (`Op`, with serde)
+  and runs them with one function (`ops::run(repo, op, trash)`), which the local popup's background jobs call too: the
+  job bodies move there from `crates/templum/src/workspace/git_*.rs`, so the popup and the API can't drift, and the
+  logic is tested headlessly where it belongs (`templum-git` is UI-free). templum-git's result types gain serde.
+
+  | Scope | Operations |
+  |---|---|
+  | read | `find` (the repository of a folder), `look` (status, operation in progress, author), `diff` (working changes, staged or not, all or some paths), `history` (a page; a search by message, author or path), `show` (a commit's message, files and diff), `file_history`, `blame`, `branches`, `compare` (a branch's commits and diff against a base), `stashes`, `stash_diff`, `remotes`, `conflict` (a file's conflict regions), `trash` (Recently discarded) |
+  | control | `init`, `set_author`, `stage`, `unstage`, `stage_all`, `stage_hunk`, `unstage_hunk`, `commit` (with `amend`), `undo_commit`, `fetch`, `pull`, `push`, `sync`, `publish`, `switch` (leaving changes stashed or bringing them), `new_branch`, `rename_branch`, `merge`, `checkout` (a commit), `tag`, `revert`, `stash`, `stash_apply`, `stash_pop`, `continue`, `resolve` (a conflict with one side), `mark_resolved`, `restore` (from the trash), `ignore`, `message` (Generate) |
+  | full | `discard` (files, or all), `discard_hunk`, `restore_version`, `delete_branch`, `stash_drop`, `abort` |
+
+  The exact names and arguments are the planner's, from the jobs; the scope column is the rule: an operation that can
+  lose work is Full.
+- **The answer:** `{"text":"Committed a1b2c3d.","git":{…}}`, `git` the operation's result as templum-git types it.
+  A refusal is `422` with git's first line as `message` and its whole stderr as `details` (at most 64 KiB; an
+  addition to the error body, for `git` only). Git asking for a login it can't get says "git on winx-desktop asks for
+  a login: run it in a terminal there."
+- **At most 8 MiB per answer:** a diff past it keeps every file's row and drops the hunks of its largest files first,
+  each marked `cut`; the panel shows "Too large to show from winx-desktop." for them.
+- **Confined:** for a token limited to some workspaces, the repository's root and its main tree (git's answer,
+  `Repo::main_tree`) must lie, canonical, inside a folder of its workspaces, with part 1's network-share rules; else
+  `403 scope`, "That repository lies outside API's folder.". The paths an operation names are relative to the
+  repository, never absolute, never through `..`, and must stay inside it. Arbitrary git arguments are never taken:
+  only these operations. Git runs the repository's hooks (pre-commit, pre-push) as it would at home: the repository is
+  the person's own, inside the workspace's folder.
+- **One call at a time per repository** among the API's `git` calls (a queue per repository root); home's own popup
+  keeps its queue, and git's lock refusal, if both act at once, is told in git's words.
+- **`message`** runs home's commit-message agent as Generate does, and is refused while home's first-use question was
+  never answered.
+- **The audit log:** one line per call, `what` naming the operation (`git:push`); `look` calls are grouped per token
+  and minute, as `terminal_input` is, since an open popup reads every 2 s.
+
+#### The mirror's side
+
+- **Answered calls:** the client's `Command::Call` takes any tool and its arguments and hands its answer (home's JSON,
+  or the refusal with its status and sentence) to the UI through a one-shot the UI awaits in a task, never on the UI
+  thread. Busy answers are retried as moves are (ten tries); a call made while the remote isn't live is refused at
+  once, "Not connected."; a call whose attempt is dropped is refused "Couldn't reach the other computer." (batch 1).
+  The answer's cap is 1 MiB, 8 MiB for `git` and `read_terminal`.
+- **Calls wait in a bounded queue:** 64 per remote; past it a call is refused at once, "winx-desktop is slow to
+  answer: try again."; a block's moves keep only the newest waiting (this fixes the minor "The calls channel of a
+  remote is unbounded").
+- **A slow connection:** `git`'s network operations and `message` go on a third call connection, with a 10-minute
+  limit, so a long push never holds a card's move. To stay within home's 16 connections a token: one event stream, at
+  most **11** terminal streams (was 12), typing, calls, slow calls, and one spare (*the designer's call*).
+- **The state handed out cheaply:** taking a remote's newest state costs a few pointer copies, not its bytes (items
+  and collections shared, copied only when changed), and the UI applies only the items that changed since the last
+  take. This fixes the minor "The whole State is cloned on each wake of a mirror", which batch 2 makes pressing: it
+  reads notes, boards and drawings that batch 1 ignored.
+- **Home's tools** (`GET /v1/tools`) are read at each connect and kept with the remote, for the rule above.
+- **Notices** reach the UI as `Update::Notice`.
+- **The remote's copies** (`RemoteSpace`): boards, cards, checklists, notes, drawings, schedules and home's agents
+  (`list_agents`), each cleaned and capped once where it enters, as batch 1 cleans names (one line through `clean_to`
+  where it is a line; a text keeps its line breaks and loses every other control character):
+
+  | What | At most |
+  |---|---|
+  | Notes | 1000 a remote; 256 KiB each |
+  | Checklists | 1000 a remote; 2000 items each; 4000 characters an item |
+  | Cards | a title of 300 characters, a description of 64 KiB, 500 items, the newest 200 comments of 16 KiB |
+  | Drawings | home's caps, again; finite points within ±10⁷; widths 1–64; an unknown color is `foreground` |
+  | Schedules | 200 a remote; their text 300 characters |
+  | An agent's task | 2000 characters |
+  | Home's agents (`list_agents`) and tools | 100 agents; 500 tools |
+
+- **Never a relay, still:** the mirror's API, control server and block server never see a remote block, note, card,
+  checklist, drawing, repository or rule (the mirror's state keeps showing the remote workspace as `remote` alone).
+  Send to on a remote workspace lists its terminals only; Generate runs at home; block Copy and Paste stay off.
+
+#### Constraints (batch 2)
+
+- **Crates** (CLAUDE.md): `templum-git` gains serde on its types and `ops` (UI-free, tested headlessly);
+  `templum-api` gains the state's new collections and fields, the `git` and `cancel_schedule` tools, `terminal_input`'s
+  mouse, and the client's answered calls, slow connection, tools list and cheap state; `templum-terminal` gains
+  `mouse_moves` in its modes and a viewer's scrollback the client fills; `templum-mcp` gains the new control tools and
+  their dangers; `crates/templum` holds the glue (home's state and tools, the remote's copies, the views on a remote,
+  the popups). No new dependency: serde is in the tree.
+- **Performance:** every part that changes what the mirror paints runs `--bench-mirror` and pastes its line; the
+  bar stays `p95_ms` ≤ 16.7. From part 2d the mirrored cockpit's kanban and note are drawn live (batch 1 drew them as
+  cards), and from 2e home's canvas in `--bench-mirror` carries 200 strokes of 50 points (the ink bench's), drawn on
+  the mirror. Part 2g runs `--bench-git`. Home builds its state as today (only while a stream is open, at most 4 times
+  a second); a note's 256 KiB cap bounds what typing in a big note costs a stream.
+- **Memory** grows only by the caps above, one terminal's history, and one Git answer per remote Git.
+- **Tests** run on Linux, macOS and Windows, with no agent CLI, no real keyring, no network beyond loopback, no sleeps;
+  `git` is on CI already (templum-git's tests run it); shell halves are `#[cfg(unix)]`. Each part adds its cases to the
+  end-to-end test, `workspace/tests/mirror_end_to_end.rs`: one headless workspace both ends, over loopback, in one
+  process.
+- **Minors** this batch fixes leave docs/minors.md in the commit of their fix: no mouse input through the API; the
+  automations' remote workspace; the whole state cloned on each wake; the unbounded calls channel; no right-click menu
+  on a remote terminal; shortcuts that answer nothing; a remote terminal's effort; a request with no viewer; only 50
+  requests listed; a request aged from the mirror.
+- **Specs to update as batch 2 lands:** api.md, kanban.md, checklist.md, cockpit.md (notes and ink on a mirror),
+  git.md, agents-view.md, automations.md (the rule, a remote's group), ask-inbox.md, connections.md (wires named
+  through `connect`, Hand a task…), context-menus.md (a remote's menus), templum-agent.md (the new control tools and
+  their danger), ARCHITECTURE.md, docs/api.md (each field and tool, and its Templum to Templum section's "What a mirror
+  can't do yet"), this file's Status and As built.
+
+#### Parts
+
+Each part is usable and reviewable on its own and ends with its tests passing; they go in this order. 2f needs nothing
+before it (home only) and may be built beside 2b–2e; 2g needs 2a and 2f.
+
+- **2a, the mirror's footing.** Client: answered calls, the bounded queue with the newest move per block, the slow
+  connection and 11 terminal streams, home's tools at each connect, notices. The cheap state and the UI applying only
+  what changed. Glue: the one rule (replacing `on_remote`'s blanket refusals), notices as notifications with their
+  cap, the undo mark, holds made general, the Share… dialog's words. Home: nothing. Tests: the client against its fake
+  home (an answered call; a refused one in its words; the queue's cap; a quick call answered while a slow one runs; a
+  home without a tool dims its act; a notice reaches `Update::Notice`); taking the state twice copies no item that
+  didn't change; end to end: a watch set at home through the API (`wait_for` without `wait` on a shell) matches, and
+  the mirror shows its notice.
+- **2b, blocks, wires and agents on the canvas.** Home: `add_block` and `open_agent`'s `x`, `y`; `connect`'s
+  `label`. Mirror: adding blocks, the Open dialog with home's agents, closing with the local question, wires (the
+  tool, the menus, labels, Delete), Hand a task…, the menus and shortcuts on a remote, the new block's keyboard. Tests:
+  home's (`x`, `y` bounds; a label on a wired pair is one Ctrl+Z step); end to end: a terminal added at a point on the
+  mirror is at that point at home and gets the keyboard on the mirror; closed on the mirror, it is gone at home; two
+  blocks wired and named on the mirror are wired and named at home; a task handed on the mirror to an agent (as
+  `delegate`'s tests fake one) is typed at home with `[from API · …]` and its end's notice shows on the mirror;
+  Ctrl+Z after an add stops at the mark.
+- **2c, terminals: scrolling back and the mouse.** Home: `terminal_input`'s `mouse`, `modes.mouse_moves`. Client: the
+  history fed into the viewer's scrollback, then a whole frame; mouse events in the typing queue, moves merged. Mirror:
+  the wheel, Shift+PageUp and Find reading history; the mouse as `modes` says. Tests: templum-terminal
+  (`mouse_moves`), the registry (`mouse` parses, at most 64, Full), the client (history then whole frame; merged
+  moves); end to end (unix): 300 numbered lines printed at home, Find on the mirror finds line 1; a program at home
+  that turns mouse reporting on and prints what it reads receives a click's bytes.
+- **2d, boards, live and acted on.** Home: `delete_card`, `edit_board`, `edit_column`, `show_board`; `create_card`,
+  `edit_card` and `move_card`'s new arguments; `edit_comment` and `delete_comment` into the control server; their
+  dangers and the registry's lists. Mirror: the remote's boards and cards, the kanban body drawn from them, every act
+  of [Boards](#boards-checklists-notes-ink), card holds. Tests: home's (each tool; a limited token's boards); the mirror
+  headless (a board drawn from a state; a drop sends `move_card` with `before`; Done sends only what changed); end to
+  end: a card dragged on the mirror lands at home in that column before that card; a card made on the mirror with
+  labels and a comment; a column added and renamed; `boards.json` on the mirror unchanged, byte for byte;
+  `--bench-mirror`.
+- **2e, checklists, notes and ink, live.** Home: the state's `notes`, `checklists`, `drawings` and blocks' `notes`,
+  `checklist`; `edit_item` and `delete_item` into the control server. Mirror: the three drawn live, checklist items
+  acted on (held), notes read-only with Send to, ink above the blocks; `--bench-mirror` with home's 200 strokes. Tests:
+  home's (a limited token sees no note shown only in another workspace; the drawings' caps); end to end: an item
+  checked, added, edited and deleted on the mirror is at home; a note typed at home shows on the mirror; a stroke drawn
+  at home shows; `notes.json` and `checklists.json` on the mirror unchanged.
+- **2f, Git at home.** templum-git: serde on its types; `ops` with the popup's job bodies, which the popup's jobs now
+  call (no change a person sees: the Git popup's tests pass unchanged). Home: the `git` tool (operations, scopes,
+  confinement, the 8 MiB cut, `details`, the audit's grouping). Tests: templum-git (each operation on a temporary
+  repository; a path through `..` refused; the cut drops the largest file's hunks first); the registry (scope per
+  operation; an unknown one is `400`); the glue (a limited token's repository outside its folder is `403`; a Control
+  token's `discard` is `403`; `look` on the workspace's repository answers its status).
+- **2g, Git on the mirror.** The popup on a remote: where it runs (local, or a remote's `git`), the folder from home's
+  state and its menu, the slow operations, Generate at home, the trash, Send to the remote's terminals, the dimming by
+  scope, the memory-only state, Details. Tests: end to end with home's workspace folder a temporary repository: the
+  mirror's popup shows a changed file; staged and committed on the mirror, it is in home's log; a branch made on the
+  mirror is home's; on a Control share Discard is dimmed and Send to lists no local terminal. `--bench-git`.
+- **2h, agents, automations and the inbox.** Home: the agent's `task` and `role`; `schedules` and `cancel_schedule`;
+  the automations' notices. Mirror: the Agents popup with remote agents (Done its own); the Automations popup with
+  home's rules and schedules; [the rule](#the-rule-homes-automations-run-only-at-home); the inbox's three fixes; the
+  remote chip's effort. Tests: end to end: a task handed at home shows in the mirror's Agents details; a remote agent
+  turns Done on the mirror when home's state goes from working to idle, and stops being Done when its block is focused
+  on the mirror; a home rule shows in the mirror's popup, switched off there it is off at home, Run now from the mirror
+  runs it at home (its Notify me notifies at home and its notice shows on the mirror); with the mirror's automation
+  clock moved past a home rule's time nothing runs on the mirror and the mirror's `automations.json` holds no home
+  rule; a new local rule's Where lists no remote workspace and defaults to a local one; a rule saved with a remote
+  Where is Skipped with the rule's words; a local event rule on "any agent of a kind" doesn't fire when a remote agent
+  of that kind ends its turn; a schedule at home is listed and cancelled from the mirror; a remote request is aged from
+  home's `since`.
+
+#### Left to the builder (batch 2)
+
+The looks of the new dialogs (Hand a task…, Open on winx-desktop), groups and dimmed controls (theme tokens only); the
+words of tooltips not quoted here; how the shared views reach a remote's copies and send their edits, as long as no
+remote item ever enters the app's stores (a test proves the files unchanged); how holds are kept; the exact `Op`
+names, arguments and result types, from the jobs; how the history reaches the viewer's scrollback; the constants' and
+functions' names.
 
 ### Later batches
 
-Sketched so batch 1 closes no door, each its own card: editing notes and checklists from the mirror; drawing; an
-editor's files through the API; following home's camera; **sealed through tunnels**: Templum's pinned TLS carried
-inside one WebSocket the tunnel passes, so not even the tunnel's provider sees the traffic (WebSocket is part 1's
-non-goal, so it would be its own card).
+Sketched so batches 1 and 2 close no door, each its own card: editing notes from the mirror; renaming a checklist,
+reordering its items and showing another checklist in a block; drawing; an editor's files through the API; following
+home's camera; **sealed through tunnels**: Templum's pinned TLS carried inside one WebSocket the tunnel passes, so not
+even the tunnel's provider sees the traffic (WebSocket is part 1's non-goal, so it would be its own card). Batch 2's
+[Left out](#left-out-of-batch-2) lists the rest.
 
 ## Settled after the builder's read
 
