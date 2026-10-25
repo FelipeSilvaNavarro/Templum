@@ -544,6 +544,204 @@ impl State {
     }
 }
 
+/// The most items a mirrored collection may hold: home sends more than a person uses, and a
+/// state past it is "too large", as a stream's event past its limit is.
+const COLLECTION_MOST: usize = 10_000;
+
+/// Why an event of the stream couldn't be applied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ApplyError {
+    /// Not what the stream is meant to send, in words.
+    Malformed(String),
+    /// More than a mirror keeps in memory.
+    TooLarge,
+}
+
+impl std::fmt::Display for ApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApplyError::Malformed(why) => f.write_str(why),
+            ApplyError::TooLarge => f.write_str("home's state is larger than Templum keeps"),
+        }
+    }
+}
+
+impl State {
+    /// The state a `snapshot` event holds. Parsing is the slow part of a snapshot: do it before
+    /// taking any lock, then hand the result to [`State::replace`].
+    pub fn from_snapshot(data: &Value) -> Result<State, ApplyError> {
+        let new = State::deserialize(data)
+            .map_err(|e| ApplyError::Malformed(format!("a malformed snapshot event: {e}")))?;
+        let crowded = [
+            new.workspaces.len(),
+            new.blocks.len(),
+            new.wires.len(),
+            new.requests.len(),
+            new.boards.len(),
+            new.cards.len(),
+            new.automations.len(),
+            new.shares.len(),
+        ]
+        .into_iter()
+        .any(|n| n > COLLECTION_MOST);
+        if crowded {
+            return Err(ApplyError::TooLarge);
+        }
+        Ok(new)
+    }
+
+    /// Becomes `new` (see [`State::from_snapshot`]). Whether anything changed.
+    pub fn replace(&mut self, new: State) -> bool {
+        std::mem::replace(self, new) != *self
+    }
+
+    /// Applies one event of the stream to a copy of the state a mirror keeps: `snapshot` replaces
+    /// it; a collection's event is a put (replace the item with that id, or add it last) or a
+    /// delete; `view` sets the camera. Whether the state changed; any other event changes
+    /// nothing, and a malformed one says what was wrong.
+    pub fn apply(&mut self, event: &str, data: &Value) -> Result<bool, ApplyError> {
+        State::parse(event, data)?(self)
+    }
+
+    /// Whether [`State::parse`] keeps the items of this kind of event, by id (the others, a kind
+    /// this version doesn't know or the view, keep none).
+    pub(crate) fn keeps_items(event: &str) -> bool {
+        matches!(
+            event,
+            "workspace"
+                | "block"
+                | "wire"
+                | "request"
+                | "board"
+                | "card"
+                | "automation"
+                | "share"
+                | "usage"
+        )
+    }
+
+    /// Reads one event without touching any state: all the parsing, and none of the changing. The
+    /// change it returns is quick, so it can be made under a lock the UI thread takes.
+    pub fn parse(event: &str, data: &Value) -> Result<Change, ApplyError> {
+        match event {
+            "snapshot" => {
+                let new = State::from_snapshot(data)?;
+                Ok(Box::new(move |state| Ok(state.replace(new))))
+            }
+            "workspace" => edit(event, data, |s| &mut s.workspaces, |w| w.id.clone()),
+            "block" => edit(event, data, |s| &mut s.blocks, |b| b.id.clone()),
+            "wire" => edit(event, data, |s| &mut s.wires, WireView::id),
+            "request" => edit(event, data, |s| &mut s.requests, |r| r.id.clone()),
+            "board" => edit(event, data, |s| &mut s.boards, |b| b.id.to_string()),
+            "card" => edit(event, data, |s| &mut s.cards, |c| c.id.to_string()),
+            "automation" => edit(event, data, |s| &mut s.automations, |a| a.id.to_string()),
+            "share" => edit(event, data, |s| &mut s.shares, |s| s.id.clone()),
+            "usage" => {
+                // At most one, with the id `usage`.
+                let one = Edit::<UsageView>::read(event, data, |_| "usage".into())?;
+                Ok(Box::new(move |state| {
+                    let mut items: Vec<UsageView> = state.usage.take().into_iter().collect();
+                    let changed = one.run(&mut items, |_| "usage".into());
+                    state.usage = items.pop();
+                    changed
+                }))
+            }
+            "view" => {
+                let new = match data {
+                    Value::Null => None,
+                    data => Some(from_value(event, data)?),
+                };
+                Ok(Box::new(move |state| {
+                    Ok(std::mem::replace(&mut state.view, new) != state.view)
+                }))
+            }
+            _ => Ok(Box::new(|_| Ok(false))),
+        }
+    }
+}
+
+/// What an event does to a state: made by [`State::parse`], whether the state changed.
+pub type Change = Box<dyn FnOnce(&mut State) -> Result<bool, ApplyError>>;
+
+fn from_value<T: serde::de::DeserializeOwned>(event: &str, value: &Value) -> Result<T, ApplyError> {
+    T::deserialize(value)
+        .map_err(|e| ApplyError::Malformed(format!("a malformed {event} event: {e}")))
+}
+
+/// A put or a delete of the item with an id, read from an event.
+struct Edit<T> {
+    id: String,
+    /// The whole item for a put, None for a delete.
+    put: Option<T>,
+}
+
+impl<T: serde::de::DeserializeOwned + PartialEq> Edit<T> {
+    /// A put must carry an item whose own id (`id`, canonical: a number as it is printed) is the
+    /// event's: lookups and the client's weights both go by the event's id, so a mismatch would
+    /// let a hostile home pile up items the weights don't count.
+    fn read(
+        event: &str,
+        data: &Value,
+        id_of: impl Fn(&T) -> String,
+    ) -> Result<Edit<T>, ApplyError> {
+        let id = data
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApplyError::Malformed(format!("a malformed {event} event: no id")))?
+            .to_string();
+        let put = match data.get("op").and_then(Value::as_str) {
+            Some("put") => Some(from_value(
+                event,
+                data.get("value").unwrap_or(&Value::Null),
+            )?),
+            Some("delete") => None,
+            _ => {
+                return Err(ApplyError::Malformed(format!(
+                    "a malformed {event} event: no op"
+                )));
+            }
+        };
+        if put.as_ref().is_some_and(|item| id_of(item) != id) {
+            return Err(ApplyError::Malformed(format!(
+                "a malformed {event} event: the item's id is not the event's"
+            )));
+        }
+        Ok(Edit { id, put })
+    }
+
+    fn run(self, items: &mut Vec<T>, id: impl Fn(&T) -> String) -> Result<bool, ApplyError> {
+        let Some(item) = self.put else {
+            let before = items.len();
+            items.retain(|old| id(old) != self.id);
+            return Ok(items.len() != before);
+        };
+        let full = items.len() >= COLLECTION_MOST;
+        match items.iter_mut().find(|old| id(old) == self.id) {
+            Some(old) if *old == item => Ok(false),
+            Some(old) => {
+                *old = item;
+                Ok(true)
+            }
+            None if full => Err(ApplyError::TooLarge),
+            None => {
+                items.push(item);
+                Ok(true)
+            }
+        }
+    }
+}
+
+/// The change an event of a collection makes: `items` says which collection, `id` an item's id.
+fn edit<T: serde::de::DeserializeOwned + PartialEq + 'static>(
+    event: &str,
+    data: &Value,
+    items: fn(&mut State) -> &mut Vec<T>,
+    id: fn(&T) -> String,
+) -> Result<Change, ApplyError> {
+    let edit = Edit::read(event, data, id)?;
+    Ok(Box::new(move |state| edit.run(items(state), id)))
+}
+
 /// One change to the state: `value` is the whole object for a put, None for a delete.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Delta {
@@ -762,6 +960,209 @@ mod tests {
             .iter()
             .map(|d| (d.kind, d.id.as_str(), d.value.is_some()))
             .collect()
+    }
+
+    /// A delta as the stream sends it: the event's name and its data.
+    fn framed(delta: Delta) -> (&'static str, Value) {
+        let data = match delta.value {
+            Some(value) => json!({"op": "put", "id": delta.id, "value": value}),
+            None => json!({"op": "delete", "id": delta.id}),
+        };
+        (delta.kind, data)
+    }
+
+    #[test]
+    fn a_mirror_applies_what_the_stream_sends() {
+        let mut s = two_workspaces();
+        let rect = |s: &State, id: &str| s.blocks.iter().find(|b| b.id == id).unwrap().rect.x;
+
+        let mut moved = s.blocks[0].clone();
+        moved.rect.x = 77.0;
+        let put = json!({"op": "put", "id": "b1", "value": moved});
+        assert_eq!(s.apply("block", &put), Ok(true));
+        assert_eq!(rect(&s, "b1"), 77.0);
+        assert_eq!(
+            s.apply("block", &put),
+            Ok(false),
+            "the same again changes nothing"
+        );
+
+        let added = json!({"op": "put", "id": "zz", "value": block("zz", "w3", "note")});
+        assert_eq!(s.apply("block", &added), Ok(true));
+        assert_eq!(s.blocks.last().unwrap().id, "zz");
+
+        assert_eq!(
+            s.apply("wire", &json!({"op": "delete", "id": "b1-k1"})),
+            Ok(true)
+        );
+        assert!(s.wires.is_empty());
+        assert_eq!(
+            s.apply("wire", &json!({"op": "delete", "id": "b1-k1"})),
+            Ok(false)
+        );
+
+        let share = ShareView {
+            id: "s4".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            s.apply("share", &json!({"op": "put", "id": "s4", "value": share})),
+            Ok(true)
+        );
+        assert_eq!(s.shares, [share]);
+
+        assert_eq!(
+            s.apply("usage", &json!({"op": "delete", "id": "usage"})),
+            Ok(true)
+        );
+        assert_eq!(s.usage, None);
+        assert_eq!(
+            s.apply(
+                "usage",
+                &json!({"op": "put", "id": "usage", "value": UsageView::default()})
+            ),
+            Ok(true)
+        );
+        assert_eq!(s.usage, Some(UsageView::default()));
+
+        assert_eq!(s.apply("view", &Value::Null), Ok(true));
+        assert_eq!(s.view, None);
+        let other = State {
+            app: App {
+                version: "9".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            s.apply("snapshot", &serde_json::to_value(&other).unwrap()),
+            Ok(true)
+        );
+        assert_eq!(s, other);
+
+        assert_eq!(s.apply("notice", &json!({"text": "x"})), Ok(false));
+        assert!(s.apply("block", &json!({"op": "put"})).is_err());
+        assert!(
+            s.apply("block", &json!({"op": "put", "id": "x", "value": 3}))
+                .is_err()
+        );
+        assert!(s.apply("block", &json!({"op": "move", "id": "x"})).is_err());
+        assert!(s.apply("snapshot", &json!([1])).is_err());
+    }
+
+    /// A put whose item has another id than the event keeps nothing: the client's weights go by
+    /// the event's id, the state by the item's, so a mismatch would hide items from the weights.
+    #[test]
+    fn a_put_whose_item_has_another_id_is_refused() {
+        let mut s = two_workspaces();
+        let before = s.clone();
+        // A string-id kind.
+        let put = json!({"op": "put", "id": "x", "value": block("y", "w3", "note")});
+        assert!(matches!(
+            s.apply("block", &put),
+            Err(ApplyError::Malformed(_))
+        ));
+        // A numeric-id kind: the item's number as it is printed must be the event's id.
+        for id in ["05", "+5", "6", "x"] {
+            let put =
+                json!({"op": "put", "id": id, "value": BoardView { id: 5, ..Default::default() }});
+            assert!(
+                matches!(s.apply("board", &put), Err(ApplyError::Malformed(_))),
+                "{id}"
+            );
+        }
+        let put = json!({"op": "put", "id": "usage2", "value": UsageView::default()});
+        assert!(matches!(
+            s.apply("usage", &put),
+            Err(ApplyError::Malformed(_))
+        ));
+        assert_eq!(s, before, "nothing was kept");
+        // The same id, canonically, is accepted.
+        let put =
+            json!({"op": "put", "id": "5", "value": BoardView { id: 5, ..Default::default() }});
+        assert_eq!(s.apply("board", &put), Ok(true));
+
+        // Bounded: however many mismatched puts come, the state doesn't grow.
+        let mut s = State::default();
+        for i in 0..50 {
+            let put =
+                json!({"op": "put", "id": "x", "value": block(&format!("y{i}"), "w3", "note")});
+            let _ = s.apply("block", &put);
+        }
+        assert!(s.blocks.is_empty());
+    }
+
+    #[test]
+    fn an_event_is_read_before_any_state_is_touched() {
+        let put = json!({"op": "put", "id": "zz", "value": block("zz", "w3", "note")});
+        let change = State::parse("block", &put).unwrap();
+        // The parsed change is all that is left to do under a lock, and it is made once on any state.
+        let mut s = two_workspaces();
+        let before = s.blocks.len();
+        assert_eq!(change(&mut s), Ok(true));
+        assert_eq!(s.blocks.len(), before + 1);
+        assert!(State::parse("block", &json!({"op": "put", "id": "x", "value": 3})).is_err());
+        assert!(State::parse("block", &json!({"op": "move", "id": "x"})).is_err());
+        assert!(State::parse("snapshot", &json!([1])).is_err());
+        assert_eq!(
+            State::parse("notice", &json!({})).unwrap()(&mut s),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn a_state_past_the_caps_is_too_large() {
+        let blocks = |n: usize| -> Vec<BlockView> {
+            (0..n)
+                .map(|i| block(&format!("b{i}"), "w3", "note"))
+                .collect()
+        };
+        let mut s = State {
+            blocks: blocks(COLLECTION_MOST),
+            ..Default::default()
+        };
+        let added = json!({"op": "put", "id": "zz", "value": block("zz", "w3", "note")});
+        assert_eq!(s.apply("block", &added), Err(ApplyError::TooLarge));
+        assert_eq!(s.blocks.len(), COLLECTION_MOST);
+        let again = json!({"op": "put", "id": "b0", "value": block("b0", "w3", "note")});
+        assert_eq!(
+            s.apply("block", &again),
+            Ok(false),
+            "an id it has is no growth"
+        );
+
+        let big = State {
+            blocks: blocks(COLLECTION_MOST + 1),
+            ..Default::default()
+        };
+        let snapshot = serde_json::to_value(&big).unwrap();
+        assert_eq!(State::from_snapshot(&snapshot), Err(ApplyError::TooLarge));
+        assert_eq!(s.apply("snapshot", &snapshot), Err(ApplyError::TooLarge));
+        assert_eq!(s.blocks.len(), COLLECTION_MOST, "untouched");
+    }
+
+    #[test]
+    fn applying_a_diff_onto_the_old_state_makes_the_new_one() {
+        let old = two_workspaces();
+        let mut new = old.clone();
+        new.blocks[0].rect.x = 50.0;
+        new.blocks.remove(2);
+        new.blocks.push(block("b9", "w4", "note"));
+        new.wires.clear();
+        new.cards.clear();
+        new.requests.remove(0);
+        new.automations[1].on = true;
+        new.usage = None;
+        new.workspaces.push(WorkspaceView {
+            id: "w9".into(),
+            ..Default::default()
+        });
+        let mut mirror = old.clone();
+        for delta in diff(&old, &new) {
+            let (event, data) = framed(delta);
+            assert_eq!(mirror.apply(event, &data), Ok(true), "{event} {data}");
+        }
+        assert_eq!(mirror, new);
     }
 
     #[test]

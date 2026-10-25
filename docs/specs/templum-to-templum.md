@@ -1,8 +1,8 @@
 # Templum to Templum: a workspace of another computer, as if it were here
 
 - **Date:** 2026-10-25
-- **Status:** Designed (kanban card 171, part 2). Batch 1a (home's side) implemented; the mirror's side (batch 1b to
-  1d) is next.
+- **Status:** Designed (kanban card 171, part 2). Batches 1a and 1b implemented (home's side; the mirror's client);
+  the glue and the dialogs (batch 1c and 1d) are next.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
   [cockpit.md](cockpit.md#6-the-workspaces-screen) (the sidebar, the Edit… dialog), [ask-inbox.md](ask-inbox.md)
@@ -213,7 +213,7 @@ answering are disabled.
 
 | What happened | The banner says | Retries by itself |
 |---|---|---|
-| Home doesn't answer: refused, timed out, no route, a name that doesn't resolve, or the tunnel's 502, 503, 504, 530 | "Reconnecting to winx-desktop… try 3, next in 8 s. Live 2 min ago." **Try now** | Yes |
+| Home doesn't answer: refused, timed out, no route, a name that doesn't resolve, or the tunnel's or the proxy's 502, 503, 504, 530 | "Reconnecting to winx-desktop… try 3, next in 8 s. Live 2 min ago." **Try now** | Yes |
 | A stream went silent for 45 s (three missed heartbeats) | The same | Yes |
 | 429 or 503 `busy` | The same, after `Retry-After` | Yes |
 | 401, and the share's expiry has passed | "This share of API expired. Share again on winx-desktop, then **Paste a new code…**" · **Forget** | No |
@@ -227,7 +227,7 @@ answering are disabled.
 | Cloudflare Access answered (a redirect to `*.cloudflareaccess.com`, or its 403) | "Cloudflare Access stands in front of templum.example.com. Add a service token in Edit… ▸ More…, and allow it in the Access policy." | No |
 | Something that isn't a Templum answered (HTML, a 404 without Templum's error body) | "templum.example.com didn't answer as a Templum (HTTP 404, text/html). Check that the tunnel points at port 7411." **Try again** | No |
 | Home is too old (Templum's 404 for `GET /v1/me`) | "winx-desktop runs a Templum that can't be mirrored: update it." **Try again** | No |
-| The proxy refused | "The proxy proxy.corp:8080 refused the connection (407: it asks for a login Templum can't give)." **Try again** | No |
+| The proxy refused (anything but its 502, 503, 504, which are "home doesn't answer") | "The proxy proxy.corp:8080 refused the connection (407: it asks for a login Templum can't give)." **Try again** | No |
 | The keyring refused the key (locked, denied) | "Templum couldn't read this connection's key from the keyring. **Try again**, or **Paste a new code…**" | No |
 
 - **Backoff:** 1 s, doubling to 30 s, each wait ±20%; back to 1 s once a connection has been live for a minute.
@@ -269,6 +269,10 @@ checks is *the designer's call*.
 - TLS 1.2 and 1.3, ALPN `http/1.1`, ring's crypto, as the server.
 - **No redirects are followed**, and the token, the Access headers and every call go only to the code's host: a
   redirect is "didn't answer as a Templum".
+- **The way in must fit the address, checked before anything is dialed:** Loopback only with plain `http://` and a
+  host that is this computer (`127.0.0.1`, `::1`, `localhost`); Pinned and Public only with `https://`. Anything else
+  never sends the key: the remote is cut as "didn't answer as a Templum" (no address it can use). So a rewritten
+  index can't make the key travel in clear off this computer, nor to a "TLS" nobody checks.
 - **A changed pin is never accepted by a click.** The way out is a new code, which carries a new token too (*the
   designer's call*: a "trust the new certificate" button would undo pinning exactly when it matters).
 
@@ -310,6 +314,8 @@ server doesn't send its whole chain".
   the key, never in the index), then its TLS inside, end to end. The system's own proxy settings and PAC files are not
   read, nor NTLM or Kerberos asked (*the designer's call*: a work network often has a proxy, and an app started from the
   Start menu or the Dock doesn't get the variables, so the person can type it; a refusal is told, never guessed around).
+  **This computer is never reached through a proxy** (a Loopback remote ignores any proxy; `proxy_from_env` answers
+  none for `127.0.0.1`, `::1`, `localhost`, as curl does): the key would otherwise cross the proxy in clear.
 - **Every request** carries `Authorization: Bearer`, the Access headers when set, `User-Agent: Templum/<version>
   (mirror)` and `Templum-Mirror: <session>`, a random value new at each connect or reconnect.
 - **A reconnect clears the old connections** (*the designer's call*: a laptop that slept or changed networks leaves
@@ -394,8 +400,14 @@ key pressed at home does, and raw bytes would be a second encoder that is wrong 
   that sends a lone ESC (`escape`, `ctrl+[`, `ctrl+3`, `shift+escape`; not `alt+…`) that another key follows (so a
   program still reads Esc alone where the person paused, now that the network bunches keys). `send_keys` takes the same names and keeps its 16 keys and 50 ms between each.
 - **Order and pace:** per terminal, one call in flight; keys typed meanwhile wait and go in the next call, up to 1024
-  waiting (past that: "Typing faster than winx-desktop answers: some keys were dropped."). A paste is `text` (bracketed
-  when the program asked for it, at home), at most 256 KiB ("Paste at most 256 KiB into a mirrored terminal.").
+  waiting (past that: "Typing faster than winx-desktop answers: some keys were dropped.", said once while the queue
+  stays full). A paste is `text` (bracketed when the program asked for it, at home), at most 256 KiB ("Paste at most
+  256 KiB into a mirrored terminal."). A call starts no sooner than 60 ms after the previous one did (at most about
+  16 a second, under home's bucket of 40 and 20 a second), so autorepeat batches instead of draining the bucket; a
+  call home answers 429 or 503 `busy` is made again after `Retry-After` (at least 60 ms), the keys behind it still
+  waiting, and only after ten answers of "busy" in a row (or 5 s of waiting for them, whichever is first: a late key
+  would land in whatever the program shows by then) is it given up and the block told it dropped keys. `Retry-After`
+  counts as at most 30 s. Moves and answers retry on the ten answers only.
 - **No predictive echo** (*the designer's call*): a character shows when home's frame shows it. The round trip is in
   the banner instead.
 
@@ -506,6 +518,15 @@ keyring**, with a file only when there is none and the person asks for it.
   `cargo deny check` (the `keyring` umbrella crate's defaults would bring stores Templum doesn't use).
 - **Entries:** service "Templum" ("Templum (dev)" for `--dev`), account `remote-<8 random characters>`; the share's
   token and, when set, the Access Client Secret and the proxy's credentials, as one JSON value.
+- **The key also holds where it may go:** the code's address, the way in (Loopback, Public, or Pinned with its pin),
+  whether an authority the computer added was accepted, and the proxy's address. The index (`workspaces/index.json`)
+  holds the same for the UI, but anything that writes the data folder (an agent on the mirror) can rewrite it, and the
+  keyring cannot be written without the person's login. So before the first connection of a start the remote's values
+  are compared with the key's, and if any differs the key is not sent anywhere: the remote is cut as "Templum couldn't
+  read this connection's key" with "This connection's address or way in changed outside Templum, so its key isn't
+  sent. Connect again with a new code." Otherwise an edit of the index to `https://attacker.example`, whose public
+  certificate is valid, would carry the Full token there at the next start. The `0600` file and the memory copy hold
+  the same fields.
 - **No keyring** (a Linux session without a Secret Service, a keyring that refuses): the connection lasts until Templum
   quits, unless the person turns on **Keep the key in a file only you can read**: `<data>/remotes/<entry>.key`, `0600`
   in a `0700` folder, written through `private_write` as `api.json` is. Removed by Forget.
@@ -695,3 +716,156 @@ Plan: [2026-10-25-t2t-batch-1a-home.md](../plans/2026-10-25-t2t-batch-1a-home.md
   dialog makes its own footer: Make code is disabled while the API doesn't fit or the name is empty.
 - **`Server::mirrored`** says the address of a token's oldest connection with an event stream; the stream's opening
   and its end tell the UI thread (`CLIENTS`), which draws the sidebar's mark from the server.
+
+### Batch 1b (the mirror's client)
+
+Plan: [2026-10-25-t2t-batch-1b-client.md](../plans/2026-10-25-t2t-batch-1b-client.md). UI-free, in `templum-api`'s
+`client/`; nothing draws (plan 1c wires it to the canvas). What the builder chose or changed:
+
+- **Modules:** `keys.rs` (`Keys`, `Secrets`, `Kept`: keyring, file or memory), `trust.rs` (`Pinned`, `Checked`, the
+  marks), `dial.rs` (TCP, the proxy's `CONNECT`, TLS), `http.rs` (calls, streams, `failure`), `sse.rs` (the event
+  reader), `frames.rs` (a frame to a viewer's bytes), `remote.rs` (one remote's life) and `mod.rs` (the types and
+  `Mirror`). `templum-terminal` gained `Feeder` (feed and resize a viewer from any thread) and
+  `SharedTerm::grid_size`; `State::apply` (in `model.rs`) applies the stream's events to a mirror's copy.
+- **The trust marks:** a refusal in the handshake is a `rustls::Error::General` holding `templum:pin`, `:added`,
+  `:expired`, `:name`, `:issuer`, `:issuer-alone` or `:other`; `dial` reads the mark back out of the I/O error and
+  makes it a `Why`. A signature that is not the key's of the certificate shown (`InvalidCertificate`) is
+  `Certificate(Other)` on the public way in only; on the pinned one it is `PinChanged` (see Review fixes to 1b).
+- **One coordinator per remote, no `select!`:** the coordinator task never awaits the network. Its sub-tasks (calls,
+  events, typing, one per terminal) send it messages tagged with the attempt they belong to; every attempt moves the
+  epoch, so what an ended attempt still says is ignored, and dropping the attempt aborts its tasks, which drops their
+  connections (a reconnect leaves none behind). The newest state lives in the shared slot and events are applied in
+  place (`State::apply` under the lock), so a flood of deltas copies nothing; `Mirror::state` copies it once when the
+  UI thread takes it.
+- **A stream home ended is looked at once before it is called "reconnecting":** a revoke, a deleted workspace and a
+  restarted home all end the stream the same way, so the mirror tries again at once (not twice in a row if the new
+  stream ended within a second): `401` is then "revoked" with no "Reconnecting" in between, and a home that is back
+  is live without a flicker. A stream that goes silent (45 s) or a failed look is `Reconnecting { attempt: 1 }` and
+  the backoff. `attempt` counts consecutive failures; `live_at` is the last time the remote was live.
+- **`Limits`** (`silence` 45 s, `me_every` 15 s, `live_resets` 60 s, `typing_patience` 5 s) is `#[doc(hidden)] pub` for the tests
+  (`Mirror::start_with`).
+- **Frames are fed as they are read:** nothing is held between frames (the spec's "one pending frame" rule holds
+  trivially). The first frame of a stream says all three modes (set and reset), so a stream that reopens leaves nothing
+  of the old one in the viewer; later frames say only what changed. A title is cut to 256 characters after its control
+  characters are dropped. A frame of size 0 is refused like one past 2000 × 1000.
+- **Typing:** one call in flight on the typing connection; the block that has waited longest goes next, with up to
+  `INPUT_KEYS` of its waiting keys or one paste, in order. A paste past `tools::MAX_TEXT`, or past it in all the
+  pastes waiting for one block, is refused or dropped.
+- **Calls** have a 30 s limit; one that fails to reach home is "Couldn't reach the other computer." (`Refused`).
+- **Forget** runs in the remote's own task (it revokes with a connection of its own, deletes the key on the blocking
+  pool, ends); `Mirror::forget` drops what the remote had said and every update after it.
+- **A key that can't be saved** (`KeySource::Save` into a file that can't be written) is `Update::Refused { about:
+  Show, sentence }` and `Cut(Keyring)`.
+- **Public helpers:** `client::{proxy_of, proxy_from_env}` are public for the Connect dialog (plan 1d).
+
+#### Review fixes to 1b
+
+What the review of 1b changed (decisions the builder took while the person was away):
+
+- **Where the key may go** (above): `Secrets` gained `url`, `trust`, `trust_added` and `proxy`; the client compares
+  them with the `Remote`'s before it dials (`Remote::binds`, in `prepare`) and refuses the way in that does not fit the
+  address (`fits`). The proxy's address is kept in the key too, because the proxy's login goes to it. A Loopback
+  remote never uses a proxy.
+- **Typing is paced and patient:** `PACE` (60 ms) between the starts of two typing calls, `BUSY_TRIES` (10) of "busy"
+  answers retried inside the typing and calls tasks (so the queue is untouched and nothing is sent after the attempt is
+  gone: the tasks are aborted with it). `Dropped` is said once per queue until it falls below 1024 and has no paste
+  waiting.
+- **Typing while not live** (including the look after a stream's end, when the status still says Live) answers
+  `Refused { Keys(block), "Not connected: what you type isn't sent." }`, once per block until live again.
+- **A stream "home ended"** is a body that finished or a connection closed before its body did (`UnexpectedEof`, which
+  is how home cuts a revoked share); a reset or bytes that aren't HTTP are ordinary failures. A terminal stream that
+  hears 429 or 503 `busy` reopens after `max(1 s, Retry-After)`. **Try now** also restarts an attempt that is still
+  opening, and the body of a non-200 stream answer is read under the 30 s call limit.
+- **A proxy's 502, 503 and 504** to `CONNECT` are `Down` (home is unreachable, retried); other statuses stop.
+- **Pinned and a forged handshake:** a signature the pinned certificate's key didn't make (the pin matched, the
+  signature did not) is "the pin changed", from the verifier itself.
+- **The system verifier's verdict is remembered** (8 chains, a name and the hour each) in `Checked`, because
+  Windows' and macOS's verifiers may fetch and the client has one thread; when the platform says only "other" (macOS),
+  Mozilla's list reads the same chain, so "it expired" and "share Directly instead" still show.
+- **Kitty keys:** alacritty keeps one stack per screen and a switch of screens swaps them, so the painter does not push
+  and pop: on the first frame, on a change of screen and on a change of kitty, it empties the active stack (`CSI < 99
+  u`) and pushes again (`CSI > 1 u`) when kitty is on. The first frame always says the title, even an empty one.
+- **Home gone wrong:** a row is clipped at the frame's columns, a cursor is kept on the grid, and each collection of
+  the state holds 10 000 items at most (`ApplyError::TooLarge`: the stream drops and reopens). A snapshot is parsed
+  before the lock is taken. Home's `frame` sends a whole frame when the screen (`?1049`) switched.
+
+#### Second-round review fixes to 1b
+
+What the second review of 1b changed (decisions the builder took while the person was away):
+
+- **A full row with zero-width marks is no longer cut short.** Home's runs carry each cell's zero-width marks
+  (combining accents, `VS16` as in `⚠️`, ZWJ) in the text, so counting characters against the columns cut real
+  characters off the end of a full row (Claude Code's border `│` on a line with `✔️`). The painter counts nothing:
+  its first frame sends `CSI ?7l` (no autowrap), and the viewer itself clips an over-long row at the right margin
+  (alacritty drops the characters past the last column when autowrap is off). Only the painter writes to a viewer,
+  and every row it writes starts with a cursor move, so nothing else relied on autowrap; the clamp of sizes (2000 ×
+  1000) and of the cursor is unchanged. The round-trip test holds a full row with a combining accent and a row of
+  `⚠️✔️`.
+- **`Retry-After` is held to 30 s** (`http.rs`): a huge number overflowed `Instant::now() + …` and ended the typing
+  task. Typing gives up after ten busy answers (the tenth is the last; it used to be the eleventh) or 5 s of waiting
+  in all (`Limits::typing_patience`), and the keys are `Dropped`, never sent late. The calls task gives up on the tenth
+  answer too; a move or an answer waits up to 10 × 30 s at most, since it is still wanted when it lands.
+- **The public verifier remembers only what was fine,** and not past the leaf's `notAfter` (read from the DER; a
+  certificate whose date can't be read is not remembered). A refusal is asked again at the next handshake, so a person
+  who installs the authority or sets the clock is heard at once; **Try now** from Idle also forgets every verdict
+  (`Checked::forget`). What remains: for up to the clock hour (or until `notAfter`) a chain judged fine stays fine
+  although it was revoked, or its authority taken away, in the meantime, unless the person presses Try now; and a
+  refused chain costs the system's verifier a call at each handshake, which the reconnect backoff paces. The system's
+  roots themselves are read when the verifiers are built (once per start of the remote), as before.
+- **The mirrored state is also capped in bytes:** the sum of each kept item's event data length (a put weighs its
+  item in place of the old one, a delete gives it back, a snapshot starts over) may not pass 64 MiB (`WEIGHT_MOST`,
+  4 × `sse::CAP`); past it is `TooLarge` (the stream drops and reopens). Every event is parsed (`State::parse`) before
+  the lock the UI thread takes; under the lock only the quick `Change` it returns is made.
+- **A terminal home refused stays refused** when the terminals shown are only put in another order (`blocked` is
+  cleared when the set's members change, not on every `Terminals`).
+- **Tests that waited on the wall clock hold and release instead:** typing fast sends its 200 keys while the first call
+  is held, then releases it and expects the 199 waiting keys in one call; the pace between two calls is checked at half
+  of `PACE`. `Dropped` after a queue is only partly drained (one call released, 768 keys waiting) is said again when it
+  overflows again.
+
+#### Third-round review fixes to 1b
+
+What the third review of 1b changed (decisions the builder took while the person was away):
+
+- **The event stream is held by its socket, not by memory.** `events_task` used to turn every chunk into thousands of
+  `Msg::Event`s on the coordinator's unbounded inbox, faster than the coordinator took them, so a home that wrote
+  small valid events (`block` deletes of ids that don't exist pass every cap) grew the mirror by hundreds of MB in
+  seconds. Now each event takes a permit of a per-attempt semaphore (`EVENTS_WAITING_MOST`, 64) before it is sent and
+  carries it in `Msg::Event`; the permit goes back when the coordinator handles the event or drops it (an ended
+  attempt's). With 64 waiting, `events_task` stops reading, the socket's buffers fill and home's writes block. Chosen
+  over applying events in the task itself because `last_id`, `Replaced` and the failures stay with the coordinator.
+  The other channels need nothing: terminal frames are fed in the stream task itself (`Feeder::feed` is synchronous,
+  so the socket is the queue), the typing connection has one batch in flight, and the coordinator's other messages
+  come once per call or attempt. The calls channel is unbounded but only the person's commands feed it (a minor).
+- **Typing says it when a call fails,** not only when home stayed busy: a `Down` (a timeout, a closed connection) or a
+  `TooLarge` answer to a typing call is `Dropped(block)` too, with what waited behind it. The call is not made again
+  (`terminal_input` is not idempotent).
+- **`Limits::typing_patience`** (5 s) is the "5 s in total" of typing, a field so a test can shorten it.
+- **A state's weight counts what it keeps:** an event of a kind `State::parse` doesn't keep by id
+  (`State::keeps_items`) weighs nothing and adds nothing to the map, and every kept item costs its data and 64 bytes
+  (`ITEM_OVERHEAD`) for its keys and place, so a million tiny items trip the 64 MiB sooner than their data would.
+- **A stream follows its viewer:** `sync_terminals` remembers which viewer each stream feeds (`Feeder::same_viewer`)
+  and opens the stream again when the terminals shown name another viewer for the block (a block that was closed and
+  shown again), so the old viewer is not fed from a stream nobody looks at.
+
+#### Fourth-round review fixes to 1b
+
+What the fourth review of 1b changed (decisions the builder took while the person was away):
+
+- **A put's item must carry the event's id.** The client's weights key on the event's `data.id` while `Edit::run` looks
+  items up by their own id, so a hostile home could send `{"op":"put","id":"x","value":{"id":"y",…1 MiB}}` over and
+  over: the weight stayed at one item (key `x`), the state pushed a new item each time (200 MiB after 200 puts), and a
+  delete of `x` freed weight without removing anything. `Edit::read` now refuses, before any lock, a put whose item's
+  id (canonical: a number as it is printed, so `"05"` for 5 is refused; the `usage` event must say `usage`) is not the
+  event's: `Malformed`, nothing kept. Tests: `model::tests::a_put_whose_item_has_another_id_is_refused` and
+  `client::tests::puts_with_mismatched_ids_cannot_get_past_the_weight_cap` (a bounded loop through `Shared::apply`).
+- **The event stream's `event:` and `id:` are short.** `held` counted only the line and the data, so an event could
+  hold two more `CAP`s in its `event` and `id` fields (47 MiB seen), and a huge `id` became `last_id` and was sent as
+  `Last-Event-ID` on every reconnect. Both are now capped at `sse::NAME_CAP` (256 bytes, home's are short); a longer
+  one is `TooLarge`, which ends the stream as `CAP` does. Test: `client::sse::tests::a_long_event_name_or_id_is_too_large`.
+- **Forget with revoke stops reading first.** `Life::forget` awaited the connection and the revoke call (up to 3 × 10 s
+  plus 30 s) before `drop_attempt()`, while `events_task` kept reading up to 64 events (a hostile home: about 3 GiB). It
+  now clones `attempt.net`, calls `drop_attempt()`, then revokes. Test (with a fake home that holds the revoke,
+  `Fake::hold_revoke`): `forget_with_revoke_drops_the_streams_before_the_revoke_is_answered`.
+- Not done: wrapping the client tests that `results.recv().await` without a timeout in `tokio::time::timeout` (optional
+  in the review; they hang only on a regression).

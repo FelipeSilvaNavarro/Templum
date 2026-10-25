@@ -10,8 +10,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use templum_api::client::{KeySource, Keys, Limits, Mirror, Remote, Secrets, Update};
+use templum_api::code::{Key, Trust};
 use templum_api::model::*;
-use templum_api::store::{Scope, Settings, Store, Token};
+use templum_api::store::{Scope, Settings, Share, Store, Token, Way};
 use templum_api::{Options, Server, TerminalRef, codes, registry, start};
 use templum_mcp::{Incoming, Reply, rpc, tools};
 use templum_terminal::{Palette, TermOptions, Terminal};
@@ -148,7 +150,13 @@ pub struct Fake {
     pub terminals: Arc<Mutex<Vec<TerminalRef>>>,
     /// While set, the fake UI thread keeps the state requests it gets unanswered (`release_state`).
     pub hold_state: Arc<AtomicBool>,
+    /// While set, the fake UI thread keeps the `terminal_input` calls it gets unanswered
+    /// (`release_calls`), as a home that is slow to answer does.
+    pub hold_calls: Arc<AtomicBool>,
+    /// While set, the fake UI thread never answers `revoke_share`, as a home that is slow does.
+    pub hold_revoke: Arc<AtomicBool>,
     parked: Arc<Mutex<Vec<Parked>>>,
+    parked_calls: Arc<Mutex<Vec<Parked>>>,
     pub dir: tempfile::TempDir,
 }
 
@@ -182,6 +190,23 @@ impl Fake {
 
     pub fn call(&self, request: Req) -> Answer {
         request.send(&self.base)
+    }
+
+    /// Answers the `terminal_input` calls held, and stops holding.
+    pub fn release_calls(&self) {
+        self.hold_calls.store(false, Ordering::SeqCst);
+        for (id, reply) in self.parked_calls.lock().unwrap().drain(..) {
+            let _ = reply.send(tools::tool_result(&id, &Reply::ok("did terminal_input")));
+        }
+    }
+
+    /// Answers the oldest `terminal_input` call held and keeps holding the ones after it.
+    pub fn release_one_call(&self) {
+        let mut parked = self.parked_calls.lock().unwrap();
+        if !parked.is_empty() {
+            let (id, reply) = parked.remove(0);
+            let _ = reply.send(tools::tool_result(&id, &Reply::ok("did terminal_input")));
+        }
     }
 
     /// Answers the state requests held, and stops holding.
@@ -225,6 +250,12 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
     let holding = hold_state.clone();
     let parked: Arc<Mutex<Vec<Parked>>> = Arc::default();
     let park = parked.clone();
+    let hold_calls = Arc::new(AtomicBool::new(false));
+    let holding_calls = hold_calls.clone();
+    let hold_revoke = Arc::new(AtomicBool::new(false));
+    let holding_revoke = hold_revoke.clone();
+    let parked_calls: Arc<Mutex<Vec<Parked>>> = Arc::default();
+    let park_calls = parked_calls.clone();
     // A weak hold, so that dropping the fake still drops the server.
     let lender = Arc::downgrade(&server);
     std::thread::spawn(move || {
@@ -271,7 +302,23 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
                 "tools/call" if name == "close_block" => {
                     tools::tool_result(&id, &Reply::err("No."))
                 }
+                // A mirror's moves are refused for the block `locked`.
+                "tools/call"
+                    if name == "move_block" && params["arguments"]["block"] == "locked" =>
+                {
+                    tools::tool_result(&id, &Reply::err("No."))
+                }
+                "tools/call"
+                    if name == "terminal_input" && holding_calls.load(Ordering::SeqCst) =>
+                {
+                    park_calls.lock().unwrap().push((id, message.reply));
+                    continue;
+                }
                 "tools/call" if name == "delegate" && params["arguments"]["wait"] == true => {
+                    held.push(message.reply);
+                    continue;
+                }
+                "tools/call" if name == "revoke_share" && holding_revoke.load(Ordering::SeqCst) => {
                     held.push(message.reply);
                     continue;
                 }
@@ -303,9 +350,187 @@ pub fn fake_with(settings: Settings, tokens: Vec<Token>, tweak: impl FnOnce(&mut
         seen,
         terminals,
         hold_state,
+        hold_calls,
+        hold_revoke,
         parked,
+        parked_calls,
         dir,
     }
+}
+
+/// A share of the workspace `workspace`, and its text.
+pub fn share_token(scope: Scope, workspace: &str) -> (String, Token) {
+    let (text, mut token) = token(scope, Some(vec![workspace]));
+    token.name = "Another computer".into();
+    token.share = Some(Share {
+        workspace: workspace.into(),
+        way: Way::Public,
+        address: "https://templum.example.com".into(),
+    });
+    (text, token)
+}
+
+/// A mirror whose wake-ups are counted.
+pub fn mirror(keys: Keys) -> (Mirror, Arc<std::sync::atomic::AtomicUsize>) {
+    mirror_with(keys, Limits::default())
+}
+
+pub fn mirror_with(keys: Keys, limits: Limits) -> (Mirror, Arc<std::sync::atomic::AtomicUsize>) {
+    let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = wakes.clone();
+    let wake = Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+    });
+    (Mirror::start_with(keys, wake, limits), wakes)
+}
+
+/// The remote for `fake`, with the share's text kept in memory only.
+pub fn remote_for(fake: &Fake, text: &str) -> Remote {
+    remote_at(&fake.base, text)
+}
+
+/// The remote for plain HTTP to `url` (this computer), the secrets bound to it.
+pub fn remote_at(url: &str, text: &str) -> Remote {
+    let mut remote = Remote {
+        url: url.into(),
+        trust: Trust::Loopback,
+        trust_added: false,
+        access_id: None,
+        proxy: None,
+        key: KeySource::Memory(Secrets {
+            token: Key::new(text.into()),
+            access_secret: None,
+            proxy_auth: None,
+            url: String::new(),
+            trust: Trust::Loopback,
+            trust_added: false,
+            proxy: None,
+        }),
+    };
+    rebind(&mut remote);
+    remote
+}
+
+/// Makes the secrets of a remote kept in memory say where the remote goes, as the keyring does
+/// for one that is kept: call after changing its address, way in or proxy on purpose.
+pub fn rebind(remote: &mut Remote) {
+    let (url, trust, trust_added, proxy) = (
+        remote.url.clone(),
+        remote.trust.clone(),
+        remote.trust_added,
+        remote.proxy.clone(),
+    );
+    if let KeySource::Memory(secrets) | KeySource::Save { secrets, .. } = &mut remote.key {
+        (
+            secrets.url,
+            secrets.trust,
+            secrets.trust_added,
+            secrets.proxy,
+        ) = (url, trust, trust_added, proxy);
+    }
+}
+
+/// A TCP relay on a port of its own that sends every connection to another port: home can be
+/// cut (`cut`), gone (`point(0)`) and back (`point(port)`) at an address that never changes. It
+/// keeps what the clients sent, lowercased, to look at their requests.
+pub struct Relay {
+    pub port: u16,
+    target: Arc<std::sync::atomic::AtomicU16>,
+    open: Arc<Mutex<Vec<std::net::TcpStream>>>,
+    log: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Relay {
+    pub fn to(port: u16) -> Relay {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay = Relay {
+            port: listener.local_addr().unwrap().port(),
+            target: Arc::new(std::sync::atomic::AtomicU16::new(port)),
+            open: Arc::default(),
+            log: Arc::default(),
+        };
+        let (target, open, log) = (relay.target.clone(), relay.open.clone(), relay.log.clone());
+        std::thread::spawn(move || {
+            for client in listener.incoming().flatten() {
+                let to = target.load(Ordering::SeqCst);
+                if to == 0 {
+                    continue;
+                }
+                let Ok(server) = std::net::TcpStream::connect(("127.0.0.1", to)) else {
+                    continue;
+                };
+                {
+                    let mut open = open.lock().unwrap();
+                    open.extend(client.try_clone().ok());
+                    open.extend(server.try_clone().ok());
+                }
+                let (mut from_client, mut to_server) =
+                    (client.try_clone().unwrap(), server.try_clone().unwrap());
+                let log = log.clone();
+                std::thread::spawn(move || {
+                    let mut buffer = [0u8; 4096];
+                    while let Ok(n) = std::io::Read::read(&mut from_client, &mut buffer) {
+                        if n == 0
+                            || std::io::Write::write_all(&mut to_server, &buffer[..n]).is_err()
+                        {
+                            break;
+                        }
+                        log.lock().unwrap().extend(buffer[..n].to_ascii_lowercase());
+                    }
+                    let _ = to_server.shutdown(std::net::Shutdown::Both);
+                });
+                let (mut from_server, mut to_client) = (server, client);
+                std::thread::spawn(move || {
+                    let _ = std::io::copy(&mut from_server, &mut to_client);
+                    let _ = to_client.shutdown(std::net::Shutdown::Both);
+                });
+            }
+        });
+        relay
+    }
+
+    /// New connections go to `port`; 0: they are dropped.
+    pub fn point(&self, port: u16) {
+        self.target.store(port, Ordering::SeqCst);
+    }
+
+    /// Ends every connection open now.
+    pub fn cut(&self) {
+        for stream in self.open.lock().unwrap().drain(..) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    pub fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// Everything the clients sent so far, lowercased.
+    pub fn log(&self) -> String {
+        String::from_utf8_lossy(&self.log.lock().unwrap()).into_owned()
+    }
+}
+
+/// Drains what the remote `id` says until one update matches `pick`; every update drained on the
+/// way, the matching one and any that came with it included.
+pub fn until(
+    mirror: &Mirror,
+    id: &str,
+    what: &str,
+    mut pick: impl FnMut(&Update) -> bool,
+) -> Vec<Update> {
+    let mut seen = Vec::new();
+    wait_for(what, || {
+        let mut hit = false;
+        for (of, update) in mirror.updates() {
+            if of == id {
+                hit |= pick(&update);
+                seen.push(update);
+            }
+        }
+        hit
+    });
+    seen
 }
 
 /// The calls' log and the noise's, one after the other.

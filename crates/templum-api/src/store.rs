@@ -343,7 +343,7 @@ pub fn verify<'a>(tokens: &'a [Token], presented: &str, now: u64) -> Option<&'a 
 
 /// Whether two byte strings are equal, looking at every byte of equal-length ones. (A length is
 /// not a secret: both are hashes.)
-fn same(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

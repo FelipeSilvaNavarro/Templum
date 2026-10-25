@@ -21,7 +21,7 @@ futures = "0.3"
 # Already in the tree: the server's runtime, its sockets, timers, wake-ups and streams.
 tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "sync", "io-util"] }
 # Already in the tree (ureq's and the updater's): HTTP/1 on the server side.
-hyper = { version = "1", features = ["server", "http1"] }
+hyper = { version = "1", features = ["server", "client", "http1"] }
 # Already in the tree: hyper's IO adapter for tokio and its timer.
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 # Already in the tree: bodies read with a limit, and boxed.
@@ -39,6 +39,27 @@ form_urlencoded = "1"
 sysinfo = { version = "0.31", default-features = false, features = ["system"] }
 # New: writes Templum's certificate; no crate in the tree writes X.509.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+
+# New: the system's own verifier for a public certificate (the rustls project's, MIT or
+# Apache-2.0): Windows loads some roots only when its own verifier asks for them.
+rustls-platform-verifier = "0.7.1"
+# Already in the tree (ureq's): Mozilla's roots, for the private authority check.
+webpki-roots = "1"
+# New: the system's keyring for a mirror's key (keyring-rs project, MIT or Apache-2.0); the
+# `keyring` umbrella crate's defaults would bring stores Templum doesn't use.
+keyring-core = "1.0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# New: the Keychain's store for keyring-core.
+apple-native-keyring-store = { version = "1.0.2", default-features = false, features = ["keychain"] }
+
+[target.'cfg(windows)'.dependencies]
+# New: the Credential Manager's store for keyring-core.
+windows-native-keyring-store = "1.1.0"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
+# New: the Secret Service's store for keyring-core (zbus 5 with async-io, which the tree builds).
+zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-async-io-crypto-rust"] }
 
 [dev-dependencies]
 # Already in the tree: the tests' client, plain and over TLS.

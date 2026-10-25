@@ -216,6 +216,44 @@ pub struct SharedTerm(
     pub(crate) Arc<Shared>,
 );
 
+/// A viewer's grid, fed from another thread: what a PTY reader does for a shell. Cheap to clone.
+#[derive(Clone)]
+pub struct Feeder(SharedTerm);
+
+impl Feeder {
+    /// Shows `bytes` as a program's output: the tap's scanner, vte's parser under the grid's lock,
+    /// then a wake-up for the UI.
+    pub fn feed(&self, bytes: &[u8]) {
+        crate::tap::Scanner::new().scan(bytes, &self.0.1);
+        let mut parser: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut *self.0.0.lock(), bytes);
+        self.0.1.wake();
+    }
+
+    /// Whether both feed the same viewer.
+    pub fn same_viewer(&self, other: &Feeder) -> bool {
+        Arc::ptr_eq(&self.0.0, &other.0.0)
+    }
+
+    /// Gives the grid `cols` × `rows` when it has another size; the size the window reports
+    /// follows.
+    pub fn resize(&self, cols: u16, rows: u16) {
+        if self.0.grid_size() == (cols, rows) {
+            return;
+        }
+        {
+            let mut size = self.0.1.size.lock().unwrap();
+            *size = window_size(cols, rows, (size.cell_width, size.cell_height));
+        }
+        self.0
+            .0
+            .lock_unfair()
+            .resize(TermSize::new(cols as usize, rows as usize));
+        self.0.touched();
+    }
+}
+
 /// Settings a running terminal can change: the history length and the default cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TermOptions {
@@ -292,6 +330,12 @@ impl SharedTerm {
 
     pub fn modes(&self) -> Modes {
         Modes::of(*self.0.lock_unfair().mode())
+    }
+
+    /// The grid's columns and screen lines now.
+    pub fn grid_size(&self) -> (u16, u16) {
+        let term = self.0.lock_unfair();
+        (term.columns() as u16, term.screen_lines() as u16)
     }
 
     /// Starts a selection at a viewport cell (row 0 = top visible line).
@@ -1092,11 +1136,12 @@ impl Terminal {
     /// Shows `bytes` in a viewer, as a program's output: whole lines, escape sequences and all.
     /// Its watches hear them.
     pub fn feed(&self, bytes: &[u8]) {
-        crate::tap::Scanner::new().scan(bytes, &self.shared);
-        let mut parser: alacritty_terminal::vte::ansi::Processor =
-            alacritty_terminal::vte::ansi::Processor::new();
-        parser.advance(&mut *self.term.0.lock(), bytes);
-        self.shared.wake();
+        self.feeder().feed(bytes);
+    }
+
+    /// A handle that feeds and resizes this viewer from any thread.
+    pub fn feeder(&self) -> Feeder {
+        Feeder(self.term.clone())
     }
 
     /// The terminal's `TEMPLUM_TERMINAL`.
@@ -1623,6 +1668,33 @@ mod tests {
             )
             .id()
         );
+    }
+
+    #[test]
+    fn a_feeder_feeds_and_resizes_a_viewer_from_another_thread() {
+        let v = Terminal::viewer(
+            "v",
+            (20, 4),
+            Palette::default(),
+            TermOptions::default(),
+            Arc::new(|| {}),
+        );
+        let f = v.feeder();
+        std::thread::spawn(move || f.feed(b"hi")).join().unwrap();
+        assert_eq!(v.shared().lines(1), ["hi"]);
+        assert_eq!(v.shared().grid_size(), (20, 4));
+        assert!(v.feeder().same_viewer(&v.feeder()));
+        let other = Terminal::viewer(
+            "w",
+            (20, 4),
+            Palette::default(),
+            TermOptions::default(),
+            Arc::new(|| {}),
+        );
+        assert!(!v.feeder().same_viewer(&other.feeder()));
+        v.feeder().resize(30, 6);
+        assert_eq!(v.shared().grid_size(), (30, 6));
+        assert_eq!(v.shared().lines(1), ["hi"], "a resize keeps what was shown");
     }
 
     #[test]

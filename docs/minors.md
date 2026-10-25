@@ -2274,3 +2274,30 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   with `--dev` once.
 - [ ] **A pinned share's address is not tried against the machine.** (`workspace/api.rs`, `share_workspace`.) A typo in
   the host or port makes a code that never connects. Fix: the dialog connects to it once before it shows the code.
+- [ ] **The system's proxy settings and PAC files aren't read, nor NTLM or Kerberos.**
+  (`crates/templum-api/src/client/dial.rs`.) The spec's call: only a typed or environment `HTTP CONNECT` proxy with
+  Basic credentials. A work proxy that needs another login refuses with 407 ("The proxy … refused the connection").
+  Fix: a later card.
+- [ ] **A frame is fed on the client's thread under the viewer's fair lock,** which may wait for a paint's copy.
+  (`crates/templum-api/src/client/frames.rs`, `Painter::paint`; `templum-terminal`'s `Feeder::feed`.) Fix: if
+  `--bench-mirror` shows it, feed with `try_lock` and keep one merged pending frame per terminal.
+- [ ] **A key that can't be saved to its file says it as a refusal "about Show".**
+  (`crates/templum-api/src/client/remote.rs`, `prepare`.) `About` has no variant for the key; a key that doesn't match
+  its address (the index was rewritten) and an address that doesn't fit its way in are told the same way. Fix:
+  `About::Key`.
+- [ ] **A viewer resized by a `Feeder` keeps its first size in `Terminal::grid_size`.** (`crates/templum-terminal/src/
+  terminal.rs`.) `Feeder::resize` changes the grid (`SharedTerm::grid_size` reads it), but `Terminal`'s own `cols`
+  and `rows` stay the viewer's first, so `Terminal::resize` with the first size returns early. Fix: plan 1c reads the
+  grid's size, or `Terminal::grid_size` does.
+- [ ] **The calls channel of a remote is unbounded.** (`crates/templum-api/src/client/remote.rs`, `Attempt::calls`,
+  `Life::call`.) Only the person's commands feed it, but a home that answers slowly while a block is dragged queues a
+  `move_block` per mouse move, each sent in turn (up to 10 × 30 s each). Fix: keep one pending `Move` per block, the
+  newest, and send that.
+- [ ] **An event stream waiting for a fresh `Last-Event-ID` is advisory.** (`crates/templum-api/src/client/remote.rs`.)
+  Home answers every resume with a snapshot, so the id only tells it the mirror is the same client. Nothing to fix
+  unless home learns to replay.
+- [ ] **The Keychain's and the Credential Manager's stores were not run.**
+  (`crates/templum-api/src/client/keys.rs`, `system_store`.) Their arms were checked by reading (and the Secret
+  Service's by building) on this Linux machine; the tests use the mock store. Fix: CI's macOS and Windows builds,
+  then one save and load by hand on each.
+

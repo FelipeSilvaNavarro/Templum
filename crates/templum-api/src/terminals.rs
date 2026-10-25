@@ -55,14 +55,19 @@ fn row(y: usize, runs: &[Styled]) -> RowView {
     }
 }
 
-/// What `now` shows that `last` (what the client has) doesn't: None when nothing; the whole
-/// screen when there is no `last` or its size differs; else the rows that differ, by `y`. Size,
-/// cursor, title and modes come in every frame.
+/// What `now` shows that `last` (what the client has) doesn't: None when nothing; the whole screen when there is no
+/// `last` or its size or screen (`modes.full_screen`) differs; else the rows that differ, by `y`. Size, cursor, title
+/// and modes come in every frame.
 pub(crate) fn frame(last: Option<&Screen>, now: &Screen) -> Option<FrameView> {
     if last == Some(now) {
         return None;
     }
-    let last = last.filter(|l| l.cols == now.cols && l.rows.len() == now.rows.len());
+    // Another screen (`?1049`) is a new picture: the rows that look alike are not the same ones.
+    let last = last.filter(|l| {
+        l.cols == now.cols
+            && l.rows.len() == now.rows.len()
+            && l.modes.full_screen == now.modes.full_screen
+    });
     let rows = now
         .rows
         .iter()
@@ -422,6 +427,25 @@ mod tests {
             .iter()
             .map(|r| r.runs.iter().map(|run| run.text.as_str()).collect())
             .collect()
+    }
+
+    #[test]
+    fn a_switch_of_screens_is_a_whole_frame() {
+        // The same blank rows in the main screen and the alternate one: a delta would send
+        // none of them, and the mirror would keep the old screen's picture under them.
+        let home = viewer(10, 3);
+        home.feed(b"keep\r\nme");
+        let main = screen(&home);
+        home.feed(b"\x1b[?1049h");
+        let alternate = screen(&home);
+        assert!(!main.modes.full_screen && alternate.modes.full_screen);
+        let switched = frame(Some(&main), &alternate).unwrap();
+        assert!(switched.whole, "{switched:?}");
+        let back = frame(Some(&alternate), &main).unwrap();
+        assert!(back.whole);
+        home.feed(b"\x1b[?1049lx");
+        let moved = frame(Some(&main), &screen(&home)).unwrap();
+        assert!(!moved.whole, "the same screen stays a delta");
     }
 
     #[test]

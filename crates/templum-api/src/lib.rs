@@ -2,6 +2,7 @@
 //! stream. No UI: `crates/templum` holds the glue.
 
 mod audit;
+pub mod client;
 pub mod code;
 mod events;
 pub mod model;

@@ -220,62 +220,6 @@ mod tests {
         )
     }
 
-    /// What a mirror writes into a viewer to show `screen` (part 2 moves this into the crate when
-    /// it needs it): per row, `CSI y;1H CSI 0m CSI 2K`, then each run as `CSI 0m` + its SGR + its
-    /// text; then `CSI 0m`; the cursor: `CSI ?25l` when None, else `CSI row;col H`, DECSCUSR and
-    /// `CSI ?25h`; the title: `OSC 2;title BEL` when Some.
-    fn redraw(screen: &Screen) -> Vec<u8> {
-        let paint = |p: Paint, base: u8, out: &mut String| match p {
-            Paint::Default => {}
-            Paint::Index(i) => out.push_str(&format!(";{base};5;{i}")),
-            Paint::Rgb(c) => out.push_str(&format!(";{base};2;{};{};{}", c.r, c.g, c.b)),
-        };
-        let mut out = String::new();
-        for (y, row) in screen.rows.iter().enumerate() {
-            out.push_str(&format!("\x1b[{};1H\x1b[0m\x1b[2K", y + 1));
-            for run in row {
-                let mut sgr = String::from("0");
-                for (on, code) in [
-                    (run.bold, 1),
-                    (run.dim, 2),
-                    (run.italic, 3),
-                    (run.underline, 4),
-                    (run.inverse, 7),
-                ] {
-                    if on {
-                        sgr.push_str(&format!(";{code}"));
-                    }
-                }
-                paint(run.fg, 38, &mut sgr);
-                paint(run.bg, 48, &mut sgr);
-                out.push_str(&format!("\x1b[{sgr}m{}", run.text));
-            }
-            out.push_str("\x1b[0m");
-        }
-        match screen.cursor {
-            None => out.push_str("\x1b[?25l"),
-            Some(c) => {
-                let n = match (c.shape, c.blinking) {
-                    (CursorShape::Underline, true) => 3,
-                    (CursorShape::Underline, false) => 4,
-                    (CursorShape::Beam, true) => 5,
-                    (CursorShape::Beam, false) => 6,
-                    (_, true) => 1,
-                    (_, false) => 2,
-                };
-                out.push_str(&format!(
-                    "\x1b[{};{}H\x1b[{n} q\x1b[?25h",
-                    c.row + 1,
-                    c.col + 1
-                ));
-            }
-        }
-        if let Some(title) = &screen.title {
-            out.push_str(&format!("\x1b]2;{title}\x07"));
-        }
-        out.into_bytes()
-    }
-
     #[test]
     fn styles_come_as_the_program_asked() {
         let (term, _) = headless(20, 2);
@@ -448,23 +392,5 @@ mod tests {
         let c = term.changes();
         term.touched();
         assert!(term.changes() > c);
-    }
-
-    #[test]
-    fn a_screen_redrawn_in_a_viewer_reads_the_same() {
-        let (term, _) = headless(30, 5);
-        feed(
-            &term,
-            "\x1b]2;title\x07\x1b[1;31mred\x1b[0m \x1b[38;5;200mix\x1b[38;2;9;8;7m rgb\x1b[0m\r\n\
-             \x1b[48;5;4m  \x1b[48;2;1;2;3mblue\x1b[0m\x1b[7mrev\x1b[0m\x1b[4;3;2mstyles\x1b[0m\r\n\
-             ab\x1b[8msecret\x1b[0m 你好 e\u{301}!\r\n\
-             \x1b[44m  \x1b[0m\x1b[4m  \x1b[0m\r\n\
-             012345678901234567890123456789\x1b[2 q"
-                .as_bytes(),
-        );
-        let a = term.screen().unwrap();
-        let v = viewer(30, 5);
-        v.feed(&redraw(&a));
-        assert_eq!(v.shared().screen(), Some(a));
     }
 }
