@@ -4673,3 +4673,532 @@ fn edit_checklist_renames_and_moves_and_new_checklist_fills_an_empty_block(
         "Plan"
     );
 }
+
+/// The note block `block`'s editor on screen.
+fn shown_editor(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    block: BlockId,
+) -> Entity<gpui_kit::component::input::EditorState> {
+    ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&block]
+            .note()
+            .unwrap()
+            .tab()
+            .unwrap()
+            .editor
+            .clone()
+    })
+}
+
+/// Note `id`'s `rev` as the state shows it to `token`.
+fn note_rev(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    token: &Token,
+    id: u64,
+) -> u64 {
+    state(handle, ws, cx, token)
+        .notes
+        .iter()
+        .find(|n| n.id == id)
+        .map_or(0, |n| n.rev)
+}
+
+#[gpui_kit::test]
+fn edit_note_writes_on_its_rev_only_and_keeps_home_s_caret(cx: &mut TestAppContext) {
+    use templum_api::model::NOTE_TEXT_MOST;
+    let (handle, ws) = open(cx);
+    let (_, note, _) = three_blocks(handle, &ws, cx);
+    let (uid, id) = ws.read_with(cx, |ws, _| {
+        (
+            ws.space.uids[&note].clone(),
+            ws.space.blocks[&note].note().unwrap().tab().unwrap().id,
+        )
+    });
+    let editor = shown_editor(&ws, cx, note);
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |e, cx| {
+            e.set_value("first\nsecond", window, cx);
+            let end = e.value().len();
+            e.set_selected_range(end..end, cx);
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let control = with_token(&ws, cx, Scope::Control, None);
+    let rev = note_rev(handle, &ws, cx, &control, id);
+    let edit = |cx: &mut TestAppContext, args: Value| {
+        said(&tool(handle, &ws, cx, &control, "edit_note", args))
+    };
+    let answer = edit(
+        cx,
+        json!({"block": uid, "note": id, "text": "zero\nfirst\nsecond", "rev": rev}),
+    );
+    assert_eq!(answer, (false, format!("Saved note {id}.")));
+    cx.run_until_parked();
+    editor.read_with(cx, |e, _| {
+        assert_eq!(e.value().as_ref(), "zero\nfirst\nsecond");
+        assert_eq!(
+            e.selected_range(),
+            17..17,
+            "home's caret is still after second"
+        );
+    });
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.notes.get(id).unwrap().text.clone()),
+        "zero\nfirst\nsecond"
+    );
+    let newer = note_rev(handle, &ws, cx, &control, id);
+    assert!(newer > rev, "{newer} > {rev}");
+    // The same call again, on the old rev, is refused and writes nothing.
+    assert_eq!(
+        edit(
+            cx,
+            json!({"block": uid, "note": id, "text": "other", "rev": rev})
+        ),
+        (
+            true,
+            format!("Note {id} changed since: its newer text and rev are in the state.")
+        )
+    );
+    editor.read_with(cx, |e, _| {
+        assert_eq!(e.value().as_ref(), "zero\nfirst\nsecond")
+    });
+    // One Ctrl+Z of home's editor brings the old text back.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(note, window, cx));
+        window.press(UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    editor.read_with(cx, |e, _| assert_eq!(e.value().as_ref(), "first\nsecond"));
+    cx.run_until_parked();
+    // An agent's own write moves the rev too: a text made before it is refused.
+    let before = note_rev(handle, &ws, cx, &control, id);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let space = ws.space.id.clone();
+            ws.note_replace(&space, note, "agent wrote", None, window, cx)
+                .unwrap()
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(note_rev(handle, &ws, cx, &control, id) > before);
+    assert!(
+        edit(
+            cx,
+            json!({"block": uid, "note": id, "text": "late", "rev": before})
+        )
+        .0,
+        "an agent's write moved the rev"
+    );
+    // A name and a color in one call.
+    assert_eq!(
+        edit(
+            cx,
+            json!({"block": uid, "note": id, "name": "Plan", "color": "blue"})
+        ),
+        (
+            false,
+            format!("Renamed note {id} \"Plan\". Colored note {id} blue.")
+        )
+    );
+    ws.read_with(cx, |ws, _| {
+        let entry = ws.notes.get(id).unwrap();
+        assert_eq!(
+            (entry.name.as_str(), entry.color),
+            ("Plan", Some(crate::board::Label::Blue))
+        );
+    });
+    assert_eq!(
+        edit(cx, json!({"block": uid, "note": id, "color": "none"})),
+        (false, format!("Cleared the color of note {id}."))
+    );
+    // A note of another block.
+    let other = ws.update(cx, |ws, _| ws.notes.add("elsewhere".into(), None, 0));
+    let (failed, text) = edit(cx, json!({"block": uid, "note": other, "name": "x"}));
+    assert!(
+        failed && text == format!("{uid} shows no note {other}."),
+        "{text}"
+    );
+    // A note made longer than 256 KiB at home refuses its text but takes a name.
+    let long = ws.update(cx, |ws, _| {
+        ws.notes.add("x".repeat(NOTE_TEXT_MOST + 1), None, 0)
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let tab = ws.note_tab(long, window, cx).unwrap();
+            let shown = ws.space.blocks.get_mut(&note).unwrap().note_mut().unwrap();
+            shown.tabs.push(tab);
+        })
+    })
+    .unwrap();
+    let rev = note_rev(handle, &ws, cx, &control, long);
+    let (failed, text) = edit(
+        cx,
+        json!({"block": uid, "note": long, "text": "short", "rev": rev}),
+    );
+    assert!(
+        failed && text.contains("longer than the API shows"),
+        "{text}"
+    );
+    assert_eq!(
+        edit(cx, json!({"block": uid, "note": long, "name": "Big"})),
+        (false, format!("Renamed note {long} \"Big\"."))
+    );
+}
+
+#[gpui_kit::test]
+fn new_close_open_and_delete_a_note_through_the_api(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, note, terminal) = three_blocks(handle, &ws, cx);
+    let (uid, space) = ws.read_with(cx, |ws, _| {
+        (ws.space.uids[&note].clone(), ws.space.id.clone())
+    });
+    let kept = ws.read_with(cx, |ws, _| ws.space.focused);
+    let control = with_token(&ws, cx, Scope::Control, None);
+    let full = with_token(&ws, cx, Scope::Full, None);
+    let call = |cx: &mut TestAppContext, token: &Token, name: &str, args: Value| {
+        tool(handle, &ws, cx, token, name, args)
+    };
+    let line = call(
+        cx,
+        &control,
+        "new_note",
+        json!({"block": uid, "name": "Plan", "text": "first line"}),
+    );
+    let (failed, text) = said(&line);
+    assert!(!failed, "{text}");
+    assert_eq!(
+        line["result"]["target"],
+        json!({"workspace": space, "block": uid})
+    );
+    let (made, tabs) = ws.read_with(cx, |ws, _| {
+        let shown = ws.space.blocks[&note].note().unwrap();
+        (shown.tab().unwrap().id, shown.tabs.len())
+    });
+    assert_eq!((text, tabs), (format!("Made note {made} in {uid}."), 2));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.notes.name(made), "Plan");
+        assert_eq!(ws.notes.get(made).unwrap().text, "first line");
+        assert_eq!(ws.space.focused, kept, "home's keyboard didn't move");
+    });
+    // Closing keeps the note, marked as last open here.
+    let (failed, text) = said(&call(
+        cx,
+        &control,
+        "close_note",
+        json!({"block": uid, "note": made}),
+    ));
+    assert_eq!(
+        (failed, text),
+        (false, format!("Closed note {made} in {uid}."))
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.notes.get(made).unwrap().closed_in.as_deref(),
+            Some(space.as_str())
+        );
+        assert_eq!(ws.space.blocks[&note].note().unwrap().tabs.len(), 1);
+    });
+    let seen = state(handle, &ws, cx, &control);
+    let listed = seen.notes.iter().find(|n| n.id == made).unwrap();
+    assert_eq!(
+        (
+            listed.workspace.as_deref(),
+            listed.text.as_str(),
+            listed.name.as_str()
+        ),
+        (Some(space.as_str()), "", "Plan")
+    );
+    assert!(listed.rev > 0 || ws.read_with(cx, |ws, _| ws.notes.rev == 0));
+    // A blank note closed goes.
+    let blank = said(&call(cx, &control, "new_note", json!({"block": uid}))).1;
+    let blank: u64 = blank.split(' ').nth(2).unwrap().parse().unwrap();
+    call(
+        cx,
+        &control,
+        "close_note",
+        json!({"block": uid, "note": blank}),
+    );
+    ws.read_with(cx, |ws, _| assert!(ws.notes.get(blank).is_none()));
+    // open_note reopens it in a block.
+    let (failed, text) = said(&call(
+        cx,
+        &control,
+        "open_note",
+        json!({"note": made, "block": uid}),
+    ));
+    assert_eq!(
+        (failed, text),
+        (false, format!("Opened note {made} in {uid}."))
+    );
+    let active = ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&note].note().unwrap().tab().unwrap().id
+    });
+    assert_eq!(active, made);
+    // Open somewhere: just shown.
+    call(
+        cx,
+        &control,
+        "close_note",
+        json!({"block": uid, "note": made}),
+    );
+    let line = call(
+        cx,
+        &control,
+        "open_note",
+        json!({"note": made, "workspace": space, "x": 900, "y": 700}),
+    );
+    let (failed, text) = said(&line);
+    assert!(!failed, "{text}");
+    let new_uid = line["result"]["target"]["block"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(new_uid, uid);
+    assert_eq!(text, format!("Opened note {made} in {new_uid}."));
+    let at = ws.read_with(cx, |ws, _| {
+        let block = ws.space.block_by_uid(&new_uid).unwrap();
+        let rect = ws.space.canvas.get(block).unwrap().rect;
+        (
+            (rect.x, rect.y),
+            ws.space.blocks[&block].note().unwrap().ids(),
+        )
+    });
+    assert_eq!((at.0, at.1.clone()), ((900.0, 700.0), vec![made]));
+    // Open: showing the tab where it is.
+    let (_, text) = said(&call(
+        cx,
+        &control,
+        "open_note",
+        json!({"note": made, "block": uid}),
+    ));
+    assert_eq!(text, format!("Opened note {made} in {new_uid}."));
+    // Deleting is Full only.
+    let refused = call(cx, &control, "delete_note", json!({"note": made}));
+    assert_eq!(refused["error"]["code"], codes::SCOPE);
+    ws.read_with(cx, |ws, _| assert!(ws.notes.get(made).is_some()));
+    let (failed, text) = said(&call(cx, &full, "delete_note", json!({"note": made})));
+    assert_eq!(
+        (failed, text),
+        (false, format!("Deleted note {made} \"Plan\"."))
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.notes.get(made).is_none());
+        let block = ws.space.block_by_uid(&new_uid).unwrap();
+        assert!(ws.space.blocks[&block].note().unwrap().tabs.is_empty());
+    });
+    let _ = terminal;
+}
+
+#[gpui_kit::test]
+fn a_limited_token_reaches_only_its_workspace_s_notes(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (_, note, _) = three_blocks(handle, &ws, cx);
+    let uid1 = ws.read_with(cx, |ws, _| ws.space.uids[&note].clone());
+    let (second, _) = another_workspace(handle, &ws, cx);
+    let (_, text) = super::templum_agent::control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({ "workspace": &second, "kind": "note", "text": "elsewhere" }),
+    );
+    let uid2 = text
+        .trim_end_matches('.')
+        .rsplit(' ')
+        .next()
+        .unwrap()
+        .to_string();
+    let (open1, open2, closed1, unmarked) = ws.update(cx, |ws, _| {
+        let open1 = ws.space.blocks[&note].note().unwrap().tab().unwrap().id;
+        let open2 = ws
+            .in_space(&second, |ws| {
+                ws.space
+                    .blocks
+                    .values()
+                    .find_map(|b| b.note()?.tab().map(|t| t.id))
+            })
+            .unwrap()
+            .unwrap();
+        let closed1 = ws.notes.add("closed in one".into(), None, 1);
+        ws.notes.close_in(closed1, &first);
+        let unmarked = ws.notes.add("closed long ago".into(), None, 1);
+        (open1, open2, closed1, unmarked)
+    });
+    let two = with_token(&ws, cx, Scope::Full, Some(vec![second.as_str()]));
+    let one = with_token(&ws, cx, Scope::Full, Some(vec![first.as_str()]));
+    let call = |cx: &mut TestAppContext, token: &Token, name: &str, args: Value| {
+        said(&tool(handle, &ws, cx, token, name, args))
+    };
+    // What a refusal says: the words of the error.
+    let refusal = |cx: &mut TestAppContext, token: &Token, name: &str, args: Value| {
+        let line = tool(handle, &ws, cx, token, name, args);
+        line["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    // A token of w2 reaches none of w1's notes, however they are named.
+    for id in [closed1, open1, unmarked] {
+        for name in ["open_note", "delete_note"] {
+            let words = refusal(cx, &two, name, json!({"note": id, "workspace": second}));
+            assert_eq!(
+                words,
+                templum_api::registry::no("note", &id.to_string()),
+                "{name} {id}"
+            );
+        }
+    }
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.notes.get(closed1).is_some() && ws.notes.get(open1).is_some());
+    });
+    assert_eq!(
+        refusal(
+            cx,
+            &two,
+            "edit_note",
+            json!({"block": uid1, "note": open1, "name": "x"})
+        ),
+        templum_api::registry::no("block", &uid1)
+    );
+    // w1's own: the closed one reopens; the unmarked one isn't reachable; w1's can't reach w2's.
+    let (failed, text) = call(
+        cx,
+        &one,
+        "open_note",
+        json!({"note": closed1, "block": uid1}),
+    );
+    assert!(!failed, "{text}");
+    let words = refusal(
+        cx,
+        &one,
+        "open_note",
+        json!({"note": unmarked, "block": uid1}),
+    );
+    assert_eq!(
+        words,
+        templum_api::registry::no("note", &unmarked.to_string())
+    );
+    let words = refusal(cx, &one, "open_note", json!({"note": open2, "block": uid1}));
+    assert_eq!(words, templum_api::registry::no("note", &open2.to_string()));
+    let _ = uid2;
+    // An unlimited token reaches the unmarked one.
+    let all = with_token(&ws, cx, Scope::Full, None);
+    let (failed, _) = call(
+        cx,
+        &all,
+        "open_note",
+        json!({"note": unmarked, "block": uid1}),
+    );
+    assert!(!failed);
+}
+
+#[gpui_kit::test]
+fn a_deleted_workspace_s_closed_notes_are_no_new_workspace_s(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (second, _) = another_workspace(handle, &ws, cx);
+    let note = ws.update(cx, |ws, _| {
+        let id = ws.notes.add("was in w2".into(), None, 1);
+        ws.notes.close_in(id, &second);
+        id
+    });
+    let all = with_token(&ws, cx, Scope::Read, None);
+    let seen = state(handle, &ws, cx, &all);
+    assert_eq!(
+        seen.notes
+            .iter()
+            .find(|n| n.id == note)
+            .unwrap()
+            .workspace
+            .as_deref(),
+        Some(second.as_str())
+    );
+    // The workspace goes; a new one gets its id again.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.delete_space_as(&second, false, window, cx))
+    })
+    .unwrap();
+    super::templum_agent::control(
+        handle,
+        &ws,
+        cx,
+        "create_workspace",
+        json!({"name": "Again"}),
+    );
+    let ids: Vec<String> = ws.read_with(cx, |ws, _| {
+        ws.order().iter().map(|s| s.id.clone()).collect()
+    });
+    assert!(ids.contains(&second), "{ids:?}");
+    let limited = with_token(&ws, cx, Scope::Read, Some(vec![second.as_str()]));
+    let seen = state(handle, &ws, cx, &all);
+    assert_eq!(
+        seen.notes
+            .iter()
+            .find(|n| n.id == note)
+            .map(|n| n.workspace.clone()),
+        None,
+        "the note isn't listed under the new w2"
+    );
+    assert!(state(handle, &ws, cx, &limited).notes.is_empty());
+    let _ = first;
+}
+
+#[gpui_kit::test]
+fn a_note_opened_again_is_closed_in_no_workspace(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (second, _) = another_workspace(handle, &ws, cx);
+    // Closed in the first workspace, then opened in the second, which is then deleted with the
+    // tab open: the note is open nowhere, and no share of the first one may see it.
+    let note = ws.update(cx, |ws, _| {
+        let id = ws.notes.add("private".into(), None, 1);
+        ws.notes.close_in(id, &first);
+        id
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.switch_to(1, window, cx);
+            ws.open_note(note, None, window, cx);
+        })
+    })
+    .unwrap();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.notes.get(note).unwrap().closed_in.clone()),
+        None
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.switch_to(0, window, cx);
+            ws.delete_space_as(&second, false, window, cx)
+        })
+    })
+    .unwrap();
+    let limited = with_token(&ws, cx, Scope::Read, Some(vec![first.as_str()]));
+    assert!(
+        state(handle, &ws, cx, &limited)
+            .notes
+            .iter()
+            .all(|n| n.id != note),
+        "the first workspace's share doesn't list it"
+    );
+    let control = with_token(&ws, cx, Scope::Control, Some(vec![first.as_str()]));
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &control,
+        "open_note",
+        json!({"note": note, "workspace": first}),
+    );
+    assert_eq!(
+        line["error"]["message"].as_str(),
+        Some(templum_api::registry::no("note", &note.to_string()).as_str())
+    );
+}

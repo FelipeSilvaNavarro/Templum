@@ -573,14 +573,12 @@ impl Items {
                 shells,
                 gates,
             } => {
-                // Notes… lists this computer's own, which can't go into a mirrored workspace;
-                // Checklists… lists home's there.
                 let notes = gated_item(
                     ws,
                     "Notes…",
                     Some(IconName::NotebookText),
                     gates.why(Deed::OpenNote),
-                    |_, window, cx| crate::note::open_notes(None, window, cx),
+                    |ws, window, cx| crate::note::open_notes(ws.space.id.clone(), None, window, cx),
                 );
                 let checklists = gated_item(
                     ws,
@@ -1464,8 +1462,10 @@ impl Items {
                     ws,
                     "All notes…",
                     Some(IconName::NotebookText),
-                    gates.why(Deed::EditNote),
-                    move |_, window, cx| crate::note::open_notes(Some(block), window, cx),
+                    gates.why(Deed::OpenNote),
+                    move |ws, window, cx| {
+                        crate::note::open_notes(ws.space.id.clone(), Some(block), window, cx)
+                    },
                 ))
                 .when_some(rename, |menu, (note, name)| {
                     menu.item(gated_item(
@@ -1473,14 +1473,18 @@ impl Items {
                         "Rename…",
                         None,
                         gates.why(Deed::EditNote),
-                        move |_, window, cx| {
-                            let ws = cx.entity();
+                        move |ws, window, cx| {
+                            let (entity, space) = (cx.entity(), ws.space.id.clone());
                             prompt::ask_text(
                                 "Rename note",
                                 "Rename",
                                 name.clone(),
-                                move |text, _, cx| {
-                                    ws.update(cx, |ws, cx| ws.rename_note(note, &text, cx));
+                                move |text, window, cx| {
+                                    entity.update(cx, |ws, cx| {
+                                        if ws.still_on(&space, window, cx) {
+                                            ws.rename_note(note, block, &text, window, cx)
+                                        }
+                                    });
                                     true
                                 },
                                 window,
@@ -1517,16 +1521,16 @@ impl Items {
                         window,
                         cx,
                         move |menu, _, _| {
-                            let none = item(&ws, "None", None, move |ws, _, cx| {
-                                ws.set_note_color(block, None, cx)
+                            let none = item(&ws, "None", None, move |ws, window, cx| {
+                                ws.set_note_color(block, None, window, cx)
                             })
                             .checked(color.is_none());
                             Label::ALL.into_iter().fold(menu.item(none), |menu, label| {
                                 let name = label.name();
                                 let title = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
                                 menu.item(
-                                    item(&ws, title, None, move |ws, _, cx| {
-                                        ws.set_note_color(block, Some(label), cx)
+                                    item(&ws, title, None, move |ws, window, cx| {
+                                        ws.set_note_color(block, Some(label), window, cx)
                                     })
                                     .checked(color == Some(label)),
                                 )

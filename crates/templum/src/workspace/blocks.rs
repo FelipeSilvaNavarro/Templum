@@ -1127,9 +1127,10 @@ impl Workspace {
             self.end_turn(terminal, templum_mcp::Reply::err(why), cx);
         }
         if let Some((block, _, body)) = self.take_block(id, window, cx) {
-            // Its notes stay in the Notes dialog, but for blank ones: nothing is lost.
+            // Its notes stay in the Notes dialog, but for blank ones: nothing is lost. (A mirrored
+            // block's are home's, by home's ids.)
             for note in body.note().map(Note::ids).unwrap_or_default() {
-                self.drop_if_blank(note);
+                self.note_closed(note);
             }
             if let Some(list) = body.checklist().and_then(|c| c.list) {
                 self.drop_checklist_if_blank(list);

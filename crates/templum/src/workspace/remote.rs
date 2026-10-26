@@ -105,6 +105,7 @@ pub(super) fn clean_refusal(refusal: client::Refusal) -> client::Refusal {
             .details
             .map(|d| clean_text(&d, client::DETAILS_MOST))
             .filter(|d| !d.trim().is_empty()),
+        maybe_done: refusal.maybe_done,
     }
 }
 
@@ -268,9 +269,30 @@ pub(crate) struct RemoteSpace {
     /// block and a checklist block of this workspace draw them (`remote_content.rs`).
     pub notes: Notes,
     pub checklists: Checklists,
-    /// The editor of each note a note block of home's workspace shows (read-only, with no
-    /// subscription): made where a window is, laid into the blocks' tabs without one.
+    /// The editor of each note a note block of home's workspace shows (editable while the rule
+    /// lets it, its `Change` and `Blur` sent to `remote_notes.rs`): made where a window is, laid
+    /// into the blocks' tabs without one.
     pub note_editors: HashMap<u64, Entity<EditorState>>,
+    /// The notes whose text home cut, or this copy's cleaning did: never edited from here.
+    pub notes_cut: HashSet<u64>,
+    /// The notes typed in here and not yet taken by home, by home's id (`remote_notes.rs`), and
+    /// the task that wakes the next send.
+    pub(super) edits: HashMap<u64, super::remote_notes::NoteEdit>,
+    pub(super) note_wake: Option<gpui_kit::Task<()>>,
+    /// What waits until the text typed in a note is at home: a tab or a note block to close.
+    pub(super) closing: Vec<super::remote_notes::Closing>,
+    /// The notes renamed and recolored here, and the tabs closed here, not yet shown by home:
+    /// they stand over the copy until home's state shows it, a refusal ends them, or
+    /// [`holds::HOLD`] passes.
+    pub notes_renamed: Holds<u64, String>,
+    pub notes_colored: Holds<u64, Option<crate::board::Label>>,
+    pub tabs_closed: Holds<u64, bool>,
+    /// The notes the last copy laid a hold over: cleaned again from home's state at the next copy.
+    pub(super) notes_laid: HashSet<u64>,
+    /// The note block a tab was asked of (`new_note`, `open_note`): its local id, the tabs home
+    /// showed then, what had the keyboard and when it was asked. The new tab is shown with the
+    /// keyboard when home's state brings it.
+    pub(super) tab_awaited: Option<(BlockId, Vec<u64>, Option<BlockId>, Instant)>,
     /// The items checked, edited and deleted here and not yet shown by home (by checklist and
     /// item): they stand over the copy until home's state shows it, a refusal ends them, or
     /// [`holds::HOLD`] passes.
@@ -531,6 +553,15 @@ impl RemoteSpace {
             notes: Notes::default(),
             checklists: Checklists::default(),
             note_editors: HashMap::new(),
+            notes_cut: HashSet::new(),
+            edits: HashMap::new(),
+            note_wake: None,
+            closing: Vec::new(),
+            notes_renamed: Holds::default(),
+            notes_colored: Holds::default(),
+            tabs_closed: Holds::default(),
+            notes_laid: HashSet::new(),
+            tab_awaited: None,
             items_checked: Holds::default(),
             items_edited: Holds::default(),
             items_deleted: Holds::default(),
@@ -588,9 +619,6 @@ impl RemoteSpace {
     /// remote isn't live, home's Templum lacks the tool (once its tools were read: unknown ones
     /// dim nothing), or the share is below the scope the call takes.
     pub(crate) fn why_not(&self, deed: Deed) -> Option<Nay> {
-        if matches!(deed, Deed::AddNote | Deed::EditNote) {
-            return Some(Nay::NotesReadOnly);
-        }
         if deed == Deed::Draw {
             return Some(Nay::Drawing);
         }
@@ -601,7 +629,10 @@ impl RemoteSpace {
             return Some(Nay::NotConnected);
         }
         if self.tools.as_ref().is_some_and(|tools| {
-            !tools.has(tool) || deed.needs().iter().any(|arg| !tools.takes(tool, arg))
+            !tools.has(tool)
+                || deed.needs().iter().any(|arg| !tools.takes(tool, arg))
+                // A home that could add a note the mirror can't type in is older too.
+                || (deed == Deed::AddNote && !tools.has("edit_note"))
         }) {
             return Some(Nay::Older);
         }
@@ -879,7 +910,10 @@ pub(crate) enum Deed {
     AddKanban,
     AddEditor,
     OpenAgent,
+    /// The Notes dialog, and its rows of a note closed at home.
     OpenNote,
+    /// A note deleted for good from the Notes dialog.
+    DeleteNote,
     /// The Checklists dialog, and a new checklist in a checklist block that shows none.
     OpenChecklist,
     Close,
@@ -964,6 +998,10 @@ impl Deed {
                 json!({ "workspace": "w", "kind": "terminal", "shell": "s" }),
             ),
             Deed::AddKanban => ("add_block", json!({ "workspace": "w", "kind": "kanban" })),
+            Deed::AddNote => ("add_block", json!({ "workspace": "w", "kind": "note" })),
+            Deed::EditNote => ("edit_note", json!({ "block": "n", "note": 1, "name": "x" })),
+            Deed::OpenNote => ("open_note", json!({ "note": 1, "block": "n" })),
+            Deed::DeleteNote => ("delete_note", json!({ "note": 1 })),
             Deed::AddChecklist => (
                 "add_block",
                 json!({ "workspace": "w", "kind": "checklist" }),
@@ -1025,8 +1063,6 @@ pub(crate) enum Nay {
     NotYet,
     /// Drawing is on home for now.
     Drawing,
-    /// A note is only read on a mirror for now.
-    NotesReadOnly,
     NotConnected,
     /// Home's Templum lacks the tool.
     Older,
@@ -1040,9 +1076,6 @@ impl Nay {
         match self {
             Nay::NotYet => NOT_YET.into(),
             Nay::Drawing => format!("Drawing on a mirror isn't there yet: draw on {computer}."),
-            Nay::NotesReadOnly => format!(
-                "Notes are read-only on a mirror for now: add and edit notes on {computer}."
-            ),
             Nay::NotConnected => "Not connected.".into(),
             Nay::Older => format!("{computer}'s Templum is older: update it to do this from here."),
             Nay::NeedsFull => format!("Needs a Full share: share again on {computer}."),
@@ -1349,7 +1382,7 @@ fn session_of(agent: &AgentView) -> Option<templum_usage::Session> {
 
 /// The banner's ⓘ: what a mirror doesn't have yet.
 pub(crate) const NOT_MIRRORED: &str = "Not mirrored yet: editors' content (a card shows each). \
-     Not on a mirrored workspace yet: editors, editing notes, deleting a checklist, drawing, Move \
+     Not on a mirrored workspace yet: editors, deleting a checklist, drawing, Move \
      to workspace, Copy and Paste of blocks, Stop, a card's attachments, and in the Git popup \
      Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal.";
 
@@ -1898,6 +1931,8 @@ impl Workspace {
         // Home's lists are read once its tools are known and it is live, whichever comes last:
         // a call made before it is live is refused.
         let mut reads_lists = false;
+        // Notes typed while it was not live (or before who the share is was known) go now.
+        let mut note_steps = false;
         let Some(remote) = self.remote_mut(id) else {
             return heard;
         };
@@ -1908,6 +1943,7 @@ impl Workspace {
                     remote.live_at = Some(SystemTime::now());
                     remote.told.retain(|(_, said)| *said != NOT_LIVE);
                     reads_lists = remote.tools.is_some();
+                    note_steps = true;
                 }
                 remote.status = status.clone();
                 if pending {
@@ -1931,6 +1967,7 @@ impl Workspace {
                     heard.index = true;
                 }
                 remote.me = Some(me);
+                note_steps = true;
             }
             Update::Latency(latency) => remote.latency = Some(latency),
             Update::Tools(tools) => {
@@ -1961,6 +1998,9 @@ impl Workspace {
         if reads_lists {
             self.read_home_agents(id, cx);
             self.read_home_shells(id, cx);
+        }
+        if note_steps {
+            self.note_steps(id, Instant::now(), window, cx);
         }
         heard
     }
@@ -2059,6 +2099,9 @@ impl Workspace {
         let (unlisted, unlisted_due) = remote.items_deleted.expire(now, |_| false);
         let (reordered, reordered_due) = remote.items_moved.expire(now, |_| false);
         let (renamed, renamed_due) = remote.lists_renamed.expire(now, |_| false);
+        let (titled, titled_due) = remote.notes_renamed.expire(now, |_| false);
+        let (tinted, tinted_due) = remote.notes_colored.expire(now, |_| false);
+        let (shut, shut_due) = remote.tabs_closed.expire(now, |_| false);
         for (id, rect) in ended {
             if let Some(place) = self.space.home_mut(id) {
                 *place = rect;
@@ -2077,6 +2120,9 @@ impl Workspace {
             || !unlisted.is_empty()
             || !reordered.is_empty()
             || !renamed.is_empty()
+            || !titled.is_empty()
+            || !tinted.is_empty()
+            || !shut.is_empty()
         {
             let id = self.space.id.clone();
             self.remirror(&id, now);
@@ -2093,6 +2139,9 @@ impl Workspace {
             unlisted_due,
             reordered_due,
             renamed_due,
+            titled_due,
+            tinted_due,
+            shut_due,
         ]
         .into_iter()
         .flatten()
@@ -2129,6 +2178,8 @@ impl Workspace {
         space.mirror_state(&mut remote, &state, home.as_deref(), &make, (now, &dragged));
         remote.mirror_boards(&state, now);
         remote.mirror_checklists(&state, now);
+        remote.mirror_notes(&state, now);
+        remote.end_closed_tabs(&state);
         // The editors are made where a window is; the tabs of a block brought back are laid here.
         space.lay_note_tabs(&remote, &state);
         space.remote = Some(remote);
@@ -2220,7 +2271,7 @@ impl Workspace {
         let made = if same(&state.notes, &remote.state.notes) {
             HashSet::new()
         } else {
-            remote.mirror_notes(&state)
+            remote.mirror_notes(&state, now)
         };
         if !same(&state.checklists, &remote.state.checklists) {
             remote.mirror_checklists(&state, now);
@@ -2772,7 +2823,7 @@ impl Workspace {
         let computer = crate::mirror::computer_of(remote);
         let (said, sentence) = match remote.why_not(Deed::Type) {
             None => return Some((space, block)),
-            Some(Nay::NotConnected | Nay::NotYet | Nay::Drawing | Nay::NotesReadOnly) => {
+            Some(Nay::NotConnected | Nay::NotYet | Nay::Drawing) => {
                 (NOT_LIVE, NOT_CONNECTED.to_string())
             }
             Some(Nay::NeedsFull) => (
@@ -2885,6 +2936,19 @@ impl Workspace {
             );
         }
         shown
+    }
+
+    /// Whether a dialog of workspace `space` may act: home's ids and this computer's are alike, so
+    /// with a mirror in it (the dialog's, or the one shown) it acts on its own workspace only,
+    /// shown (`still_shown`).
+    pub(crate) fn still_on(
+        &mut self,
+        space: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mirrored = self.on_remote() || self.space_named(space).is_none_or(|s| s.is_remote());
+        !mirrored || self.still_shown(space, window, cx)
     }
 
     /// `keys` (names, `templum_terminal::key_name`) typed into the focused remote terminal: home
@@ -3367,7 +3431,8 @@ impl Workspace {
             Kind::Terminal => (Deed::AddTerminal, "terminal"),
             Kind::Kanban => (Deed::AddKanban, "kanban"),
             Kind::Checklist => (Deed::AddChecklist, "checklist"),
-            Kind::Note | Kind::Editor => return,
+            Kind::Note => (Deed::AddNote, "note"),
+            Kind::Editor => return,
         };
         let Some(remote) = self.space.remote.as_deref() else {
             return;
@@ -3660,6 +3725,15 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.why_not(Deed::Close).is_some() {
+            return;
+        }
+        // A note block whose text isn't at home yet closes once it is: that goes first.
+        let space = self.space.id.clone();
+        let mut ids = ids;
+        ids.retain(|id| {
+            !self.close_when_saved(&space, super::remote_notes::Closing::Block(*id), window, cx)
+        });
+        if ids.is_empty() {
             return;
         }
         let busy: Vec<String> = ids
@@ -4153,12 +4227,15 @@ mod tests {
         let cleaned = clean_refusal(client::Refusal {
             sentence: "a\u{1b}[31mb\nc".into(),
             details: Some("x\u{1b}y\n\tz".into()),
+            maybe_done: true,
         });
         assert!(!cleaned.sentence.contains(['\u{1b}', '\n']), "{cleaned:?}");
         assert_eq!(cleaned.details.as_deref(), Some("xy\n\tz"));
+        assert!(cleaned.maybe_done, "what home may have done is kept");
         let blank = clean_refusal(client::Refusal {
             sentence: "x".into(),
             details: Some("\u{1b}".into()),
+            maybe_done: false,
         });
         assert_eq!(blank.details, None);
     }
@@ -4466,14 +4543,46 @@ mod tests {
     }
 
     #[test]
-    fn notes_say_they_are_read_only_and_adds_are_home_s_calls() {
+    fn notes_and_adds_are_home_s_calls() {
         let mut remote = remote_at("https://winx-desktop.example.com", Status::Live);
         remote.me.as_mut().unwrap().scope = Scope::Control;
         let words = |r: &RemoteSpace, d| r.why_not(d).map(|n| n.words("winx-desktop"));
         assert_eq!(
-            words(&remote, Deed::AddNote).as_deref(),
-            Some("Notes are read-only on a mirror for now: add and edit notes on winx-desktop.")
+            words(&remote, Deed::AddEditor).as_deref(),
+            Some("Not on a mirrored workspace yet")
         );
+        for add in [
+            Deed::AddTerminal,
+            Deed::AddKanban,
+            Deed::AddChecklist,
+            Deed::AddNote,
+            Deed::EditNote,
+            Deed::OpenNote,
+        ] {
+            assert_eq!(remote.why_not(add), None, "{add:?}");
+        }
+        // Deleting a note takes a Full share.
+        assert_eq!(
+            words(&remote, Deed::DeleteNote).as_deref(),
+            Some("Needs a Full share: share again on winx-desktop.")
+        );
+        // A home that could add a note but not type in it is older for adding one.
+        let tools = |names: &[&str]| {
+            Tools::read(&serde_json::Value::Array(
+                names
+                    .iter()
+                    .map(|n| serde_json::json!({ "name": n, "inputSchema": { "properties": {} } }))
+                    .collect(),
+            ))
+        };
+        remote.tools = Some(tools(&["add_block", "edit_item"]));
+        for deed in [Deed::AddNote, Deed::EditNote, Deed::OpenNote] {
+            assert_eq!(remote.why_not(deed), Some(Nay::Older), "{deed:?}");
+        }
+        assert_eq!(remote.why_not(Deed::AddKanban), None);
+        remote.tools = Some(tools(&["add_block", "edit_note", "open_note"]));
+        assert_eq!(remote.why_not(Deed::AddNote), None);
+        remote.tools = None;
         assert_eq!(
             words(&remote, Deed::AddEditor).as_deref(),
             Some("Not on a mirrored workspace yet")

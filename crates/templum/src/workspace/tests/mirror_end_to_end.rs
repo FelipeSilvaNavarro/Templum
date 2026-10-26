@@ -1580,3 +1580,302 @@ fn the_mirror_s_own_new_rule_offers_no_remote_workspace(cx: &mut TestAppContext)
         );
     });
 }
+
+/// The mirror's note editor of home's note block `uid`, its shown tab.
+fn mirrored_editor(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    uid: &str,
+) -> Option<Entity<gpui_kit::component::input::EditorState>> {
+    ws.read_with(cx, |ws, _| {
+        let block = remote_of(ws).homes.get(uid)?;
+        let note = ws.space.blocks.get(block)?.note_view()?;
+        note.tab().map(|t| t.editor.clone())
+    })
+}
+
+fn step_mirror(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    at: std::time::Instant,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.note_steps("r1", at, window, cx))
+    })
+    .unwrap();
+}
+
+fn far() -> std::time::Instant {
+    std::time::Instant::now() + std::time::Duration::from_secs(60)
+}
+
+#[gpui_kit::test]
+fn a_note_typed_on_the_mirror_is_home_s_and_an_agent_s_append_merges(cx: &mut TestAppContext) {
+    let ((home_handle, home), (handle, ws), (_, note, _), [home_dir, _dir]) =
+        super::remote::shown_mirror_as(cx, Scope::Control);
+    let (uid, first) = home.read_with(cx, |ws, _| {
+        (ws.space.uids[&note].clone(), ws.space.id.clone())
+    });
+    let id = home.read_with(cx, |ws, _| {
+        ws.space.blocks[&note].note().unwrap().tab().unwrap().id
+    });
+    pump_home(&home, cx, "the note on the mirror", |cx| {
+        mirrored_editor(&ws, cx, &uid).is_some()
+    });
+    let editor = mirrored_editor(&ws, cx, &uid).unwrap();
+    // Typed at the top on the mirror: home has it after the pause.
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |e, cx| {
+            e.set_selected_range(0..0, cx);
+            e.insert("Top ".to_string(), window, cx);
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    step_mirror(handle, &ws, cx, far());
+    let text = |cx: &mut TestAppContext| {
+        home.read_with(cx, |ws, _| ws.notes.get(id).unwrap().text.clone())
+    };
+    pump_home(&home, cx, "the text at home", |cx| text(cx) == "Top hello");
+    home.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    let saved = std::fs::read_to_string(crate::notes::path(home_dir.path())).unwrap();
+    assert!(saved.contains("Top hello"), "{saved}");
+    pump_home(&home, cx, "the mirror's note to be clean", |cx| {
+        step_mirror(handle, &ws, cx, far());
+        ws.read_with(cx, |ws, _| remote_of(ws).edits.is_empty())
+    });
+    // Typed again on the mirror, then an agent's append at home before the mirror's step: the
+    // mirror's copy shows the append, and the step merges both.
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |e, cx| {
+            e.set_selected_range(0..0, cx);
+            e.insert("Z".to_string(), window, cx);
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // The pause is the test's, not the clock's: however long home's state takes, it holds.
+    let typed = far();
+    ws.update(cx, |ws, _| {
+        ws.space
+            .remote
+            .as_mut()
+            .unwrap()
+            .edits
+            .get_mut(&id)
+            .unwrap()
+            .typed = typed
+    });
+    cx.update_window(home_handle, |_, window, cx| {
+        home.update(cx, |ws, cx| {
+            let reply = ws.note_append((&first, note), &uid, "agent line", window, cx);
+            assert!(!reply.is_error, "{}", reply.text);
+        })
+    })
+    .unwrap();
+    pump_home(&home, cx, "the append on the mirror's copy", |cx| {
+        ws.read_with(cx, |ws, _| {
+            remote_of(ws)
+                .notes
+                .get(id)
+                .is_some_and(|n| n.text.contains("agent line"))
+        })
+    });
+    assert_eq!(
+        editor.read_with(cx, |e, _| e.value().to_string()),
+        "ZTop hello",
+        "home's change waits for the pause"
+    );
+    step_mirror(handle, &ws, cx, typed + std::time::Duration::from_secs(1));
+    assert_eq!(
+        editor.read_with(cx, |e, _| e.value().to_string()),
+        "ZTop hello\n\nagent line"
+    );
+    pump_home(&home, cx, "home to hold both", |cx| {
+        text(cx) == "ZTop hello\n\nagent line"
+    });
+}
+
+#[gpui_kit::test]
+fn a_note_changed_in_one_place_at_both_ends_keeps_both_texts(cx: &mut TestAppContext) {
+    let ((home_handle, home), (handle, ws), (_, note, _), _dirs) =
+        super::remote::shown_mirror_as(cx, Scope::Control);
+    let (uid, first) = home.read_with(cx, |ws, _| {
+        (ws.space.uids[&note].clone(), ws.space.id.clone())
+    });
+    let id = home.read_with(cx, |ws, _| {
+        ws.space.blocks[&note].note().unwrap().tab().unwrap().id
+    });
+    pump_home(&home, cx, "the note on the mirror", |cx| {
+        mirrored_editor(&ws, cx, &uid).is_some()
+    });
+    let editor = mirrored_editor(&ws, cx, &uid).unwrap();
+    // The mirror changes "hello" ...
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |e, cx| {
+            e.set_selected_range(1..4, cx);
+            e.replace("ELL".to_string(), window, cx);
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // ... and home changes the same word before the step.
+    cx.update_window(home_handle, |_, window, cx| {
+        home.update(cx, |ws, cx| {
+            ws.note_replace(&first, note, "HOME", None, window, cx)
+                .expect("replaced")
+        })
+    })
+    .unwrap();
+    pump_home(&home, cx, "home's change on the copy", |cx| {
+        ws.read_with(cx, |ws, _| {
+            remote_of(ws)
+                .notes
+                .get(id)
+                .is_some_and(|n| n.text == "HOME")
+        })
+    });
+    step_mirror(handle, &ws, cx, far());
+    let share = ws.read_with(cx, |ws, _| remote_of(ws).me.as_ref().unwrap().name.clone());
+    let name = format!("hello ({share})");
+    pump_home(&home, cx, "the copy at home", |cx| {
+        home.read_with(cx, |ws, _| {
+            ws.notes
+                .notes
+                .iter()
+                .any(|n| n.name == name && n.text == "hELLo")
+        })
+    });
+    home.read_with(cx, |ws, _| {
+        assert_eq!(ws.notes.get(id).unwrap().text, "HOME");
+        let tabs = ws.space.blocks[&note].note().unwrap().ids();
+        assert_eq!(tabs.len(), 2, "the copy is a tab of the same block");
+    });
+    pump_home(&home, cx, "the mirror to show home's text", |cx| {
+        editor.read_with(cx, |e, _| e.value() == "HOME")
+    });
+    ws.read_with(cx, |ws, _| assert!(remote_of(ws).edits.is_empty()));
+}
+
+#[gpui_kit::test]
+fn a_note_made_renamed_colored_closed_and_reopened_on_the_mirror_is_home_s(
+    cx: &mut TestAppContext,
+) {
+    use crate::workspace::remote_notes::NoteAct;
+    let ((_, home), (handle, ws), (_, note, _), [_home_dir, dir]) =
+        super::remote::shown_mirror_as(cx, Scope::Control);
+    let first = home.read_with(cx, |ws, _| ws.space.id.clone());
+    pump_home(&home, cx, "home's blocks on the mirror", |cx| {
+        ws.read_with(cx, |ws, _| remote_of(ws).homes.len() == 3)
+    });
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    let file = crate::notes::path(dir.path());
+    let before = std::fs::read(&file).ok();
+    let own = ws.read_with(cx, |ws, _| ws.notes.clone());
+    // Add ▸ Note at a point: home's note block there.
+    let notes_blocks = |cx: &mut TestAppContext| {
+        home.read_with(cx, |ws, _| {
+            ws.space
+                .blocks
+                .iter()
+                .filter(|(id, b)| b.note().is_some() && **id != note)
+                .map(|(id, _)| ws.space.uids[id].clone())
+                .collect::<Vec<_>>()
+        })
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_note_at(Point::new(900.0, 700.0), window, cx)
+        })
+    })
+    .unwrap();
+    pump_home(&home, cx, "a note block at home", |cx| {
+        !notes_blocks(cx).is_empty()
+    });
+    let uid = notes_blocks(&mut *cx).remove(0);
+    let (block, at) = home.read_with(cx, |ws, _| {
+        let b = ws.space.block_by_uid(&uid).unwrap();
+        (b, ws.space.canvas.get(b).unwrap().rect)
+    });
+    assert_eq!((at.x, at.y), (900.0, 700.0));
+    pump_home(&home, cx, "the block on the mirror", |cx| {
+        ws.read_with(cx, |ws, _| remote_of(ws).homes.contains_key(&uid))
+    });
+    let mine = viewer_of(&ws, cx, &uid);
+    // Its first note: typed in, renamed and colored from the mirror.
+    pump_home(&home, cx, "its note on the mirror", |cx| {
+        mirrored_editor(&ws, cx, &uid).is_some()
+    });
+    let editor = mirrored_editor(&ws, cx, &uid).unwrap();
+    let id = home.read_with(cx, |ws, _| {
+        ws.space.blocks[&block].note().unwrap().tab().unwrap().id
+    });
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |e, cx| e.insert("body".to_string(), window, cx));
+        ws.update(cx, |ws, cx| {
+            ws.rename_note(id, mine, "Plan", window, cx);
+            ws.set_note_color(mine, Some(crate::board::Label::Blue), window, cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    step_mirror(handle, &ws, cx, far());
+    pump_home(&home, cx, "the text, name and color at home", |cx| {
+        home.read_with(cx, |ws, _| {
+            let n = ws.notes.get(id).unwrap();
+            (n.text.as_str(), n.name.as_str(), n.color)
+                == ("body", "Plan", Some(crate::board::Label::Blue))
+        })
+    });
+    // × closes it at home: the note stays, last open in the workspace.
+    pump_home(&home, cx, "the mirror to be clean", |cx| {
+        step_mirror(handle, &ws, cx, far());
+        ws.read_with(cx, |ws, _| remote_of(ws).edits.is_empty())
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close_note_tab(mine, 0, window, cx))
+    })
+    .unwrap();
+    pump_home(&home, cx, "the tab closed at home", |cx| {
+        home.read_with(cx, |ws, _| {
+            ws.space.blocks[&block].note().unwrap().tabs.is_empty()
+                && ws.notes.get(id).unwrap().closed_in.as_deref() == Some(first.as_str())
+        })
+    });
+    // All notes… lists it as closed, and a click reopens it at home.
+    pump_home(&home, cx, "the closed note on the mirror's copy", |cx| {
+        ws.read_with(cx, |ws, _| {
+            crate::note::note_rows(ws, "r1", "")
+                .iter()
+                .any(|r| r.id == id && r.detail.ends_with("Closed"))
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_note_here(id, Some(mine), window, cx))
+    })
+    .unwrap();
+    pump_home(&home, cx, "the note reopened at home", |cx| {
+        home.read_with(cx, |ws, _| {
+            ws.space.blocks[&block].note().unwrap().ids() == [id]
+        })
+    });
+    // The trash on this Control share says so and deletes nothing.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.remote_note_act("r1", None, NoteAct::Delete { note: id }, window, cx)
+        })
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.said.iter().any(|s| s.starts_with("Needs a Full share")));
+    });
+    home.read_with(cx, |ws, _| assert!(ws.notes.get(id).is_some()));
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    assert_eq!(std::fs::read(&file).ok(), before, "the mirror's notes.json");
+    ws.read_with(cx, |ws, _| assert_eq!(ws.notes, own));
+}
+
+fn viewer_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, uid: &str) -> BlockId {
+    ws.read_with(cx, |ws, _| remote_of(ws).homes[uid])
+}

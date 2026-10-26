@@ -464,7 +464,10 @@ pub const DRAWINGS_MOST: usize = 2_000;
 pub const POINTS_MOST: usize = 100_000;
 
 /// A note a note block shows: its text cut at [`NOTE_TEXT_MOST`] bytes, `cut` true past it (or when
-/// all the notes' texts passed [`NOTES_TEXT_MOST`] before it: then its text is empty).
+/// all the notes' texts passed [`NOTES_TEXT_MOST`] before it: then its text is empty). `rev` is its
+/// text's revision (grows each time the text changes, and at each `edit_note` of it); `changed`,
+/// Unix seconds. A note no block shows that was last open in a workspace is listed too, its text
+/// empty and `workspace` that workspace's id; an older home sends none of the three.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct NoteView {
     pub id: u64,
@@ -472,6 +475,12 @@ pub struct NoteView {
     pub text: String,
     pub color: Option<String>,
     pub cut: bool,
+    #[serde(default)]
+    pub rev: u64,
+    #[serde(default)]
+    pub changed: u64,
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 /// A checklist a checklist block shows.
@@ -688,7 +697,13 @@ impl State {
             notes: self
                 .notes
                 .iter()
-                .filter(|note| shown_notes.contains(&note.id))
+                .filter(|note| {
+                    shown_notes.contains(&note.id)
+                        || note
+                            .workspace
+                            .as_deref()
+                            .is_some_and(|w| caller.sees(Some(w)))
+                })
                 .cloned()
                 .collect(),
             checklists: self
@@ -1828,6 +1843,43 @@ mod tests {
             (all.notes.len(), all.checklists.len(), all.drawings.len()),
             (3, 2, 2)
         );
+    }
+
+    #[test]
+    fn a_limited_caller_sees_the_closed_notes_of_its_workspaces_only() {
+        let mut state = two_workspaces();
+        let mut n1 = BlockView::clone(&block("n1", "w1", "note"));
+        n1.notes = Some(NotesShown {
+            tabs: vec![7],
+            shown: Some(7),
+        });
+        state.blocks = vec![Arc::new(n1)];
+        let closed = |id: u64, workspace: &str| {
+            Arc::new(NoteView {
+                workspace: Some(workspace.into()),
+                ..NoteView::clone(&note(id))
+            })
+        };
+        state.notes = vec![note(7), closed(5, "w1"), closed(6, "w2"), note(8)];
+        let ids = |s: &State| s.notes.iter().map(|n| n.id).collect::<Vec<_>>();
+        assert_eq!(ids(&state.visible(&caller(&["w1"]))), [7, 5]);
+        assert_eq!(ids(&state.visible(&caller(&["w2"]))), [6]);
+        let all = Caller {
+            workspaces: None,
+            ..caller(&[])
+        };
+        assert_eq!(ids(&state.visible(&all)), [7, 5, 6, 8]);
+    }
+
+    #[test]
+    fn a_note_from_an_older_home_reads_without_rev_changed_or_workspace() {
+        let value = json!({"id": 7, "name": "Plan", "text": "x", "color": null, "cut": false});
+        let view: NoteView = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!((view.rev, view.changed, view.workspace), (0, 0, None));
+        let mut s = State::default();
+        let put = json!({"op": "put", "id": "7", "value": value});
+        assert_eq!(s.apply("note", &put), Ok(true));
+        assert_eq!(s.notes[0].rev, 0);
     }
 
     #[test]

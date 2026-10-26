@@ -150,7 +150,10 @@ impl Workspace {
             Some(Loaded::Nothing) | None => {}
         }
         match self.data_dir.as_deref().map(notes::load) {
-            Some(Loaded::Saved(notes)) => {
+            Some(Loaded::Saved(mut notes)) => {
+                // Before the copy kept to tell a change: a note's rev starts from the clock, so a
+                // restarted Templum never gives out one it gave before.
+                notes.stamp(notes::rev_seed());
                 self.notes_saved = Some(notes.clone());
                 self.notes = notes;
             }
@@ -605,6 +608,7 @@ impl Workspace {
         drop(space);
         self.end_later(tree, cx);
         self.api_forget_workspace(&deleted, cx);
+        self.notes.forget_workspace(&deleted);
         self.write_index(window, cx);
         cx.notify();
     }

@@ -674,6 +674,7 @@ impl Workspace {
             Kind::Note => (
                 NewBlock::Note {
                     text: add.text.unwrap_or_default(),
+                    open: None,
                 },
                 "a note".to_string(),
             ),

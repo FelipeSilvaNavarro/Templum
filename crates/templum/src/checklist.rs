@@ -567,7 +567,7 @@ pub(crate) fn open_checklists(
         kind,
         move |ws, query| rows(ws, &listed, query),
         move |ws, id, window, cx| {
-            if still_on(ws, &opens, window, cx) {
+            if ws.still_on(&opens, window, cx) {
                 ws.open_checklist(id, into, window, cx)
             }
         },
@@ -579,26 +579,13 @@ pub(crate) fn open_checklists(
             None => {}
         },
         move |ws, window, cx| {
-            if still_on(ws, &makes, window, cx) {
+            if ws.still_on(&makes, window, cx) {
                 ws.new_checklist(into, window, cx)
             }
         },
         window,
         cx,
     );
-}
-
-/// Whether a Checklists dialog of workspace `space` may act: home's ids and this computer's are
-/// alike, so with a mirror in it (the dialog's, or the one shown) it acts on its own workspace
-/// only, shown.
-fn still_on(
-    ws: &mut Workspace,
-    space: &str,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) -> bool {
-    let mirrored = ws.on_remote() || ws.space_named(space).is_none_or(|s| s.is_remote());
-    !mirrored || ws.still_shown(space, window, cx)
 }
 
 /// The Checklists dialog's rows for `query`, of workspace `space`: each checklist's name, then its

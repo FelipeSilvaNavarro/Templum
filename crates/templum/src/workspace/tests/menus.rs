@@ -559,7 +559,7 @@ fn the_canvas_menu_on_a_remote_adds_at_home_where_clicked(cx: &mut TestAppContex
         adds(&ws, cx),
         [json!({"workspace": "w1", "kind": "kanban", "x": world.x, "y": world.y})]
     );
-    // Note is dimmed there: the click asks nothing.
+    // Note is home's too.
     cx.update_window(handle, |_, window, cx| {
         right_click(
             window,
@@ -579,7 +579,8 @@ fn the_canvas_menu_on_a_remote_adds_at_home_where_clicked(cx: &mut TestAppContex
         window.render_frame(cx);
     })
     .unwrap();
-    assert_eq!(adds(&ws, cx).len(), 1);
+    assert_eq!(adds(&ws, cx).len(), 2);
+    assert_eq!(adds(&ws, cx)[1]["kind"], "note");
     // Terminal ▸ lists home's shells: Default is home's default.
     cx.update_window(handle, |_, window, cx| {
         right_click(
@@ -602,9 +603,9 @@ fn the_canvas_menu_on_a_remote_adds_at_home_where_clicked(cx: &mut TestAppContex
         window.render_frame(cx);
     })
     .unwrap();
-    assert_eq!(adds(&ws, cx).len(), 2);
-    assert_eq!(adds(&ws, cx)[1]["kind"], json!("terminal"));
-    assert!(adds(&ws, cx)[1].get("shell").is_none(), "home's default");
+    assert_eq!(adds(&ws, cx).len(), 3);
+    assert_eq!(adds(&ws, cx)[2]["kind"], json!("terminal"));
+    assert!(adds(&ws, cx)[2].get("shell").is_none(), "home's default");
 }
 
 #[gpui_kit::test]
@@ -659,14 +660,6 @@ fn hand_a_task_is_in_a_remote_agent_s_menu(cx: &mut TestAppContext) {
 fn a_shortcut_a_remote_can_t_do_says_why_once(cx: &mut TestAppContext) {
     use crate::keys::Command;
     let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
-    let notes = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
-        ws.read_with(cx, |ws, _| {
-            ws.said
-                .iter()
-                .filter(|s| s.starts_with("Notes are read-only"))
-                .count()
-        })
-    };
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             ws.run(Command::NewNote, window, cx);
@@ -677,12 +670,11 @@ fn a_shortcut_a_remote_can_t_do_says_why_once(cx: &mut TestAppContext) {
         })
     })
     .unwrap();
-    assert_eq!(notes(&ws, cx), 1);
     ws.read_with(cx, |ws, _| {
-        let computer = crate::mirror::computer_of(ws.space.remote.as_deref().unwrap());
-        assert!(ws.said.contains(&format!(
-            "Notes are read-only on a mirror for now: add and edit notes on {computer}."
-        )));
+        assert!(
+            !ws.said.iter().any(|s| s.contains("read-only")),
+            "a note is home's now: nothing is said of it"
+        );
         let editors = ws
             .said
             .iter()
@@ -695,4 +687,9 @@ fn a_shortcut_a_remote_can_t_do_says_why_once(cx: &mut TestAppContext) {
         .filter(|(tool, args)| tool == "add_block" && args["kind"] == json!("terminal"))
         .collect();
     assert_eq!(adds.len(), 1, "a terminal is home's to add");
+    let notes = sent(&ws, cx)
+        .into_iter()
+        .filter(|(tool, args)| tool == "add_block" && args["kind"] == json!("note"))
+        .count();
+    assert_eq!(notes, 2, "so is a note, once for each key");
 }

@@ -43,6 +43,7 @@ mod questions;
 pub(crate) mod remote;
 mod remote_boards;
 mod remote_content;
+mod remote_notes;
 pub(crate) mod remote_rules;
 mod render;
 mod schedules;

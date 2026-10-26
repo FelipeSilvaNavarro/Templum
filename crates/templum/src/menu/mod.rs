@@ -368,7 +368,7 @@ impl Workspace {
                             (t.id, name.to_string())
                         }),
                         send: self.send_to_menu(n.to_send(cx)),
-                        gates: Gates::of(self, &[Deed::EditNote]),
+                        gates: Gates::of(self, &[Deed::EditNote, Deed::OpenNote]),
                     },
                     Body::Checklist(_) => Items::Checklist {
                         block,

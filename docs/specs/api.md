@@ -261,7 +261,10 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
               "assignee": { "block": "b7k2m" }, "checklist": [{ "id": 41, "text": "Build", "done": false }],
               "comments": [{ "number": 51, "by": "b7k2m", "text": "…", "at": 1761550000, "edited": false }],
               "attachments": [{ "name": "shot.png", "size": 48128 }] }],
-  "notes": [{ "id": 7, "name": "Plan", "text": "first\nsecond", "color": "blue", "cut": false }],
+  "notes": [{ "id": 7, "name": "Plan", "text": "first\nsecond", "color": "blue", "cut": false,
+             "rev": 1761550000123, "changed": 1761550000 },
+            { "id": 5, "name": "Old", "text": "", "color": null, "cut": false, "rev": 1761550000100,
+              "changed": 1761540000, "workspace": "w3" }],
   "checklists": [{ "id": 12, "name": "Release", "items": [{ "id": 13, "text": "Tag it", "done": false }] }],
   "drawings": [{ "id": "w3", "drawings": [{ "kind": "stroke", "color": "blue", "width": 2.0,
                                             "points": [[0, 0], [100, 100]] }] }],
@@ -292,10 +295,14 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
   `tool`, `said`, `details` and `facts` (Templum's words) and `reason` (the model's).
 - A card's attachments give names and sizes, never paths (*the designer's call*).
 - `notes` holds the notes a note block shows (a note block has `notes`: `{"tabs": [7, 9], "shown": 7}`), their
-  `text` cut at 256 KiB (`cut` true then); `checklists` the checklists a checklist block shows (that block has
+  `text` cut at 256 KiB (`cut` true then), each with `rev` (its text's revision: a number that grows each time the text
+  changes and at each `edit_note` of it, from the Unix time in ms when Templum started) and `changed` (Unix seconds),
+  and the notes no block shows that were last open in a workspace (`closed_in` in `notes.json`), with no text and
+  `workspace` that workspace's id (kanban card 204); `checklists` the checklists a checklist block shows (that block has
   `checklist`: the id); `drawings` one item per workspace with ink, its id the workspace's, in paint order as the
   canvas file keeps them, at most 2,000 drawings and 100,000 points (a shape counts 2), the oldest left out past
-  either. A limited token sees the notes and checklists its visible blocks show, and the drawings of its workspaces.
+  either. A limited token sees the notes and checklists its visible blocks show, the notes last closed in its
+  workspaces, and the drawings of its workspaces.
 
 ### Tools
 
@@ -317,6 +324,11 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
   | `delete_automation` | `automation` | Deletes it | full |
   | `cancel_schedule` | `schedule` (`s3`) | Cancels a delivery an agent asked for later, as the Automations popup's Cancel does; `Cancelled s3.`; one the token doesn't see is "There's no schedule s3: GET /v1/state lists them." | control |
   | `recent_folders` | `workspace` | The workspace's recent folders (`Space::recent`), newest first, a folder a line, as the Git popup's folder menu lists them; empty when there are none. A token limited to some workspaces gets only those inside their folders, links followed, each as its real path, once (kanban card 203); a mirror of another computer is refused with its sentence | read |
+  | `edit_note` | `block`, `note` (a tab of that block), then any of `name` (one line; blank is Untitled), `color` (`red`, `yellow`, `green`, `cyan`, `blue`, `magenta` or `none`), `text` with `rev` | Renames, tints, or replaces the note's whole text (at most 256 KiB) when its `rev` is still `rev` (else "Note 7 changed since: its newer text and rev are in the state."; a note whose text the state cuts refuses a text); the text goes through the note's editor, one Ctrl+Z step, home's caret kept (kanban card 204) | control |
+  | `new_note` | `block`, then `name`, `text` | A new note as a shown tab of that note block (`text` at most 256 KiB); `Made note 12 in b7k2m.` | control |
+  | `open_note` | `note`, then `block`, or `workspace` with `x`, `y` (both or neither) | Where the note is open, that tab is shown; else a tab of `block`, or a new note block of `workspace`; `Opened note 9 in b7k2m.` A token limited to some workspaces reaches the notes its blocks show and those last closed in its workspaces; any other is "There's no note 9: GET /v1/state lists them." | control |
+  | `close_note` | `block`, `note` | Closes that tab as its × does (a blank note goes); `Closed note 7 in b7k2m.` | control |
+  | `delete_note` | `note` | Deletes it for good, from every block, as the Notes dialog's trash does; `Deleted note 7 "Plan".` | full |
 
 - **`git`** (Templum to Templum, part 2f; docs/api.md's Git): one of the Git popup's operations in a repository of a
   workspace (`workspace`, `folder`, `op` and its arguments; never raw git arguments), the API's own because the popup

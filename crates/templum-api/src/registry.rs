@@ -9,6 +9,11 @@ use templum_mcp::control::{self, Rule};
 use templum_mcp::tools::MAX_TEXT;
 use templum_terminal::{Button, KEY_NAMES, MouseInput, MouseKind, named_key};
 
+use crate::model::NOTE_TEXT_MOST;
+
+/// The colors a note takes through `edit_note`, and the word that clears it.
+const NOTE_COLORS: [&str; 7] = ["red", "yellow", "green", "cyan", "blue", "magenta", "none"];
+
 /// The keys one `terminal_input` call presses (`send_keys` keeps its own, fewer: `MAX_KEYS`).
 pub const INPUT_KEYS: usize = 256;
 
@@ -16,7 +21,7 @@ pub const INPUT_KEYS: usize = 256;
 pub const INPUT_MOUSE: usize = 64;
 
 /// The tools only the API serves: automations are the person's, not an agent's.
-const OWN: [&str; 11] = [
+const OWN: [&str; 16] = [
     "answer_request",
     "save_automation",
     "set_automation",
@@ -28,6 +33,11 @@ const OWN: [&str; 11] = [
     "revoke_share",
     "git",
     "recent_folders",
+    "edit_note",
+    "new_note",
+    "open_note",
+    "close_note",
+    "delete_note",
 ];
 
 /// The arguments that name something a workspace-limited token must see: a block, a workspace, a
@@ -111,6 +121,7 @@ pub const NOT_TARGETS: &[&str] = &[
     "remote",
     "remove_items",
     "replaced",
+    "rev",
     "scope",
     "search",
     "share",
@@ -153,6 +164,8 @@ pub fn tools() -> Vec<Value> {
         .cloned()
         .unwrap_or_default();
     let automation = json!({ "type": "integer", "description": "An automation's number, as the state shows it." });
+    let note_id =
+        json!({ "type": "integer", "description": "A note's id, as the state shows it." });
     all.extend([
         tool(
             "answer_request",
@@ -322,6 +335,65 @@ pub fn tools() -> Vec<Value> {
             json!({ "workspace": { "type": "string", "description": "The workspace's id or name." } }),
             &["workspace"],
         ),
+        tool(
+            "edit_note",
+            "Renames a note, tints it, or replaces its whole text, as the person does on a note \
+             block: name (one line; blank is Untitled), color (red, yellow, green, cyan, blue, \
+             magenta or none), or text (at most 256 KiB) with rev, the note's rev in the state the \
+             text was made on. A text is written only while the note's rev is still that one, as \
+             one step of its Ctrl+Z with the person's caret kept; else it is refused and the \
+             newer text and rev are in the state. The note must be a tab of block.",
+            json!({
+                "block": { "type": "string", "description": "A note block's id, as the state shows it." },
+                "note": note_id.clone(),
+                "name": { "type": "string" },
+                "color": { "type": "string", "enum": NOTE_COLORS, "description": "none clears it." },
+                "text": { "type": "string", "description": "The note's whole new text, at most 256 KiB." },
+                "rev": { "type": "integer", "description": "With text: the note's rev in the state, which the text was made on." },
+            }),
+            &["block", "note"],
+        ),
+        tool(
+            "new_note",
+            "Adds a new note as a tab of a note block, shown, as the block's + does; name (one \
+             line) and text (at most 256 KiB) are optional. Says its id.",
+            json!({
+                "block": { "type": "string", "description": "A note block's id, as the state shows it." },
+                "name": { "type": "string" },
+                "text": { "type": "string", "description": "The new note's text, at most 256 KiB." },
+            }),
+            &["block"],
+        ),
+        tool(
+            "open_note",
+            "Shows a note: where it is open that tab is shown; else it opens as a tab of block, or \
+             in a new note block of workspace (at x, y, both or neither). The state lists the \
+             notes no block shows that were last open in a workspace.",
+            json!({
+                "note": note_id.clone(),
+                "block": { "type": "string", "description": "A note block's id, as the state shows it." },
+                "workspace": { "type": "string", "description": "The workspace's id or name." },
+                "x": { "type": "number", "description": "With workspace: where the new block goes." },
+                "y": { "type": "number", "description": "With workspace: where the new block goes." },
+            }),
+            &["note"],
+        ),
+        tool(
+            "close_note",
+            "Closes a note's tab as its × does: the note stays (a blank one goes) and the state \
+             lists it by the workspace it was open in.",
+            json!({
+                "block": { "type": "string", "description": "A note block's id, as the state shows it." },
+                "note": note_id.clone(),
+            }),
+            &["block", "note"],
+        ),
+        tool(
+            "delete_note",
+            "Deletes a note for good, from every block, as the Notes dialog's trash does.",
+            json!({ "note": note_id }),
+            &["note"],
+        ),
     ]);
     all
 }
@@ -376,7 +448,9 @@ pub fn scope(name: &str, args: &Value) -> Result<Scope, String> {
     if own(name) {
         return Ok(match name {
             "save_automation" if args["automation"]["do"].get("command").is_some() => Scope::Full,
-            "delete_automation" | "terminal_input" | "share_workspace" => Scope::Full,
+            "delete_automation" | "terminal_input" | "share_workspace" | "delete_note" => {
+                Scope::Full
+            }
             // Any share may revoke itself; the glue asks Full of one revoking another.
             "revoke_share" => Scope::Read,
             "recent_folders" => Scope::Read,
@@ -795,6 +869,41 @@ pub enum Own {
     RecentFolders {
         workspace: String,
     },
+    EditNote {
+        block: String,
+        note: u64,
+        name: Option<String>,
+        /// None: left as it is; Some(None): cleared.
+        color: Option<Option<String>>,
+        /// The text and the `rev` it was made on.
+        text: Option<(String, u64)>,
+    },
+    NewNote {
+        block: String,
+        name: Option<String>,
+        text: Option<String>,
+    },
+    OpenNote {
+        note: u64,
+        into: NoteInto,
+    },
+    CloseNote {
+        block: String,
+        note: u64,
+    },
+    DeleteNote {
+        note: u64,
+    },
+}
+
+/// Where `open_note` opens a note that no block shows.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NoteInto {
+    Block(String),
+    Workspace {
+        workspace: String,
+        at: Option<(f32, f32)>,
+    },
 }
 
 /// What `terminal_input` types.
@@ -897,6 +1006,115 @@ pub enum Answer {
     Dismiss,
 }
 
+/// A whole number given as a number or as a string of digits (a path's parameter comes as one).
+pub fn whole(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// The note tools' arguments (`parse_own`'s arm for them).
+fn parse_note_tool(name: &str, args: &Value) -> Result<Own, String> {
+    let note = || {
+        whole(&args["note"])
+            .ok_or_else(|| "\"note\" is a note's id, as the state shows it".to_string())
+    };
+    let string = |key: &str| match &args[key] {
+        Value::Null => Ok(None),
+        Value::String(text) => Ok(Some(text.clone())),
+        _ => Err(format!("\"{key}\" is a string")),
+    };
+    let block = || string("block")?.ok_or_else(|| format!("{name} needs \"block\", a string"));
+    let text = |key: &str| -> Result<Option<String>, String> {
+        let text = string(key)?;
+        match text {
+            Some(text) if text.len() > NOTE_TEXT_MOST => {
+                Err("A note through the API holds at most 256 KiB.".into())
+            }
+            text => Ok(text),
+        }
+    };
+    Ok(match name {
+        "edit_note" => {
+            let (block, note) = (block()?, note()?);
+            let name = string("name")?;
+            let color = match string("color")? {
+                None => None,
+                Some(color) if NOTE_COLORS.contains(&color.as_str()) => {
+                    Some((color != "none").then_some(color))
+                }
+                Some(_) => {
+                    return Err(
+                        "\"color\" is red, yellow, green, cyan, blue, magenta or none".into(),
+                    );
+                }
+            };
+            let rev = match &args["rev"] {
+                Value::Null => None,
+                rev => Some(whole(rev).ok_or("\"rev\" is a whole number")?),
+            };
+            let text = match (text("text")?, rev) {
+                (Some(text), Some(rev)) => Some((text, rev)),
+                (None, None) => None,
+                _ => {
+                    return Err(
+                        "edit_note's text and rev go together: rev is the note's rev in \
+                                the state, which the text was made on"
+                            .into(),
+                    );
+                }
+            };
+            if name.is_none() && color.is_none() && text.is_none() {
+                return Err("edit_note takes name, color, or text with rev".into());
+            }
+            Own::EditNote {
+                block,
+                note,
+                name,
+                color,
+                text,
+            }
+        }
+        "new_note" => Own::NewNote {
+            block: block()?,
+            name: string("name")?,
+            text: text("text")?,
+        },
+        "open_note" => {
+            let note = note()?;
+            let (block, workspace) = (string("block")?, string("workspace")?);
+            let place = |key: &str| match &args[key] {
+                Value::Null => Ok(None),
+                value => value
+                    .as_f64()
+                    .filter(|n| n.is_finite() && n.abs() <= f64::from(control::PLACE_MOST))
+                    .map(Some)
+                    .ok_or_else(|| format!("\"{key}\" is within ±10000000")),
+            };
+            let (x, y) = (place("x")?, place("y")?);
+            let into = match (block, workspace) {
+                (Some(block), None) if x.is_none() && y.is_none() => NoteInto::Block(block),
+                (None, Some(workspace)) => NoteInto::Workspace {
+                    workspace,
+                    at: match (x, y) {
+                        (Some(x), Some(y)) => Some((x as f32, y as f32)),
+                        (None, None) => None,
+                        _ => return Err("x and y go together, with workspace".into()),
+                    },
+                },
+                (Some(_), None) => return Err("x and y go together, with workspace".into()),
+                _ => return Err("open_note takes block, or workspace".into()),
+            };
+            Own::OpenNote { note, into }
+        }
+        "close_note" => Own::CloseNote {
+            block: block()?,
+            note: note()?,
+        },
+        _ => Own::DeleteNote { note: note()? },
+    })
+}
+
 /// An own tool's arguments; Err says what is wrong with them.
 pub fn parse_own(name: &str, args: &Value) -> Result<Own, String> {
     let number = |key: &str| {
@@ -978,6 +1196,9 @@ pub fn parse_own(name: &str, args: &Value) -> Result<Own, String> {
         "delete_automation" => Own::DeleteAutomation {
             id: number("automation")?,
         },
+        "edit_note" | "new_note" | "open_note" | "close_note" | "delete_note" => {
+            parse_note_tool(name, args)?
+        }
         "recent_folders" => Own::RecentFolders {
             workspace: args["workspace"]
                 .as_str()
@@ -1207,6 +1428,23 @@ mod tests {
             ("delete_automation", json!({"automation": 1}), Scope::Full),
             ("cancel_schedule", json!({"schedule": "s3"}), Scope::Control),
             ("recent_folders", json!({"workspace": "w3"}), Scope::Read),
+            (
+                "edit_note",
+                json!({"block": "n1", "note": 7, "name": "x"}),
+                Scope::Control,
+            ),
+            ("new_note", json!({"block": "n1"}), Scope::Control),
+            (
+                "open_note",
+                json!({"note": 7, "block": "n1"}),
+                Scope::Control,
+            ),
+            (
+                "close_note",
+                json!({"block": "n1", "note": 7}),
+                Scope::Control,
+            ),
+            ("delete_note", json!({"note": 7}), Scope::Full),
         ] {
             assert_eq!(scope(name, &args), Ok(want), "{name}");
         }
@@ -1914,6 +2152,156 @@ mod tests {
             Err("recent_folders needs \"workspace\", a string".into())
         );
         assert_eq!(nominal("recent_folders"), "read");
+        assert_eq!(nominal("delete_note"), "full");
+        assert_eq!(nominal("edit_note"), "control");
         assert!(parse_own("overview", &json!({})).is_err());
+    }
+
+    #[test]
+    fn the_note_tools_parse_and_say_what_is_missing() {
+        let edit = |args: Value| parse_own("edit_note", &args);
+        assert_eq!(
+            edit(
+                json!({"block": "n1", "note": 7, "name": "Plan", "color": "blue",
+                        "text": "x", "rev": 5})
+            ),
+            Ok(Own::EditNote {
+                block: "n1".into(),
+                note: 7,
+                name: Some("Plan".into()),
+                color: Some(Some("blue".into())),
+                text: Some(("x".into(), 5)),
+            })
+        );
+        assert_eq!(
+            edit(json!({"block": "n1", "note": "7", "color": "none"})),
+            Ok(Own::EditNote {
+                block: "n1".into(),
+                note: 7,
+                name: None,
+                color: Some(None),
+                text: None,
+            }),
+            "a numeric string is a number; none clears"
+        );
+        assert_eq!(
+            edit(json!({"block": "n1", "note": 7})),
+            Err("edit_note takes name, color, or text with rev".into())
+        );
+        let together = Err(
+            "edit_note's text and rev go together: rev is the note's rev in the \
+                            state, which the text was made on"
+                .to_string(),
+        );
+        assert_eq!(
+            edit(json!({"block": "n1", "note": 7, "text": "x"})),
+            together
+        );
+        assert_eq!(edit(json!({"block": "n1", "note": 7, "rev": 3})), together);
+        assert_eq!(
+            edit(json!({"block": "n1", "note": 7, "color": "plaid"})),
+            Err("\"color\" is red, yellow, green, cyan, blue, magenta or none".into())
+        );
+        let long = "x".repeat(NOTE_TEXT_MOST + 1);
+        let most = Err("A note through the API holds at most 256 KiB.".to_string());
+        assert_eq!(
+            edit(json!({"block": "n1", "note": 7, "text": long, "rev": 1})),
+            most
+        );
+        assert_eq!(
+            parse_own("new_note", &json!({"block": "n1", "text": long})),
+            most
+        );
+        assert!(
+            edit(json!({"block": "n1", "note": 7, "text": "x".repeat(NOTE_TEXT_MOST), "rev": 1}))
+                .is_ok()
+        );
+        assert_eq!(
+            edit(json!({"block": "n1", "note": 1.5, "name": "x"})),
+            Err("\"note\" is a note's id, as the state shows it".into())
+        );
+        assert_eq!(
+            parse_own("new_note", &json!({"block": "n1", "name": "Plan"})),
+            Ok(Own::NewNote {
+                block: "n1".into(),
+                name: Some("Plan".into()),
+                text: None
+            })
+        );
+        assert_eq!(
+            parse_own("new_note", &json!({})),
+            Err("new_note needs \"block\", a string".into())
+        );
+
+        let open = |args: Value| parse_own("open_note", &args);
+        assert_eq!(
+            open(json!({"note": 5, "block": "n1"})),
+            Ok(Own::OpenNote {
+                note: 5,
+                into: NoteInto::Block("n1".into())
+            })
+        );
+        assert_eq!(
+            open(json!({"note": 5, "workspace": "w1", "x": 10, "y": -20.5})),
+            Ok(Own::OpenNote {
+                note: 5,
+                into: NoteInto::Workspace {
+                    workspace: "w1".into(),
+                    at: Some((10.0, -20.5))
+                }
+            })
+        );
+        assert_eq!(
+            open(json!({"note": 5, "workspace": "w1"})),
+            Ok(Own::OpenNote {
+                note: 5,
+                into: NoteInto::Workspace {
+                    workspace: "w1".into(),
+                    at: None
+                }
+            })
+        );
+        let either = Err("open_note takes block, or workspace".to_string());
+        assert_eq!(open(json!({"note": 5})), either);
+        assert_eq!(
+            open(json!({"note": 5, "block": "n1", "workspace": "w1"})),
+            either
+        );
+        let pair = Err("x and y go together, with workspace".to_string());
+        assert_eq!(
+            open(json!({"note": 5, "block": "n1", "x": 1, "y": 2})),
+            pair
+        );
+        assert_eq!(open(json!({"note": 5, "workspace": "w1", "x": 1})), pair);
+        assert_eq!(
+            open(json!({"note": 5, "workspace": "w1", "x": 1e9, "y": 2})),
+            Err("\"x\" is within ±10000000".into())
+        );
+        assert_eq!(
+            parse_own("close_note", &json!({"block": "n1", "note": 7})),
+            Ok(Own::CloseNote {
+                block: "n1".into(),
+                note: 7
+            })
+        );
+        assert_eq!(
+            parse_own("delete_note", &json!({"note": 7})),
+            Ok(Own::DeleteNote { note: 7 })
+        );
+        assert_eq!(
+            parse_own("delete_note", &json!({})),
+            Err("\"note\" is a note's id, as the state shows it".into())
+        );
+        assert!(
+            [
+                "edit_note",
+                "new_note",
+                "open_note",
+                "close_note",
+                "delete_note"
+            ]
+            .iter()
+            .all(|n| own(n) && known(n))
+        );
     }
 }

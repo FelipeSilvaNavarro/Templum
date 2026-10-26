@@ -22,8 +22,8 @@ use crate::{attachments, checklists, notes};
 
 /// A block [`Workspace::add_block_in`] opens.
 pub(crate) enum NewBlock {
-    /// A new note with `text`.
-    Note { text: String },
+    /// A new note with `text`, or with `open`, the note to show instead of a new one.
+    Note { text: String, open: Option<u64> },
     /// A new checklist named `name` ("Checklist" when blank) with `items`, each checked or not.
     Checklist {
         name: String,
@@ -148,8 +148,11 @@ impl Workspace {
             let now = notes::now();
             // Built here, not by the menus' constructors, which give the new block the keyboard.
             let id = match new {
-                NewBlock::Note { text } => {
-                    let note = ws.notes.add(text, None, now);
+                NewBlock::Note { text, open } => {
+                    let note = match open {
+                        Some(note) => note,
+                        None => ws.notes.add(text, None, now),
+                    };
                     let tabs = ws.note_tab(note, window, cx).into_iter().collect();
                     Some(ws.add_block(
                         rect,

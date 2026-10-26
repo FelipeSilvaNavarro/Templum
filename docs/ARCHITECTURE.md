@@ -121,12 +121,16 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   `Workspace::act_on_boards`, the one door (on this computer an edit of `Workspace::boards`, on a mirror a call of
   home's, asked of `why_not` and held over the copy by `cards_moved`, `cards_deleted` and `cards_edited`).
   `workspace/remote_content.rs` keeps a remote's copies of home's notes, checklists and drawings (`RemoteSpace::notes`,
-  `checklists`, the remote `Space::ink`, cleaned and capped where they enter, never saved), a read-only editor for each
-  note a note block of home's shows (`note_editors`, laid into the blocks' tabs by `Space::lay_note_tabs`) and the acts
-  on a checklist: every write of a checklist's items, local or remote, is `ChecklistAct` through
+  `checklists`, the remote `Space::ink`, cleaned and capped where they enter, never saved), an editor for each note a
+  note block of home's shows (`note_editors`, laid into the blocks' tabs by `Space::lay_note_tabs`; home's text goes
+  in through `note::write`, a ranged change) and the acts on a checklist: every write of a checklist's items, local or remote, is `ChecklistAct` through
   `Workspace::act_on_checklist`, the one door (on this computer an edit of `Workspace::checklists`, on a mirror a
   call of home's held over the copy by `items_checked`, `items_edited` and `items_deleted`). A remote note and
   checklist are `Body::Note`/`Body::Checklist` with `remote` set, which `Body::note()` and `checklist()` skip.
+  `workspace/remote_notes.rs` keeps the notes typed in on a mirror and not yet at home (`NoteEdit`, `note_steps`: the
+  whole text goes after a pause with the `rev` it was typed on, and the merge, which is pure and lives in `notes.rs`,
+  runs when home's text moved on, or the person's text becomes a new note) and the door `remote_note_act` for the
+  tabs, Rename, Color and the Notes dialog.
   `workspace/remote_rules.rs` keeps a remote's copies of home's rules for its workspace and of its agents' schedules
   (`RemoteSpace::rules`, `schedules`, cleaned and capped where they enter, never saved) and the Automations popup's
   keys of them: a home rule is addressed by `HOME_KEYS | n << 32 | id`, a number no local id reaches, and every

@@ -792,12 +792,12 @@ fn calls_waiting_when_the_attempt_drops_are_refused_once() {
     mirror.send("r1", Command::Disconnect);
     for (n, answered) in calls.into_iter().enumerate() {
         // The first was in flight: home may have done it. The others never left.
-        let words = if n == 0 {
-            "winx may have done it: the connection dropped before it answered."
+        let expected = if n == 0 {
+            Refusal::maybe_done("winx may have done it: the connection dropped before it answered.")
         } else {
-            "Couldn't reach the other computer."
+            refusal("Couldn't reach the other computer.")
         };
-        assert_eq!(block_on(answered), Err(refusal(words)));
+        assert_eq!(block_on(answered), Err(expected));
     }
     mirror.send("r1", Command::TryNow);
     until(&mirror, "r1", "live again", live);

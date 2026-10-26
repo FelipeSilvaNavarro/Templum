@@ -24,6 +24,7 @@ use crate::checklists::{self, Checklists, Item, List};
 use crate::note::{self, Note, NoteTab};
 use crate::notes::{Entry, Notes};
 use crate::session::InkItem;
+use gpui_kit::component::input::InputEvent;
 
 /// The most notes and checklists the copy keeps, and the most items of a checklist.
 pub(super) const MOST_NOTES: usize = 1_000;
@@ -33,19 +34,31 @@ pub(super) const MOST_LIST_ITEMS: usize = 2_000;
 /// bytes, so a text home sent is never cut again but a hostile home's is.
 pub(super) const NOTE_CHARS: usize = 262_144;
 
+/// A note's text with only what a mirror shows: its line breaks and tabs kept, every other control
+/// character dropped. What is typed, sent and kept as home's copy is alike, so a pasted carriage
+/// return can't make every later copy look like a change of home's.
+pub(super) fn clean_note_text(text: &str) -> String {
+    text.chars().filter(|c| kept(*c)).collect()
+}
+
+/// A character of a note's text a mirror shows (the one filter of the typed, the sent and the
+/// copy's text).
+fn kept(c: char) -> bool {
+    !c.is_control() || matches!(c, '\n' | '\t')
+}
+
 /// Home's note as the copy keeps it: its name one line, its text cleaned and capped (a cut note,
 /// home's or this cleaning's, ends with the sentence that says the rest is at home), its color
-/// one of the six.
-pub(super) fn note_of(view: &NoteView, computer: &str) -> Entry {
-    let mut chars = view
-        .text
-        .chars()
-        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'));
+/// one of the six; and whether the note is cut (home's cut, or this cleaning's): it is never
+/// edited from here.
+fn note_cut_of(view: &NoteView, computer: &str) -> (Entry, bool) {
+    let mut chars = view.text.chars().filter(|c| kept(*c));
     let mut text: String = chars.by_ref().take(NOTE_CHARS).collect();
-    if view.cut || chars.next().is_some() {
+    let cut = view.cut || chars.next().is_some();
+    if cut {
         text.push_str(&format!("\n\n… The rest is on {computer}."));
     }
-    Entry {
+    let entry = Entry {
         id: view.id,
         name: clean_title(&view.name),
         text,
@@ -53,8 +66,11 @@ pub(super) fn note_of(view: &NoteView, computer: &str) -> Entry {
             .color
             .as_deref()
             .and_then(|name| Label::ALL.into_iter().find(|l| l.name() == name)),
-        changed: 0,
-    }
+        changed: view.changed,
+        rev: view.rev,
+        closed_in: view.workspace.clone(),
+    };
+    (entry, cut)
 }
 
 /// Home's checklist as the copy keeps it: a name of one line, at most `MOST_LIST_ITEMS` items of
@@ -100,11 +116,15 @@ pub(super) fn drawings_of(views: &[DrawingView]) -> Vec<Drawing> {
 
 impl RemoteSpace {
     /// The copy of home's notes, made again from `state`: the first `MOST_NOTES`, each id once. A
-    /// note home didn't change since the state this one holds (the very same `Arc`) is moved over
-    /// as it is, not cleaned again, so this is called before `state` becomes `self.state`. Answers
-    /// the ids of the notes it made anew: the only ones whose editors may have a text to take.
-    pub(super) fn mirror_notes(&mut self, state: &State) -> HashSet<u64> {
+    /// note home didn't change since the state this one holds (the very same `Arc`) and no hold
+    /// was laid over is moved over as it is, not cleaned again, so this is called before `state`
+    /// becomes `self.state`. Answers the ids of the notes it made anew: the only ones whose
+    /// editors may have a text to take. Then what was done here to a note's name and color and
+    /// home's state doesn't show yet is laid over the copy (`lay_note_holds`).
+    pub(super) fn mirror_notes(&mut self, state: &State, now: Instant) -> HashSet<u64> {
         let computer = crate::mirror::computer_of(self);
+        let laid = std::mem::take(&mut self.notes_laid);
+        let was_cut = std::mem::take(&mut self.notes_cut);
         let mut old: HashMap<u64, Entry> = std::mem::take(&mut self.notes)
             .notes
             .into_iter()
@@ -112,19 +132,29 @@ impl RemoteSpace {
             .collect();
         let before: HashMap<u64, &Arc<NoteView>> =
             self.state.notes.iter().map(|n| (n.id, n)).collect();
-        let (mut seen, mut made) = (HashSet::new(), HashSet::new());
+        let (mut seen, mut made, mut cut) = (HashSet::new(), HashSet::new(), HashSet::new());
         let notes = state
             .notes
             .iter()
             .filter(|view| seen.insert(view.id))
             .take(MOST_NOTES)
             .map(|view| {
-                let same = before.get(&view.id).is_some_and(|b| Arc::ptr_eq(b, view));
+                let same = before.get(&view.id).is_some_and(|b| Arc::ptr_eq(b, view))
+                    && !laid.contains(&view.id);
                 match old.remove(&view.id).filter(|_| same) {
-                    Some(entry) => entry,
+                    Some(entry) => {
+                        if was_cut.contains(&view.id) {
+                            cut.insert(view.id);
+                        }
+                        entry
+                    }
                     None => {
                         made.insert(view.id);
-                        note_of(view, &computer)
+                        let (entry, is_cut) = note_cut_of(view, &computer);
+                        if is_cut {
+                            cut.insert(view.id);
+                        }
+                        entry
                     }
                 }
             })
@@ -133,7 +163,69 @@ impl RemoteSpace {
             notes,
             ..Notes::default()
         };
+        self.notes_cut = cut;
+        self.lay_note_holds(state, now);
         made
+    }
+
+    /// What was done to a note's name or color here and home's state doesn't show yet stands over
+    /// the copy. Each hold ends when home's state shows it, or after `HOLD`; a note one was laid
+    /// over is cleaned again from home's state at the next copy, not moved over.
+    fn lay_note_holds(&mut self, state: &State, now: Instant) {
+        let views: HashMap<u64, &Arc<NoteView>> = state.notes.iter().map(|n| (n.id, n)).collect();
+        let mut laid = HashSet::new();
+        for note in self.notes_renamed.keys() {
+            let Some(home) = views.get(&note).map(|n| clean_title(&n.name)) else {
+                self.notes_renamed.end(&note);
+                continue;
+            };
+            let name = self
+                .notes_renamed
+                .shown(note, home.clone(), now, |mine, home| mine == home);
+            if name != home
+                && let Some(entry) = self.notes.notes.iter_mut().find(|n| n.id == note)
+            {
+                entry.name = name;
+                laid.insert(note);
+            }
+        }
+        for note in self.notes_colored.keys() {
+            let Some(home) = views.get(&note).map(|n| {
+                n.color
+                    .as_deref()
+                    .and_then(|name| Label::ALL.into_iter().find(|l| l.name() == name))
+            }) else {
+                self.notes_colored.end(&note);
+                continue;
+            };
+            let color = self
+                .notes_colored
+                .shown(note, home, now, |mine, home| mine == home);
+            if color != home
+                && let Some(entry) = self.notes.notes.iter_mut().find(|n| n.id == note)
+            {
+                entry.color = color;
+                laid.insert(note);
+            }
+        }
+        self.notes_laid = laid;
+    }
+
+    /// A tab closed here ends its hold once home's state no longer shows it.
+    pub(super) fn end_closed_tabs(&mut self, state: &State) {
+        let home = self.home.as_ref().map(|h| h.id.as_str());
+        let shown: HashSet<u64> = state
+            .blocks
+            .iter()
+            .filter(|b| home.is_some_and(|h| h == b.workspace))
+            .filter_map(|b| b.notes.as_ref())
+            .flat_map(|n| n.tabs.iter().copied())
+            .collect();
+        for note in self.tabs_closed.keys() {
+            if !shown.contains(&note) {
+                self.tabs_closed.end(&note);
+            }
+        }
     }
 
     /// The copy of home's checklists, made again from `state` as the notes' are; a checklist an
@@ -278,9 +370,6 @@ impl RemoteSpace {
     }
 }
 
-/// `RemoteSpace::told`'s tag for a typed key in a mirrored note.
-const NOTE_READ_ONLY: &str = "note read-only";
-
 impl Workspace {
     /// The notes a note block draws: this computer's for a local one; a mirrored workspace's copy
     /// of home's for a remote one, which is drawn only while its workspace is shown (None else).
@@ -298,6 +387,14 @@ impl Workspace {
             self.space.remote.as_deref().map(|r| &r.checklists)
         } else {
             Some(&self.checklists)
+        }
+    }
+
+    /// The notes of workspace `space`: this computer's, or a mirrored workspace's copy.
+    pub(crate) fn notes_in(&self, space: &str) -> Option<&Notes> {
+        match self.space_named(space)?.remote.as_deref() {
+            Some(remote) => Some(&remote.notes),
+            None => Some(&self.notes),
         }
     }
 
@@ -323,9 +420,10 @@ impl Workspace {
     }
 
     /// The note editors of the mirrored workspace `id`, made again from its copy of home's notes:
-    /// one read-only editor, with no subscription, for each note a note block of home's workspace
-    /// shows (each note once); an editor whose text is not the copy's takes it, its selection
-    /// kept where the text still reaches. Editors of notes no longer shown go. Then the blocks'
+    /// one editor, subscribed to its keys, for each note a note block of home's workspace
+    /// shows (each note once); an editor whose text is not the copy's takes it by `note::write`
+    /// unless the note is being typed in (`edits`), its selection kept where the text still
+    /// reaches. Editors of notes no longer shown go. Then the blocks'
     /// tabs are laid (`lay_note_tabs`). Only an editor of a note in `made` (`mirror_notes`) is
     /// compared with the copy's text: a note moved over is the text it already has.
     pub(super) fn remote_notes(
@@ -344,60 +442,48 @@ impl Workspace {
         let shown = remote.shown_notes();
         remote.note_editors.retain(|note, _| shown.contains(note));
         for note in &shown {
-            let Some(text) = remote.notes.get(*note).map(|n| &n.text) else {
+            let Some(text) = remote.notes.get(*note).map(|n| n.text.clone()) else {
                 continue;
             };
             match remote.note_editors.get(note) {
-                Some(editor) if made.contains(note) => editor.update(cx, |editor, cx| {
-                    if editor.value() == text.as_str() {
-                        return;
-                    }
-                    let kept = editor.selected_range();
-                    editor.set_value(text.clone(), window, cx);
-                    let clip = |at: usize| {
-                        let mut at = at.min(text.len());
-                        while !text.is_char_boundary(at) {
-                            at -= 1;
-                        }
-                        at
-                    };
-                    editor.set_selected_range(clip(kept.start)..clip(kept.end), cx);
-                }),
+                // Home's text goes in as a ranged change: the caret, the scroll and the undo
+                // history stay. A note being typed in is never written here: `note_steps` merges
+                // at the person's pause.
+                Some(editor) if made.contains(note) && !remote.edits.contains_key(note) => {
+                    note::write(editor, &text, window, cx);
+                }
                 Some(_) => {}
+                // Shown again while typed in here: the person's editor, still subscribed.
+                None if remote.edits.contains_key(note) => {
+                    let editor = remote.edits[note].editor.clone();
+                    remote.note_editors.insert(*note, editor);
+                }
                 None => {
-                    let editor = note::editor(text, window, cx);
+                    let editor = note::editor(&text, window, cx);
+                    let (space_id, note_id) = (id.to_string(), *note);
+                    cx.subscribe_in(
+                        &editor,
+                        window,
+                        move |ws, _, event: &InputEvent, window, cx| match event {
+                            InputEvent::Change => {
+                                ws.remote_note_typed(&space_id, note_id, Instant::now(), window, cx)
+                            }
+                            InputEvent::Blur => ws.flush_note(&space_id, note_id, window, cx),
+                            _ => {}
+                        },
+                    )
+                    .detach();
                     remote.note_editors.insert(*note, editor);
                 }
             }
         }
         let state = remote.state.clone();
+        remote.end_closed_tabs(&state);
         space.lay_note_tabs(&remote, &state);
         space.remote = Some(remote);
+        self.note_steps(id, Instant::now(), window, cx);
+        self.show_awaited_tab(id, window, cx);
         cx.notify();
-    }
-
-    /// A key that would type in a note of the mirrored workspace is told once (per note block, per
-    /// run): the note is read-only here, and nothing was changed.
-    pub(crate) fn tell_note_read_only(
-        &mut self,
-        block: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(remote) = self.space.remote.as_mut() else {
-            return;
-        };
-        let Some(home) = remote.home_of(block) else {
-            return;
-        };
-        if remote.told.insert((home, NOTE_READ_ONLY)) {
-            let computer = crate::mirror::computer_of(remote);
-            self.warn(
-                format!("Notes are read-only on a mirror for now: edit them on {computer}."),
-                window,
-                cx,
-            );
-        }
     }
 
     /// A person's act on an item of the checklist block `block` of the mirrored workspace `space`:
@@ -621,7 +707,11 @@ impl Space {
                 .tabs
                 .iter()
                 .copied()
-                .filter(|id| remote.note_editors.contains_key(id) && seen.insert(*id))
+                .filter(|id| {
+                    remote.note_editors.contains_key(id)
+                        && remote.tabs_closed.get(id) != Some(&true)
+                        && seen.insert(*id)
+                })
                 .collect();
             if note.ids() == tabs {
                 continue;
@@ -688,8 +778,9 @@ mod tests {
             text: format!("x\r\n\x07\ty{}", "t".repeat(300_000)),
             color: Some("purple".into()),
             cut: false,
+            ..Default::default()
         };
-        let note = note_of(&view, "winx-desktop");
+        let note = note_cut_of(&view, "winx-desktop").0;
         assert!(!note.name.contains(['\n', '\x1b']) && note.name.chars().count() <= 60);
         assert!(!note.text.contains(['\r', '\x07']));
         assert!(note.text.starts_with("x\n\tyttt"));
@@ -706,14 +797,14 @@ mod tests {
             cut: true,
             ..Default::default()
         };
-        let note = note_of(&short, "winx-desktop");
+        let note = note_cut_of(&short, "winx-desktop").0;
         assert_eq!(note.text, format!("short{tail}"));
         assert_eq!(note.color, Some(Label::Blue));
         let whole = NoteView {
             text: "short".into(),
             ..Default::default()
         };
-        assert_eq!(note_of(&whole, "winx-desktop").text, "short");
+        assert_eq!(note_cut_of(&whole, "winx-desktop").0.text, "short");
 
         let state = State {
             notes: (1..=1_500)
@@ -727,7 +818,7 @@ mod tests {
             ..Default::default()
         };
         let mut space = remote();
-        space.mirror_notes(&state);
+        space.mirror_notes(&state, std::time::Instant::now());
         assert_eq!(space.notes.notes.len(), MOST_NOTES);
         assert_eq!(space.notes.notes[0].id, 1);
     }
@@ -853,7 +944,7 @@ mod tests {
         };
         let mut space = remote();
         let now = std::time::Instant::now();
-        assert_eq!(space.mirror_notes(&first), HashSet::from([7]));
+        assert_eq!(space.mirror_notes(&first, now), HashSet::from([7]));
         space.mirror_checklists(&first, now);
         space.state = first;
         let (text7, text12) = (
@@ -866,7 +957,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            space.mirror_notes(&second),
+            space.mirror_notes(&second, now),
             HashSet::from([9]),
             "7 moved over"
         );

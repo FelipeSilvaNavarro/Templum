@@ -22,6 +22,7 @@ use super::agents_view::Doing;
 use super::waits::{Approved, Waiting};
 use super::{Body, Space, Workspace};
 use crate::note::Note;
+use crate::notes;
 use crate::session::InkItem;
 
 /// Unix seconds for an instant of the executor's clock, given the clock's `now` and the time.
@@ -168,11 +169,14 @@ impl Workspace {
     fn note_views(&self, spaces: &[&Space]) -> Vec<NoteView> {
         let mut left = NOTES_TEXT_MOST;
         let mut seen = std::collections::HashSet::new();
-        let ids = bodies(spaces)
+        let ids: Vec<u64> = bodies(spaces)
             .filter_map(Body::note)
             .flat_map(Note::ids)
-            .filter(|id| seen.insert(*id));
-        ids.filter_map(|id| self.notes.get(id))
+            .filter(|id| seen.insert(*id))
+            .collect();
+        let mut views: Vec<NoteView> = ids
+            .into_iter()
+            .filter_map(|id| self.notes.get(id))
             .map(|entry| {
                 let mut end = entry.text.len().min(NOTE_TEXT_MOST);
                 while !entry.text.is_char_boundary(end) {
@@ -191,9 +195,39 @@ impl Workspace {
                     text: text.to_string(),
                     color: entry.color.map(|label| label.name().to_string()),
                     cut: text.len() < entry.text.len(),
+                    rev: entry.rev,
+                    changed: entry.changed,
+                    workspace: None,
                 }
             })
-            .collect()
+            .collect();
+        // Then the notes no block shows that were last open in one of this computer's own
+        // workspaces, the most recently changed first: what lets a share reopen them. They carry
+        // no text, so they take nothing of the budget.
+        let mut closed: Vec<&notes::Entry> = self
+            .notes
+            .notes
+            .iter()
+            .filter(|n| !seen.contains(&n.id))
+            .filter(|n| {
+                n.closed_in
+                    .as_deref()
+                    .and_then(|w| self.space_named(w))
+                    .is_some_and(|w| !w.is_remote())
+            })
+            .collect();
+        closed.sort_by_key(|n| std::cmp::Reverse((n.changed, n.id)));
+        views.extend(closed.into_iter().map(|entry| NoteView {
+            id: entry.id,
+            name: entry.name.clone(),
+            text: String::new(),
+            color: entry.color.map(|label| label.name().to_string()),
+            cut: false,
+            rev: entry.rev,
+            changed: entry.changed,
+            workspace: entry.closed_in.clone(),
+        }));
+        views
     }
 
     /// The checklists a checklist block of this computer shows, each once.

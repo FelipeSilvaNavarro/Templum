@@ -46,6 +46,7 @@ pub(super) fn content_state() -> State {
             id,
             name: name.into(),
             text: text.into(),
+            rev: 100,
             ..NoteView::default()
         })
     };
@@ -100,6 +101,8 @@ pub(super) fn live_content(
                 text: "own text".into(),
                 color: None,
                 changed: 1,
+                rev: 0,
+                closed_in: None,
             }],
             ..Notes::default()
         };
@@ -203,7 +206,7 @@ use templum_api::client::Tools;
 use templum_api::store::Scope;
 
 /// The note editor of tab `index` of the note block `block`.
-fn note_editor(
+pub(super) fn note_editor(
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
     block: BlockId,
@@ -215,7 +218,7 @@ fn note_editor(
     })
 }
 
-fn value(
+pub(super) fn value(
     editor: &Entity<gpui_kit::component::input::EditorState>,
     cx: &mut TestAppContext,
 ) -> String {
@@ -223,58 +226,15 @@ fn value(
 }
 
 /// `content_state()` with `change` made to its note block `n1` and the notes.
-fn changed(change: impl FnOnce(&mut State)) -> State {
+pub(super) fn changed(change: impl FnOnce(&mut State)) -> State {
     let mut state = content_state();
     change(&mut state);
     state
 }
 
-fn n1_of(state: &mut State) -> &mut BlockView {
+pub(super) fn n1_of(state: &mut State) -> &mut BlockView {
     let at = state.blocks.iter().position(|b| b.id == "n1").unwrap();
     Arc::make_mut(&mut state.blocks[at])
-}
-
-fn said_in(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<String> {
-    ws.read_with(cx, |ws, _| ws.said.clone())
-}
-
-#[gpui_kit::test]
-fn a_remote_note_shows_home_s_text_read_only(cx: &mut TestAppContext) {
-    let (handle, ws, _dir) = live_content(cx);
-    let n1 = viewer(&ws, cx, "n1");
-    let before = ws.read_with(cx, |ws, _| ws.notes.clone());
-    ws.read_with(cx, |ws, cx| {
-        let body = &ws.space.blocks[&n1];
-        let note = body.note_view().expect("a note");
-        assert!(note.remote && body.note().is_none());
-        assert_eq!(note.ids(), [7, 9]);
-        assert_eq!(note.tab().map(|t| t.id), Some(9));
-        assert_eq!(crate::block::title(ws, body, cx), "Ideas");
-    });
-    let editor = note_editor(&ws, cx, n1, 1);
-    assert_eq!(value(&editor, cx), "one");
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.focus_block(n1, window, cx));
-        window.render_frame(cx);
-        window.press("x", cx);
-    })
-    .unwrap();
-    assert_eq!(value(&editor, cx), "one");
-    ws.read_with(cx, |ws, _| assert_eq!(ws.notes, before));
-    let sentence = |said: Vec<String>| {
-        said.into_iter()
-            .filter(|s| s.starts_with("Notes are read-only on a mirror for now: edit them on "))
-            .count()
-    };
-    assert_eq!(sentence(said_in(&ws, cx)), 1);
-    cx.update_window(handle, |_, window, cx| window.press("y", cx))
-        .unwrap();
-    assert_eq!(value(&editor, cx), "one");
-    assert_eq!(sentence(said_in(&ws, cx)), 1, "said once");
-    // Find is the editor's own: no sentence for it.
-    cx.update_window(handle, |_, window, cx| window.press("secondary-f", cx))
-        .unwrap();
-    assert_eq!(sentence(said_in(&ws, cx)), 1);
 }
 
 #[gpui_kit::test]
@@ -311,30 +271,6 @@ fn a_remote_note_s_shown_tab_is_the_mirror_s_own(cx: &mut TestAppContext) {
     });
     apply(handle, &ws, cx, state);
     assert_eq!(shown(&ws, cx), (vec![9], Some(9)));
-}
-
-#[gpui_kit::test]
-fn home_s_text_follows_into_a_remote_note_and_keeps_the_selection(cx: &mut TestAppContext) {
-    let (handle, ws, _dir) = live_content(cx);
-    let n1 = viewer(&ws, cx, "n1");
-    let editor = note_editor(&ws, cx, n1, 0);
-    assert_eq!(value(&editor, cx), "first\nsecond");
-    editor.update(cx, |editor, cx| editor.set_selected_range(0..3, cx));
-    let with_text = |text: &str| {
-        let text = text.to_string();
-        changed(|s| {
-            s.notes[0] = Arc::new(NoteView {
-                text,
-                ..NoteView::clone(&s.notes[0])
-            })
-        })
-    };
-    apply(handle, &ws, cx, with_text("first\nsecond\nthird"));
-    assert_eq!(value(&editor, cx), "first\nsecond\nthird");
-    assert_eq!(editor.read_with(cx, |e, _| e.selected_range()), 0..3);
-    apply(handle, &ws, cx, with_text("fi"));
-    assert_eq!(value(&editor, cx), "fi");
-    assert_eq!(editor.read_with(cx, |e, _| e.selected_range()), 0..2);
 }
 
 #[gpui_kit::test]
@@ -437,88 +373,6 @@ fn a_note_is_in_one_tab_at_most_on_a_mirror(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_remote_note_s_tabs_and_menu_dim_what_edits(cx: &mut TestAppContext) {
-    let (handle, ws, _dir) = live_content(cx);
-    let (n1, b1) = (viewer(&ws, cx, "n1"), viewer(&ws, cx, "b1"));
-    ws.update(cx, |ws, _| live(ws, Scope::Full));
-    let state = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
-        ws.read_with(cx, |ws, _| {
-            (
-                ws.notes.clone(),
-                ws.space.blocks[&n1].note_view().unwrap().ids(),
-            )
-        })
-    };
-    let before = state(&ws, cx);
-    draw(handle, cx);
-    cx.update_window(handle, |_, window, cx| {
-        window.click(("note-tab-new", n1.0 as usize), cx);
-        window.click(
-            gpui_kit::ElementId::Name(format!("note-tab-close-{}-0", n1.0).into()),
-            cx,
-        );
-        window.render_frame(cx);
-    })
-    .unwrap();
-    assert_eq!(state(&ws, cx), before, "the + and the × change nothing");
-    ws.read_with(cx, |ws, cx| {
-        let computer = crate::mirror::computer_of(remote_of(ws));
-        let words =
-            format!("Notes are read-only on a mirror for now: add and edit notes on {computer}.");
-        // Rename…, Color ▸, All notes… and the header's button ask the same rule.
-        let gates = crate::menu::Gates::of(ws, &[Deed::EditNote]);
-        assert_eq!(gates.why(Deed::EditNote).as_deref(), Some(words.as_str()));
-        assert_eq!(ws.why_not(Deed::EditNote), Some(words));
-        // Copy all copies the note on screen; Send to ▸ lists home's terminals only.
-        let note = ws.space.blocks[&n1].note_view().unwrap();
-        assert_eq!(note.tab().map(|t| t.id), Some(7), "the × showed the tab");
-        assert_eq!(
-            note.text(cx),
-            "first\nsecond",
-            "Copy all copies the shown note"
-        );
-        assert_eq!(ws.remote_terminals(), [(b1, "b1".to_string())]);
-    });
-    // Right-clicking the block opens its menu.
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| {
-            ws.open_block_menu(n1, point(px(100.0), px(100.0)), window, cx)
-        });
-        assert!(ws.read(cx).menu.is_some());
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn a_remote_note_s_menu_opens_no_dialog_and_renames_nothing_of_the_mirror_s_own(
-    cx: &mut TestAppContext,
-) {
-    let (handle, ws, _dir) = live_content(cx);
-    let n1 = viewer(&ws, cx, "n1");
-    let own = ws.read_with(cx, |ws, _| ws.notes.clone());
-    draw(handle, cx);
-    // All notes…, Rename…: dimmed, they open nothing.
-    for item in [0usize, 1] {
-        cx.update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| {
-                ws.open_block_menu(n1, point(px(100.0), px(100.0)), window, cx)
-            });
-            window.render_frame(cx);
-            window.within("popup-menu").click(item, cx);
-            window.render_frame(cx);
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            window.render_frame(cx);
-            assert!(window.try_find("dialog").is_none(), "item {item}");
-        })
-        .unwrap();
-        ws.read_with(cx, |ws, _| assert_eq!(ws.notes, own, "item {item}"));
-    }
-    // Home's note 7 is not this computer's note 7, whoever asks.
-    ws.update(cx, |ws, cx| ws.rename_note(7, "Renamed", cx));
-    ws.read_with(cx, |ws, _| assert_eq!(ws.notes, own));
-}
-
-#[gpui_kit::test]
 fn new_note_from_a_local_notes_dialog_adds_nothing_once_a_mirror_is_shown(cx: &mut TestAppContext) {
     let (handle, ws, _dir) = super::remote::offline(cx);
     let block = cx
@@ -526,7 +380,7 @@ fn new_note_from_a_local_notes_dialog_adds_nothing_once_a_mirror_is_shown(cx: &m
             ws.update(cx, |ws, cx| {
                 ws.new_note(window, cx);
                 let block = ws.space.canvas.top().unwrap();
-                crate::note::open_notes(Some(block), window, cx);
+                crate::note::open_notes(ws.space.id.clone(), Some(block), window, cx);
                 block
             })
         })
@@ -630,6 +484,7 @@ fn no_local_tool_sees_a_remote_note_or_checklist(cx: &mut TestAppContext) {
                 let space = ws.space.id.clone();
                 let new = super::super::ops::NewBlock::Note {
                     text: "Mine".into(),
+                    open: None,
                 };
                 let place = super::super::ops::Place::Free;
                 ws.add_block_in(&space, new, place, None, window, cx)
@@ -768,7 +623,7 @@ fn list_state(change: impl FnOnce(&mut ChecklistView)) -> State {
     })
 }
 
-fn click_on(handle: AnyWindowHandle, cx: &mut TestAppContext, id: gpui_kit::ElementId) {
+pub(super) fn click_on(handle: AnyWindowHandle, cx: &mut TestAppContext, id: gpui_kit::ElementId) {
     cx.update_window(handle, |_, window, cx| {
         // Active: focus listeners (a field's blur) only hear an active window.
         window.activate_window();
@@ -1168,7 +1023,7 @@ fn copy_name(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> String {
     })
 }
 
-fn press_in(handle: AnyWindowHandle, cx: &mut TestAppContext, key: &str) {
+pub(super) fn press_in(handle: AnyWindowHandle, cx: &mut TestAppContext, key: &str) {
     cx.update_window(handle, |_, window, cx| {
         window.press(key, cx);
         window.render_frame(cx);
@@ -1323,6 +1178,9 @@ fn all_checklists_on_the_mirror_lists_home_s_and_makes_a_new_one_at_home(cx: &mu
         assert!(window.has_active_dialog(cx));
         assert!(window.try_find("checklist-row-99").is_none());
         window.click("checklist-row-12", cx);
+        // Showing c1 glides the camera by the clock: landed, the next click finds c1 where it
+        // was drawn.
+        ws.update(cx, |ws, _| ws.space.flight = None);
         window.render_frame(cx);
     })
     .unwrap();
@@ -1398,6 +1256,8 @@ fn all_checklists_on_the_mirror_lists_home_s_and_makes_a_new_one_at_home(cx: &mu
 
 #[gpui_kit::test]
 fn a_mirror_s_checklists_dialog_deletes_nothing(cx: &mut TestAppContext) {
+    // The dialog slides in by the clock: still, the trash is where the first click found it.
+    no_motion(cx);
     let (handle, ws, _dir) = live_content(cx);
     let c1 = viewer(&ws, cx, "c1");
     let own = ws.read_with(cx, |ws, _| ws.checklists.clone());

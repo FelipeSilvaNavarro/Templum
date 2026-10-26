@@ -172,7 +172,7 @@ the only key a URL may carry, and only on those two routes. Revoking a token voi
 |---|---|
 | **read** | Every GET, the event stream, and the tools that only read (`overview`, `list_agents`, `list_shells`, `recent_folders`, `read_terminal`, `list_cards`, `read_note`, `read_checklist`, `wait_for`) |
 | **control** | Also every other tool that doesn't type for you: opening agents, handing and interrupting tasks, blocks, wires, cards, notes, checklists, showing; answering questions, plans and requests to connect; running, switching and saving automations that run no command; Git's acts (`git`: stage, commit, push, branches, stashes…) |
-| **full** | Also `send_to_terminal`, `send_keys`, `terminal_input`, `share_workspace`, saving an automation that runs a command, deleting an automation, answering a request to delete or merge a worktree, answering the Templum Agent's approvals, and Git's discards, Restore version, deleting a branch, dropping a stash and aborting (`git`) |
+| **full** | Also `send_to_terminal`, `send_keys`, `terminal_input`, `share_workspace`, saving an automation that runs a command, deleting an automation, deleting a note (`delete_note`), answering a request to delete or merge a worktree, answering the Templum Agent's approvals, and Git's discards, Restore version, deleting a branch, dropping a stash and aborting (`git`) |
 
 Too low a scope: `403` `{"error":{"code":"scope","message":"send_to_terminal needs a Full token."}}`. A call through the
 API never shows the Templum Agent's approval: the token is your own hand, and its scope says how far it reaches.
@@ -223,7 +223,7 @@ doesn't see that one.
 `POST /v1/tools/{name}` runs any tool with its arguments as the JSON body; the answer is
 `{"text":"Created card 40.","workspace":"w3","block":"b7k2m"}` (the tool's words, and what it touched when known). The
 tool refusing is `422` `refused` with its sentence; a malformed argument is `400` `invalid`. `GET /v1/tools` lists them,
-with the eleven only the API has:
+with the sixteen only the API has:
 
 | Tool | Arguments | Scope |
 |---|---|---|
@@ -238,6 +238,11 @@ with the eleven only the API has:
 | `revoke_share` | `share` (left out: the calling token's own) | full, or the share itself |
 | `git` | `workspace`, `folder`, `op` and its arguments ([Git](#git)) | read, control or full, by `op` |
 | `recent_folders` | `workspace` | read |
+| `edit_note` | `block`, `note` (a note that block shows as a tab), then any of `name`, `color` (`red`, `yellow`, `green`, `cyan`, `blue`, `magenta` or `none`), `text` with `rev` | control |
+| `new_note` | `block`, then `name`, `text` | control |
+| `open_note` | `note`, then `block`, or `workspace` with `x`, `y` (both or neither) | control |
+| `close_note` | `block`, `note` | control |
+| `delete_note` | `note` | full |
 
 REST aliases name the common calls; path parameters and the body become the tool's arguments, and the path wins:
 
@@ -355,8 +360,23 @@ step of the kanban's Ctrl+Z; a limited token reaches only the boards its workspa
 and `delete_comment` (`card`, `comment`, and `text`) act as you: edit a comment by `you`, delete any.
 
 **Notes, checklists and ink.** `notes` holds the notes a note block shows, its `text` cut at 256 KiB (`cut` true
-then); all the texts together take at most 8 MiB as JSON (a control character takes up to 6 bytes), and the notes
-past that come with `cut` true and an empty `text`; a note block has `notes`: `{"tabs": [7, 9], "shown": 7}`. `checklists` holds the checklists a checklist block
+then), and each note no note block shows that was last open in a workspace (closed since the version that added
+`edit_note`), its `text` empty and `workspace` that workspace's id; a workspace-limited token sees those of its
+workspaces. All the texts together take at most 8 MiB as JSON (a control character takes up to 6 bytes), and the
+notes past that come with `cut` true and an empty `text`. Every note has `rev`, its text's revision (a number that grows each time its text changes and at each
+`edit_note` of its text, from the Unix time in milliseconds when Templum started, so a restarted Templum never reuses
+one), and `changed` (Unix seconds). `edit_note` renames a note (`name`, one line; blank is Untitled), tints it
+(`color`), or replaces its whole text (`text`, at most 256 KiB) when its `rev` is still `rev`, the one the state showed
+with the text the change was made on; else it is refused ("Note 7 changed since: its newer text and rev are in the
+state."), and so is a text for a note longer than 256 KiB, which the state shows cut: no change is written over a text
+the caller didn't see. The text goes in as one step of the note's Ctrl+Z, your caret kept. `new_note` adds a new note
+as a shown tab of a note block (`text` at most 256 KiB). `open_note` shows a note's tab where it is open, else opens it
+as a tab of `block`, or in a new note block of `workspace`. `close_note` closes a tab as its × does (a blank note goes).
+`delete_note` deletes a note for good, from every block, as the Notes dialog's trash does. A workspace-limited token
+reaches only the notes its blocks show and those last closed in its workspaces. None of the five moves your keyboard,
+selection or camera, and on a block of a mirrored workspace they are refused ("… is a mirror of …: act on it there.").
+Notes closed before this version are listed to no one through the API (they stay in the Notes dialog).
+A note block has `notes`: `{"tabs": [7, 9], "shown": 7}`. `checklists` holds the checklists a checklist block
 shows; a checklist block that shows one has `checklist`: its id. `drawings` holds one item per workspace with ink, its
 id the workspace's: its drawings in paint order, as the canvas file keeps them (`kind` `stroke` with `points`, or
 `line`, `arrow`, `rect`, `ellipse` with `from` and `to`; `color` by name; `width`; `highlight`), at most 2,000
@@ -657,8 +677,9 @@ Secret typed again). The name is home's.
 
 **On a mirrored workspace.** Not mirrored: an editor's content (a card names it). Scrolling back in a mirrored shell (the wheel, Shift+PageUp,
 Find) reads home's last 2000 lines, without colors, and again after it changed; the mouse reaches a program that asked
-for it, with a Full share. Not on a mirrored workspace: editors, editing notes (a note is read-only and live there:
-select, copy and find in it, send it to a terminal), renaming a checklist and moving its items, drawing, Move
+for it, with a Full share. Notes are edited there as here: what you type goes to home after a pause, checked
+against home's text; a change home made in the same place keeps both texts, yours as a new note beside it. Not on a
+mirrored workspace: editors, deleting a checklist, drawing, Move
 to workspace, Copy and Paste of blocks, Stop. The banner's ⓘ lists them. Fullscreen (grid mode) works there as on your
 own workspaces: it tiles home's blocks on this computer and moves nothing at home. The Git popup works on a mirrored workspace:
 everything it reads and does is home's `git` (reads with any share, acts with Control, discards, Restore version,
@@ -730,21 +751,19 @@ What the banner says, what it means, and whether it tries again by itself:
 What a workspace shows is mirrored live, and what you do on it that is one discrete change is done at home. These stay
 on home (each is its own card):
 
-1. Editing a note's text, names, colors and tabs, and opening or deleting notes: a note is read-only and live.
-2. Renaming a checklist, moving its items, and showing another checklist in a block.
-3. Drawing: drawing, erasing, moving and deleting ink and shapes (they are drawn live).
-4. An editor's files: an editor shows as a card.
-5. Following home's camera.
-6. Reaching home through a tunnel with Templum's own pinned certificate inside it.
-7. Undo beyond moves: Ctrl+Z there undoes moves only.
-8. A card's attachments: their names and sizes show, open them on home.
-9. Drafts of a kanban card.
-10. Move to workspace, and Copy and Paste of blocks (Copy and Paste between a mirror and a local workspace stay off for
+1. Drawing: drawing, erasing, moving and deleting ink and shapes (they are drawn live).
+2. An editor's files: an editor shows as a card.
+3. Following home's camera.
+4. Reaching home through a tunnel with Templum's own pinned certificate inside it.
+5. Undo beyond moves: Ctrl+Z there undoes moves only (a note's text keeps its editor's own Ctrl+Z).
+6. A card's attachments: their names and sizes show, open them on home.
+7. Drafts of a kanban card.
+8. Move to workspace, and Copy and Paste of blocks (Copy and Paste between a mirror and a local workspace stay off for
     good).
-11. In the Git popup: Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal.
-12. Each subagent's line in the Agents popup (their count shows).
-13. Moving several blocks at once as one step at home.
-14. Stopping the workspace on home (Start stays).
+9. In the Git popup: Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal.
+10. Each subagent's line in the Agents popup (their count shows).
+11. Moving several blocks at once as one step at home.
+12. Stopping the workspace on home (Start stays).
 
 ### 8. Safety
 

@@ -261,7 +261,7 @@ fn for_it(tool: &Value) -> Value {
 }
 
 /// The farthest a block may be put from the canvas's origin, in canvas units.
-const PLACE_MOST: f32 = 10_000_000.0;
+pub const PLACE_MOST: f32 = 10_000_000.0;
 
 /// The longest name of a wire, in characters.
 pub const LABEL_MOST: usize = 60;

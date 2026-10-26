@@ -190,6 +190,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `Instant::now()`. The window is far narrower than the one `lod.rs` had (an update apart), and none was seen failing.
   A person sees nothing; a contributor may see CI fail once on a very busy runner. Fix: draw again from the same
   camera while the frame landed past the glide, as `zoom_mid_glide` in `lod.rs` does.
+- [ ] **`the_welcome_opened_again_shows_the_system_and_changes_only_what_was_chosen` failed once in a full run.**
+  (`crates/templum/src/workspace/tests/welcome.rs`, seen by the orchestrator under load; not reproduced in 30 runs of
+  `welcome:: themes::` with 16 busy loops beside, and the failing assertion wasn't kept.) The welcome is not a dialog, so
+  it isn't the slide-in clock that made the checklist and gallery tests flaky (fixed with `no_motion`). A person sees
+  nothing; a contributor may see CI fail once. Fix: loop the test with busy loops beside, keep the panic, then make
+  the test wait on the state it checks (`cx.run_until_parked()` after the autostart write), not on the clock.
 
 ## Release and benches
 
@@ -306,7 +312,7 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   Notes dialog into a full block shows no tab lit, and the + is out of reach until the strip is scrolled. Fix: keep a
   `ScrollHandle` for the strip and `scroll_to_item` the active tab when it changes.
 - [ ] **Undoing a blank note's close brings back an empty block.** A blank note goes when its block closes
-  (`drop_if_blank`, `crates/templum/src/workspace/note_tabs.rs`), so Ctrl+Z after closing it, or Ctrl+Shift+Z after
+  (`note_closed`, `crates/templum/src/workspace/note_tabs.rs`), so Ctrl+Z after closing it, or Ctrl+Shift+Z after
   undoing a new note block, shows "No note open here". Fix: in `add_saved`, a note item whose notes are all gone opens
   a new blank note.
 - [ ] **Two canvases naming one note both show it after a restart.** `note_open_at` looks in the workspaces already
@@ -2202,6 +2208,29 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 
 ## Templum to Templum
 
+- [ ] **A tab's × waiting for its text fires `close_note` after home already closed the note, and home's refusal
+  shows.** (`workspace/remote_notes.rs`: `fire_closings`, and `remote_note_act`'s `Close`.) After "… isn't open on
+  winx-desktop any more: your version is …", or a send that lands, a second toast says "b7k2m shows no note 9.".
+  Fix: `fire_closings` drops a `Closing::Tab` whose note `block_showing` no longer shows.
+- [ ] **A gone note whose copy was refused `TRIES` times is never tried again.** (`workspace/remote_notes.rs`: step 1
+  waits while `copy_refused >= TRIES`, and only a key in the shown tab resets it.) Example: a share downgraded and
+  given back; the note has no tab, so no key reaches it and the text waits until Templum quits (reopening the note
+  from All notes… shows it again). Fix: reset `copy_refused` on `Update::Status(Live)`/`Update::Me` for an edit whose
+  note no block shows, or say in the stuck sentence that reopening the note shows the text.
+- [ ] **`edit_note` takes a text for a note the state emptied under its 8 MiB budget.** (`workspace/note_tabs.rs`
+  refuses only past 256 KiB; `workspace/api_state.rs` empties a note past the budget, with `cut` true and its `rev`.)
+  The spec's table says "refused for a note whose text the state cuts": an API client other than the mirror can write
+  over a text it never saw (it needs 8 MiB of notes in its state). Fix: refuse a text for a note the caller's last
+  state emptied, or narrow the spec and docs/api.md to "longer than 256 KiB".
+- [ ] **× on a tab, or on a whole note block, past 256 KiB does nothing visible.** (`workspace/remote_notes.rs`:
+  `close_when_saved`, for `Closing::Tab` and `Closing::Block`; the `NOTE_LONG` sentence is told once per note.) The tab
+  (or the block) stays open, the tab with its " •", until the person shortens the text, and nothing is said on the ×.
+  Fix: remove the note's `NOTE_LONG` tag from `told` in `close_when_saved`, so the next step says it again.
+- [ ] **A copy past 256 KiB whose block is still there lands on top of that block.** (`workspace/remote_notes.rs`,
+  `keep_note`: `add_block` with `x`, `y` = `edit.rect`'s origin; home's `Place::At` is exact, `ops.rs` `spot`.) Home
+  closes the tab of a note the person made longer than 256 KiB and the block stays: the new note block (`note::SIZE`)
+  covers the old block's top-left corner, on the mirror and at home. Fix: when the block is alive, send
+  `near: <its id>` instead of `x`/`y` (`room_near` finds free room).
 - [ ] **The banner, the remote tile and the Forget… dialog were checked headlessly only.** (`mirror.rs`,
   `connect_dialog.rs`.) Their spacing, the veil's strength and the Connect dialog's added-authority choice were not
   looked at on a display. Fix: look at them with two `--dev` instances (stop, revoke and delete at home).
@@ -2358,26 +2387,58 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **A mirror's comment pencil and trash aren't dimmed, only refused.** (`kanban.rs`, `refused`.) A card whose home
   refuses `edit_comment` or `delete_comment` says the rule's words when they are clicked, once; the buttons look
   alive. Fix: read the two deeds once a frame, as Done's, and dim them.
-- [ ] **A remote note's scroll may move when home's text changes.** (`workspace/remote_content.rs`, `remote_notes`.)
-  `set_value` keeps the selection (clipped), not the scroll. Fix: keep the editor's scroll offset across the set.
+- [ ] **A remote note's scroll may move when home's text changes, and so may a home's.** (`note.rs`, `write`.) It
+  keeps the scroll with `set_scroll_offset`, which gpui-base defers to the next layout; whether that wins over the
+  scroll `set_selected_range` takes to the caret was only checked headlessly (the same doubt as "`append_note` scrolls
+  the note back to the person's caret"). Fix: look at it with two `--dev` instances and an agent's `append_note`; if
+  the caret wins, set the offset again one frame later.
 - [ ] **A remote note, a remote checklist and home's ink were checked headlessly only.** (`note.rs`, `checklist.rs`,
-  `ink.rs`.) The read-only note, the dimmed + and × of its tabs, the dimmed check boxes and header buttons, the new
-  item's field and home's strokes painted above a mirror's blocks were not looked at on a display. Fix: look at them
-  with two `--dev` instances, one an older home.
+  `ink.rs`.) The editable note and its " •", the conflict's notification, All notes…'s Closed rows, the dimmed + and ×
+  of its tabs, the dimmed check boxes and header buttons, the new item's field and home's strokes painted above a
+  mirror's blocks were not looked at on a display. Fix: look at them with two `--dev` instances, one an older home.
+- [ ] **A copy whose answer was lost, and that home made, stays stuck; a key makes a second one.**
+  (`workspace/remote_notes.rs`, `keep_note`'s `Err` arm with `maybe_done`.) A person sees "Plan (Another computer)"
+  appear as a tab of the block while their own note stays read-only with " •" and "… couldn't be kept … press a key
+  to try again"; a key duplicates the note at home. Fix: at the next state, if `edit.block` shows a note named `name`
+  whose text is the person's, take `keep_note`'s `Ok` path.
+- [ ] **A note closed at home with a send in flight that had landed is copied anyway: its text is at home twice.**
+  (`workspace/remote_notes.rs`, step 2: `sent.is_some()` goes to the copy.) The closed note holds the sent text and
+  the new note beside it holds the same text; nothing is lost. Fix: in step 2, return while `sent` is Some; after the
+  `Ok` the base is the sent text, so step 2 drops the edit when nothing more was typed, and after a refusal ("… shows
+  no note …") it copies as now.
+- [ ] **Keys typed between a copy starting and the next paint are overwritten when the copy lands.**
+  (`note.rs`, `readonly` is applied at render; `workspace/remote_notes.rs`, `keep_note`'s `Ok` writes home's text
+  over the editor.) The copy can start without a key (home's state, the wake), so a key can reach the editor before
+  the read-only paint; that key is in neither note. Fix: in `remote_note_typed`, when the edit is `copying`, undo the
+  change (`note::write` the text the copy carries), or take the copy's text for `keep_note`'s `Ok` from the editor's
+  value at that moment.
+- [ ] **Revisions start at 0, not from the clock, when no `notes.json` was read.** (`workspace/spaces.rs`: `stamp`
+  runs only in the `Loaded::Saved` arm.) On a first run, or with the file moved aside, revisions don't start from the
+  Unix time in milliseconds the spec says; no reuse is possible in practice, as the next start reads the file and
+  seeds high. Fix: stamp after the `match` (`self.notes.stamp(notes::rev_seed())` for every arm).
 - [ ] **A mirrored checklist's item text and name aren't dimmed, only refused.** (`checklist.rs`, `row`.) A click on an
   item's text while the remote isn't live says the rule's words once; the text looks alive (the check box, the × and
   + Add an item are dimmed). Fix: read `Deed::EditItem` once a frame in `Why`, dim the text and give it the words as
   its tooltip.
 - [ ] **Notes of a mirrored workspace are cleaned and capped, then drawn whole.** (`workspace/remote_content.rs`,
-  `note_of`.) A hostile home's 1,000 notes of 256 KiB are 1,000 editors; the cap bounds memory but not the cost of
+  `note_cut_of`.) A hostile home's 1,000 notes of 256 KiB are 1,000 editors; the cap bounds memory but not the cost of
   opening them. Fix: make an editor for the note on screen of each block only, the rest when a tab is shown.
+- [ ] **Undoing all of one's typing after a send whose answer was lost can bring the text back.**
+  (`workspace/remote_notes.rs`, step 6 with `doubt`.) A send's answer is lost, the person undoes back to the base
+  before home's next state arrives, step 6 drops the edit (the text equals the old base), and the state then shows the
+  send had landed: the clean path writes it back into the editor. Fix: in step 6, keep the edit while `doubt` is Some.
+- [ ] **Two lost answers in a row can make a spurious copy.** (`workspace/remote_notes.rs`, `send_note`'s `Err` arm.)
+  A second `maybe_done` replaces `doubt` with the newer text; if the first send landed and the second was refused at
+  home, home's text matches neither and the person's text becomes a note beside it. Nothing is lost. Fix: keep every
+  doubted text (a short `Vec`) and resolve against any of them.
 - [ ] **Home's state copies every note's text and converts all the ink on each API tick.** (`workspace/api_state.rs`,
   `note_views`, `drawing_views`.) While an event stream is open, each tick (250 ms; 100 ms while dragging) copies the
   text of every shown note (up to 256 KiB each) and converts every local workspace's ink twice (`InkItem::of`, then
   `DrawingView::from`), changed or not; a person with many large notes or much ink sees stalls of a few ms on the UI
   thread. Fix: cache an `Arc<DrawingsView>` per space keyed by an ink revision (bumped on push, remove, retain, undo
-  and redo) and an `Arc<NoteView>` per note keyed by a revision of its text (`Entry.changed` is in seconds: too coarse),
-  so an unchanged tick reuses its `Arc`s and the publisher's comparison becomes a pointer check.
+  and redo) and an `Arc<NoteView>` per note keyed by `Entry.rev` (a note's name and color change `NoteView` without
+  moving it: key by the three), so an unchanged tick reuses its `Arc`s and the publisher's comparison becomes a
+  pointer check.
 - [ ] **Two `git` calls sent back to back on one repository may run in either order.**
   (`workspace/api_git.rs`, `api_git`, `git_queue`.) Each call finds its repository on the background executor before it
   takes its place in that repository's queue, so a `stage` and a `commit` sent without waiting for the first answer
@@ -2475,3 +2536,41 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   `remote_new_checklist`.) Locally New checklist edits the name at once; on a mirror home names it "Checklist", and
   the block beside comes without the camera going to it. Fix: once home's state brings the checklist (`awaiting`),
   `edit_field(Name)` and `reveal` it.
+- [ ] **Text of a mirror's note not at home yet is lost when Templum quits or the remote is forgotten.**
+  (`workspace/remote_notes.rs`, `NoteEdit`.) It lives only in the editor in memory, and only for the second or so
+  before it is sent, or for as long as the remote isn't live. Fix: list such notes in `may_close`'s question and in
+  Forget…'s.
+- [ ] **Notes closed at home before kanban card 204 can't be reopened from a mirror.** (`notes.rs`, `closed_in`.) They
+  have no mark, so the state doesn't list them; they stay in home's own Notes dialog. Fix: set `closed_in` at load for
+  the notes a saved canvas names (the workspace of its file), or let the person pick a workspace in home's Notes
+  dialog.
+- [ ] **Several carets collapse to one when home's text comes into a mirror's note.** (`note.rs`, `write`.) It keeps
+  the active selection only. Fix: shift every selection.
+- [ ] **A composition pending is committed early when home's change is written into a mirror's note.**
+  (`note.rs`, `write`.) A dead key or an input method's text is marked, and the write commits it as plain text before
+  the splice (`unmark_text`), so the accent the person was composing stays as typed or is replaced by home's text;
+  nothing lands over the caret. Fix: wait for the composition to end (`marked_text_range` is None) and write then.
+- [ ] **The new tab may not be shown with the keyboard when home's state arrives before `new_note`'s answer.**
+  (`workspace/remote_notes.rs`, `show_awaited_tab`.) The person clicks + and the tab appears without the keyboard, or
+  not shown, until a later state comes within 5 s. Fix: call `ws.show_awaited_tab(&id, window, cx)` right after
+  setting `tab_awaited` in the `Ok`.
+- [ ] **A note block closed with unsaved text stays open if the person switches workspace before home has the
+  text.** (`workspace/remote_notes.rs`, `fire_closings`, `Closing::Block(_) => {}`.) The block they closed is still
+  there when they come back. Fix: let `close_remote_now` take the space id, or keep the closing until its workspace
+  is shown.
+- [ ] **× on a tab whose send was refused `TRIES` times does nothing visible.** (`workspace/remote_notes.rs`,
+  `close_when_saved`.) The tab stays with its " •" and nothing is said again. Fix: say the refusal on the ×, or drop
+  the closing after `TRIES`.
+- [ ] **A typed-in note that becomes cut, with nothing new typed, keeps its old text in the editor.**
+  (`workspace/remote_notes.rs`, step 2; `remote_content.rs`, `remote_notes` skips the write while the edit exists.)
+  The mirror shows the pre-cut text without "… The rest is on …" until home changes the note again. Fix: when
+  step 2 drops the edit, `note::write` the copy's text if it differs.
+- [ ] **A key in a note home no longer shows, or that's missing from the copy, isn't tracked.**
+  (`workspace/remote_notes.rs`, `remote_note_typed`.) Text typed in that frame is overwritten by home's next write.
+  Fix: `note_locked` returns a reason when `block_showing(note)` is None.
+- [ ] **A copy with no home workspace to go to stays "Keeping your version…" forever.**
+  (`workspace/remote_notes.rs`, `keep_note`: `return` with `copying` still true.) The note is read-only for the rest
+  of the run. Fix: set `stuck` (with `copy_refused` at `TRIES`) and say why.
+- [ ] **Each send of a mirror's note carries the whole text.** (`workspace/remote_notes.rs`, `send_note`.) Up to
+  256 KiB every 0.5–2 s while typing, where the splice with its `rev` would be small. Fix: send the splice when home's
+  `edit_note` can apply one.

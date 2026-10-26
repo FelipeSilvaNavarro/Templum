@@ -320,11 +320,13 @@ the body, the tabs, the Notes dialog), `tab_strip.rs` (the tabs and the rename f
 (opening, closing, renaming and deleting). An editor's Markdown preview lives in `markdown.rs`.
 
 **On a mirrored workspace** ([Templum to Templum](templum-to-templum.md), part 2e) a note block shows the notes home's
-block shows, as tabs, in a read-only editor: select, Copy, Copy all, Find and Send to ▸ (home's terminals) work; a key
-that would type says "Notes are read-only on a mirror for now: edit them on winx-desktop." once per block and changes
-nothing. Which tab is shown is the mirror's own choice. The tabs' + and ×, a double click, Rename…, Color ▸ and All
-notes… are dimmed with "Notes are read-only on a mirror for now: add and edit notes on winx-desktop." A text home cut
-at 256 KiB ends with "… The rest is on winx-desktop." Home's text follows into the editor, the selection kept.
+block shows, as tabs, in an editor typed in as a local one: the text goes to home after a pause, checked against
+home's text (a change of home's in the same place keeps both texts, the person's as a new note beside it; see
+[Notes on a mirror](templum-to-templum.md#notes-on-a-mirror-kanban-card-204)). Select, Copy, Copy all, Find and Send to ▸
+(home's terminals) work; which tab is shown is the mirror's own choice. The tabs' + and ×, a double click, Rename…,
+Color ▸ and All notes… are home's acts, dimmed with the rule's words when the mirror can't. A text home cut at 256 KiB
+ends with "… The rest is on winx-desktop." and is read-only. Home's text follows into the editor as a ranged change,
+the selection kept.
 
 ## 6. The workspaces screen
 

@@ -64,7 +64,7 @@ impl Gates {
         Gates {
             close: ws.why_not(Deed::Close),
             boards: ws.why_not(Deed::ShowBoard),
-            notes: ws.why_not(Deed::EditNote),
+            notes: ws.why_not(Deed::OpenNote),
             checklists: ws.why_not(Deed::OpenChecklist),
         }
     }
@@ -516,7 +516,7 @@ pub(crate) fn render(
             "All notes",
             gates.notes.clone(),
             z,
-            move |_, window, cx| note::open_notes(Some(id), window, cx),
+            move |ws, window, cx| note::open_notes(ws.space.id.clone(), Some(id), window, cx),
             cx,
         )),
         _ => None,

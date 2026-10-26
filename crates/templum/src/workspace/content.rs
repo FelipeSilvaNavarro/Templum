@@ -538,6 +538,7 @@ impl Workspace {
             tools::BlockKind::Note => (
                 NewBlock::Note {
                     text: args.text.unwrap_or_default(),
+                    open: None,
                 },
                 "a note",
             ),

@@ -8,9 +8,9 @@
   2026-10-25-t2t-batch-2e-checklists-notes-ink, 2026-10-25-t2t-batch-2f-git-home,
   2026-10-25-t2t-batch-2g-git-mirror and 2026-10-26-t2t-batch-2h-agents-automations-inbox)
   ([Batch 2](#batch-2-the-whole-workspace-live)). Since then: grid mode (kanban card 206), home's shells in
-  Add ▸ Terminal ▸ (kanban card 201), home's recent folders in the Git popup's folder menu (kanban card 203). Editing
-  notes from the mirror is designed (kanban card 204, plan 2026-10-26-mirror-notes:
-  [Notes on a mirror](#notes-on-a-mirror-kanban-card-204)). Later batches (see [Later batches](#later-batches)) are
+  Add ▸ Terminal ▸ (kanban card 201), home's recent folders in the Git popup's folder menu (kanban card 203), notes
+  made, edited, renamed, colored, reopened and deleted from the mirror (kanban card 204, plan
+  2026-10-26-mirror-notes: [Notes on a mirror](#notes-on-a-mirror-kanban-card-204)). Later batches (see [Later batches](#later-batches)) are
   sketched.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
@@ -756,7 +756,7 @@ call; the mirror dims what its share can't do with the words of [One rule](#one-
 
 | The person, on the mirror | Home runs | Share |
 |---|---|---|
-| Adds a terminal, a kanban or a checklist | `add_block` (with `x`, `y`; a terminal's `shell`) | Control |
+| Adds a terminal, a kanban, a checklist or a note | `add_block` (with `x`, `y`; a terminal's `shell`) | Control |
 | Lists home's agents and shells in the menus | `list_agents`, `list_shells` | any |
 | Lists home's recent folders in the Git popup's folder menu | `recent_folders` | any |
 | Opens an agent | `open_agent` (with `x`, `y`) | Control |
@@ -768,6 +768,8 @@ call; the mirror dims what its share can't do with the words of [One rule](#one-
 | Moves, makes, edits, comments on or deletes a card; edits columns and boards | `move_card`, `create_card`, `edit_card`, `comment_card`, `edit_comment`, `delete_comment`, `delete_card`, `edit_column`, `edit_board`, `show_board` | Control |
 | Checks, adds, edits or deletes a checklist item | `check_item`, `add_items`, `edit_item`, `delete_item` | Control |
 | Renames a checklist, moves its items; a new checklist in a block that shows none | `edit_checklist`, `new_checklist` | Control |
+| Types in, renames, recolors a note; makes, closes, reopens one | `edit_note`, `new_note`, `close_note`, `open_note` | Control |
+| Deletes a note | `delete_note` | Full |
 | Reads a repository in the Git popup | `git` (its reads) | any |
 | Stages, commits, pushes, switches and makes branches, stashes, reverts… | `git` | Control |
 | Discards changes, restores a version, deletes a branch, drops a stash, aborts a merge | `git` | Full |
@@ -781,8 +783,8 @@ call; the mirror dims what its share can't do with the words of [One rule](#one-
 - **Adding:** the toolbar's buttons, the canvas menu's **Add ▸** (Terminal ▸, home's shells: below; Kanban board;
   Checklist) and their shortcuts work on a remote workspace. The block goes where it would go locally (the menu's
   click, else where a new block goes in the mirror's view), sent as `x` and `y`; home sizes it by its kind. A checklist
-  is added as the local Add adds one, named, through `add_block`'s `text`. **Note** is dimmed: "Notes are read-only on a
-  mirror for now: add and edit notes on winx-desktop."; **Editor** says "Not on a mirrored workspace yet".
+  is added as the local Add adds one, named, through `add_block`'s `text`. **Note** adds a note block at home the same
+  way (kanban card 204; home names its note Untitled); **Editor** says "Not on a mirrored workspace yet".
 - **The new block** shows when home's state brings it, a round trip later; the mirror then gives it the keyboard, as a
   local add does, unless the person focused something else meanwhile (or 5 s passed since home's answer). No
   placeholder stands in for it (*the designer's call*: a round trip is short, and a ghost would be a block that isn't).
@@ -910,15 +912,16 @@ home as tools. Editors, and kinds the mirror doesn't know, stay batch 1's card.
 - A remote block that shows no checklist offers New checklist and Open a checklist…, as locally, dimmed with the
   rule's words when the mirror can't (`Deed::OpenChecklist`).
 
-**Notes** (as batch 2e built them; kanban card 204 makes them editable:
+**Notes** (batch 2e showed them; kanban card 204 made them editable, as built in
 [Notes on a mirror](#notes-on-a-mirror-kanban-card-204)):
 
 - Home's tabs and notes' text, live. The tab shown is the mirror's own choice, starting on home's (*the designer's
   call*: a view, as the camera is, not an edit).
-- Read-only: selecting, Copy, **Copy all** and Find work. A key that would type says once "Notes are read-only on a
-  mirror for now: edit them on winx-desktop."; Rename…, Color ▸, All notes… and the tabs' + and ✕ are dimmed.
-  **Send to ▸** lists the remote workspace's terminals only.
-- A note home cut (past 256 KiB) ends with "… The rest is on winx-desktop."
+- Typed in as locally: the text goes to home after a pause, checked against home's text; a change of home's in the same
+  place keeps both texts (the person's as a new note beside it). The tabs' + and ✕, Rename…, Color ▸, All notes… and
+  the empty block's buttons are home's acts, dimmed with the rule's words when the mirror can't. Selecting, Copy,
+  **Copy all** and Find work; **Send to ▸** lists the remote workspace's terminals only.
+- A note home cut (past 256 KiB) ends with "… The rest is on winx-desktop." and is read-only.
 
 **Ink and shapes:** home's drawings of the workspace, painted above the blocks by the local painter, their colors by
 name in the mirror's theme. The drawing tools stay dimmed ("Drawing on a mirror isn't there yet: draw on
@@ -1036,7 +1039,7 @@ button, item, shortcut and drag asks it, and a dimmed control shows its answer a
    it with the registry's own `scope` (the same crate as home's); home's `403` still wins if they differ.
 4. "Not on a mirrored workspace yet" for what batch 2 leaves out.
 
-This replaces batch 1's blanket `on_remote` refusals. The banner's ⓘ lists what is left (editors, editing notes,
+This replaces batch 1's blanket `on_remote` refusals. The banner's ⓘ lists what is left (editors,
 deleting a checklist, drawing, attachments, Move to workspace, Copy and Paste of blocks). What only changes the mirror's own view (panning,
 zooming, grid mode) is no deed and is never dimmed.
 
@@ -1092,6 +1095,10 @@ rule is the control server's danger, which gives the API's scope):
 id or `"end"`, or both; renames the checklist the block shows, blank reading "Checklist", or moves one of its items;
 one step of its Ctrl+Z) and `new_checklist` (`block`, `name`: a new checklist in a checklist block that shows none,
 refused on one that shows one). Danger –, so Control.
+
+**Tools of kanban card 204** (the API's own, Control except `delete_note`, Full): `edit_note`, `new_note`, `open_note`,
+`close_note`, `delete_note`, and `rev`, `changed` and `workspace` in the state's notes. See
+[Notes on a mirror](#notes-on-a-mirror-kanban-card-204).
 
 **Into the control server** from the block server: `edit_item` and `delete_item` (on any checklist block, as the
 person's acts are), `edit_comment` and `delete_comment` (through the API, the person's: edits a comment `by: "you"`,
@@ -1301,7 +1308,7 @@ functions' names.
 
 ### Later batches
 
-Sketched so batches 1 and 2 close no door, each its own card: editing notes from the mirror; renaming a checklist,
+Sketched so batches 1 and 2 close no door, each its own card: editing notes from the mirror (done: kanban card 204); renaming a checklist,
 reordering its items and showing another checklist in a block (done: kanban card 205); drawing; an editor's files
 through the API; following home's camera; **sealed through tunnels**: Templum's pinned TLS carried inside one
 WebSocket the tunnel passes, so not even the tunnel's provider sees the traffic (WebSocket is part 1's non-goal, so it
@@ -2420,8 +2427,9 @@ Control share gets only the recent folder inside its workspace's folder).
 
 ### Notes on a mirror (kanban card 204)
 
-*Designed; plan [2026-10-26-mirror-notes.md](../plans/2026-10-26-mirror-notes.md). When it is built, the builder turns
-this into its As built and the [Notes](#boards-checklists-notes-ink) bullets above into what it says.*
+*Built: plan [2026-10-26-mirror-notes.md](../plans/2026-10-26-mirror-notes.md). What the builder chose or changed
+is under **As built** at the end of this section; the [Notes](#boards-checklists-notes-ink) bullets above say what the
+mirror does now.*
 
 The person (PT-BR, translated): "Templum Mirror: the notes system isn't integrated, the user must be able to create
 notes" and "besides reading, the user must be able to create, edit, rename, change the color of or reopen a note".
@@ -2487,7 +2495,7 @@ note of home's.
 
 **How the text goes home** (the design; the plan has every rule):
 
-- Home gives every note a **`rev`**: a number that grows each time its text changes (and at each `edit_note` of it),
+- Home gives every note a **`rev`**: a number that grows each time its text changes (and at each `edit_note` of its text),
   starting at the Unix time in milliseconds when Templum starts, so a restarted Templum never reuses one (the request
   ids' rule). The state's `notes` carry it.
 - The mirror keeps, for each note the person typed in, the text and `rev` of home's that their typing started from
@@ -2527,3 +2535,89 @@ without their text.
 notes (they are app-wide); deleting takes Full; every text is capped at 256 KiB at both ends and the mirror's copy is
 cleaned as before; a hostile mirror with a Control share can write over the workspace's notes as the person could, one
 Ctrl+Z step each at home; a hostile home's `rev`s only decide whether its own edits apply.
+
+#### As built (kanban card 204)
+
+Built as the plan has it, step by step; the code's reality moved these:
+
+- **Home:** `notes.rs` has `Entry::rev` (in memory, seeded at launch with `notes::rev_seed()`, the Unix time in ms,
+  before `notes_saved` is cloned), `Notes::stamp`, `touch`, `close_in`, `forget_workspace`, and `splice`, `merge` and
+  `shift` (pure, tested headlessly). `closed_in` is marked by `Workspace::note_closed` (a blank note goes; any other is
+  remembered) from the tab's ×, a closed block and `close_note`; a deleted workspace forgets its marks. `note::write`
+  is the one way a text goes into an editor (home's `edit_note`, and the mirror for every text of home's): one ranged
+  change, one Ctrl+Z step, the caret moved by `shift`, the scroll set back (`set_scroll_offset` is deferred by
+  gpui-base to the next layout; whether it wins over `move_to`'s own scroll was not looked at by hand, see the minor).
+  The five tools are `Own::EditNote…DeleteNote` in the registry (16 own tools; `rev` is a non-target argument),
+  dispatched by `api_call` to `Workspace::api_note` (`note_tabs.rs`), which answers with the block as its target.
+- **Confinement** (`api_allows`): `open_note` and `delete_note` check the note against the *workspaces' data*
+  (`note_seen`: open in a block the token sees, or no block and `closed_in` a workspace it sees), not against
+  `api_scope`'s state, which carries no notes (*the builder's call*). A note a token doesn't reach is "There's no note
+  9…", as one that isn't there. A block of a mirrored workspace gets `Space::mirror_words` as an `isError` answer; an
+  unknown block is the `not_found` error. `edit_note` refuses a text on a stale `rev` and on a note longer than 256 KiB
+  before it changes anything, so a call that fails changes nothing; its longer-than-API sentence says "edit it in
+  Templum on the computer that holds it" (home doesn't know its own name for it).
+- **`Workspace::open_note` does nothing on a mirror** (a guard added: with the rule now open, this computer's note of
+  home's id would have been opened in a block of the mirror). A dialog's click goes to `open_note_here`, which shows
+  the tab of an open note on a mirror (no call) and else calls home.
+- **The mirror's rule:** `Deed::AddNote` is `add_block` (older, too, when home lacks `edit_note`), `EditNote` is
+  `edit_note`, `OpenNote` is `open_note`, new `DeleteNote` is `delete_note`; `Nay::NotesReadOnly` is gone and so is
+  "editing notes" from the banner's ⓘ (`NOT_MIRRORED`).
+- **The copy:** `note_cut_of` keeps `rev`, `changed` and `closed_in` (the state's `workspace`); `notes_cut` names the notes
+  whose text is cut; `mirror_notes(state, now)` lays the rename and color holds (`lay_note_holds`) and `remirror` calls
+  it; closed notes are in the copy with no editor. `clean_note_text` is the one cleaning (also run on what is typed,
+  step 0).
+- **`NoteEdit` and `note_steps`** are `workspace/remote_notes.rs`, as the plan's §6.4. Two things differ. A change of
+  home's waits for the person's pause *before* it is merged (the plan's order merged at once; the spec says the editor
+  waits), so step 5 returns while `now < typed + PAUSE` unless the edit is flushed. And step 7 waits on any rung of the
+  rule (not connected, an older home, a share without Control), not only "not connected": nothing can be sent in any of
+  them, and the text stays. The `NoteEdit` also keeps the note's last name (for the new note's name when the note is
+  gone). A refused copy of the person's text (`stuck`) keeps the text in the editor and says home's sentence; the note
+  takes no keys (a key says "Your version of … couldn't be kept on …", once) and its " •" stays. The copy is tried
+  again once the remote is live and `HOLD` has passed, until it was refused `TRIES` times in a row; a key starts the
+  tries again. A send whose answer was lost (the client's `Refusal::maybe_done`: the call was sent and no answer
+  came) leaves the sent text as `doubt` and the base alone: home's next text says whether it landed (it is the
+  doubt: the base moves, nothing is merged), didn't (it is the base: the text goes again on the new rev) or
+  neither (the person's text is kept as a new note) — a merge on the old base would put the sent text in twice.
+  A copy whose answer was lost the same way is not retried by itself (home may have made it: a second would be a
+  duplicate note): only a key tries again. The wake is set only for due times still ahead of the step's `now`: a due
+  already past has had its step, and what the edit waits on is an event, not time (an answer, home's state, a key),
+  so a wake for it would run `note_steps` without end. The remote going live and `Update::Me` run `note_steps`
+  themselves, so unsent text and a copy to retry move on at once.
+  Past 256 KiB (step 1b only flags it) a note home still shows is neither sent nor copied by a conflict (home
+  would refuse both), says its sentence once and stays editable, so the person can shorten it; what only moves the
+  base (home's changes, a send whose answer was lost) still runs. A past-cap note home closed, or whose block home
+  closed, is kept whatever its size: the copy goes by `add_block` (which takes what the body holds, `new_note` refuses
+  256 KiB), so it lands as "a new note where it was" and not as a tab of the same block. A note home shows again
+  while it has an edit gets the edit's editor back, not a new one on home's text; once the copy has landed, a
+  note shown by a block gets home's text written into that editor, whatever the copy's reason.
+  `note::write` commits a composition pending (a dead key, an input method) as plain text before it splices, since a
+  ranged write would land over its marked range. Opening a note in a block clears its `closed_in` (`Notes::opened`,
+  in `note_tab`), so a workspace deleted with the tab open doesn't hand the note to another workspace's share. When
+  home's block is gone too the copy goes in by `add_block`, which has no name: the sentence says "a new note where it
+  was". A key in a note before the share is known (`me` not read yet) says "Not connected", and a share below
+  Control says the rule's "Needs a Full share…". A note cut at home while typed in becomes a copy with its own sentence ("… is longer
+  than a mirror edits (256 KiB): your version is the new note …"; not in the spec's list: *the builder's call*).
+- **The door** is `remote_note_act` (`NoteAct::New/Close/Rename/Color/Open/Delete`); holds `notes_renamed`,
+  `notes_colored` and `tabs_closed` are laid in `mirror_notes` and `lay_note_tabs` and ended by home's state,
+  `expire_holds` or a refusal. `Close` of a tab, and closing a note block (`remote_close`), wait for a `NoteEdit` through
+  `close_when_saved` (`RemoteSpace::closing`). `tab_awaited` shows the new tab asked of `new_note` or `open_note`
+  and gives it the keyboard when it comes (`show_awaited_tab`, 5 s). The rename field, the Rename… prompt and the Notes
+  dialog carry their workspace (`Workspace::still_on`, moved from `checklist.rs`). `open_notes` takes the workspace;
+  its rows on a mirror are the notes its blocks show ("Open") and those closed in it ("Closed"); the trash on a Control
+  share says "Needs a Full share…" through the door.
+- **Not done by hand:** the whole feature was checked headlessly (below); nothing was looked at in two `--dev`
+  Templums, the scroll of `note::write` wasn't compared against `append_note`'s, and `--bench-mirror` wasn't run.
+  They are in [minors.md](../minors.md).
+
+Tests: `notes.rs` (rev, `closed_in`, `splice`, `merge`, `shift`), the registry's scope and `the_note_tools_parse_and_say_what_is_missing`,
+`a_limited_caller_sees_the_closed_notes_of_its_workspaces_only` (model.rs); tests/api.rs
+`edit_note_writes_on_its_rev_only_and_keeps_home_s_caret`, `new_close_open_and_delete_a_note_through_the_api`,
+`a_limited_token_reaches_only_its_workspace_s_notes`, `a_deleted_workspace_s_closed_notes_are_no_new_workspace_s`, `a_note_opened_again_is_closed_in_no_workspace`;
+tests/remote_notes.rs (the plan's 1–17: typing and its pause, `MOST_WAIT`, the caret, the merge, both-in-one-place, a
+refused edit, a state older than the answer, a note closed at home, a cut or too long note, not connected, the tabs,
+unsaved close, the new tab, the dialog, a local dialog over a mirror, an older home, Add ▸ Note; and, after review, a send whose
+answer was lost, a composition pending, the words of a locked key, a refused copy tried again); `remote.rs`'s
+`notes_and_adds_are_home_s_calls` (the `Deed` words, an older home); and in mirror_end_to_end.rs the plan's 20–22 over
+loopback (the plan's 18, `notes.json` byte for byte, is in the third: it makes, types, renames, colors, closes and
+reopens a note and checks the mirror's `notes.json` and `ws.notes`).
+

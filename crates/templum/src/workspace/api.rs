@@ -366,6 +366,17 @@ impl Workspace {
                 let outcome = self.api_input(&caller, &block, input, cx)?;
                 return Ok(self.api_answer(outcome, None, conn, id, reply, name, window, cx));
             }
+            if matches!(
+                own,
+                Own::EditNote { .. }
+                    | Own::NewNote { .. }
+                    | Own::OpenNote { .. }
+                    | Own::CloseNote { .. }
+                    | Own::DeleteNote { .. }
+            ) {
+                let (done, target) = self.api_note(own, window, cx)?;
+                return Ok(Some(answer_line(id, &done, target.as_ref())));
+            }
             let done = self.api_own(&caller, own, window, cx)?;
             return Ok(Some(answer_line(id, &done, None)));
         }
@@ -635,6 +646,14 @@ impl Workspace {
                 }
             }
         }
+        // A note is the token's when a block it sees shows it, or it was last open in a workspace
+        // it sees: never home's other notes (they are app-wide).
+        if matches!(name, "open_note" | "delete_note")
+            && let Some(note) = registry::whole(&args["note"])
+            && !self.note_seen(&seen, note)
+        {
+            return Err(not_found("note", &note.to_string()));
+        }
         // What it opens starts inside the folders of its workspaces, symlinks and `..` followed.
         if matches!(name, "add_block" | "open_agent" | "git") {
             let kind = args["kind"].as_str().unwrap_or_default();
@@ -711,6 +730,26 @@ impl Workspace {
             }
         }
         Ok(args)
+    }
+
+    /// Whether note `id` is one `seen` reaches: shown by a block `seen` has, or open nowhere and
+    /// last open in a workspace `seen` has.
+    fn note_seen(&self, seen: &templum_api::State, id: u64) -> bool {
+        let sees = |workspace: &str| seen.workspaces.iter().any(|w| w.id == workspace);
+        match self.note_open_at(id) {
+            Some((space, block)) => {
+                sees(&space.id)
+                    && space
+                        .uids
+                        .get(&block)
+                        .is_some_and(|uid| seen.blocks.iter().any(|b| &b.id == uid))
+            }
+            None => self
+                .notes
+                .get(id)
+                .and_then(|n| n.closed_in.as_deref())
+                .is_some_and(sees),
+        }
     }
 
     /// The real folders of the workspaces `seen` has.
@@ -904,6 +943,12 @@ impl Workspace {
             )),
             // Answered later by `api_git`, which `api_call` takes first.
             Own::Git { .. } => Reply::err("git must go through api_git."),
+            // Answered with its target by `api_call`, which takes them first (`api_note`).
+            Own::EditNote { .. }
+            | Own::NewNote { .. }
+            | Own::OpenNote { .. }
+            | Own::CloseNote { .. }
+            | Own::DeleteNote { .. } => Reply::err("The note tools must go through api_note."),
             Own::RecentFolders { workspace } => {
                 // A mirror's folders are home's: it has none here.
                 let space = match self.space_of(&workspace, true) {

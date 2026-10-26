@@ -525,6 +525,7 @@ mod tests {
                 Err(Refusal {
                     sentence: "fatal: x".into(),
                     details: details.map(Into::into),
+                    maybe_done: false,
                 }),
             )
         };

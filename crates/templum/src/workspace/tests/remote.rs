@@ -428,8 +428,14 @@ pub(super) fn pump_home(
 pub(super) fn live(ws: &mut Workspace, scope: Scope) {
     let remote = ws.space.remote.as_mut().unwrap();
     remote.status = Status::Live;
+    let name = remote
+        .me
+        .as_ref()
+        .map(|m| m.name.clone())
+        .unwrap_or_default();
     remote.me = Some(templum_api::model::MeView {
         scope,
+        name,
         ..Default::default()
     });
 }
@@ -1152,7 +1158,6 @@ fn a_remote_workspace_refuses_what_it_cant_do_yet(cx: &mut TestAppContext) {
     });
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.new_note(window, cx);
             ws.new_editor(window, cx);
             let rect = ws.new_terminal_rect(window, cx);
             ws.open(rect, window, cx);
@@ -1971,7 +1976,6 @@ fn the_banner_tooltips_say_the_real_round_trip_and_what_isnt_mirrored() {
     let tip = crate::mirror::not_mirrored_tip();
     for word in [
         "editors",
-        "editing notes",
         "deleting a checklist",
         "attachments",
         "drawing",
@@ -4256,7 +4260,7 @@ fn an_act_after_an_undone_move_ends_what_ctrl_shift_z_could_redo(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
-fn notes_and_editors_stay_off_a_remote(cx: &mut TestAppContext) {
+fn editors_stay_off_a_remote_and_notes_are_home_s_calls(cx: &mut TestAppContext) {
     let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
@@ -4266,10 +4270,19 @@ fn notes_and_editors_stay_off_a_remote(cx: &mut TestAppContext) {
         })
     })
     .unwrap();
+    let adds = sent(&ws, cx);
+    assert_eq!(
+        adds.len(),
+        2,
+        "a note is home's add_block, an editor nothing"
+    );
+    assert!(adds.iter().all(|(tool, args)| {
+        tool == "add_block" && args["kind"] == "note" && args["workspace"] == "w1"
+    }));
+    assert_eq!(adds[1].1["x"], 0.0);
     ws.read_with(cx, |ws, _| {
-        assert!(ws.calls.is_empty());
-        assert_eq!(ws.space.canvas.blocks().len(), 1);
-        assert!(ws.space.undo.is_empty(), "no mark");
+        assert_eq!(ws.space.canvas.blocks().len(), 1, "nothing is added here");
+        assert!(matches!(ws.space.undo.as_slice(), [] | [(_, Change::Mark)]));
     });
 }
 

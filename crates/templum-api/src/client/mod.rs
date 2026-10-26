@@ -193,6 +193,9 @@ pub struct Refusal {
     pub sentence: String,
     /// What home says besides (git's whole stderr for a failed `git` operation).
     pub details: Option<String>,
+    /// Home may have done the call anyway: it was sent and no answer came (the connection dropped,
+    /// or it timed out). False for home's own refusals and for a call that never left.
+    pub maybe_done: bool,
 }
 
 /// The most of a refusal's details the client keeps: home's own cap, again where it enters.
@@ -203,6 +206,15 @@ impl Refusal {
         Refusal {
             sentence: sentence.into(),
             details: None,
+            maybe_done: false,
+        }
+    }
+
+    /// `of`, for a call that was sent and not answered.
+    pub fn maybe_done(sentence: impl Into<String>) -> Refusal {
+        Refusal {
+            maybe_done: true,
+            ..Refusal::of(sentence)
         }
     }
 }

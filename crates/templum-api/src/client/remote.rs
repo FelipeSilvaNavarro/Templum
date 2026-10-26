@@ -564,7 +564,7 @@ impl Life {
                 self.computer()
             );
             for to in busy {
-                self.refuse(to, may_have_done_it.clone());
+                self.refuse_with(to, Refusal::maybe_done(may_have_done_it.clone()));
             }
             for to in waiting {
                 self.refuse(to, "Couldn't reach the other computer.");
@@ -927,14 +927,17 @@ impl Life {
 
     /// Answers a call's `to` with a refusal. A move is told as an update, as it always was.
     fn refuse(&self, to: To, sentence: impl Into<String>) {
-        let sentence = sentence.into();
+        self.refuse_with(to, Refusal::of(sentence));
+    }
+
+    fn refuse_with(&self, to: To, refusal: Refusal) {
         match to {
             To::Move(block) => self.say(Update::Refused {
                 about: About::Move(block),
-                sentence,
+                sentence: refusal.sentence,
             }),
             To::Answer(answer) => {
-                let _ = answer.send(Err(Refusal::of(sentence)));
+                let _ = answer.send(Err(refusal));
             }
             // Scrolling back says nothing when it can't read: the person keeps the live screen.
             To::History(..) => {}
@@ -1048,7 +1051,11 @@ impl Life {
                 }
                 Ok(json)
             }
-            Err(Failure::Refused(sentence, details)) => Err(Refusal { sentence, details }),
+            Err(Failure::Refused(sentence, details)) => Err(Refusal {
+                sentence,
+                details,
+                maybe_done: false,
+            }),
             Err(Failure::Missing(sentence)) => Err(Refusal::of(sentence)),
             Err(Failure::TooLarge) => Err(Refusal::of(format!(
                 "{}'s answer was too large to show.",
@@ -1060,7 +1067,7 @@ impl Life {
                 if let Some(attempt) = self.attempt.as_mut() {
                     attempt.slow = None;
                 }
-                Err(Refusal::of(format!(
+                Err(Refusal::maybe_done(format!(
                     "{} didn't answer in time: it may still be running there.",
                     self.computer()
                 )))
@@ -1071,7 +1078,10 @@ impl Life {
                 {
                     attempt.slow = None;
                 }
-                Err(Refusal::of("Couldn't reach the other computer."))
+                Err(Refusal {
+                    maybe_done: sent,
+                    ..Refusal::of("Couldn't reach the other computer.")
+                })
             }
         };
         match (to, answer) {
@@ -2214,7 +2224,7 @@ mod tests {
             assert_eq!(first_answer.try_recv().unwrap(), Ok(json!({})));
             assert_eq!(
                 second_answer.try_recv().unwrap(),
-                Err(Refusal::of(
+                Err(Refusal::maybe_done(
                     "The other computer may have done it: the connection dropped before it answered."
                 ))
             );
@@ -2247,7 +2257,8 @@ mod tests {
                 answer.try_recv().unwrap(),
                 Err(Refusal {
                     sentence: "fatal: x".into(),
-                    details: Some("d".into())
+                    details: Some("d".into()),
+                    maybe_done: false,
                 })
             );
         });
@@ -2271,12 +2282,14 @@ mod tests {
             life.begin();
             for (n, mut answer) in answers.into_iter().enumerate() {
                 // The first was sent: home may have done it. The others never left.
-                let words = if n == 0 {
-                    "The other computer may have done it: the connection dropped before it answered."
+                let expected = if n == 0 {
+                    Refusal::maybe_done(
+                        "The other computer may have done it: the connection dropped before it answered.",
+                    )
                 } else {
-                    "Couldn't reach the other computer."
+                    Refusal::of("Couldn't reach the other computer.")
                 };
-                assert_eq!(answer.try_recv().unwrap(), Err(Refusal::of(words)));
+                assert_eq!(answer.try_recv().unwrap(), Err(expected));
             }
             assert!(
                 life.attempt.as_ref().unwrap().jobs.is_empty(),
@@ -2340,7 +2353,7 @@ mod tests {
             }
             assert_eq!(
                 answer.await.unwrap(),
-                Err(Refusal::of(
+                Err(Refusal::maybe_done(
                     "winx-desktop didn't answer in time: it may still be running there."
                 ))
             );
