@@ -641,8 +641,9 @@ Secret typed again). The name is home's.
 **On a mirrored workspace.** Not mirrored: an editor's content (a card names it). Scrolling back in a mirrored shell (the wheel, Shift+PageUp,
 Find) reads home's last 2000 lines, without colors, and again after it changed; the mouse reaches a program that asked
 for it, with a Full share. Not on a mirrored workspace: editors, editing notes (a note is read-only and live there:
-select, copy and find in it, send it to a terminal), renaming a checklist and moving its items, drawing, grid mode, Move
-to workspace, Copy and Paste of blocks, Stop. The banner's ⓘ lists them. The Git popup works on a mirrored workspace:
+select, copy and find in it, send it to a terminal), renaming a checklist and moving its items, drawing, Move
+to workspace, Copy and Paste of blocks, Stop. The banner's ⓘ lists them. Fullscreen (grid mode) works there as on your
+own workspaces: it tiles home's blocks on this computer and moves nothing at home. The Git popup works on a mirrored workspace:
 everything it reads and does is home's `git` (reads with any share, acts with Control, discards, Restore version,
 deleting a branch, dropping a stash and aborting with Full, dimmed on a Control share); Fetch, Pull, Push, Sync,
 Publish and Generate wait up to 10 minutes, and one a tunnel cuts says it may still be running on home; Generate uses
@@ -719,8 +720,8 @@ on home (each is its own card):
 7. Undo beyond moves: Ctrl+Z there undoes moves only.
 8. A card's attachments: their names and sizes show, open them on home.
 9. Drafts of a kanban card.
-10. Grid mode, Move to workspace, and Copy and Paste of blocks (Copy and Paste between a mirror and a local workspace
-    stay off for good).
+10. Move to workspace, and Copy and Paste of blocks (Copy and Paste between a mirror and a local workspace stay off for
+    good).
 11. In the Git popup: Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal.
 12. Home's other shells in Add ▸ Terminal: a terminal added from a mirror opens home's default shell.
 13. Each subagent's line in the Agents popup (their count shows).

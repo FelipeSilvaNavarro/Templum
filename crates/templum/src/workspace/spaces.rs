@@ -818,8 +818,9 @@ impl Workspace {
                         // Before home's first state the camera is nobody's: it isn't kept. Nor
                         // is one that isn't finite or lies beyond MOST_FAR: the entry couldn't be
                         // read back, or would start a dot grid with no end.
-                        camera: (r.placed || s.canvas.camera != Camera::default())
-                            .then_some(s.canvas.camera)
+                        // Grid mode's is not the canvas's.
+                        camera: (r.placed || s.camera() != Camera::default())
+                            .then_some(s.camera())
                             .filter(|c| {
                                 c.origin.x.abs() <= super::remote::MOST_FAR
                                     && c.origin.y.abs() <= super::remote::MOST_FAR

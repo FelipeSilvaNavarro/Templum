@@ -49,11 +49,10 @@ const DOT: f32 = 8.0;
 /// The Templum Agent's mark before a title, world units.
 const MARK: f32 = 10.0;
 
-/// Why a mirror's block headers can't close or fill the screen: the same for every block, so
-/// asked once a frame, not once a block.
+/// Why a mirror's block headers can't close: the same for every block, so asked once a frame,
+/// not once a block.
 pub(crate) struct Gates {
     close: Option<String>,
-    grid: Option<String>,
     /// The header buttons to every board, note and checklist: they list this computer's own.
     boards: Option<String>,
     notes: Option<String>,
@@ -64,7 +63,6 @@ impl Gates {
     pub(crate) fn of(ws: &Workspace) -> Gates {
         Gates {
             close: ws.why_not(Deed::Close),
-            grid: ws.why_not(Deed::Grid),
             boards: ws.why_not(Deed::ShowBoard),
             notes: ws.why_not(Deed::EditNote),
             checklists: ws.why_not(Deed::OpenChecklist),
@@ -404,8 +402,7 @@ pub(crate) fn render(
     .test_support();
 
     // On a mirror, what home can't do from here is dimmed, its tooltip the rule's words.
-    let (no_close, no_grid) = (gates.close.clone(), gates.grid.clone());
-    let no_grid_dim = no_grid.is_some();
+    let no_close = gates.close.clone();
     // Painted over the title: pressing it never starts a move.
     let close = div()
         .id(("close", n))
@@ -455,14 +452,13 @@ pub(crate) fn render(
             .text_color(ui.title),
         )
         .tooltip(move |window, cx| {
-            Tooltip::new(match &no_grid {
-                Some(why) => why.clone(),
-                None if tiled => "Back to the canvas".to_string(),
-                None => "Fullscreen".to_string(),
+            Tooltip::new(if tiled {
+                "Back to the canvas"
+            } else {
+                "Fullscreen"
             })
             .build(window, cx)
         })
-        .when(no_grid_dim, |el| el.opacity(0.4))
         // The block isn't focused by this press: that would drop the selection going full screen.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.fullscreen(id, window, cx)))

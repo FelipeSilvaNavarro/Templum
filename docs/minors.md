@@ -389,6 +389,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`tiling.rs`). Fix: animate each block from its canvas rect to its tile and back, as camera flights do.
 - [ ] **The title bar shows 100% in grid mode.** It reads the camera's zoom (`title_bar.rs`), which is grid mode's.
   Fix: show "Grid" there while a workspace is tiled.
+- [ ] **On a mirror in grid mode, a block home adds stays unseen until the grid ends.** (`mirror_blocks`,
+  `crates/templum/src/workspace/remote.rs`.) A block added at home (by its person or an agent there) is put on the
+  mirror's canvas, which grid mode hides; locally a new block joins the grid, and one added from the mirror's tile
+  menu does too (`focus_awaited`). Fix: in grid mode, have `mirror_blocks` join a new block of home's to the focused
+  tile's half, as `Workspace::join_grid` does.
 - [ ] **A pasted group comes into the grid one block at a time.** Each pasted block splits the one before
   (`added`, `crates/templum/src/workspace/blocks.rs`), so their arrangement on the canvas is lost. Fix: tile a
   pasted group as a dwindle of its own in the focused tile's half.
@@ -2308,7 +2313,7 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   through a real tunnel were not seen on a display. Fix: look at them with two `--dev` instances.
 - [ ] **The Open dialog, Hand a task…, the dimmed menu items and the dimmed ✕ were checked headlessly only.**
   (`launcher.rs`, `ask_home_folder`; `prompt.rs`, `ask_lines`; `menu/build.rs`, `gated_item`; `block.rs`, the header's
-  ✕ and fullscreen.) Their layout, the tooltips of dimmed items (an element item has no hover of its own in a popup
+  ✕.) Their layout, the tooltips of dimmed items (an element item has no hover of its own in a popup
   menu) and the dimmed look were not seen on a display. Fix: look at them with two `--dev` instances, one a Control
   share, one a Full share, one an older home.
 - [ ] **The Open dialog's answer closes whatever dialog is on top.** (`launcher.rs`, `ask_home_folder`.) A person who

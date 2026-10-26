@@ -413,11 +413,10 @@ impl Items {
                         connect,
                         disconnect,
                     } => {
-                        let menu = menu.item(gated_item(
+                        let menu = menu.item(item(
                             ws,
                             "Fullscreen",
                             Some(IconName::Maximize2),
-                            gates.why(Deed::Grid),
                             move |ws, window, cx| {
                                 let ids = if group.contains(&block) {
                                     group.clone()
@@ -441,44 +440,37 @@ impl Items {
                     } => {
                         let bring = ws.clone();
                         // New blocks take half of this tile: it has the focus.
-                        adding(
-                            ws,
-                            menu,
-                            agents,
-                            Some(shells),
-                            at,
-                            Gates::default(),
-                            window,
-                            cx,
-                        )
-                        .when(!others.is_empty(), |menu| {
-                            menu.submenu("From the canvas", window, cx, move |menu, _, _| {
-                                others.iter().fold(menu, |menu, (id, title)| {
-                                    let id = *id;
-                                    menu.item(item(
-                                        &bring,
-                                        title.clone(),
-                                        None,
-                                        move |ws, window, cx| ws.add_to_grid(id, block, window, cx),
-                                    ))
+                        adding(ws, menu, agents, shells, at, gates.clone(), window, cx)
+                            .when(!others.is_empty(), |menu| {
+                                menu.submenu("From the canvas", window, cx, move |menu, _, _| {
+                                    others.iter().fold(menu, |menu, (id, title)| {
+                                        let id = *id;
+                                        menu.item(item(
+                                            &bring,
+                                            title.clone(),
+                                            None,
+                                            move |ws, window, cx| {
+                                                ws.add_to_grid(id, block, window, cx)
+                                            },
+                                        ))
+                                    })
                                 })
                             })
-                        })
-                        .separator()
-                        .when(flip, |menu| {
-                            menu.item(item(ws, "Flip the split", None, move |ws, _, cx| {
-                                ws.flip_tile(block, cx)
+                            .separator()
+                            .when(flip, |menu| {
+                                menu.item(item(ws, "Flip the split", None, move |ws, _, cx| {
+                                    ws.flip_tile(block, cx)
+                                }))
+                            })
+                            .item(item(ws, "Leave the grid", None, move |ws, window, cx| {
+                                ws.leave_tile(block, window, cx)
                             }))
-                        })
-                        .item(item(ws, "Leave the grid", None, move |ws, window, cx| {
-                            ws.leave_tile(block, window, cx)
-                        }))
-                        .item(item(
-                            ws,
-                            "Back to the canvas",
-                            Some(IconName::Minimize2),
-                            |ws, window, cx| ws.leave_grid(window, cx),
-                        ))
+                            .item(item(
+                                ws,
+                                "Back to the canvas",
+                                Some(IconName::Minimize2),
+                                |ws, window, cx| ws.leave_grid(window, cx),
+                            ))
                     }
                 };
                 let mover = ws.clone();

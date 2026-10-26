@@ -804,7 +804,6 @@ pub(crate) enum Deed {
     /// Handing an agent a task.
     Delegate,
     Draw,
-    Grid,
     MoveToWorkspace,
     CopyBlocks,
     /// An operation of home's `git` by its name (`templum_git::ops::Op::name`).
@@ -968,7 +967,6 @@ pub(super) fn command_deed(command: crate::keys::Command) -> Option<Deed> {
         Command::NewNote => Deed::AddNote,
         Command::NewEditor | Command::OpenFile => Deed::AddEditor,
         Command::NewGit => Deed::Git("look"),
-        Command::ToggleGrid => Deed::Grid,
         _ => return None,
     })
 }
@@ -1258,7 +1256,7 @@ fn session_of(agent: &AgentView) -> Option<templum_usage::Session> {
 /// The banner's ⓘ: what a mirror doesn't have yet.
 pub(crate) const NOT_MIRRORED: &str = "Not mirrored yet: editors' content (a card shows each). \
      Not on a mirrored workspace yet: editors, editing notes, renaming a checklist and moving its \
-     items, drawing, grid mode, Move to workspace, Copy and Paste of blocks, Stop, a card's \
+     items, drawing, Move to workspace, Copy and Paste of blocks, Stop, a card's \
      attachments, and in the Git popup Clone, Choose another folder, Generate's ⚙, Open in editor \
      and Run in a terminal.";
 
@@ -1416,6 +1414,10 @@ impl Space {
             remote.held.end(&id);
             remote.closed.end(&id);
             self.canvas.remove(id);
+            // A tile's neighbour takes its place; the last one's going brings the canvas back.
+            if self.untile(id).is_some() && self.grid.is_none() {
+                self.calm();
+            }
             self.blocks.remove(&id);
             self.appearing.remove(&id);
             self.selected.retain(|s| *s != id);
@@ -1424,7 +1426,7 @@ impl Space {
                 self.hovered = None;
             }
             if self.focused == Some(id) {
-                self.focused = self.canvas.top();
+                self.focused = self.top();
             }
             if self.selected_wire.is_some_and(|w| w.touches(id)) {
                 self.selected_wire = None;
@@ -1449,12 +1451,13 @@ impl Space {
                     id
                 }
             };
-            // The person's hand has the block: it follows the pointer, not home.
+            // The person's hand has the block: it follows the pointer, not home. A tile stays the
+            // grid's: its place on the canvas follows home.
             let shown = remote.rect_shown(id, rect, now);
             if !dragged.contains(&id)
-                && let Some(block) = self.canvas.get_mut(id)
+                && let Some(place) = self.home_mut(id)
             {
-                block.rect = shown;
+                *place = shown;
             }
             match self.blocks.get_mut(&id) {
                 Some(Body::Terminal(pane)) => {
@@ -1882,10 +1885,9 @@ impl Workspace {
         {
             if let Some(local) = remote.homes.get(&block).copied() {
                 remote.held.end(&local);
-                if let (Some(rect), Some(b)) =
-                    (remote.rects.get(&local), space.canvas.get_mut(local))
+                if let (Some(rect), Some(place)) = (remote.rects.get(&local), space.home_mut(local))
                 {
-                    b.rect = *rect;
+                    *place = *rect;
                 }
             }
             space.remote = Some(remote);
@@ -1910,8 +1912,8 @@ impl Workspace {
         };
         let live = remote.why_not(Deed::Move).is_none();
         for id in ids {
-            let (Some(block), Some(home)) = (self.space.canvas.get_mut(*id), remote.home_of(*id))
-            else {
+            // A tile's place on the canvas is what moved (Ctrl+Z in grid mode).
+            let (Some(place), Some(home)) = (self.space.home_mut(*id), remote.home_of(*id)) else {
                 continue;
             };
             let Some(last) = remote.rects.get(id).copied() else {
@@ -1920,12 +1922,12 @@ impl Workspace {
             // What home has, as far as this knows: a move sent and not shown yet counts.
             let sent = remote.held.get(id).copied().unwrap_or(last);
             if !live {
-                block.rect = last;
+                *place = last;
                 remote.held.end(id);
-            } else if same_rect(block.rect, sent) {
+            } else if same_rect(*place, sent) {
                 continue;
             } else {
-                let r = block.rect;
+                let r = *place;
                 remote.held.hold(*id, r, now);
                 let rect = templum_api::model::Rect {
                     x: r.x,
@@ -1946,11 +1948,10 @@ impl Workspace {
         let (ended, due) = remote
             .held
             .expire(now, |id| self.placed.iter().any(|(p, _)| p == id));
-        for id in ended {
-            if let (Some(rect), Some(b)) = (remote.rects.get(&id), self.space.canvas.get_mut(id)) {
-                b.rect = *rect;
-            }
-        }
+        let ended: Vec<(BlockId, Rect)> = ended
+            .into_iter()
+            .filter_map(|id| Some((id, *remote.rects.get(&id)?)))
+            .collect();
         let (back, closed_due) = remote.closed.expire(now, |_| false);
         let (undone, wires_due) = remote.wires_held.expire(now, |_| false);
         let (moved, moved_due) = remote.cards_moved.expire(now, |_| false);
@@ -1959,6 +1960,11 @@ impl Workspace {
         let (checked, checked_due) = remote.items_checked.expire(now, |_| false);
         let (typed, typed_due) = remote.items_edited.expire(now, |_| false);
         let (unlisted, unlisted_due) = remote.items_deleted.expire(now, |_| false);
+        for (id, rect) in ended {
+            if let Some(place) = self.space.home_mut(id) {
+                *place = rect;
+            }
+        }
         // What was done here that home's state never showed ends: home's last state is drawn
         // again (a block closed here that home still lists comes back, a card moved here goes
         // where home has it).
@@ -3329,9 +3335,16 @@ impl Workspace {
             && self.canvas_has_keys(window);
         let block =
             (remote.homes.get(&awaited.home).copied()).filter(|id| entry.canvas.get(*id).is_some());
+        let before = awaited.before;
         match (waiting, block) {
             (true, None) => return,
-            (true, Some(id)) => self.focus_block(id, window, cx),
+            (true, Some(id)) => {
+                // In grid mode it takes half of the tile that had the keyboard, as a local one.
+                if !self.space.shown(id) {
+                    self.join_grid(id, before);
+                }
+                self.focus_block(id, window, cx);
+            }
             (false, _) => {}
         }
         if let Some(remote) = self.remote_mut(space) {

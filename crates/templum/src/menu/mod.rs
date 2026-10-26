@@ -247,8 +247,8 @@ impl Workspace {
                     grid.area.x + grid.area.w / 2.0,
                     grid.area.y + grid.area.h / 2.0,
                 )),
-                agents: AgentList::Local(self.agents_for_menu()),
-                shells: self.shells_for_menu(),
+                agents: self.agent_list_for_menu(),
+                shells: (!self.on_remote()).then(|| self.shells_for_menu()),
                 flip: grid.tiles.ids().len() > 1 && grid.homes.contains_key(&block),
                 others: self
                     .space
@@ -383,11 +383,17 @@ impl Workspace {
                     gates: Gates::of(
                         self,
                         &[
-                            Deed::Grid,
                             Deed::Wire,
                             Deed::Unwire,
                             Deed::MoveToWorkspace,
                             Deed::Close,
+                            // A tile's new blocks.
+                            Deed::OpenAgent,
+                            Deed::AddTerminal,
+                            Deed::AddKanban,
+                            Deed::AddNote,
+                            Deed::AddChecklist,
+                            Deed::AddEditor,
                         ],
                     ),
                     close: if body.terminal().is_some() {
@@ -673,15 +679,15 @@ enum Tail {
         connect: Vec<(BlockId, SharedString)>,
         disconnect: Vec<(BlockId, SharedString)>,
     },
-    /// In grid mode: new blocks (`agents`, placed on the canvas at `at`) and the blocks left on
-    /// the canvas, taking half of the tile; flip the split (with a neighbour), leave the grid,
-    /// back to the canvas.
+    /// In grid mode: new blocks (`agents`, placed on the canvas at `at`; None `shells` on a
+    /// mirror, as the canvas's menu) and the blocks left on the canvas, taking half of the tile;
+    /// flip the split (with a neighbour), leave the grid, back to the canvas.
     Tile {
         flip: bool,
         others: Vec<(BlockId, SharedString)>,
         at: Point,
         agents: AgentList,
-        shells: Shells,
+        shells: Option<Shells>,
     },
 }
 
@@ -746,7 +752,8 @@ enum Items {
         /// its terminal (`TEMPLUM_TERMINAL`).
         schedules: Vec<(u64, String)>,
         terminal: Option<String>,
-        /// Fullscreen, Connect to, Disconnect from, Move to workspace and Close on a mirror.
+        /// Connect to, Disconnect from, Move to workspace, Close and a tile's new blocks on a
+        /// mirror.
         gates: Gates,
     },
     Canvas {

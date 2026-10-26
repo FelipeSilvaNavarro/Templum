@@ -1156,7 +1156,6 @@ fn a_remote_workspace_refuses_what_it_cant_do_yet(cx: &mut TestAppContext) {
             ws.new_editor(window, cx);
             let rect = ws.new_terminal_rect(window, cx);
             ws.open(rect, window, cx);
-            ws.toggle_grid(window, cx);
             ws.set_tool(Tool::Pen, window, cx);
             ws.set_tool(Tool::Eraser, window, cx);
             // Copy and paste of blocks.
@@ -1197,7 +1196,6 @@ fn a_remote_workspace_refuses_what_it_cant_do_yet(cx: &mut TestAppContext) {
             uids,
             "no editor took a uid in the mirror"
         );
-        assert!(ws.space.grid.is_none());
         assert!(!ws.tool.draws(), "{:?}", ws.tool);
         assert!(!ws.space.stopped, "a remote can't be stopped");
         assert_eq!(ws.spaces().count(), spaces, "no workspace was made");

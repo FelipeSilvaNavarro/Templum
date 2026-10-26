@@ -203,13 +203,18 @@ beside New workspace, and the keymap a `connect_templum` command with no default
   would at home (the frame says when a program took over).
 - **Moving and resizing** a block works as locally, with snapping and Ctrl+Z; home moves its block and the mirror keeps
   following home.
+- **Fullscreen** (grid mode: the shortcut, the button beside ✕, the block menu's item) works as locally, enabled with
+  its usual tooltip. It is the mirror's own view of home's blocks: it calls nothing at home, and home's blocks keep
+  their places there. A tile home moves goes back to home's place when the grid ends, one home closes gives its place
+  to its neighbour, a block added from a tile's menu takes half of that tile, and the index keeps the canvas's camera.
+  Like the rest of a mirror's canvas, it isn't kept across a restart.
 - **Requests:** the Requests button counts the remote workspace's requests while it is shown; the inbox lists them
   and answers them (a question's options, a plan's Approve or Reject, Allow or Deny). One that arrives plays the sound
   and shows the notification a local one would, titled "API on winx-desktop".
 - **Blocks not mirrored yet** (notes, checklists, editors, boards in batch 1): a card in the block's place, with its
   kind's icon, its title and "Not mirrored yet: open it on winx-desktop." Ink and shapes aren't shown yet; the ⓘ says so.
 - **Not on a remote workspace yet** (each disabled where it shows, with the tooltip "Not on a mirrored workspace
-  yet"): adding blocks (toolbar, menus, drops), closing blocks, wiring, the drawing tools, grid mode, Move to
+  yet"): adding blocks (toolbar, menus, drops), closing blocks, wiring, the drawing tools, Move to
   workspace, Copy and Paste of blocks, Stop, the Git popup.
 - **Right-click the tile:** Open, Edit…, Disconnect (or Connect), Forget…. **Edit…** shows the connection (address,
   way in, the pin, what the share can do, when it expires, the round trip), **Paste a new code…**, and the local look
@@ -714,9 +719,9 @@ Each is its own kanban card (*the designer's call*):
 7. Undo on a mirror beyond moves: an undo at home that undoes the mirror's own steps, not the person's at home.
 8. A card's attachments from the mirror: thumbnails, opening and attaching (their names and sizes show).
 9. Kanban drafts on a mirror: a remote card's dialog has no Save draft.
-10. Grid mode, Move to workspace, and Copy and Paste of blocks on a remote workspace. (Copy and Paste of a block
-    between a remote and a local workspace stays off for good: it would write home's content into the mirror's stores,
-    batch 1's anti-goal.)
+10. Move to workspace, and Copy and Paste of blocks on a remote workspace. (Copy and Paste of a block between a
+    remote and a local workspace stays off for good: it would write home's content into the mirror's stores, batch 1's
+    anti-goal.) Grid mode, left out at first, works (kanban card 206): it is the mirror's own view.
 11. In the Git popup on a remote: Clone a repository…, Choose another folder… (a picker of home's folders), the ⚙
     beside Generate (home's Settings), Open in editor, and Run in a terminal on a failed command.
 12. Home's shells in Add ▸ Terminal ▸: a terminal added from a mirror opens home's default shell.
@@ -989,7 +994,8 @@ button, item, shortcut and drag asks it, and a dimmed control shows its answer a
 4. "Not on a mirrored workspace yet" for what batch 2 leaves out.
 
 This replaces batch 1's blanket `on_remote` refusals. The banner's ⓘ lists what is left (editors, editing notes,
-drawing, attachments, grid mode, Move to workspace, Copy and Paste of blocks).
+drawing, attachments, Move to workspace, Copy and Paste of blocks). What only changes the mirror's own view (panning,
+zooming, grid mode) is no deed and is never dimmed.
 
 **The Share… dialog's words** follow what a share now does: **Control**: "Watch and work with blocks, cards,
 checklists, Git and automations, open agents and hand them tasks, answer requests. No typing into terminals; agents it
@@ -2255,3 +2261,22 @@ agents) is a cleaned, capped copy made where the state enters and never saved; e
 `remote_call`; the Git popup is the same popup over a seam that calls `git` at home; and home's automations run only
 at home, with a test for every way one could fire on the mirror. Left out of batch 2, by design: the 15 items of
 "Left out of batch 2".
+
+### Fullscreen on a mirror (kanban card 206)
+
+The fullscreen button was dimmed on a mirror ("Not on a mirrored workspace yet") yet worked: it called `fullscreen`,
+which never asked the rule, while the shortcut and the menu's item were refused. Grid mode only changes the mirror's
+view, so it is no `Deed` any more (`Deed::Grid` is gone, with the header's `Gates::grid`): the button, the item and the
+shortcut all act, the button with its usual tooltip. What made it go wrong after going in:
+
+- **Home's state wrote over the tiles.** `mirror_blocks`, `remote_moved`, `expire_holds` and a refused move write a
+  block's place through `Space::home_mut`: a tile's place waits in `Grid::homes`, so a move at home is where the block
+  goes back to, and Ctrl+Z of a move in the grid sends home the canvas place, not the tile.
+- **A tile home closed stayed a hole.** `mirror_blocks` untiles a block home no longer has (`Space::untile`, the
+  workspace's half of `untile`, with `Space::calm`); the last one going brings the canvas and its camera back.
+- **The tile's menu was a local one.** It now lists home's agents, home's default shell and the rule's gates, as the
+  canvas's menu does on a mirror, and the block home adds for it joins the grid (`focus_awaited`, `join_grid`).
+- **The index kept grid mode's camera** as the remote's: it keeps `Space::camera()`, the canvas's.
+
+Tests: the four at the end of `workspace/tests/grid.rs` ("On a mirror").
+
