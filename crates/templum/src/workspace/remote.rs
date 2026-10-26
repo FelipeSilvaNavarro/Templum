@@ -293,6 +293,11 @@ pub(crate) struct RemoteSpace {
     pub agents: Option<Vec<HomeAgent>>,
     pub agents_at: Option<Instant>,
     agents_asking: bool,
+    /// The shells home's terminals can run: None until read. Read with `agents`, and again when
+    /// a menu that lists them opens [`AGENTS_AGAIN`] after the last read.
+    pub shells: Option<HomeShells>,
+    pub shells_at: Option<Instant>,
+    shells_asking: bool,
     /// What typing already told, once: (home's block, which sentence). "Not connected" is told
     /// again after the remote was live in between.
     pub told: HashSet<(String, &'static str)>,
@@ -396,6 +401,44 @@ fn home_agent(line: &str) -> Option<HomeAgent> {
 /// How much of a title is read before `clean_title` cuts it.
 const TITLE_READ: usize = 1000;
 
+/// The most shells of home's a mirror lists besides its default.
+pub(crate) const MOST_SHELLS: usize = 32;
+
+/// The shells home can open a terminal in, as its `list_shells` says: its default's name (blank
+/// when it gave none), and the others', which `add_block`'s `shell` takes back.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct HomeShells {
+    pub default: String,
+    pub others: Vec<String>,
+}
+
+/// Home's shells out of its `list_shells` answer, a name a line as home writes them
+/// (`Workspace::shell_list`), the default's first and ending with `  default`. Home is not
+/// trusted: at most [`MOST_SHELLS`] others, each once, and a name that isn't already one clean
+/// line of a title's length (`clean_title`) is left out, not cleaned: home takes back only the
+/// names it wrote.
+pub(crate) fn home_shells(text: &str) -> HomeShells {
+    let fit = |name: &&str| !name.is_empty() && super::bus::clean_title(name) == *name;
+    let default = (text.lines().find_map(|l| l.strip_suffix("  default")))
+        .filter(fit)
+        .unwrap_or_default()
+        .to_string();
+    let mut others: Vec<String> = Vec::new();
+    for name in text
+        .lines()
+        .filter(|l| !l.ends_with("  default"))
+        .filter(fit)
+    {
+        if others.len() == MOST_SHELLS {
+            break;
+        }
+        if name != default && !others.iter().any(|s| s == name) {
+            others.push(name.into());
+        }
+    }
+    HomeShells { default, others }
+}
+
 /// How many notifications of one kind a remote may make in a [`NOTICE_SPAN`], so a home that went
 /// wrong can't flood the person.
 #[derive(Default)]
@@ -473,6 +516,9 @@ impl RemoteSpace {
             agents: None,
             agents_at: None,
             agents_asking: false,
+            shells: None,
+            shells_at: None,
+            shells_asking: false,
             old_keys: Vec::new(),
             inherits: None,
             entry,
@@ -562,8 +608,12 @@ impl RemoteSpace {
 
     /// Home's agents are not read yet, or were read [`AGENTS_AGAIN`] ago or more.
     pub(crate) fn agents_stale(&self, now: Instant) -> bool {
-        self.agents_at
-            .is_none_or(|at| now.saturating_duration_since(at) >= AGENTS_AGAIN)
+        stale(self.agents_at, now)
+    }
+
+    /// The same for home's shells.
+    pub(crate) fn shells_stale(&self, now: Instant) -> bool {
+        stale(self.shells_at, now)
     }
 
     /// Home's workspace this one mirrors: as its state names it, else the entry's.
@@ -618,6 +668,11 @@ impl RemoteEntry {
             ..RemoteEntry::default()
         }
     }
+}
+
+/// A list of home's read at `at` is not read yet, or was read [`AGENTS_AGAIN`] ago or more.
+fn stale(at: Option<Instant>, now: Instant) -> bool {
+    at.is_none_or(|at| now.saturating_duration_since(at) >= AGENTS_AGAIN)
 }
 
 /// What the Connect dialog hands over: the code and what More… added.
@@ -785,7 +840,10 @@ pub(crate) enum Deed {
     /// Answering a request that asks this scope of the share.
     Answer(Scope),
     Start,
+    /// A terminal running home's default shell.
     AddTerminal,
+    /// A terminal running another shell of home's (`add_block`'s `shell`).
+    AddShell,
     AddNote,
     /// A key typed in a note, its tabs' + and ×, its Rename, Color and All notes.
     EditNote,
@@ -872,6 +930,10 @@ impl Deed {
             Deed::Unwire => ("disconnect", json!({ "a": "a", "b": "b" })),
             Deed::Label => ("connect", json!({ "a": "a", "b": "b", "label": "l" })),
             Deed::AddTerminal => ("add_block", json!({ "workspace": "w", "kind": "terminal" })),
+            Deed::AddShell => (
+                "add_block",
+                json!({ "workspace": "w", "kind": "terminal", "shell": "s" }),
+            ),
             Deed::AddKanban => ("add_block", json!({ "workspace": "w", "kind": "kanban" })),
             Deed::AddChecklist => (
                 "add_block",
@@ -919,6 +981,7 @@ impl Deed {
         match self {
             Deed::Label => &["label"],
             Deed::Mouse => &["mouse"],
+            Deed::AddShell => &["shell"],
             _ => &[],
         }
     }
@@ -1802,7 +1865,9 @@ impl Workspace {
             _ => {}
         }
         let pending = self.pending_connect.as_deref() == Some(id);
-        let mut reads_agents = false;
+        // Home's lists are read once its tools are known and it is live, whichever comes last:
+        // a call made before it is live is refused.
+        let mut reads_lists = false;
         let Some(remote) = self.remote_mut(id) else {
             return heard;
         };
@@ -1812,6 +1877,7 @@ impl Workspace {
                 if status == Status::Live {
                     remote.live_at = Some(SystemTime::now());
                     remote.told.retain(|(_, said)| *said != NOT_LIVE);
+                    reads_lists = remote.tools.is_some();
                 }
                 remote.status = status.clone();
                 if pending {
@@ -1839,7 +1905,7 @@ impl Workspace {
             Update::Latency(latency) => remote.latency = Some(latency),
             Update::Tools(tools) => {
                 remote.tools = Some(tools);
-                reads_agents = true;
+                reads_lists = remote.status == Status::Live;
             }
             Update::Kept(kept) => {
                 remote.entry.key = match kept {
@@ -1862,8 +1928,9 @@ impl Workspace {
             | Update::Keyring(_)
             | Update::Notice(_) => {}
         }
-        if reads_agents {
+        if reads_lists {
             self.read_home_agents(id, cx);
+            self.read_home_shells(id, cx);
         }
         heard
     }
@@ -2242,6 +2309,9 @@ impl Workspace {
         remote.agents = None;
         remote.agents_at = None;
         remote.agents_asking = false;
+        remote.shells = None;
+        remote.shells_at = None;
+        remote.shells_asking = false;
         remote.requests_told.clear();
         remote.requests_budget = Budget::default();
         remote.notice_budget = Budget::default();
@@ -3221,18 +3291,42 @@ impl Workspace {
     /// home adds it (`add_block`), where it places it itself when its Templum can't place one. Nothing
     /// is added here; the block comes with home's state, and takes the keyboard (`awaiting`).
     pub(super) fn remote_add(&mut self, kind: Kind, at: Point, cx: &mut Context<Self>) {
-        self.remote_add_in(kind, at, None, cx);
+        self.remote_add_in(kind, at, None, None, cx);
     }
 
-    /// `remote_add` in `folder` at home (a terminal's or an editor's), the workspace's when None.
+    /// On the remote shown, a terminal of home's running its shell `shell` (a name of its
+    /// `list_shells`; None: its default) with its top-left corner at `at`, else where a new
+    /// terminal goes: home opens it (`remote_add_in`).
+    pub(crate) fn open_home_shell(
+        &mut self,
+        shell: Option<String>,
+        at: Option<Point>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let deed = match shell {
+            Some(_) => Deed::AddShell,
+            None => Deed::AddTerminal,
+        };
+        if self.why_not(deed).is_some() {
+            return;
+        }
+        let at = at.unwrap_or_else(|| self.new_terminal_rect(window, cx).origin());
+        self.remote_add_in(Kind::Terminal, at, None, shell, cx);
+    }
+
+    /// `remote_add` in `folder` at home (a terminal's or an editor's), the workspace's when None;
+    /// a terminal runs home's shell `shell`, its default when None.
     pub(crate) fn remote_add_in(
         &mut self,
         kind: Kind,
         at: Point,
         folder: Option<String>,
+        shell: Option<String>,
         cx: &mut Context<Self>,
     ) {
         let (deed, name) = match kind {
+            Kind::Terminal if shell.is_some() => (Deed::AddShell, "terminal"),
             Kind::Terminal => (Deed::AddTerminal, "terminal"),
             Kind::Kanban => (Deed::AddKanban, "kanban"),
             Kind::Checklist => (Deed::AddChecklist, "checklist"),
@@ -3257,6 +3351,9 @@ impl Workspace {
         }
         if let Some(folder) = folder {
             args["folder"] = folder.into();
+        }
+        if let Some(shell) = shell {
+            args["shell"] = shell.into();
         }
         let (space, before) = (self.space.id.clone(), self.space.focused);
         self.mark_remote();
@@ -3374,6 +3471,36 @@ impl Workspace {
         });
         let call = Call {
             tool: "list_agents".into(),
+            args: serde_json::json!({}),
+            slow: false,
+        };
+        self.remote_call(space, call, then, cx);
+    }
+
+    /// Asks home which shells its terminals can run (`list_shells`), unless that is under way or
+    /// home's Templum has no such tool: its answer is the list Add ▸ Terminal ▸ shows. A refusal
+    /// says nothing.
+    pub(crate) fn read_home_shells(&mut self, space: &str, cx: &mut Context<Self>) {
+        let Some(remote) = self.remote_mut(space) else {
+            return;
+        };
+        let lists = remote.tools.as_ref().is_some_and(|t| t.has("list_shells"));
+        if !lists || std::mem::replace(&mut remote.shells_asking, true) {
+            return;
+        }
+        let id = space.to_string();
+        let then: Then = Box::new(move |ws, answered, _, _| {
+            let Some(remote) = ws.remote_mut(&id) else {
+                return;
+            };
+            remote.shells_asking = false;
+            if let Ok(answer) = answered {
+                remote.shells = Some(home_shells(answer["text"].as_str().unwrap_or_default()));
+                remote.shells_at = Some(Instant::now());
+            }
+        });
+        let call = Call {
+            tool: "list_shells".into(),
             args: serde_json::json!({}),
             slow: false,
         };

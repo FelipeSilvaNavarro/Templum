@@ -57,11 +57,14 @@ On a **mirrored workspace** the same menus open, and what home can't do there is
 tooltip ([Templum to Templum](templum-to-templum.md#batch-2b-blocks-wires-and-agents-on-the-canvas)): the canvas menu's
 **AI agent ▸** lists home's agents (before home answered: "Asking *computer*…") and a choice asks which folder of
 home's;
-**Add ▸** has Terminal as one item (home's default shell), Kanban board, Checklist, and Note and Editor dimmed;
+**Add ▸** has Terminal ▸ (home's shells: Default, then the others home has; "Asking *computer*…" before home answered;
+an older home's Templum has Default only, its other shells dimmed with the rule's words), Kanban board, Checklist, and
+Note and Editor dimmed;
 **Notes…** and **Checklists…** are dimmed. A remote terminal's menu is Copy, Paste (dimmed without a Full share),
 **Hand a task…** (when an agent runs in it) and the block menu's end, with Fullscreen, Connect to ▸, Disconnect from ▸,
 Move to workspace and Close each dimmed when home can't. A card of home's has the end alone. A wire's menu has Rename
-wire… and Disconnect. The shells' menu and a drawing's don't open.
+wire… and Disconnect. The toolbar's shells' menu lists home's shells, as Add ▸ Terminal ▸; a drawing's menu doesn't
+open.
 
 Every block's header has a **⋯** (More), shown on hover beside Fullscreen and Close, which opens the block's menu at the
 click, as a right-click does.

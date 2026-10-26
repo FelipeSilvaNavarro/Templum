@@ -98,13 +98,9 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
             ui,
         )
         .on_click(cx.listener(|ws, e: &ClickEvent, window, cx| {
-            // The shells to pick from; Ctrl+Shift+T opens the default without a menu. A mirror
-            // has home's default only: it opens at once.
-            if ws.on_remote() {
-                ws.new_terminal(window, cx);
-            } else {
-                ws.open_menu(Target::Shells, e.position(), window, cx)
-            }
+            // The shells to pick from (a mirror's are home's); Ctrl+Shift+T opens the default
+            // without a menu.
+            ws.open_menu(Target::Shells, e.position(), window, cx)
         }))
         .test_support()
         .into_any_element(),

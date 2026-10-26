@@ -170,7 +170,7 @@ the only key a URL may carry, and only on those two routes. Revoking a token voi
 
 | Scope | May |
 |---|---|
-| **read** | Every GET, the event stream, and the tools that only read (`overview`, `list_agents`, `read_terminal`, `list_cards`, `read_note`, `read_checklist`, `wait_for`) |
+| **read** | Every GET, the event stream, and the tools that only read (`overview`, `list_agents`, `list_shells`, `read_terminal`, `list_cards`, `read_note`, `read_checklist`, `wait_for`) |
 | **control** | Also every other tool that doesn't type for you: opening agents, handing and interrupting tasks, blocks, wires, cards, notes, checklists, showing; answering questions, plans and requests to connect; running, switching and saving automations that run no command; Git's acts (`git`: stage, commit, push, branches, stashes…) |
 | **full** | Also `send_to_terminal`, `send_keys`, `terminal_input`, `share_workspace`, saving an automation that runs a command, deleting an automation, answering a request to delete or merge a worktree, answering the Templum Agent's approvals, and Git's discards, Restore version, deleting a branch, dropping a stash and aborting (`git`) |
 
@@ -259,6 +259,12 @@ names its block when it opened at once (not in a new worktree). `connect` takes 
 characters; blank takes it off): on two blocks already wired it renames their wire, else it wires them with that
 name; either is one Ctrl+Z step. `list_agents` ends the line of an agent the person hid in Templum's menus with `  hidden`
 (it still opens); a mirror's menus leave those out.
+
+**Shells.** `list_shells` names the shells a terminal can run, a name a line, as Add ▸ Terminal ▸ lists them: the
+default first, its line ending with `  default` (`zsh  default`), then each other shell found (`fish`, `PowerShell 7`).
+Names only, never a program's path. `add_block`'s `shell` (a terminal's) opens one of them by that name, the default
+when left out; a name the list doesn't have is refused (`There's no shell "fish": list_shells lists them.`): it is never
+a program or a command of the caller's.
 
 ### Git
 
@@ -649,7 +655,8 @@ deleting a branch, dropping a stash and aborting with Full, dimmed on a Control 
 Publish and Generate wait up to 10 minutes, and one a tunnel cuts says it may still be running on home; Generate uses
 home's agent; Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal stay on home. Adding, closing and wiring
 blocks, naming wires, opening home's agents and handing them tasks work from the mirror, each done at home through its
-API; a block you close or a wire you make shows at once and home's state wins after two seconds. Ctrl+Z there undoes
+API. Add ▸ Terminal ▸ and the toolbar's Terminal list home's shells (Default, then the others home has), never this
+computer's; the one you pick opens at home (an older Templum at home opens its default only). A block you close or a wire you make shows at once and home's state wins after two seconds. Ctrl+Z there undoes
 moves only: it stops once at each of those acts and says to undo the rest on home. A selection of several blocks moved
 on the mirror is one Ctrl+Z step per block on home. A kanban is live: dragging cards and columns, adding, renaming and
 deleting columns and boards, the card dialog and Send to work from the mirror, each done at home; a card you move,
@@ -723,10 +730,9 @@ on home (each is its own card):
 10. Move to workspace, and Copy and Paste of blocks (Copy and Paste between a mirror and a local workspace stay off for
     good).
 11. In the Git popup: Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal.
-12. Home's other shells in Add ▸ Terminal: a terminal added from a mirror opens home's default shell.
-13. Each subagent's line in the Agents popup (their count shows).
-14. Moving several blocks at once as one step at home.
-15. Stopping the workspace on home (Start stays).
+12. Each subagent's line in the Agents popup (their count shows).
+13. Moving several blocks at once as one step at home.
+14. Stopping the workspace on home (Start stays).
 
 ### 8. Safety
 

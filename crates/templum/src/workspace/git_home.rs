@@ -420,7 +420,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let at = self.new_terminal_rect(window, cx).origin();
-        self.remote_add_in(Kind::Terminal, at, Some(root), cx);
+        self.remote_add_in(Kind::Terminal, at, Some(root), None, cx);
         self.close_git(window, cx);
     }
 

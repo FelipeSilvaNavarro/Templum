@@ -203,6 +203,7 @@ impl Workspace {
         let reply = match parsed.call {
             ControlCall::Overview => Reply::ok(self.overview(cx)),
             ControlCall::ListAgents => Reply::ok(self.agent_list()),
+            ControlCall::ListShells => Reply::ok(self.shell_list()),
             ControlCall::Block(Call::ReadTerminal {
                 block,
                 lines,
@@ -637,9 +638,26 @@ impl Workspace {
                         "Name a folder: Templum can't find your home folder.",
                     ));
                 };
+                // Only a shell of this computer's own list: never a program the caller names.
+                let shell = match add.shell {
+                    None => None,
+                    Some(name) => {
+                        self.reload_early_shells();
+                        match self.shells.iter().find(|s| s.label == name) {
+                            Some(shell) => Some(shell.clone()),
+                            None => {
+                                return refuse(Reply::err(format!(
+                                    "There's no shell {:?}: list_shells lists them.",
+                                    clean_title(&name)
+                                )));
+                            }
+                        }
+                    }
+                };
                 let block = NewBlock::Terminal {
                     folder,
                     command: None,
+                    shell,
                 };
                 (block, "a terminal".to_string())
             }
@@ -1166,6 +1184,20 @@ impl Workspace {
             text.push(format!("Your tasks under way: {}", tasks.join("; ")));
         }
         tools::tail(&text.join("\n"), tools::MAX_TEXT).to_string()
+    }
+
+    /// `list_shells`' answer: the default's name (`  default` ends its line), then each other shell
+    /// found, as Add ▸ Terminal ▸ lists them. Names only: never a program's path.
+    pub(super) fn shell_list(&mut self) -> String {
+        self.reload_early_shells();
+        let default = self.default_shell_name();
+        let others = (self.shells.iter())
+            .filter(|s| s.label != default)
+            .map(|s| s.label.clone());
+        std::iter::once(format!("{default}  default"))
+            .chain(others)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// `list_agents`' answer: a line per agent Templum can open.

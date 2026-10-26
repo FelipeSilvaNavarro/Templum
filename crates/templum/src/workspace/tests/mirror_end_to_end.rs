@@ -593,6 +593,53 @@ fn a_terminal_added_on_the_mirror_is_there_at_home_has_the_keyboard_and_closes_t
     });
 }
 
+/// Home's shells reach the mirror through `list_shells`, and the one chosen there runs in the
+/// terminal home adds (kanban card 201).
+#[gpui_kit::test]
+fn a_shell_chosen_on_the_mirror_runs_in_the_terminal_home_adds(cx: &mut TestAppContext) {
+    use templum_terminal::ShellOption;
+    let (handle, ws, dir) = with_data(cx);
+    let folder = tempfile::tempdir().unwrap();
+    let (program, args) = quiet();
+    let quiet_shell = ShellOption {
+        label: "Quiet".into(),
+        program,
+        args,
+    };
+    ws.update(cx, |ws, _| {
+        ws.space.folder = Some(folder.path().to_path_buf());
+        ws.config.shell.program = None;
+        ws.default_shell = "zsh".into();
+        ws.shells_early = false;
+        ws.shells = vec![quiet_shell.clone()];
+    });
+    three_blocks(handle, &ws, cx);
+    let (first, _store) = mirrored(handle, &ws, cx, dir.path());
+    pump_home(&ws, cx, "home's shells on the mirror", |cx| {
+        ws.read_with(cx, |ws, _| {
+            let shells = remote_of(ws).shells.as_ref();
+            shells.is_some_and(|s| s.default == "zsh" && s.others == ["Quiet"])
+        })
+    });
+    let at = Point::new(1234.0, 567.0);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open_home_shell(Some("Quiet".into()), Some(at), window, cx)
+        })
+    })
+    .unwrap();
+    let mut added = None;
+    pump_home(&ws, cx, "the new terminal at home", |cx| {
+        added = block_at(&ws, cx, &first, (at.x, at.y));
+        added.is_some()
+    });
+    ws.read_with(cx, |ws, _| {
+        let home = ws.spaces().find(|s| s.id == first).unwrap();
+        let pane = home.terminal(added.unwrap()).unwrap();
+        assert_eq!(pane.shell.as_ref(), Some(&quiet_shell));
+    });
+}
+
 #[gpui_kit::test]
 fn two_blocks_wired_and_named_on_the_mirror_are_wired_and_named_at_home(cx: &mut TestAppContext) {
     use templum_canvas::Wire;

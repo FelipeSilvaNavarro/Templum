@@ -7,7 +7,8 @@
   2026-10-25-t2t-batch-2b-canvas, 2026-10-25-t2t-batch-2c-terminals, 2026-10-25-t2t-batch-2d-boards,
   2026-10-25-t2t-batch-2e-checklists-notes-ink, 2026-10-25-t2t-batch-2f-git-home,
   2026-10-25-t2t-batch-2g-git-mirror and 2026-10-26-t2t-batch-2h-agents-automations-inbox)
-  ([Batch 2](#batch-2-the-whole-workspace-live)). Later batches (see [Later batches](#later-batches)) are sketched.
+  ([Batch 2](#batch-2-the-whole-workspace-live)). Since then: grid mode (kanban card 206), home's shells in
+  Add ▸ Terminal ▸ (kanban card 201). Later batches (see [Later batches](#later-batches)) are sketched.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
   [cockpit.md](cockpit.md#6-the-workspaces-screen) (the sidebar, the Edit… dialog), [ask-inbox.md](ask-inbox.md)
@@ -724,19 +725,20 @@ Each is its own kanban card (*the designer's call*):
     anti-goal.) Grid mode, left out at first, works (kanban card 206): it is the mirror's own view.
 11. In the Git popup on a remote: Clone a repository…, Choose another folder… (a picker of home's folders), the ⚙
     beside Generate (home's Settings), Open in editor, and Run in a terminal on a failed command.
-12. Home's shells in Add ▸ Terminal ▸: a terminal added from a mirror opens home's default shell.
-13. In the Agents popup on a remote agent, each subagent's line (their count shows); the dot that travels along a wire
+12. In the Agents popup on a remote agent, each subagent's line (their count shows); the dot that travels along a wire
     while a task is handed.
-14. A `move_block` for several blocks at once: the minor "a selection of several blocks moved on the mirror is one
+13. A `move_block` for several blocks at once: the minor "a selection of several blocks moved on the mirror is one
     Ctrl+Z step per block at home" stays.
-15. Stopping a remote workspace at home from the mirror (it would cut the mirror's own view; Start stays).
+14. Stopping a remote workspace at home from the mirror (it would cut the mirror's own view; Start stays).
+
+Home's shells in Add ▸ Terminal ▸, left out at first, are there (kanban card 201): [The canvas](#the-canvas).
 
 Why these: the person named Git, the inbox, automations and agents, and "completely" is read as everything a person
 reads on a workspace, and every act they take on it that is one discrete change. Editing a note's text is not one: two
 computers typing into one text a round trip apart needs a design of its own for conflicts, and a half-done one loses
 text. Checklist items are discrete (an id and a value), so adding, editing, checking and deleting them are in batch 2.
-Items 2, 3, 12 and 13 are cheap but rare from another computer; 4 and 6 widen what crosses the network (files, a second
-TLS); 5, 7–11, 14 and 15 are conveniences whose absence the mirror says in words.
+Items 2, 3 and 12 are cheap but rare from another computer; 4 and 6 widen what crosses the network (files, a second
+TLS); 5, 7–11, 13 and 14 are conveniences whose absence the mirror says in words.
 
 Its anti-goals and threats are with batch 1's, marked *(batch 2)*: [Anti-goals](#anti-goals-a-failure-even-if-it-works)
 and the [threat model](#threat-model).
@@ -748,7 +750,8 @@ call; the mirror dims what its share can't do with the words of [One rule](#one-
 
 | The person, on the mirror | Home runs | Share |
 |---|---|---|
-| Adds a terminal, a kanban or a checklist | `add_block` (with `x`, `y`) | Control |
+| Adds a terminal, a kanban or a checklist | `add_block` (with `x`, `y`; a terminal's `shell`) | Control |
+| Lists home's agents and shells in the menus | `list_agents`, `list_shells` | any |
 | Opens an agent | `open_agent` (with `x`, `y`) | Control |
 | Closes a block | `close_block` | Control |
 | Wires or unwires two blocks, names a wire | `connect` (with `label`), `disconnect` | Control |
@@ -767,14 +770,26 @@ call; the mirror dims what its share can't do with the words of [One rule](#one-
 
 #### The canvas
 
-- **Adding:** the toolbar's buttons, the canvas menu's **Add ▸** (Terminal, which opens home's default shell; Kanban
-  board; Checklist) and their shortcuts work on a remote workspace. The block goes where it would go locally (the menu's
+- **Adding:** the toolbar's buttons, the canvas menu's **Add ▸** (Terminal ▸, home's shells: below; Kanban board;
+  Checklist) and their shortcuts work on a remote workspace. The block goes where it would go locally (the menu's
   click, else where a new block goes in the mirror's view), sent as `x` and `y`; home sizes it by its kind. A checklist
   is added as the local Add adds one, named, through `add_block`'s `text`. **Note** is dimmed: "Notes are read-only on a
   mirror for now: add and edit notes on winx-desktop."; **Editor** says "Not on a mirrored workspace yet".
 - **The new block** shows when home's state brings it, a round trip later; the mirror then gives it the keyboard, as a
   local add does, unless the person focused something else meanwhile (or 5 s passed since home's answer). No
   placeholder stands in for it (*the designer's call*: a round trip is short, and a ghost would be a block that isn't).
+- **Choosing a shell** (kanban card 201): **Terminal ▸** (the toolbar's Terminal, the canvas menu's and a tile's
+  **Add ▸ Terminal ▸**) lists home's shells as home's own menu lists them, from home's `list_shells` (read with
+  home's agents, and again when the menu opens a minute or more after the last read): **Default (*zsh*)**, home's
+  default, then each other shell found there (fish, PowerShell 7…); "Asking winx-desktop…" under Default until the
+  first answer. The chosen one is sent by its name as `add_block`'s `shell`; Default sends none, and Ctrl+Shift+T
+  opens it without a menu, as at home. A home whose Templum is older has Default only, and a dimmed **Other shells**
+  says "winx-desktop's Templum is older: update it to do this from here." (`Deed::AddShell`, which needs `add_block`'s
+  `shell`). The mirror never lists its own shells there. *Security:* `list_shells` gives names only, never a
+  program's path; home opens only a shell of its own list by that name and refuses any other ("There's no shell
+  "fish": list_shells lists them."), so a share can't make home run a program of its choosing. A name the mirror
+  reads is kept only when it already is one clean line (at most 32 shells besides the default, each once): it is
+  never cleaned into another name.
 - **Opening an agent:** **AI agent ▸** (the canvas menu, the toolbar) lists home's agents, from home's `list_agents`
   (read when the remote connects, and again when the menu opens a minute or more after the last read; "Asking
   winx-desktop…" until the first answer): installed ones first, the others greyed, as at home. Choosing one opens
@@ -2260,7 +2275,7 @@ everything the mirror can do; every collection of home's (boards, cards, checkli
 agents) is a cleaned, capped copy made where the state enters and never saved; every act is home's tool through
 `remote_call`; the Git popup is the same popup over a seam that calls `git` at home; and home's automations run only
 at home, with a test for every way one could fire on the mirror. Left out of batch 2, by design: the 15 items of
-"Left out of batch 2".
+"Left out of batch 2" (fewer since: each later card that brings one says so there).
 
 ### Fullscreen on a mirror (kanban card 206)
 
@@ -2280,3 +2295,26 @@ shortcut all act, the button with its usual tooltip. What made it go wrong after
 
 Tests: the four at the end of `workspace/tests/grid.rs` ("On a mirror").
 
+### Home's shells on a mirror (kanban card 201)
+
+Add ▸ Terminal ▸ on a mirror opened home's default shell only (item 12 of "Left out of batch 2"). Now:
+
+- **Home's API:** a control tool `list_shells` (read; the Templum Agent's too, its reads fold into one row), the
+  default's name first with `  default`, then the others' names as Add ▸ Terminal ▸ lists them
+  (`Workspace::shell_list`: the list read again when it was read early, as a menu does). `add_block`'s `shell` (a
+  terminal's only; with another kind it is refused) opens the shell of `Workspace::shells` with that label exactly
+  (`NewBlock::Terminal`'s `shell`, through `spawn_block_with`, so the block keeps it across restarts as a local one).
+  `shell` joins the registry's arguments that name nothing.
+- **The mirror:** `RemoteSpace::shells` (`HomeShells`, from `home_shells`), `shells_at`, `read_home_shells` (not
+  asked of a home without `list_shells`), `shells_stale`; `Deed::AddShell` (`add_block` with `shell`, needing
+  `shell`) gates the other shells; `open_home_shell` opens one (`remote_add_in` grew `shell`). The menus take a
+  `ShellList` (this computer's, or home's) as they take an `AgentList`; the toolbar's Terminal opens the menu on a
+  mirror too, refused with the rule's words when adding a terminal is.
+- **Found on the way:** home's lists were read when its tools came, which may be before the remote is live, when
+  the call is refused ("Not connected."): home's agents then waited for the menu's next open. They are read once the
+  tools are known and the remote is live, whichever comes last.
+
+Tests: `add_block_opens_only_a_shell_list_shells_names` (`templum_agent.rs`), the shells' tests after the agents' in
+`remote.rs` (the list read back as home writes it, a hostile list, read at connect and after a minute, waiting for
+live, an older home, the toolbar's choice), `a_shell_chosen_on_the_mirror_runs_in_the_terminal_home_adds`
+(`mirror_end_to_end.rs`), and `control.rs`'s parse tests.

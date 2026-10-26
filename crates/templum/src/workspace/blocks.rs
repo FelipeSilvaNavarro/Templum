@@ -513,9 +513,8 @@ impl Workspace {
             return;
         }
         if self.on_remote() {
-            // Home's default shell: there is no choice of shell on a mirror.
-            let at = at.unwrap_or_else(|| self.new_terminal_rect(window, cx).origin());
-            return self.remote_add(Kind::Terminal, at, cx);
+            // Home's default shell: a mirror's menus choose home's others (`open_home_shell`).
+            return self.open_home_shell(None, at, window, cx);
         }
         let rect = match at {
             Some(at) => {

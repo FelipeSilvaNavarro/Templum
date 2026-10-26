@@ -4360,6 +4360,225 @@ fn home_s_agents_are_read_at_connect_and_again_after_a_minute(cx: &mut TestAppCo
     assert_eq!(sent(&ws, cx), [("list_agents".to_string(), json!({}))]);
 }
 
+/// A made-up list of home's shells: one named as the default (left out of the others), then two.
+fn home_with_shells(ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    use templum_terminal::ShellOption;
+    let shell = |label: &str| ShellOption {
+        label: label.into(),
+        program: format!("/nonexistent/{label}"),
+        args: vec!["-l".into()],
+    };
+    ws.update(cx, |ws, _| {
+        ws.config.shell.program = None;
+        ws.default_shell = "zsh".into();
+        ws.shells_early = false;
+        ws.shells = vec![shell("zsh"), shell("fish"), shell("PowerShell 7")];
+    });
+}
+
+#[gpui_kit::test]
+fn home_s_shell_list_reads_as_home_writes_it(cx: &mut TestAppContext) {
+    use crate::workspace::remote::{HomeShells, home_shells};
+    let (_handle, ws) = open(cx);
+    home_with_shells(&ws, cx);
+    let text = ws.update(cx, |ws, _| ws.shell_list());
+    assert_eq!(text, "zsh  default\nfish\nPowerShell 7");
+    assert!(!text.contains("/nonexistent"), "names only, never a path");
+    assert_eq!(
+        home_shells(&text),
+        HomeShells {
+            default: "zsh".into(),
+            others: vec!["fish".into(), "PowerShell 7".into()],
+        }
+    );
+}
+
+#[test]
+fn a_hostile_shell_list_is_cut_and_nothing_is_cleaned_into_another_name() {
+    use crate::workspace::remote::{MOST_SHELLS, home_shells};
+    let many: Vec<String> = (0..40).map(|n| format!("s{n}")).collect();
+    let text = format!(
+        "bash  default\nzsh  default\nnu\nnu\n fish\nfi\u{7}sh\nf\u{202e}ish\n{}\nbash\n{}",
+        "x".repeat(61),
+        many.join("\n")
+    );
+    let shells = home_shells(&text);
+    assert_eq!(shells.default, "bash", "the first default only");
+    assert_eq!(shells.others.len(), MOST_SHELLS);
+    assert_eq!(shells.others[0], "nu", "once");
+    assert_eq!(
+        shells.others[1], "s0",
+        "the rest are left out, the default too"
+    );
+    let unclean = home_shells("\u{7}  default\n  ");
+    assert_eq!((unclean.default.as_str(), unclean.others.len()), ("", 0));
+}
+
+/// Home as it is now, by its registry: `add_block` takes `shell` and `list_shells` is there.
+fn tools_of_home(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    use templum_api::client::Update;
+    let tools = Tools::read(&json!(templum_api::registry::listed()));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.heard("r1", Update::Tools(tools), window, cx)
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn home_s_shells_are_read_at_connect_and_again_after_a_minute(cx: &mut TestAppContext) {
+    use crate::menu::Target;
+    use crate::workspace::remote::HomeShells;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    tools_of_home(handle, &ws, cx);
+    let calls = sent(&ws, cx);
+    let shells_at = calls.iter().position(|(tool, _)| tool == "list_shells");
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    let n = shells_at.expect("asked at connect");
+    assert_eq!(calls[n].1, json!({}));
+    // One at a time.
+    tools_of_home(handle, &ws, cx);
+    assert_eq!(sent(&ws, cx).len(), 2);
+    answer(
+        handle,
+        &ws,
+        cx,
+        n,
+        Ok(json!({"text": "zsh  default\nfish\nPowerShell 7"})),
+    );
+    answer(handle, &ws, cx, 0, Ok(json!({"text": ""})));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            remote_of(ws).shells,
+            Some(HomeShells {
+                default: "zsh".into(),
+                others: vec!["fish".into(), "PowerShell 7".into()],
+            })
+        );
+    });
+    let open = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_menu(Target::Shells, point(px(100.0), px(100.0)), window, cx)
+            })
+        })
+        .unwrap()
+    };
+    open(&ws, cx);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.menu.is_some(), "the shells' menu opens on a mirror");
+        assert!(ws.said.is_empty(), "{:?}", ws.said);
+    });
+    assert!(sent(&ws, cx).is_empty(), "read a moment ago");
+    ws.update(cx, |ws, _| {
+        let remote = ws.space.remote.as_mut().unwrap();
+        remote.shells_at = Some(Instant::now() - Duration::from_secs(61));
+    });
+    open(&ws, cx);
+    assert_eq!(sent(&ws, cx), [("list_shells".to_string(), json!({}))]);
+}
+
+/// Home's tools may come before the remote is live, when a call would be refused: its lists are
+/// read once both are so, whichever comes last.
+#[gpui_kit::test]
+fn home_s_lists_wait_for_the_remote_to_be_live(cx: &mut TestAppContext) {
+    use templum_api::client::Update;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    ws.update(cx, |ws, _| {
+        ws.space.remote.as_mut().unwrap().status = Status::Connecting;
+    });
+    tools_of_home(handle, &ws, cx);
+    assert!(sent(&ws, cx).is_empty(), "not live yet");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.heard("r1", Update::Status(Status::Live), window, cx)
+        })
+    })
+    .unwrap();
+    let tools: Vec<String> = sent(&ws, cx).into_iter().map(|(tool, _)| tool).collect();
+    assert_eq!(tools, ["list_agents", "list_shells"]);
+}
+
+#[gpui_kit::test]
+fn an_older_home_is_not_asked_for_its_shells_and_opens_its_default(cx: &mut TestAppContext) {
+    use crate::workspace::remote::Deed;
+    use templum_api::client::Update;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let older = json!([
+        {"name": "list_agents"},
+        {"name": "add_block", "inputSchema": {"properties": {"workspace": {}, "kind": {}, "x": {}, "y": {}}}},
+    ]);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.heard("r1", Update::Tools(Tools::read(&older)), window, cx)
+        })
+    })
+    .unwrap();
+    assert_eq!(sent(&ws, cx), [("list_agents".to_string(), json!({}))]);
+    ws.update(cx, |ws, _| ws.calls.clear());
+    let p = Point::new(120.0, -40.0);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let computer = crate::mirror::computer_of(remote_of(ws));
+            assert_eq!(
+                ws.why_not(Deed::AddShell),
+                Some(format!(
+                    "{computer}'s Templum is older: update it to do this from here."
+                ))
+            );
+            assert_eq!(ws.why_not(Deed::AddTerminal), None);
+            ws.open_home_shell(Some("fish".into()), Some(p), window, cx);
+            assert!(ws.calls.is_empty(), "nothing an older home would misread");
+            ws.open_home_shell(None, Some(p), window, cx);
+        })
+    })
+    .unwrap();
+    let calls = sent(&ws, cx);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "add_block");
+    assert_eq!(calls[0].1.get("shell"), None, "home's default");
+}
+
+/// The toolbar's Terminal on a mirror lists home's shells; the one chosen opens at home, by its
+/// name, where a new terminal goes. Default names no shell.
+#[gpui_kit::test]
+fn the_toolbar_s_terminal_opens_the_shell_of_home_s_chosen(cx: &mut TestAppContext) {
+    use crate::workspace::remote::HomeShells;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    ws.update(cx, |ws, _| {
+        let remote = ws.space.remote.as_mut().unwrap();
+        remote.shells = Some(HomeShells {
+            default: "zsh".into(),
+            others: vec!["fish".into(), "PowerShell 7".into()],
+        });
+        remote.shells_at = Some(Instant::now());
+    });
+    let choose = |cx: &mut TestAppContext, index: usize| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-terminal", cx);
+            window.render_frame(cx);
+            // Default (zsh), —, fish, PowerShell 7.
+            window.within("popup-menu").click(index, cx);
+            window.render_frame(cx);
+        })
+        .unwrap()
+    };
+    choose(cx, 3);
+    choose(cx, 0);
+    let adds: Vec<_> = sent(&ws, cx)
+        .into_iter()
+        .filter(|(tool, _)| tool == "add_block")
+        .map(|(_, args)| args)
+        .collect();
+    assert_eq!(adds.len(), 2, "{adds:?}");
+    assert_eq!(adds[0]["kind"], json!("terminal"));
+    assert_eq!(adds[0]["shell"], json!("PowerShell 7"));
+    assert!(adds[0]["x"].is_number(), "where a new terminal goes");
+    assert_eq!(adds[1].get("shell"), None);
+}
+
 #[gpui_kit::test]
 fn the_open_dialog_offers_the_workspace_s_folder_then_its_terminals_once(cx: &mut TestAppContext) {
     let (handle, ws, _dir) = live_terminals(cx, &["b1", "b2", "b3", "b4"]);

@@ -891,8 +891,8 @@ fn home_s_moves_and_closes_keep_a_mirror_s_grid(cx: &mut TestAppContext) {
     });
 }
 
-/// A tile's menu on a mirror adds home's blocks, as the canvas's does: Add ▸ Terminal asks home
-/// for its default shell, and the terminal home adds takes half of the tile with the keyboard.
+/// A tile's menu on a mirror adds home's blocks, as the canvas's does: Add ▸ Terminal ▸ Default
+/// asks home for its default shell, and the terminal home adds takes half of the tile with the keyboard.
 /// The index keeps the canvas's camera, not grid mode's.
 #[gpui_kit::test]
 fn a_mirror_s_tile_adds_home_s_terminal_and_keeps_the_canvas_camera(cx: &mut TestAppContext) {
@@ -910,8 +910,13 @@ fn a_mirror_s_tile_adds_home_s_terminal_and_keeps_the_canvas_camera(cx: &mut Tes
         let kept = kept.unwrap().remote.unwrap().camera.unwrap();
         assert_eq!((kept.x, kept.y, kept.zoom), (-300.0, -200.0, 0.5));
     });
-    // Copy, Paste, —, AI agent ▸, Add ▸: Terminal.
+    // Copy, Paste, —, AI agent ▸, Add ▸: Terminal ▸ Default.
     pick(handle, cx, a, 4, Some(0));
+    cx.update_window(handle, |_, window, cx| {
+        click_innermost_menu_item(window, cx, 0);
+        window.render_frame(cx);
+    })
+    .unwrap();
     let calls = sent(&ws, cx);
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert_eq!(calls[0].0, "add_block");

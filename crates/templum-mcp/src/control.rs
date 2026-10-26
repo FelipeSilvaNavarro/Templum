@@ -55,6 +55,8 @@ pub struct AddBlock {
     pub board: Option<String>,
     pub columns: Vec<String>,
     pub text: Option<String>,
+    /// A terminal's shell, by its name in `list_shells`; the default when None.
+    pub shell: Option<String>,
     pub near: Option<String>,
     /// Its top-left corner on the canvas; not with `near`.
     pub at: Option<(f32, f32)>,
@@ -85,6 +87,7 @@ pub enum ControlCall {
     Block(Call),
     Overview,
     ListAgents,
+    ListShells,
     CreateWorkspace {
         name: String,
         folder: Option<String>,
@@ -372,6 +375,12 @@ pub fn list() -> Value {
             "inputSchema": none,
         },
         {
+            "name": "list_shells",
+            "description": "The shells a terminal can run (add_block's shell), a name a line: the default first, \
+                            its line ending with \"  default\", then each other shell found.",
+            "inputSchema": none,
+        },
+        {
             "name": "create_workspace",
             "description": "Makes a workspace, not shown. Says its id.",
             "inputSchema": {
@@ -409,6 +418,7 @@ pub fn list() -> Value {
                     "board": { "type": "string", "description": "A kanban's board, by name or id: made with columns when there is none." },
                     "columns": { "type": "array", "items": { "type": "string" }, "description": "A new board's columns." },
                     "text": { "type": "string", "description": "A note's text; a checklist's name on its first line, then an item per line." },
+                    "shell": { "type": "string", "description": "A terminal's shell, by its name in list_shells; the default when left out." },
                     "near": block,
                     "x": at("x"),
                     "y": at("y"),
@@ -556,6 +566,7 @@ pub fn reads(name: &str) -> bool {
         name,
         "overview"
             | "list_agents"
+            | "list_shells"
             | "read_terminal"
             | "list_cards"
             | "read_note"
@@ -628,6 +639,7 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
     let call = match name {
         "overview" => ControlCall::Overview,
         "list_agents" => ControlCall::ListAgents,
+        "list_shells" => ControlCall::ListShells,
         "create_workspace" => ControlCall::CreateWorkspace {
             name: text("name")?,
             folder: optional("folder")?,
@@ -642,6 +654,12 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
         }
         "add_block" => ControlCall::AddBlock(AddBlock {
             workspace: text("workspace")?,
+            shell: match (optional("shell")?, args["kind"].as_str()) {
+                (Some(_), Some(kind)) if kind != "terminal" => {
+                    return Err("\"shell\" is a terminal's".into());
+                }
+                (shell, _) => shell,
+            },
             kind: match args["kind"].as_str() {
                 Some("terminal") => Kind::Terminal,
                 Some("note") => Kind::Note,
@@ -838,6 +856,7 @@ pub fn title(name: &str) -> &'static str {
     match name {
         "overview" => "Looking at the canvas",
         "list_agents" => "Looking at the agents",
+        "list_shells" => "Looking at the shells",
         "read_terminal" => "Reading a terminal",
         "list_cards" => "Reading a board",
         "read_note" => "Reading a note",
@@ -932,6 +951,7 @@ mod tests {
             [
                 "overview",
                 "list_agents",
+                "list_shells",
                 "read_terminal",
                 "wait_for",
                 "list_cards",
@@ -1017,6 +1037,25 @@ mod tests {
             panic!()
         };
         assert_eq!(add.at, Some((-12.5, 40.0)));
+        assert_eq!(add.shell, None);
+        let ControlCall::AddBlock(add) = parse("add_block", &with(json!({"shell": "fish"})))
+            .unwrap()
+            .call
+        else {
+            panic!()
+        };
+        assert_eq!(add.shell.as_deref(), Some("fish"));
+        assert_eq!(
+            err(
+                "add_block",
+                json!({"workspace": "w3", "kind": "kanban", "shell": "fish"})
+            ),
+            "\"shell\" is a terminal's"
+        );
+        assert_eq!(
+            err("add_block", with(json!({"shell": 5}))),
+            "\"shell\" is a string"
+        );
         let opening = json!({"agent": "codex", "workspace": "w3", "x": 1e7, "y": -1e7});
         let ControlCall::OpenAgent(open) = parse("open_agent", &opening).unwrap().call else {
             panic!()
@@ -1200,6 +1239,7 @@ mod tests {
         let examples = [
             ("overview", json!({})),
             ("list_agents", json!({})),
+            ("list_shells", json!({})),
             (
                 "create_workspace",
                 json!({"name": "API", "folder": "~/proj"}),

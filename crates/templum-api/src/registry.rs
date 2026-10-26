@@ -113,6 +113,7 @@ pub const NOT_TARGETS: &[&str] = &[
     "scope",
     "search",
     "share",
+    "shell",
     "shown",
     "side",
     "skip",

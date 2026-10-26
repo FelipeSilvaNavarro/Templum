@@ -792,6 +792,7 @@ impl Workspace {
         let new = NewBlock::Terminal {
             folder: path,
             command: Some(text.to_string()),
+            shell: None,
         };
         match self.add_block_in(&space, new, place, None, window, cx) {
             Ok(id) => {

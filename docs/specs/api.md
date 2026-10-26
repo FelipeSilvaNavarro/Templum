@@ -183,7 +183,7 @@ one WebSocket for input only).
 
 | Scope | May |
 |---|---|
-| **read** | Every GET, the event stream, and the tools that only read (`overview`, `list_agents`, `read_terminal`, `list_cards`, `read_note`, `read_checklist`, `wait_for`) |
+| **read** | Every GET, the event stream, and the tools that only read (`overview`, `list_agents`, `list_shells`, `read_terminal`, `list_cards`, `read_note`, `read_checklist`, `wait_for`) |
 | **control** | Also every other tool whose danger in the control server is **–**, **Ask own** or **Ask own when losing** ([templum-agent.md](templum-agent.md#tools)): opening agents, handing and interrupting tasks, blocks, wires, cards, notes, checklists, showing; answering questions, plans and requests to connect; running, switching and saving automations that run no command |
 | **full** | Also the tools whose danger is **Ask** or **Ask each** (`send_to_terminal`, `send_keys`, and those to come: `run`, `set_setting`, deletions that lose work), saving an automation that runs a command, deleting an automation, answering a request to delete or merge a worktree, and answering the Templum Agent's approvals |
 

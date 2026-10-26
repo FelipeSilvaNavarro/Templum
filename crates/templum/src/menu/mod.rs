@@ -22,7 +22,7 @@ use templum_git::{Branch, Commit, Entry};
 use templum_terminal::ShellOption;
 
 use crate::git_block;
-use crate::workspace::remote::{Deed, GIT_GATES, HomeAgent};
+use crate::workspace::remote::{Deed, GIT_GATES, HomeAgent, HomeShells};
 use crate::workspace::{Body, Workspace};
 
 /// What was right-clicked.
@@ -120,23 +120,31 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The shells and the ink a mirrored workspace doesn't have: the menu says so instead of
-        // opening. The agents it has only when home can open them.
+        // The ink a mirrored workspace doesn't have: the menu says so instead of opening. The
+        // agents and the shells it has only when home can open them.
         if self.on_remote() {
             let why = match target {
-                Target::Shells | Target::Ink(_) => Some(crate::workspace::remote::NOT_YET.into()),
+                Target::Ink(_) => Some(crate::workspace::remote::NOT_YET.into()),
                 Target::Agents(_) => self.why_not(Deed::OpenAgent),
+                Target::Shells => self.why_not(Deed::AddTerminal),
                 _ => None,
             };
             if let Some(why) = why {
                 return self.warn(why, window, cx);
             }
-            // Home's agents are read at each connect, and again when they are a minute old.
-            let stale =
-                (self.space.remote.as_deref()).is_some_and(|r| r.agents_stale(Instant::now()));
-            if stale && matches!(target, Target::Canvas(_) | Target::Agents(_)) {
-                let id = self.space.id.clone();
+            // Home's agents and shells are read at each connect, and again when they are a minute
+            // old.
+            let (now, id) = (Instant::now(), self.space.id.clone());
+            let remote = self.space.remote.as_deref();
+            let (agents, shells) = (
+                remote.is_some_and(|r| r.agents_stale(now)),
+                remote.is_some_and(|r| r.shells_stale(now)),
+            );
+            if agents && matches!(target, Target::Canvas(_) | Target::Agents(_)) {
                 self.read_home_agents(&id, cx);
+            }
+            if shells && matches!(target, Target::Canvas(_) | Target::Shells) {
+                self.read_home_shells(&id, cx);
             }
         }
         self.reload_early_shells();
@@ -207,6 +215,18 @@ impl Workspace {
             .collect()
     }
 
+    /// The shells a menu lists: this computer's, or on a mirror home's (none while unread).
+    fn shell_list_for_menu(&self) -> ShellList {
+        match self.space.remote.as_deref() {
+            Some(remote) => ShellList::Home {
+                shells: remote.shells.clone(),
+                computer: crate::mirror::computer_of(remote),
+                why: self.why_not(Deed::AddShell).map(Into::into),
+            },
+            None => ShellList::Local(self.shells_for_menu()),
+        }
+    }
+
     /// The agents a menu lists: this computer's, or on a mirror home's (none while unread).
     fn agent_list_for_menu(&self) -> AgentList {
         match self.space.remote.as_deref() {
@@ -248,7 +268,7 @@ impl Workspace {
                     grid.area.y + grid.area.h / 2.0,
                 )),
                 agents: self.agent_list_for_menu(),
-                shells: (!self.on_remote()).then(|| self.shells_for_menu()),
+                shells: self.shell_list_for_menu(),
                 flip: grid.tiles.ids().len() > 1 && grid.homes.contains_key(&block),
                 others: self
                     .space
@@ -296,7 +316,7 @@ impl Workspace {
             Target::Canvas(at) => Items::Canvas {
                 at,
                 agents: self.agent_list_for_menu(),
-                shells: (!self.on_remote()).then(|| self.shells_for_menu()),
+                shells: self.shell_list_for_menu(),
                 gates: Gates::of(
                     self,
                     &[
@@ -311,7 +331,7 @@ impl Workspace {
                     ],
                 ),
             },
-            Target::Shells => Items::Shells(self.shells_for_menu()),
+            Target::Shells => Items::Shells(self.shell_list_for_menu()),
             Target::Agents(at) => Items::Agents {
                 at,
                 agents: self.agent_list_for_menu(),
@@ -679,15 +699,15 @@ enum Tail {
         connect: Vec<(BlockId, SharedString)>,
         disconnect: Vec<(BlockId, SharedString)>,
     },
-    /// In grid mode: new blocks (`agents`, placed on the canvas at `at`; None `shells` on a
-    /// mirror, as the canvas's menu) and the blocks left on the canvas, taking half of the tile;
-    /// flip the split (with a neighbour), leave the grid, back to the canvas.
+    /// In grid mode: new blocks (`agents` and `shells`, placed on the canvas at `at`, as the
+    /// canvas's menu) and the blocks left on the canvas, taking half of the tile; flip the split
+    /// (with a neighbour), leave the grid, back to the canvas.
     Tile {
         flip: bool,
         others: Vec<(BlockId, SharedString)>,
         at: Point,
         agents: AgentList,
-        shells: Option<Shells>,
+        shells: ShellList,
     },
 }
 
@@ -735,6 +755,20 @@ struct Shells {
     others: Vec<ShellOption>,
 }
 
+/// The shells a menu lists.
+#[derive(Clone)]
+enum ShellList {
+    /// This computer's.
+    Local(Shells),
+    /// A mirror's: home's, none while they are not read yet; the computer's name; and why home's
+    /// shells other than its default can't open (the rule's words).
+    Home {
+        shells: Option<HomeShells>,
+        computer: String,
+        why: Option<SharedString>,
+    },
+}
+
 /// A target's menu, with what it shows read from the workspace.
 enum Items {
     /// A block's menu: its kind's, then the same end for every kind.
@@ -759,11 +793,10 @@ enum Items {
     Canvas {
         at: Point,
         agents: AgentList,
-        /// None on a mirror: home's default shell, an item.
-        shells: Option<Shells>,
+        shells: ShellList,
         gates: Gates,
     },
-    Shells(Shells),
+    Shells(ShellList),
     Agents {
         at: Point,
         agents: AgentList,

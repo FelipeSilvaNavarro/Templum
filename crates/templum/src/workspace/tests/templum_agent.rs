@@ -398,6 +398,70 @@ fn create_workspace_makes_one_without_showing_it(cx: &mut TestAppContext) {
     assert!(failed && text.contains("red, yellow, green"), "{text}");
 }
 
+/// `add_block`'s `shell` opens a shell of this computer's own list, by the name `list_shells`
+/// gives it: never a program the caller names (kanban card 201).
+#[gpui_kit::test]
+fn add_block_opens_only_a_shell_list_shells_names(cx: &mut TestAppContext) {
+    use templum_terminal::ShellOption;
+    let (handle, ws) = open(cx);
+    let folder = tempfile::tempdir().unwrap();
+    control(
+        handle,
+        &ws,
+        cx,
+        "create_workspace",
+        json!({"name": "API", "folder": folder.path()}),
+    );
+    let (program, args) = quiet();
+    let quiet_shell = ShellOption {
+        label: "Quiet".into(),
+        program,
+        args,
+    };
+    ws.update(cx, |ws, _| {
+        ws.config.shell.program = None;
+        ws.default_shell = "zsh".into();
+        ws.shells_early = false;
+        ws.shells = vec![quiet_shell.clone()];
+    });
+    let (failed, text) = control(handle, &ws, cx, "list_shells", json!({}));
+    assert!(!failed, "{text}");
+    assert_eq!(text, "zsh  default\nQuiet");
+    let add = |cx: &mut TestAppContext, shell: &str| {
+        control(
+            handle,
+            &ws,
+            cx,
+            "add_block",
+            json!({"workspace": "w2", "kind": "terminal", "shell": shell}),
+        )
+    };
+    let (failed, text) = add(cx, "Quiet");
+    assert!(!failed, "{text}");
+    let uid = id_in(&text);
+    let terminals = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space_named("w2").unwrap().terminals().count()
+        })
+    };
+    ws.read_with(cx, |ws, _| {
+        let space = ws.space_named("w2").unwrap();
+        let pane = space.terminal(space.block_by_uid(&uid).unwrap()).unwrap();
+        assert_eq!(pane.shell.as_ref(), Some(&quiet_shell));
+    });
+    let before = terminals(cx);
+    let (failed, text) = add(cx, "fish");
+    assert!(failed);
+    assert_eq!(text, "There's no shell \"fish\": list_shells lists them.");
+    // Its program, or another case of its name, is no name of the list.
+    for shell in ["/bin/sh", &quiet_shell.program.clone(), "quiet"] {
+        let (failed, text) = add(cx, shell);
+        assert!(failed, "{shell}: {text}");
+        assert!(text.ends_with(": list_shells lists them."), "{text}");
+    }
+    assert_eq!(terminals(cx), before, "nothing opened");
+}
+
 #[gpui_kit::test]
 fn add_block_opens_each_kind_where_it_covers_nothing(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);

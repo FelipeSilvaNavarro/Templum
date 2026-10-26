@@ -553,6 +553,7 @@ impl Workspace {
                     NewBlock::Terminal {
                         folder,
                         command: args.command.clone(),
+                        shell: None,
                     },
                     "a terminal",
                 ),

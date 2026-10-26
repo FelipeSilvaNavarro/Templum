@@ -12,13 +12,13 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, ClipboardItem, Context, Entity, SharedString, Window, div, px};
 use templum_canvas::{BlockId, Point, Wire};
 
-use super::{AgentList, Gates, Items, SendTo, Shells, Tail};
+use super::{AgentList, Gates, Items, SendTo, ShellList, Shells, Tail};
 use crate::board::Label;
 use crate::git_block;
 use crate::kanban;
 use crate::launcher;
 use crate::prompt;
-use crate::workspace::remote::{Deed, HomeAgent};
+use crate::workspace::remote::{Deed, HomeAgent, HomeShells};
 use crate::workspace::{BoardAct, Workspace};
 
 /// An item whose click updates the workspace.
@@ -66,7 +66,7 @@ fn adding(
     ws: &Entity<Workspace>,
     menu: PopupMenu,
     agents: AgentList,
-    shells: Option<Shells>,
+    shells: ShellList,
     at: Point,
     gates: Gates,
     window: &mut Window,
@@ -97,23 +97,23 @@ fn adding(
         cx,
         move |menu, window, cx| {
             let ws = &add;
-            let terminal = ws.clone();
-            let menu = match shells.clone() {
-                Some(shells) => menu.submenu_with_icon(
+            let (terminal, shells) = (ws.clone(), shells.clone());
+            let menu = match gates.why(Deed::AddTerminal) {
+                // The whole submenu is dimmed, with the rule's words.
+                Some(why) => menu.item(gated_item(
+                    ws,
+                    "Terminal",
+                    Some(IconName::SquareTerminal),
+                    Some(why),
+                    |_, _, _| {},
+                )),
+                None => menu.submenu_with_icon(
                     Some(Icon::new(IconName::SquareTerminal)),
                     "Terminal",
                     window,
                     cx,
                     move |menu, _, _| shell_items(&terminal, menu, shells.clone(), Some(at)),
                 ),
-                // A mirror has home's default shell only.
-                None => menu.item(gated_item(
-                    ws,
-                    "Terminal",
-                    Some(IconName::SquareTerminal),
-                    gates.why(Deed::AddTerminal),
-                    move |ws, window, cx| ws.open_shell(None, Some(at), window, cx),
-                )),
             };
             menu.item(gated_item(
                 ws,
@@ -152,10 +152,17 @@ fn adding(
 fn shell_items(
     ws: &Entity<Workspace>,
     menu: PopupMenu,
-    shells: Shells,
+    shells: ShellList,
     at: Option<Point>,
 ) -> PopupMenu {
-    let Shells { default, others } = shells;
+    let Shells { default, others } = match shells {
+        ShellList::Local(shells) => shells,
+        ShellList::Home {
+            shells,
+            computer,
+            why,
+        } => return home_shell_items(ws, menu, shells, computer, why, at),
+    };
     // Macs list eight shells.
     let menu = menu.scrollable(true).max_h(px(420.0)).item(item(
         ws,
@@ -172,6 +179,52 @@ fn shell_items(
             ws.open_shell(Some(shell.clone()), at, window, cx)
         }))
     })
+}
+
+/// Home's shells on a mirror, as `shell_items` lists this computer's: **Default (*name*)**, then
+/// the others; the chosen one opens a terminal at home. Before home answered, one dimmed item says
+/// it is asked; when home's other shells can't open (its Templum is older), one dimmed item says
+/// why `why`, and its default still opens.
+fn home_shell_items(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    shells: Option<HomeShells>,
+    computer: String,
+    why: Option<SharedString>,
+    at: Option<Point>,
+) -> PopupMenu {
+    let default = match shells.as_ref().map(|s| s.default.as_str()) {
+        Some(name) if !name.is_empty() => format!("Default ({name})"),
+        _ => "Default".to_string(),
+    };
+    let menu = menu.scrollable(true).max_h(px(420.0)).item(item(
+        ws,
+        default,
+        Some(IconName::SquareTerminal),
+        move |ws, window, cx| ws.open_home_shell(None, at, window, cx),
+    ));
+    if why.is_some() {
+        return menu
+            .separator()
+            .item(gated_item(ws, "Other shells", None, why, |_, _, _| {}));
+    }
+    let Some(shells) = shells else {
+        return menu
+            .separator()
+            .item(PopupMenuItem::new(format!("Asking {computer}…")).disabled(true));
+    };
+    if shells.others.is_empty() {
+        return menu;
+    }
+    shells
+        .others
+        .into_iter()
+        .fold(menu.separator(), |menu, name| {
+            let label = SharedString::from(name.clone());
+            menu.item(item(ws, label, None, move |ws, window, cx| {
+                ws.open_home_shell(Some(name.clone()), at, window, cx)
+            }))
+        })
 }
 
 /// The agents, installed first; the others are greyed out (Settings ▸ Agents says how to install

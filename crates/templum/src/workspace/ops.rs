@@ -29,10 +29,12 @@ pub(crate) enum NewBlock {
         name: String,
         items: Vec<(String, bool)>,
     },
-    /// A terminal in `folder`, `command` typed and run once its shell reads it.
+    /// A terminal in `folder` running `shell` (None: the default), `command` typed and run once
+    /// its shell reads it.
     Terminal {
         folder: PathBuf,
         command: Option<String>,
+        shell: Option<templum_terminal::ShellOption>,
     },
     /// A kanban showing `board`.
     Kanban { board: u64 },
@@ -173,8 +175,12 @@ impl Workspace {
                     };
                     Some(ws.add_block(rect, Body::Checklist(shown)))
                 }
-                NewBlock::Terminal { folder, command } => {
-                    let id = ws.spawn_block(rect, Some(folder), window, cx);
+                NewBlock::Terminal {
+                    folder,
+                    command,
+                    shell,
+                } => {
+                    let id = ws.spawn_block_with(rect, Some(folder), Vec::new(), shell, window, cx);
                     if let Some(pane) = id.and_then(|id| ws.space.terminal_mut(id)) {
                         pane.opened_by = opener;
                         // The shell reads it once it is ready.

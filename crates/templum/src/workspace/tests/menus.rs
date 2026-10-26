@@ -580,7 +580,7 @@ fn the_canvas_menu_on_a_remote_adds_at_home_where_clicked(cx: &mut TestAppContex
     })
     .unwrap();
     assert_eq!(adds(&ws, cx).len(), 1);
-    // Terminal is an item, not a menu of shells.
+    // Terminal ▸ lists home's shells: Default is home's default.
     cx.update_window(handle, |_, window, cx| {
         right_click(
             window,
@@ -598,10 +598,13 @@ fn the_canvas_menu_on_a_remote_adds_at_home_where_clicked(cx: &mut TestAppContex
             .within("popup-menu")
             .click(0usize, cx);
         window.render_frame(cx);
+        click_innermost_menu_item(window, cx, 0);
+        window.render_frame(cx);
     })
     .unwrap();
     assert_eq!(adds(&ws, cx).len(), 2);
     assert_eq!(adds(&ws, cx)[1]["kind"], json!("terminal"));
+    assert!(adds(&ws, cx)[1].get("shell").is_none(), "home's default");
 }
 
 #[gpui_kit::test]

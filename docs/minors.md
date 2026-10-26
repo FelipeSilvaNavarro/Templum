@@ -2325,8 +2325,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **A refused close brings its block back as a new one.** (`workspace/remote.rs`, `mirror_blocks`.) The block that
   was closed here and kept by home is drawn again with a new canvas id, so it is no longer selected or focused and
   keeps no scroll. Fix: keep the closed body for `HOLD` and put it back on a refusal.
-- [ ] **A mirror's Add ▸ Terminal opens home's default shell, with no choice of shell.** (`menu/build.rs`, `adding`;
-  `toolbar.rs`.) The shells of this computer are not home's. Fix: list home's shells in `GET /v1/state` and offer them.
 - [ ] **Shift+PageUp and Shift+PageDown scroll a mirrored shell but not a local one.** (`workspace/input.rs`,
   `remote_page`.) Locally they reach the program as keys. Fix: page a local terminal's history the same way when no
   program took the screen or the mouse.

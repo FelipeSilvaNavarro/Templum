@@ -150,6 +150,7 @@ pub fn is_read(tool: &str) -> bool {
         tool_name(tool),
         "overview"
             | "list_agents"
+            | "list_shells"
             | "read_terminal"
             | "list_cards"
             | "read_note"
