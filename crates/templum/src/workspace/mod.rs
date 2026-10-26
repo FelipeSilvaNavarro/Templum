@@ -2198,6 +2198,25 @@ fn missing_themes(themes: &[Entry], config: &ThemeConfig) -> Vec<String> {
     .collect()
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test: what a notification or a question told the person, oldest first (`told`): neither
+    /// gpui-component's `Notification` nor its dialogs give their words back.
+    static TOLD: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Test: keeps `words`, which the person is told in a notification or a question.
+#[cfg(test)]
+pub(crate) fn told(words: &str) {
+    TOLD.with_borrow_mut(|told| told.push(words.to_string()));
+}
+
+/// Test: what the person was told so far in this test (its own thread), oldest first.
+#[cfg(test)]
+pub(crate) fn told_so_far() -> Vec<String> {
+    TOLD.with_borrow(Clone::clone)
+}
+
 /// Shows a notification at the bottom right, clear of the title bar's buttons. Deferred: at
 /// startup the window's notification layer doesn't exist yet.
 pub(crate) fn show_notification(window: &mut Window, cx: &mut App, notification: Notification) {

@@ -184,78 +184,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Tests
 
-- [ ] **The PowerShell piping test failed once on macOS CI.** `powershell_gives_typed_agents_templums_words`
-  (`crates/templum-terminal/src/integration.rs`) types `'x' | claude -p review` right after `typed_qwen`'s last
-  command; on PR #46's macOS runner the line never showed on the screen and the wait for `claude.args` ran out (30
-  s), while the run before passed. PowerShell can drop what is typed while it gets its next prompt ready, as
-  `type_first` already handles for the first line. Fix: wait for the prompt (the reported folder, or `wait_pressing`
-  with `\r`) before typing each piped line.
-- [ ] **Three tests don't check the words they are about.** `discard_all_with_a_filter_on_takes_only_the_rows_shown`
-  (`crates/templum/src/workspace/tests/git_layout.rs`) doesn't check the count in the question;
-  `a_hunk_that_changed_since_it_was_read_is_refused` (`tests/git_hunks.rs`) checks the notification count, not "The
-  file changed; try again"; `past_the_cap_a_discard_keeps_nothing` (`tests/git_trash.rs`) doesn't check "Too much to
-  keep a copy". The batches 3 and 4 tests do the same: `without_a_remote_publish_says_so`,
-  `a_failed_clone_says_why_and_leaves_no_folder` (`tests/git_sync.rs`), `leaving_a_branch_with_commits_not_pushed_offers_to_push_it`
-  (`tests/git_switch.rs`), `a_region_changed_since_it_was_read_is_refused` and
-  `a_whole_file_choice_whose_copy_fails_changes_nothing` (`tests/git_conflicts.rs`) count notifications. Fix: read
-  the dialog's description and the notification's message in each (gpui-component's `Notification` keeps its message
-  private: a test-only accessor, or an element id on the message).
-- [ ] **A test that writes a script and runs it can fail once with "Text file busy".** Another test's thread may
-  fork while the script is still open for writing, and Linux then refuses to run it (ETXTBSY). templum-git now runs
-  a busy program again a few times (`retry_busy` in `repo.rs`), so its fake-git tests no longer fail this way; left:
-  `poll_asks_claude_code_in_an_empty_folder` (`crates/templum-usage/src/claude.rs:1139`, `poll` gave None, seen in
-  the reduced-env run of T2T batch 1c; it passed alone three times), and the fake agent of
-  `crates/templum/src/workspace/tests/git_message.rs` is written the same way. Fix: run them again on
-  `ExecutableFileBusy` as templum-git does, or have `sh` read the script (`sh <path> …`).
-- [ ] **`an_agent_past_its_timeout_is_stopped` counts the notifications, not what they say.**
-  (`crates/templum/src/workspace/tests/git_message.rs`.) Fix: check it is "didn't answer within".
-- [ ] **`the_shell_page_switches_shell_integration` failed once in a full run.**
-  (`crates/templum/src/workspace/tests/welcome.rs:206`, seen at e04f859: integration still on after the click; it
-  passed alone and on the next full run; seen again in the reduced-env run of T2T batch 1d, and passed alone three
-  times.) A person sees nothing; a contributor may see CI fail once. Fix: find what
-  the click misses under load (the row after `to_bottom` maybe not laid out yet): render a frame between `to_bottom`
-  and the click, or click by the field's element id once it is in view.
-- [ ] **`a_far_editor_draws_bars_where_its_code_was` fails when the machine is busy.**
-  (`crates/templum/src/workspace/tests/lod.rs`, "mid-glide, step 1: silhouette", seen at f6fa66f; it passed alone and
-  on the next full run.) `glide_40ms_in` sets the glide's start 40 ms before `Instant::now()`, so a frame drawn late
-  on a loaded machine lands past the 150 ms glide. A person sees nothing; a contributor may see CI fail once. Fix:
-  let the test set the glide's clock (a progress it passes in, or a start far enough from both ends that a late frame
-  stays mid-glide), not the real clock.
-- [ ] **`a_clone_stopped_midway_leaves_no_folder_and_an_empty_one_empty` fails now and then on Linux.**
-  (`crates/templum-git/tests/repo.rs:2003`, "Couldn't run …/slow-git: Text file busy (os error 26)", seen once in a
-  full `cargo test --workspace` during card 69; it passed alone and on the next run.) The test writes its fake `git`
-  script and runs it at once while another test thread forks, which holds the file's write descriptor open (ETXTBSY).
-  A person sees nothing; a contributor may see CI fail once. Fix: write the script, `sync_all` it and drop the
-  handle, then retry the spawn once on `ErrorKind::ExecutableFileBusy`, or create the script before any thread starts.
-- [ ] **`stop_agent_ends_what_an_agent_that_quit_left_running` fails when the machine is busy.**
-  (`crates/templum/src/workspace/tests/spawn.rs:1099`, "its job wrote its file", seen at 4748d5b in a full
-  `cargo test --workspace`, 84 s; it passed alone three times.) The job left running is
-  `sleep 3 && touch f` and the test has to stop it before that, after a 1.5 s sleep of its own, so a loaded machine
-  that delays `stop_agent` lets the job write its file. A person sees nothing; a contributor may see CI fail once.
-  Fix: a longer job (`sleep 10`, the final wait to match) so the stop has seconds to spare, or have the job loop
-  until a "stopped" file exists and fail the test if it ever ends by itself.
-- [ ] **`a_snapshot_before_the_agent_started_doesnt_stop_its_prompt` failed once in a full run.**
-  (`crates/templum/src/workspace/tests/spawn.rs`, seen during card 143 in a full `cargo test --workspace` on a loaded
-  machine; it passed alone three times and in the next two full runs.) A person sees nothing; a contributor may see CI
-  fail once. Fix: wait on the condition with a deadline (frames until it holds), not one look.
-- [ ] **`said_twice` fails now and then in a full run.** (`crates/templum/src/workspace/tests/spawn.rs`:
-  `a_task_for_an_agent_still_starting_is_typed_once_it_is_ready`, seen during card 153;
-  `another_agents_prompt_waits_for_its_process_and_a_still_screen`, seen during card 173 in the reduced-env run, its
-  screen showing the second copy as `sayhi(When task…`; each passed alone five to eight times and in the next full
-  run.) It already waits with a deadline: the cause is that the tty's echo and `cat`'s copy interleave, so where a
-  copy wraps varies, and `screen_until` joins the rows trimmed, so a copy that wraps at its space reads `sayhi`. A
-  person sees nothing; a contributor may see CI fail once. Fix: count `say hi` in the grid's text with wrapped rows
-  joined untrimmed (`bounds_to_string` keeps them), or prompt with a word without spaces.
-- [ ] **`a_quiet_agent_is_told_once_to_a_master_not_waiting` failed once in a full run.**
-  (`crates/templum/src/workspace/tests/delegate.rs:2832`, seen at d71ae86 in a full `cargo test --workspace` while
-  two other agents built in their worktrees: the reply's end notice wasn't there yet, `told` was `[]`; it passed alone
-  five times and on the next full run of the crate.) A person sees nothing; a contributor may see CI fail once. Fix:
-  wait for the notice with a deadline (frames until `notices` has it, as `until` does), not one `after(cx, 1000)`.
-- [ ] **`the_engine_chip_picks_the_model` failed once in a full reduced-env run.**
-  (`crates/templum/src/workspace/tests/templum_agent.rs:3047`, "the field keeps the keyboard", seen at ec70b59 plus
-  card 171 batch 2 in `env -i … cargo test --workspace -j 4`; the module passed three times alone in the same env.)
-  A person sees nothing; a contributor may see CI fail once. Fix: find which step loses the field's focus under load
-  (the `blur` then the menu's click) and wait for the focus with frames rather than one `render_frame`.
+- [ ] **A few tests still look at a glide mid-flight on the real clock.** `navigation.rs` (the tests around
+  `restart_glide` at lines 231 and 312, and the two-notch zoom at line 770) and `editor.rs:437` set the glide's start
+  and draw a frame in the same update, so the frame lands mid-glide only if it comes within about 110 ms of
+  `Instant::now()`. The window is far narrower than the one `lod.rs` had (an update apart), and none was seen failing.
+  A person sees nothing; a contributor may see CI fail once on a very busy runner. Fix: draw again from the same
+  camera while the frame landed past the glide, as `zoom_mid_glide` in `lod.rs` does.
 
 ## Release and benches
 

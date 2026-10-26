@@ -91,11 +91,13 @@ fn discard_all_with_a_filter_on_takes_only_the_rows_shown(cx: &mut TestAppContex
     })
     .unwrap();
     settle(handle, cx);
+    let asked = told_so_far();
+    assert!(
+        asked.len() == 1 && asked[0].starts_with("Discard the changes to b.txt? "),
+        "{asked:?}"
+    );
     cx.update_window(handle, |_, window, cx| {
-        assert!(
-            window.has_active_dialog(cx),
-            "Discard the changes to b.txt?"
-        );
+        assert!(window.has_active_dialog(cx));
         window.within("dialog").click("ok", cx);
         window.render_frame(cx);
     })

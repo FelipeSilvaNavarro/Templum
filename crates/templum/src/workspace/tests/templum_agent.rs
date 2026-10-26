@@ -3069,6 +3069,8 @@ fn full_screen_fills_the_canvas_and_stays_when_the_chat_closes(cx: &mut TestAppC
 #[gpui_kit::test]
 fn the_engine_chip_picks_the_model(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
+    // The composer grows in real time, the chip and its menu with it: a click lands once at rest.
+    no_motion(cx);
     // The floating composer (the chat is closed, its conversation empty): the chip's menu has the
     // keyboard, and the composer stays for it while the field has none and holds no text.
     cx.update_window(handle, |_, window, cx| {

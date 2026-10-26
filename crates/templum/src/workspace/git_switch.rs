@@ -238,13 +238,14 @@ impl Workspace {
                                     move |ws, window, cx| ws.push_branch(branch.clone(), window, cx)
                                 }),
                             );
+                            let message =
+                                format!("{branch} has {} not pushed yet", words::commits(n));
+                            #[cfg(test)]
+                            super::told(&message);
                             notify_with(
                                 &entity,
                                 at.clone(),
-                                Notification::info(format!(
-                                    "{branch} has {} not pushed yet",
-                                    words::commits(n)
-                                )),
+                                Notification::info(message),
                                 vec![push],
                                 window,
                                 cx,

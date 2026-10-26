@@ -325,6 +325,8 @@ impl Workspace {
         cx: &mut App,
     ) {
         eprintln!("templum: {agent}: {sentence}");
+        #[cfg(test)]
+        super::told(&sentence);
         let title = SharedString::from(format!("{agent}: commit message"));
         let (text, mono) = (details, self.cell.font.family.clone());
         let notification = Notification::error(sentence)

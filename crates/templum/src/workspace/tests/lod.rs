@@ -39,6 +39,40 @@ fn unfocus(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppCont
     .unwrap();
 }
 
+/// Zooms one `step` from the camera as it is and draws a frame 40 ms into the glide, `then` done
+/// first in that frame's update (a pan). The glide runs on the real clock: a frame drawn late on
+/// a busy machine lands past its end. Then the camera goes back and zooms again, until a frame
+/// is drawn mid-glide.
+fn zoom_mid_glide(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    step: i32,
+    then: impl Fn(&mut Workspace),
+) {
+    let from = ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    for tries in 1.. {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let pivot = ws.center(window);
+                ws.zoom_to(step, pivot, cx);
+            })
+        })
+        .unwrap();
+        ws.update(cx, glide_40ms_in);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, _| then(ws));
+            window.render_frame(cx);
+        })
+        .unwrap();
+        if ws.read_with(cx, |ws, _| ws.space.flight.is_some()) {
+            return;
+        }
+        assert!(tries < 20, "no frame drawn mid-glide, step {step}");
+        rest_at(handle, ws, cx, from.origin, from.zoom());
+    }
+}
+
 /// The element was drawn in the last frame.
 fn shown(handle: AnyWindowHandle, cx: &mut TestAppContext, id: impl Into<ElementId>) -> bool {
     let id = id.into();
@@ -53,19 +87,7 @@ fn the_rest_zoom_holds_through_a_glide_and_changes_when_it_ends(cx: &mut TestApp
     let (handle, ws) = open(cx);
     rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 0.5);
     ws.read_with(cx, |ws, _| assert_eq!(ws.space.rest, 0.5));
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| {
-            let pivot = ws.center(window);
-            ws.zoom_to(-1, pivot, cx);
-        })
-    })
-    .unwrap();
-    ws.update(cx, glide_40ms_in);
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, _| ws.pan_by(Point::new(30.0, 0.0)));
-        window.render_frame(cx);
-    })
-    .unwrap();
+    zoom_mid_glide(handle, &ws, cx, -1, |ws| ws.pan_by(Point::new(30.0, 0.0)));
     ws.read_with(cx, |ws, _| {
         let z = ws.space.view.zoom();
         assert!(ws.space.flight.is_some() && z < 0.5, "mid-glide at {z}");
@@ -1025,15 +1047,7 @@ fn a_far_editor_draws_bars_where_its_code_was(cx: &mut TestAppContext) {
     assert_eq!(words, 5, "fn, main(), {{, println!(\"hi\");, }}");
     rest_at(handle, &ws, cx, corner, 0.5);
     for (step, during, landed) in [(-1, "code", "silhouette"), (1, "silhouette", "code")] {
-        cx.update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| {
-                let pivot = ws.center(window);
-                ws.zoom_to(step, pivot, cx);
-            })
-        })
-        .unwrap();
-        ws.update(cx, glide_40ms_in);
-        frame(handle, cx);
+        zoom_mid_glide(handle, &ws, cx, step, |_| {});
         assert!(
             shown(handle, cx, (during, n)),
             "mid-glide, step {step}: {during}"

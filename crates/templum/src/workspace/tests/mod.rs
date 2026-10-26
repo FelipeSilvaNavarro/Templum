@@ -10,7 +10,7 @@ use templum_canvas::{BlockId, Camera, Point, Rect, chrome};
 
 use crate::config::Edit;
 
-use super::{Workspace, bind_keys};
+use super::{Workspace, bind_keys, told_so_far};
 
 #[cfg(target_os = "macos")]
 const NEW: &str = "cmd-t";

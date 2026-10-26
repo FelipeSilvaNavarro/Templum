@@ -4497,6 +4497,8 @@ fn the_open_dialog_asks_home_closes_when_it_opened_and_shows_a_refusal(cx: &mut 
     use gpui_kit::component::WindowExt as _;
     use gpui_kit::test::TestWindowExt as _;
     let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    // The dialog slides in in real time: a click on it lands once it is at rest.
+    no_motion(cx);
     let mut state = terminals_of_home(&["b1"]);
     let mut home = WorkspaceView::clone(&state.workspaces[0]);
     home.folder = Some("/srv/api".into());
@@ -4554,6 +4556,8 @@ fn an_agent_opened_from_the_open_dialog_gets_the_keyboard(cx: &mut TestAppContex
     use crate::workspace::remote::HomeAgent;
     use gpui_kit::test::TestWindowExt as _;
     let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    // The dialog slides in in real time: a click on it lands once it is at rest.
+    no_motion(cx);
     let mut state = terminals_of_home(&["b1"]);
     let mut home = WorkspaceView::clone(&state.workspaces[0]);
     home.folder = Some("/srv/api".into());
@@ -4712,6 +4716,8 @@ fn closing_a_remote_agent_asks_first(cx: &mut TestAppContext) {
     use gpui_kit::component::WindowExt as _;
     use gpui_kit::test::TestWindowExt as _;
     let (handle, ws, _dir) = offline(cx);
+    // The dialog slides in in real time: a click on it lands once it is at rest.
+    no_motion(cx);
     show_remote(handle, &ws, cx);
     ws.update(cx, |ws, _| {
         live(ws, Scope::Control);
@@ -4756,6 +4762,8 @@ fn a_question_confirmed_after_another_workspace_is_shown_does_nothing(cx: &mut T
     use gpui_kit::component::WindowExt as _;
     use gpui_kit::test::TestWindowExt as _;
     let (handle, ws, _dir) = offline(cx);
+    // The dialog slides in in real time: a click on it lands once it is at rest.
+    no_motion(cx);
     show_remote(handle, &ws, cx);
     ws.update(cx, |ws, _| {
         live(ws, Scope::Control);

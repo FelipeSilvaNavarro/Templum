@@ -2901,7 +2901,12 @@ fn a_quiet_agent_is_told_once_to_a_master_not_waiting(cx: &mut TestAppContext) {
     }
     assert_eq!(quiet(&ws, cx), typed, "told once");
     assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
-    // Its reply ends the task: one notice, the end.
+    // Its reply ends the task: one notice, the end. It waits in the queue, where it is read, as
+    // Templum typed into mine a moment ago (NOTICE_GAP of the real clock: on a busy machine the
+    // first notice's may have run out by now, and the end would be typed at once).
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(mine).unwrap().sent = Some(Instant::now())
+    });
     let reply = json!({ "text": "Line 42." });
     let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply);
     assert_eq!((failed, text.as_str()), (false, "Answered task t1."));

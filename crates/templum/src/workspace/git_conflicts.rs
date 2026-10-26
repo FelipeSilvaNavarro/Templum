@@ -30,6 +30,8 @@ fn tell(at: super::GitAt, refused: Failure, window: &mut Window, cx: &mut Contex
         }
     };
     eprintln!("templum: {message}");
+    #[cfg(test)]
+    super::told(&message);
     show_notification(window, cx, Notification::error(message));
 }
 

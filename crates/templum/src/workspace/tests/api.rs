@@ -3128,6 +3128,7 @@ fn the_tick_lends_terminals_while_a_terminal_stream_is_open(cx: &mut TestAppCont
     let text = ws.read_with(cx, |ws, _| ws.api.shown.clone()).unwrap();
     let port = port(&ws, cx);
     let (done, ended) = std::sync::mpsc::channel::<String>();
+    let (headed, head) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream
@@ -3140,6 +3141,11 @@ fn the_tick_lends_terminals_while_a_terminal_stream_is_open(cx: &mut TestAppCont
         )
         .unwrap();
         let mut all = String::new();
+        let mut byte = [0];
+        while !all.ends_with("\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+            all.push(byte[0].into());
+        }
+        let _ = headed.send(());
         let _ = stream.read_to_string(&mut all);
         let _ = done.send(all);
     });
@@ -3148,9 +3154,11 @@ fn the_tick_lends_terminals_while_a_terminal_stream_is_open(cx: &mut TestAppCont
             ws.api.server.as_ref().unwrap().terminal_streams()
         })
     };
-    // The stream counts before the UI thread answers, so wait for the answer: it starts the tick.
-    wait_until(cx, "the UI thread to lend the terminals", |cx| {
-        ws.read_with(cx, |ws, _| ws.api.ticking)
+    // The stream counts before the UI thread answers, and the server lets it through only after
+    // (a stream opening also starts the tick): wait for the answer's head, sent once it did.
+    wait_until(cx, "the stream to open", |_| head.try_recv().is_ok());
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.api.ticking, "the answer starts the tick")
     });
     assert_eq!(streams(cx), 1);
     assert!(ws.update(cx, |ws, cx| ws.api_tick_once(cx)));

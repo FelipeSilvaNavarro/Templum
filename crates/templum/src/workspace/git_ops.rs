@@ -656,6 +656,8 @@ pub(crate) fn notify_git_failure(
     cx: &mut App,
 ) {
     eprintln!("templum: {err}");
+    #[cfg(test)]
+    super::told(&message);
     let (err, ws) = (err.clone(), ws.clone());
     let notification = Notification::error(message)
         .title(err.command.clone())

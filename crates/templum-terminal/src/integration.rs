@@ -1330,11 +1330,26 @@ mod tests {
                 let file = home.dir.path().join(format!("{name}.in"));
                 std::fs::read_to_string(file).unwrap_or_default()
             };
+            // Each line is typed at the prompt, once the command before it ended, and Enter is
+            // pressed again until it ran: PowerShell can drop what is typed while it gets its next
+            // prompt ready, and an Enter while it starts reading. `pi x` ends with its fake's 3.
+            let pipe = |line: &str, name: &str| {
+                let ended = term.status().finished;
+                term.write(format!("{line}\r").into_bytes());
+                let file = home.dir.path().join(format!("{name}.args"));
+                wait_pressing(&term, line, Some(b"\r"), |_| file.exists());
+                ended
+            };
             assert!(!home.dir.path().join("claude.in").exists());
-            term.write(&b"'x' | claude -p review\r"[..]);
+            wait(&term, "pi to end", |t| {
+                let s = t.status();
+                s.running.is_none() && s.last.map(|o| o.code) == Some(Some(3))
+            });
+            let ended = pipe("'x' | claude -p review", "claude");
             wait_args(&term, &home, "claude", &["-p", "review"]);
             assert_eq!(piped("claude"), "x\n");
-            term.write(&b"'y' | codex exec -\r"[..]);
+            wait(&term, "claude to end", |t| t.status().finished > ended);
+            pipe("'y' | codex exec -", "codex");
             let codex: Vec<&str> = CODEX_WORDS.lines().collect();
             wait_args(
                 &term,

@@ -1116,25 +1116,36 @@ mod tests {
         );
     }
 
+    /// Writes the program `script` at `path` from a shell of its own: this process never holds it
+    /// open for writing, so no other test's fork, which keeps what it inherited until it execs,
+    /// can make running it fail with "Text file busy" (Linux).
+    #[cfg(unix)]
+    fn write_program(path: &Path, script: &str) {
+        let written = Command::new("sh")
+            .args(["-c", "printf '%s' \"$1\" > \"$0\" && chmod 755 \"$0\""])
+            .arg(path)
+            .arg(script)
+            .status()
+            .unwrap();
+        assert!(written.success());
+    }
+
     #[cfg(unix)]
     #[test]
     fn poll_asks_claude_code_in_an_empty_folder() {
-        use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("claude");
         let printed = dir.path().join("usage.jsonl");
         std::fs::write(&printed, USAGE).unwrap();
         // Records its arguments, then prints what Claude Code would.
-        std::fs::write(
+        write_program(
             &program,
-            format!(
+            &format!(
                 "#!/bin/sh\necho \"$@\" > \"{0}/args\"\necho \"$CLAUDE_CONFIG_DIR\" > \"{0}/config\"\ncat \"{1}\"\n",
                 dir.path().display(),
                 printed.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let probe = dir.path().join("probe");
         let l = poll(&program, &probe, None, 5).unwrap();
         assert_eq!(l.windows.len(), 3);
@@ -1156,19 +1167,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn poll_gives_up_on_an_output_a_child_keeps_open() {
-        use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("claude");
-        std::fs::write(
+        write_program(
             &program,
-            format!(
+            &format!(
                 "#!/bin/sh\ncat \"{0}/usage.jsonl\"\nsleep 3 &\n",
                 dir.path().display()
             ),
-        )
-        .unwrap();
+        );
         std::fs::write(dir.path().join("usage.jsonl"), USAGE).unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let start = Instant::now();
         let within = (Duration::from_secs(30), Duration::from_millis(300));
         let probe = dir.path().join("probe");

@@ -252,9 +252,9 @@ pub(super) fn me(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -
     })
 }
 
-/// The terminal's screen once it shows `needle`, its rows joined: a long line wraps at the
-/// terminal's width (macOS's temporary folder is long), and `Snapshot::text` breaks it there. A
-/// failure points at the caller's line, which names the needle.
+/// The terminal's screen once it shows `needle`, its lines joined: a long line wraps at the
+/// terminal's width (macOS's temporary folder is long), and is read as one line, with the space
+/// where it wraps. A failure points at the caller's line, which names the needle.
 #[track_caller]
 pub(super) fn screen_with(
     ws: &Entity<Workspace>,
@@ -279,12 +279,8 @@ pub(super) fn screen_until(
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let shown = ws.read_with(cx, |ws, _| {
-            let mut snap = templum_terminal::Snapshot::default();
-            snap.refresh(
-                ws.space.terminal(id).unwrap().term.shared(),
-                &ws.theme.palette,
-            );
-            snap.text().replace('\n', "")
+            let term = &ws.space.terminal(id).unwrap().term;
+            term.shared().lines(term.grid_size().1.into()).concat()
         });
         if done(&shown) {
             return shown;

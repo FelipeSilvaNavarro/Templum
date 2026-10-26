@@ -19,6 +19,22 @@ fn said_twice(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
     screen_until(ws, cx, id, |shown| shown.matches("say hi").count() >= 2);
 }
 
+/// Looks whether the agent is ready for its prompt, READY_LOOK of the test's clock each, while
+/// `waiting` holds; false if it still does after ten seconds: what a look reads (the shell starting
+/// the agent, its output) comes in real time, slower on a busy machine.
+fn typed(cx: &mut TestAppContext, waiting: impl Fn(&mut TestAppContext) -> bool) -> bool {
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while waiting(cx) {
+        if std::time::Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+    }
+    true
+}
+
 /// The startup terminal at (40, 100), 400 × 300, the camera at 100% on the origin, and Claude Code
 /// and Codex started as `cat` in front of the new terminals' shells (`agent_cat`).
 pub(super) fn spawner(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, BlockId) {
@@ -358,13 +374,7 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
             assert!(prompt(cx), "{agent} typed into a question: {bytes:?}");
         }
         prints(&ws, cx, new, b"\x1b[?2004h\r");
-        let mut looks = 0;
-        while prompt(cx) {
-            assert!(looks < 10, "{agent} never typed");
-            std::thread::sleep(Duration::from_millis(100));
-            after(cx, look);
-            looks += 1;
-        }
+        assert!(typed(cx, prompt), "{agent} never typed");
         // A task the caller hands over, under its own first line.
         screen_with(
             &ws,
@@ -421,14 +431,10 @@ fn a_spawns_task_past_its_timeout_isnt_told(cx: &mut TestAppContext) {
     in_front(&ws, cx, new, true);
     found(&ws, cx, new);
     let (theirs, _) = me(&ws, cx, new);
-    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
-    let mut looks = 0;
-    while ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some()) {
-        assert!(looks < 10, "never typed");
-        std::thread::sleep(Duration::from_millis(100));
-        after(cx, look);
-        looks += 1;
-    }
+    let waiting = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some())
+    };
+    assert!(typed(cx, waiting), "never typed");
     screen_with(&ws, cx, new, "say hi");
     entered(&ws, cx, new);
     event(handle, &ws, cx, &theirs, json!({ "event": "submitted" }));
@@ -576,14 +582,10 @@ fn a_snapshot_before_the_agent_started_doesnt_stop_its_prompt(cx: &mut TestAppCo
         ..Default::default()
     };
     snapshot(handle, &ws, cx, new, running);
-    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
-    let mut looks = 0;
-    while ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some()) {
-        assert!(looks < 10, "never typed");
-        std::thread::sleep(Duration::from_millis(100));
-        after(cx, look);
-        looks += 1;
-    }
+    let waiting = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some())
+    };
+    assert!(typed(cx, waiting), "never typed");
     screen_with(&ws, cx, new, "say hi");
     entered(&ws, cx, new);
     ws.read_with(cx, |ws, _| {
@@ -695,13 +697,7 @@ fn a_task_for_an_agent_still_starting_is_typed_once_it_is_ready(cx: &mut TestApp
         ..Default::default()
     };
     snapshot(handle, &ws, cx, new, running);
-    let mut looks = 0;
-    while waiting(cx) {
-        assert!(looks < 10, "never typed");
-        std::thread::sleep(Duration::from_millis(100));
-        after(cx, look);
-        looks += 1;
-    }
+    assert!(typed(cx, waiting), "never typed");
     screen_with(&ws, cx, new, "say hi");
     entered(&ws, cx, new);
     said_twice(&ws, cx, new);
@@ -808,13 +804,7 @@ fn a_prompt_waits_while_its_agent_asks_its_person(cx: &mut TestAppContext) {
     }
     assert!(waiting(cx), "typed into its dialog");
     set(cx, Some(AgentState::Idle));
-    let mut looks = 0;
-    while waiting(cx) {
-        assert!(looks < 10, "never typed");
-        std::thread::sleep(Duration::from_millis(100));
-        after(cx, look);
-        looks += 1;
-    }
+    assert!(typed(cx, waiting), "never typed");
     screen_with(&ws, cx, new, "say hi");
     entered(&ws, cx, new);
     said_twice(&ws, cx, new);
@@ -1223,16 +1213,22 @@ fn stop_agent_ends_what_an_agent_that_quit_left_running(cx: &mut TestAppContext)
     let (handle, ws, mine) = spawner(cx);
     let (terminal, _) = me(&ws, cx, mine);
     let dir = tempfile::tempdir().unwrap();
-    let flag = dir.path().join("f");
+    let (flag, stop) = (dir.path().join("f"), dir.path().join("stop"));
     // Its "agent" (`cat`) leaves a job a second later (start times are whole seconds), then quits
-    // at Ctrl+D; the shell waits in a builtin `read`. `setsid` through Perl: macOS has no
-    // `setsid` command.
+    // at Ctrl+D; the shell waits in a builtin `read`. The job writes its file once the test says
+    // so, however long the stop took: only a job that outlived it writes (and it ends with the
+    // folder, if the test fails first). `setsid` through Perl: macOS has no `setsid` command.
     const SETSID: &str = "perl -MPOSIX -e \"setsid; exec @ARGV\"";
+    let job = format!(
+        "until [ -e {} ] || [ ! -d {} ]; do sleep 0.1; done; touch {}",
+        stop.display(),
+        dir.path().display(),
+        flag.display()
+    );
     ws.update(cx, |ws, _| {
         ws.command = Some(jobs(&format!(
-            "sh -c 'sleep 1.2; ({SETSID} sh -c \"sleep 3 && touch {}\" &); exec cat'; \
-             while read -r x; do :; done",
-            flag.display()
+            "sh -c 'sleep 1.2; ({SETSID} sh -c \"{job}\" &); exec cat'; \
+             while read -r x; do :; done"
         )))
     });
     let spawn = json!({ "agent": "codex", "folder": dir.path() });
@@ -1269,7 +1265,8 @@ fn stop_agent_ends_what_an_agent_that_quit_left_running(cx: &mut TestAppContext)
         text.starts_with(&format!("Stopped {them}: ended ")) && text.contains("left running"),
         "{text}"
     );
-    std::thread::sleep(Duration::from_millis(3000));
+    std::fs::write(&stop, "").unwrap();
+    std::thread::sleep(Duration::from_millis(1000));
     assert!(!flag.exists(), "its job wrote its file");
     // Once the person typed at the prompt, what runs there is theirs.
     ws.read_with(cx, |ws, _| {

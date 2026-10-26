@@ -188,10 +188,13 @@ impl Workspace {
                                 }
                             }),
                         );
+                        let words = "No remote: add one to publish this branch.";
+                        #[cfg(test)]
+                        super::told(words);
                         notify_with(
                             &entity,
                             at,
-                            Notification::warning("No remote: add one to publish this branch."),
+                            Notification::warning(words),
                             vec![run],
                             window,
                             cx,

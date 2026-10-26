@@ -106,6 +106,8 @@ pub(crate) fn confirm(
     cx: &mut App,
 ) {
     let (title, description) = (title.into(), description.into());
+    #[cfg(test)]
+    crate::workspace::told(&format!("{title} {description}"));
     let on_ok = Rc::new(on_ok);
     window.open_alert_dialog(cx, move |alert, _, _| {
         let on_ok = on_ok.clone();
