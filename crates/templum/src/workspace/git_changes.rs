@@ -4,25 +4,16 @@ use std::rc::Rc;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
+use templum_git::ops::{self, Undone};
 use templum_git::{GitError, Repo};
 
-use crate::git_block::{self, words};
+use crate::git_block;
 use crate::prompt;
 
 use super::git_discard::REFUSED;
 use super::{
     Extra, GitAt, Workspace, notify_git_error, notify_git_failure, notify_with, show_notification,
 };
-
-/// What Undo commit found.
-enum Undone {
-    /// Taken back: its message, for the fields.
-    Done(String),
-    /// On the upstream: Revert… instead.
-    Pushed,
-    /// HEAD isn't that commit any more.
-    Moved,
-}
 
 impl Workspace {
     /// Commits with the form's message: what is staged, or every change (`Git::commit_all`).
@@ -44,26 +35,9 @@ impl Workspace {
         let at = self.here();
         self.act_job(
             at,
-            move || {
-                if all {
-                    repo.stage_all()?;
-                }
-                // No summary typed: the sentence for the one file (`can_commit` saw one), by what
-                // is staged now, not by the status the form read up to 2 s ago, which a file
-                // written since is missing from. Else the commit waits for a message.
-                let summary = if typed.is_empty() {
-                    match words::staged_summary(&repo.status()?) {
-                        Some(summary) => summary,
-                        None => return Ok::<_, GitError>(None),
-                    }
-                } else {
-                    typed
-                };
-                // An Amend's Undo goes back to the commit it replaces: read it before.
-                let replaced = if amend { Some(repo.head()?) } else { None };
-                let message = git_block::join_message(&summary, &description);
-                Ok(Some((repo.commit(&message, amend)?, replaced)))
-            },
+            // No summary typed: the sentence for the one file (`can_commit` saw one), by what is
+            // staged now; else the commit waits for a message.
+            move || ops::commit(&repo, &typed, &description, amend, all),
             move |ws, at, result, window, cx| {
                 let entity = cx.entity();
                 // Only a commit that happened is pushed.
@@ -78,7 +52,7 @@ impl Workspace {
                             ws.focus_summary(window, cx);
                         }
                     }
-                    Ok(Some((short, replaced))) => {
+                    Ok(Some(ops::Committed { short, replaced })) => {
                         if let Some(git) = ws.git_at(&at) {
                             git.amend = false;
                             let (summary, description) =
@@ -208,18 +182,7 @@ impl Workspace {
         let job_short = short.clone();
         self.act_job(
             self.here(),
-            move || -> Result<Undone, GitError> {
-                // A commit made since: it is never the one taken back, pushed or not.
-                if !repo.head().is_ok_and(|h| h.starts_with(&job_short)) {
-                    return Ok(Undone::Moved);
-                }
-                if repo.on_upstream(&job_short)? {
-                    return Ok(Undone::Pushed);
-                }
-                Ok(repo
-                    .undo_commit(&job_short, replaced.as_deref())?
-                    .map_or(Undone::Moved, Undone::Done))
-            },
+            move || ops::undo_commit(&repo, &job_short, replaced.as_deref()),
             move |ws, at, result, window, cx| {
                 match result {
                     Ok(Undone::Done(message)) => {
@@ -295,7 +258,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let ws = cx.entity();
-        let program = self.config.git.program().to_string();
         prompt::ask_text(
             "Your email for commits",
             "Set",
@@ -305,13 +267,9 @@ impl Workspace {
                 if email.is_empty() {
                     return false;
                 }
-                let (name, program) = (name.clone(), program.clone());
+                let name = name.clone();
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(
-                        move |_| Repo::set_author(&program, &name, &email),
-                        window,
-                        cx,
-                    )
+                    ws.git_action(move |repo| repo.set_author(&name, &email, true), window, cx)
                 });
                 true
             },

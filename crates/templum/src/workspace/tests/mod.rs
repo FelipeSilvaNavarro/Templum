@@ -764,6 +764,7 @@ mod accounts;
 mod agents;
 mod agents_view;
 mod api;
+mod api_git;
 mod attachments;
 mod automations;
 mod block_ids;

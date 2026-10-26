@@ -306,6 +306,18 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
   | `run_automation` | `automation` | Run now | control |
   | `delete_automation` | `automation` | Deletes it | full |
 
+- **`git`** (Templum to Templum, part 2f; docs/api.md's Git): one of the Git popup's operations in a repository of a
+  workspace (`workspace`, `folder`, `op` and its arguments; never raw git arguments), the API's own because the popup
+  is the person's. The scope is the operation's: reads (`find`, `look`, `diff`, `history`, `show`, `blame`, `branches`,
+  `unmerged`, `default_branch`, `compare`, `stashes`, `stash_diff`, `remotes`, `last_message`, `measure`, `trash`) take
+  any token, acts take Control, and what can lose work (`discard`, `discard_hunk`, `restore_version`, `delete_branch`,
+  `stash_drop`, `abort`) takes Full; `GET /v1/tools` lists "read, control or full, by op". The registry parses and
+  checks the call (`Own::Git`, `templum_git::ops::Op::check`: a malformed argument is `400` before the UI thread); the
+  glue finds the repository off the UI thread and, for a token limited to some workspaces, requires its root and its
+  main working tree inside their folders (`403`, "That repository lies outside API's folder."); the operations of one
+  repository run in turn and each is killed after 10 minutes. The answer is `{"text", "git", "workspace"}`; a `422` of
+  `git` adds `details`, git's stderr (at most 64 KiB), to the error. The audit log writes `git:<op>`, and `git:look`
+  and `git:diff` are grouped as `terminal_input` is. The server's `Audited` marker in the response carries the name.
 - **`move_block`** joins the control server now, as templum-agent.md's batch 3 lists it, with `block`, `x`, `y`, `w`,
   `h` (any of them; the rest keep): a step of that workspace's Ctrl+Z, `–` for the Templum Agent's gate. Its
   `workspace` argument (a move to another workspace) stays for the control server's batch 3 (*the designer's call*).

@@ -63,7 +63,7 @@ pub(crate) const FONT: f32 = 12.0;
 /// How often the status is read while the block is on screen.
 pub(crate) const POLL: Duration = Duration::from_secs(2);
 /// How many commits History loads at a time.
-pub(crate) const PAGE: usize = 200;
+pub(crate) use templum_git::ops::PAGE;
 /// Past this many lanes the graph is cut (the commit's dot on the last one).
 // ponytail: a history with more than 6 branches open at once draws 6; a horizontal scroll of the
 // graph if people meet it.
@@ -200,23 +200,6 @@ impl Check {
 /// A command waiting for the block's running one.
 pub(crate) type Queued = Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
 
-/// One refresh's result, read in the background.
-pub(crate) struct Read {
-    pub status: Status,
-    pub operation: Option<Operation>,
-    pub author: Option<(String, String)>,
-}
-
-impl Read {
-    pub fn of(repo: &Repo) -> Result<Read, GitError> {
-        Ok(Read {
-            status: repo.status()?,
-            operation: repo.operation(),
-            author: repo.author()?,
-        })
-    }
-}
-
 /// A Git block's state: the folder, what it holds, and the last read.
 pub(crate) struct Git {
     /// What the user chose; the repository's root may be above it.
@@ -329,15 +312,6 @@ pub(crate) struct Git {
     pub files_filter: Entity<InputState>,
     _files_filter: Subscription,
     _search: Subscription,
-}
-
-/// The summary, then a blank line and the description when there is one.
-pub(crate) fn join_message(summary: &str, description: &str) -> String {
-    if description.is_empty() {
-        summary.to_string()
-    } else {
-        format!("{summary}\n\n{description}")
-    }
 }
 
 impl Git {

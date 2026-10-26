@@ -118,7 +118,7 @@ impl Options {
             heartbeat: HEARTBEAT,
             ticket_life: TICKET_LIFE,
             replaced_grace: REPLACED_GRACE,
-            computer: sysinfo::System::host_name().unwrap_or_default(),
+            computer: crate::computer(),
         })
     }
 }
@@ -965,10 +965,16 @@ fn json_response(status: u16, value: &Value) -> Response<Body> {
 
 /// An error answer: `{"error":{"code":…,"message":…}}`.
 fn error(status: u16, code: &str, message: &str) -> Response<Body> {
-    let mut response = json_response(
-        status,
-        &json!({ "error": { "code": code, "message": message } }),
-    );
+    error_with(status, code, message, None)
+}
+
+/// An error answer with `details` beside its message (git's stderr).
+fn error_with(status: u16, code: &str, message: &str, details: Option<&str>) -> Response<Body> {
+    let mut body = json!({ "error": { "code": code, "message": message } });
+    if let Some(details) = details {
+        body["error"]["details"] = json!(details);
+    }
+    let mut response = json_response(status, &body);
     if status == 401 {
         response
             .headers_mut()
@@ -1372,6 +1378,7 @@ async fn route(shared: &Arc<Shared>, peer: Peer, request: Request<RequestBody>) 
     flight.set(what == "revoke_share");
     let response = dispatch(shared, peer, &token, found, params, query, request).await;
     drop(flight);
+    let what = audited(&response, what);
     shared
         .audit
         .write(&addr, Some(&token.name), &what, response.status().as_u16());
@@ -1667,9 +1674,13 @@ fn tool_answer(answer: &Value) -> Response<Body> {
     let result = &answer["result"];
     let text = result["content"][0]["text"].as_str().unwrap_or_default();
     if result["isError"] == true {
-        return error(422, "refused", text);
+        return error_with(422, "refused", text, result["details"].as_str());
     }
     let mut out = json!({ "text": text });
+    // The git tool's result, whatever its shape (null included).
+    if let Some(git) = result.get("git") {
+        out["git"] = git.clone();
+    }
     // A share's connection code: given once, in the answer.
     if let Some(code) = result["code"].as_str() {
         out["code"] = json!(code);
@@ -1704,10 +1715,10 @@ async fn tool(
     match registry::scope(name, &args) {
         Err(why) => return error(400, "invalid", &why),
         Ok(needs) if needs > token.scope => {
-            return error(
-                403,
-                "scope",
-                &format!("{name} needs a {} token.", needs.word()),
+            return audited_as(
+                error(403, "scope", &registry::needs_words(name, &args, needs)),
+                name,
+                &args,
             );
         }
         Ok(_) => {}
@@ -1727,9 +1738,34 @@ async fn tool(
     )
     .await
     {
-        Ok(answer) => tool_answer(&answer),
-        Err(response) => response,
+        Ok(answer) => audited_as(tool_answer(&answer), name, &args),
+        Err(response) => audited_as(response, name, &args),
     }
+}
+
+/// What the audit log writes for a call: `git:<op>` for the git tool (its operation's scope and
+/// noise differ), else the tool's name.
+#[derive(Clone)]
+struct Audited(String);
+
+/// A response of the git tool marked with its operation (known by now: its scope was found).
+fn audited_as(mut response: Response<Body>, name: &str, args: &Value) -> Response<Body> {
+    if name == "git"
+        && let Some(op) = args["op"].as_str()
+    {
+        response
+            .extensions_mut()
+            .insert(Audited(format!("git:{op}")));
+    }
+    response
+}
+
+/// The audit line's `what`: the response's own when the call marked one.
+fn audited(response: &Response<Body>, what: String) -> String {
+    response
+        .extensions()
+        .get::<Audited>()
+        .map_or(what, |a| a.0.clone())
 }
 
 /// The words of a target that isn't there.
@@ -2381,5 +2417,66 @@ mod tests {
         assert_eq!(status(json!({"error": {"code": -1, "message": "m"}})), 500);
         let reply = tools::tool_result(&json!(1), &templum_mcp::Reply::ok("hi"));
         assert_eq!(status(serde_json::from_str(&reply).unwrap()), 200);
+    }
+
+    /// A response's JSON body, read to the end.
+    fn json_of(response: Response<Body>) -> Value {
+        let bytes = futures::executor::block_on(response.into_body().collect())
+            .unwrap()
+            .to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn a_git_answer_carries_its_result_and_a_refusal_its_details() {
+        let ok = tool_answer(&json!({"result": {
+            "content": [{"type": "text", "text": "Committed a1b2c3d."}],
+            "git": {"short": "a1b2c3d", "replaced": null},
+        }}));
+        assert_eq!(ok.status().as_u16(), 200);
+        assert_eq!(
+            json_of(ok),
+            json!({"text": "Committed a1b2c3d.", "git": {"short": "a1b2c3d", "replaced": null}})
+        );
+        // A result that is nothing is still there, as null.
+        let nothing = tool_answer(&json!({"result": {
+            "content": [{"type": "text", "text": "Fetched."}],
+            "git": null,
+        }}));
+        assert_eq!(json_of(nothing), json!({"text": "Fetched.", "git": null}));
+        let refused = tool_answer(&json!({"result": {
+            "isError": true,
+            "content": [{"type": "text", "text": "fatal: x"}],
+            "details": "fatal: x\nhint: y",
+        }}));
+        assert_eq!(refused.status().as_u16(), 422);
+        assert_eq!(
+            json_of(refused),
+            json!({"error": {"code": "refused", "message": "fatal: x", "details": "fatal: x\nhint: y"}})
+        );
+        // Any other tool's refusal has no details.
+        let plain = tool_answer(&json!({"result": {
+            "isError": true,
+            "content": [{"type": "text", "text": "no"}],
+        }}));
+        assert_eq!(
+            json_of(plain),
+            json!({"error": {"code": "refused", "message": "no"}})
+        );
+    }
+
+    #[test]
+    fn a_git_call_is_audited_by_its_operation() {
+        let marked = audited_as(error(403, "scope", "m"), "git", &json!({"op": "push"}));
+        assert_eq!(audited(&marked, "git".into()), "git:push");
+        // A call without a known operation, and any other tool, keep the route's word.
+        let unmarked = audited_as(error(400, "invalid", "m"), "git", &json!({}));
+        assert_eq!(audited(&unmarked, "git".into()), "git");
+        let other = audited_as(
+            error(403, "scope", "m"),
+            "send_keys",
+            &json!({"op": "push"}),
+        );
+        assert_eq!(audited(&other, "send_keys".into()), "send_keys");
     }
 }

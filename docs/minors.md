@@ -169,6 +169,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   entry left half-made by a crash has no manifest, so `list` skips it and `prune` never deletes it
   (`crates/templum-git/src/trash.rs:165`, `:239`). Fix: pad the counter (`{:06}`), and prune folders without a
   manifest older than a day.
+- [ ] **A `resolve` through the API leaves the file conflicted.** `Op::Resolve` (`crates/templum-git/src/ops/run.rs`)
+  only checks out a side, as the popup does before its Mark resolved; a token that repeats it makes a copy each time
+  until the trash refuses at 50 for the repository. Fix: refuse a `resolve` of a file whose working bytes equal the
+  side's already, with no copy.
 - [ ] **Recently discarded doesn't name the files.** A row says "Discarded 7 files"
   (`crates/templum/src/git_block/discarded.rs:51`). Fix: the file names under it, folded past a few.
 
@@ -197,13 +201,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   the dialog's description and the notification's message in each (gpui-component's `Notification` keeps its message
   private: a test-only accessor, or an element id on the message).
 - [ ] **A test that writes a script and runs it can fail once with "Text file busy".** Another test's thread may
-  fork while the script is still open for writing, and Linux then refuses to run it (ETXTBSY):
-  `a_cancelled_command_is_killed_and_says_so` and `a_clone_stopped_midway_leaves_no_folder_and_an_empty_one_empty`
-  (`crates/templum-git/tests/repo.rs`) each did once in a full run, so did
+  fork while the script is still open for writing, and Linux then refuses to run it (ETXTBSY). templum-git now runs
+  a busy program again a few times (`retry_busy` in `repo.rs`), so its fake-git tests no longer fail this way; left:
   `poll_asks_claude_code_in_an_empty_folder` (`crates/templum-usage/src/claude.rs:1139`, `poll` gave None, seen in
   the reduced-env run of T2T batch 1c; it passed alone three times), and the fake agent of
-  `crates/templum/src/workspace/tests/git_message.rs` is written the same way. Fix: have `sh` read
-  the script (`sh <path> …`) instead of running the file itself.
+  `crates/templum/src/workspace/tests/git_message.rs` is written the same way. Fix: run them again on
+  `ExecutableFileBusy` as templum-git does, or have `sh` read the script (`sh <path> …`).
 - [ ] **`an_agent_past_its_timeout_is_stopped` counts the notifications, not what they say.**
   (`crates/templum/src/workspace/tests/git_message.rs`.) Fix: check it is "didn't answer within".
 - [ ] **`the_shell_page_switches_shell_integration` failed once in a full run.**
@@ -2458,3 +2461,32 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   thread. Fix: cache an `Arc<DrawingsView>` per space keyed by an ink revision (bumped on push, remove, retain, undo
   and redo) and an `Arc<NoteView>` per note keyed by a revision of its text (`Entry.changed` is in seconds: too coarse),
   so an unchanged tick reuses its `Arc`s and the publisher's comparison becomes a pointer check.
+- [ ] **Two `git` calls sent back to back on one repository may run in either order.**
+  (`workspace/api_git.rs`, `api_git`, `git_queue`.) Each call finds its repository on the background executor before it
+  takes its place in that repository's queue, so a `stage` and a `commit` sent without waiting for the first answer
+  can swap. A client that waits for each answer (the mirror's popup does) is not affected. Fix: a ticket taken in
+  `api_git`, with the queue ordering by it once the repository is known.
+- [ ] **A planted `.git` file naming a network share is read by git before Templum can look at the root.**
+  (`workspace/api_git.rs`, `locate`.) `Repo::discover` runs git in the folder first; on Windows git opening a share
+  offers the person's credentials to it. Only something already able to write the workspace's folder can plant one (a
+  share's `git` paths can't name `.git`). Fix: read the folder's `.git` file before discovering and refuse a gitdir on
+  a share outside the token's folders (`refuses_share`).
+- [ ] **A killed `git` call's helpers can outlive it in two cases.** (`crates/templum-git/src/repo.rs`, `until_cancelled`,
+  `kill_tree`.) Once git exited and a helper still holds the pipe, the second loop kills by git's process group; if every
+  member left the group (a `setsid` daemon) the group id can be freed and reused within the 10 minutes (theoretical).
+  On Windows, once git has exited `taskkill /T /PID` no longer finds the root, so the helper isn't killed. What a person
+  sees: a stray helper process after a call that timed out. Fix: on Unix, remember the group's members before git
+  exits; on Windows, run git in a Job Object with `KILL_ON_JOB_CLOSE`.
+- [ ] **A prompt can appear on home's screen during a `git` call, and commits are signed as the person.**
+  (`crates/templum-git/src/repo.rs`, `quiet`; `ops/jobs.rs`, `commit`.) The call silences ssh and credential managers
+  but not a graphical `GIT_ASKPASS` / `core.askPass` window, nor gpg-agent's pinentry when `commit.gpgSign` is on; with
+  the passphrase cached (or `gpg.format=ssh` and an agent holding the key) a commit made by a remote token is signed
+  with the person's key without a question. What a person sees: a password window nobody asked for, or commits of theirs
+  signed that they didn't make (no operation can change a remote's URL, so the window cannot be pointed at an attacker's
+  server). Fix: pass `-c commit.gpgSign=false` for `commit` and `sync` calls of a token below Full, and
+  `GIT_ASKPASS=true` / `-c core.askPass=` for every call with a deadline.
+- [ ] **`resolve` through the API can add a copy to the trash without end.** (`crates/templum-git/src/ops/jobs.rs`,
+  `resolve_file`; `trash.rs`, `prune`.) `Repo::resolve` doesn't stage, so the file stays conflicted and every repeat
+  copies it again (up to 50 per repository, the API's counted apart from the person's). What a person sees: the API's
+  share of the trash filled with copies of one file. Fix: skip the copy when the file's bytes equal `:2`, `:3` or HEAD's
+  version, which git keeps.

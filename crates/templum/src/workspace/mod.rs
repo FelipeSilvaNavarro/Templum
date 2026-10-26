@@ -4,6 +4,7 @@ mod activity;
 mod agent;
 pub(crate) mod agents_view;
 pub(crate) mod api;
+mod api_git;
 mod api_state;
 mod approvals;
 pub(crate) mod automations;

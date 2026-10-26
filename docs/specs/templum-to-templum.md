@@ -3,9 +3,9 @@
 - **Date:** 2026-10-25
 - **Status:** Batch 1 implemented (kanban card 171, part 2; plans 2026-10-25-t2t-batch-1a…1d: home's side; the
   mirror's client; the remote workspace on the canvas; acting from the mirror, Edit…, the end-to-end test and
-  `--bench-mirror`). Batch 2: parts 2a–2e built (plans 2026-10-25-t2t-batch-2a-footing,
-  2026-10-25-t2t-batch-2b-canvas, 2026-10-25-t2t-batch-2c-terminals, 2026-10-25-t2t-batch-2d-boards and
-  2026-10-25-t2t-batch-2e-checklists-notes-ink); parts 2f–2h designed, not built
+  `--bench-mirror`). Batch 2: parts 2a–2f built (plans 2026-10-25-t2t-batch-2a-footing,
+  2026-10-25-t2t-batch-2b-canvas, 2026-10-25-t2t-batch-2c-terminals, 2026-10-25-t2t-batch-2d-boards,
+  2026-10-25-t2t-batch-2e-checklists-notes-ink and 2026-10-25-t2t-batch-2f-git-home); parts 2g–2h designed, not built
   ([Batch 2](#batch-2-the-whole-workspace-live)). Later batches (see [Later batches](#later-batches)) are sketched.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
@@ -1944,3 +1944,136 @@ a mirror itself (home's note id is a note of this computer's too), as `new_note_
 `live_content`'s mirror has its own note 7 and list 12 (items 13 and 14), so a write made with home's ids shows in
 `untouched`; the Templum Agent's `delete_item` of an item that isn't there (or on a block with no list) runs at once and
 says so, with no approval to click. Not done, in `minors.md`: caching the `Arc`s of drawings and notes between API ticks.
+
+### Batch 2f (Git at home)
+
+Plan: [2026-10-25-t2t-batch-2f-git-home.md](../plans/2026-10-25-t2t-batch-2f-git-home.md). Its "Open for the
+orchestrator" items were settled as it recommended (the popup calls each job's own function in `ops`, never `ops::run`;
+operations follow the jobs; `set_author` writes the repository's config for a limited token; a hunk is accepted only as
+`hunk_patch` draws it; every call has a 10-minute deadline; the queue per repository is on the UI thread; `git:diff`
+is grouped with `git:look`; `resolve` and `resolve_region` stay Control; a discard through the API keeps a copy when
+the trash fits; `message` answers `committed`; `FileDiff` gains `cut`; `templum-api` depends on `templum-git`; shape
+refusals are `400`, state refusals `422`, confinement `403`). What the builder chose or changed:
+
+- **templum-git:** serde on every result type (enums in snake_case, the default external representation); `Repo`
+  gains `with_deadline` (`run_in` takes a deadline and goes through `until_cancelled` with it, a kill being the
+  `CANCELLED` error) and `set_author(&self, name, email, global)`, which runs in the repository's root where the old
+  one ran in Templum's own folder; `Pull` is `Default`. `ops/` is `mod.rs` (the shared types: `Failure`, `Look`,
+  `Committed`, `Undone`, `Discarding`, `Compared`, `Page`, `CommitShown`), `jobs.rs` (the popup's job bodies), `op.rs`
+  (`Op`, `OPS`, `Home`, `Answer`, `Done` and the answer types), `check.rs` (the argument rules and the state checks)
+  and `run.rs` (`run`, `fit`, `ANSWER_MOST`). `message::{Writer, generate}` and `Workspace::commit_writer` are
+  Generate's, shared with the popup.
+- **The rules, as built.** A path: 1–4,096 bytes, no control character, not starting with `/`, `\` or `:`, no drive,
+  no empty, `.` or `..` part, and no part that is `.git` (`is_dotgit`, as git's `is_hfs_dotgit` and `is_ntfs_dotgit`
+  read it): in any case, without HFS+'s ignored characters (U+200C–200F, U+202A–202E, U+206A–206F, U+FEFF), with
+  trailing dots or spaces or a stream after it (`.git::$INDEX_ALLOCATION`), or `git~1`; on Windows no `:` in any part.
+  A hash: 4–64 hex digits. A new name (branch, tag): not starting with `-` or `+`, none of `^ ~ : ? * [ \`, no `..`
+  or `@{`, no control character or whitespace, at most 255 bytes, and not a hash's digits (4–64 hex: git resolves a
+  ref ahead of the commit). An existing branch, and a remote: the same shape without the whitespace rule, then
+  listed (`Which::Local` for push, delete, rename, publish and unmerged; a remote branch for `switch` with `remote`).
+  A stash is `{index ≤ 10,000, hash}`, checked by `Repo` against the list. A trash entry is 1–100 bytes of
+  `[A-Za-z0-9._-]` listed by `ops::discarded` for this repository's root. A patch is exactly one file with one hunk
+  and `hunk_patch(&file, 0)` equals it byte for byte, its file listed on the side the operation acts on; a
+  `discard_hunk`'s `path` is the patch's. Texts are one line (no control character); `description` takes newlines.
+  `inside` checks the folder a path lies in (its deepest existing ancestor, links followed, under the canonical root; a
+  link that leads nowhere is outside) and `not_link` the file a write replaces, in that order, so a link inside to
+  somewhere outside answers the link's words.
+- **Departures from the plan** (the code as built is the truth):
+  - `ops` is split into `op.rs`, `check.rs` and `run.rs` besides `mod.rs` and `jobs.rs`; `Home` and the answer types
+    live in `op.rs`.
+  - `Workspace::api_git` returns `Result<Option<String>, Refusal>` (a line now for a mirrored workspace, one without a
+    folder, or a missing folder; Ok(None) for a call that answers later), not `Result<(), Refusal>`.
+  - `set_author`'s `name` and `email` may not be empty or start with `-`: `git config --local user.name <value>` reads
+    an option in the value's place.
+  - **`diff` leaves out an untracked or conflicted file whose path leads out of the repository or is a link:**
+    `Repo::working_diff` reads those itself (`std::fs::read` follows a link), so a link to a file outside would show
+    the file to a Read token. The popup is unchanged.
+  - **`restore` and `ignore` check what they write:** every file a discard kept must lie in a folder inside the
+    repository (`Trash::restore` writes through a folder link), and `ignore` refuses a `.gitignore` that is a link.
+  - `unstage` also takes a staged rename's old path; `stage` takes a conflicted file (Mark resolved).
+  - `delete_branch`'s sentence is "Deleted {branch}." and `init`'s "Made a repository at {root}.", which the plan's
+    list leaves out; a shape refusal of a name says "\"{name}\" can't name a {branch|tag|remote}.".
+  - `ToolResult.git` and `Error.details` are added in `schemas_with_views` (the schemas' `json!` is at the macro's
+    recursion limit); `server.rs` marks a git response with `Audited` (a response extension) and `route` writes it.
+- **Review round 1 (the share's token drives git on the person's computer):**
+  - **Names that reach git are full refs.** `publish` pushes `refs/heads/{branch}`, so a branch named `+main` is no
+    forced push of `main` and one with a `:` is no `src:dst` (`-u` still sets the upstream); `merge`, `compare_log`
+    and `range_diff` take `refs/heads/{name}`, else `refs/remotes/{name}` (`Repo::full_ref`), so a tag or hash of the
+    same name never stands in for the branch; `push_branch` and `unmerged_count` already built `refs/heads/…`. A name
+    git reads as a branch only (`switch`, `rename_branch`, `delete_branch`, `new_branch`) is checked by listing or by
+    `check-ref-format`. The popup gets these too (the commands it runs are the same).
+  - **`undo_commit`'s `replaced`** must be a commit other than HEAD with HEAD's parents, as an amend leaves it
+    (`Repo::amended`); any other is a git failure and the branch stays. An amended root commit has no parents, so
+    another root commit passed (closed in round 2 by the reflog).
+  - **`fit`** weighs each file's hunks once, sorts and cuts heaviest first: linear, 4,000 files in milliseconds. What
+    git prints isn't capped before `fit`; the call's deadline bounds it.
+  - **The deadline kills what git started.** A call with a deadline (the API's) runs git in a process group of its
+    own (Unix `process_group(0)`) and kills it with `kill -KILL -- -<pid>`; on Windows `taskkill /T /F /PID`. Such a
+    call also asks nothing on a terminal: `GIT_TERMINAL_PROMPT=0` (as every call), `SSH_ASKPASS_REQUIRE=force` with
+    `SSH_ASKPASS=false` on Unix (ssh's askpass fails at once, as `BatchMode` would, without replacing the user's
+    `GIT_SSH_COMMAND` or `core.sshCommand`; a `SSH_ASKPASS_REQUIRE` the user set stays) and `GCM_INTERACTIVE=never`.
+    The popup's calls keep their prompts and their plain kill, which a person at the keyboard may rely on. **A prompt
+    can still appear at home:** a graphical `GIT_ASKPASS` or `core.askPass` window (acceptable: no operation can change
+    a remote's URL), and with `commit.gpgSign` gpg-agent's pinentry for a commit the remote made; with the passphrase
+    cached (or `gpg.format=ssh` and an agent) the remote's commits are silently signed with the person's key. Kept as
+    it is and listed in `minors.md`.
+- **Review round 2:**
+  - **A call can't make home read without end.** `until_cancelled` takes `most`: a call with a deadline (the API's)
+    reads at most `API_OUTPUT_MOST` = 64 MiB of git's stdout (and of its stderr), one byte past it kills the group and
+    the error is `GitError::too_large` ("The output of git is too large to read from <computer>: ask for less."). The
+    patch is then parsed and copied (about 4 times its size: 186 MB of patch peaked at 774 MB), so the cap is what bounds
+    the memory, not the deadline. The popup has no deadline and reads as before. The files `whole` names in `diff`
+    are read up to `ASKED_BYTES` = 32 MiB together (each still under `DIFF_LIMIT`); past it a file follows the ordinary
+    budget, else it is listed unread.
+  - **A call's discards can't push out a person's.** `Trash::for_api` marks the copies it makes (an `api` file in the
+    discard's folder) and `prune` keeps the newest 50 of each repository root, the API's counted apart from the person's;
+    60 `resolve` calls in one repository leave another's discards, and the person's own, listed. Not done: skipping a
+    copy whose bytes equal a version git keeps (`resolve` can still add 50 copies of a file per repository).
+  - **A path is a file, never a pattern.** `Repo::run_paths` prefixes `--literal-pathspecs` for the commands that take
+    a caller's paths (`stage`, `unstage`, `discard`, `resolve`, the whole-file diff and a file's history). It is not set
+    for every command: `git stash push -u` passes pathspec magic of its own and left untracked files in the tree
+    (and in the stash) with `GIT_LITERAL_PATHSPECS=1`. The popup has it too.
+  - **`undo_commit`'s "Pushed" guard reads the full HEAD hash**, not the short one a tag or branch can shadow.
+  - **A tag and a branch never share a name:** `tag` refuses a name `refs/heads/` has, `new_branch` one `refs/tags/`
+    has, and `branches` lists names by `refname:lstrip=2` (and `upstream:lstrip=2`), so a tag that arrived with a fetch
+    named like a branch no longer turns it into `heads/main`.
+  - **`undo_commit` of an amended root:** when HEAD has no parents, HEAD's reflog must say that its newest "commit
+    (amend)" entry replaced `replaced` (the entry before it). The plan said `HEAD@{1}`, but a later commit that was
+    undone moves it (the existing test of an amend, a commit and its undo).
+- **Review round 3:**
+  - **A call's copies are never count-pruned.** Round 2 counted the API's copies apart, but 50 `resolve` calls on a file
+    the person had merged by hand pushed the hand copy out (the file stays conflicted, so the call repeats), and a forced
+    `restore` made the same kind of copy. Now `prune` deletes an API copy by age (7 days) only, and `Trash::put` of the
+    API's trash refuses (`io::ErrorKind::StorageFull`, shown as `Failure::Keep`: "Couldn't keep a copy, so nothing was
+    changed: the trash already holds 50 copies made through the API for <root>: restore or clear them on that
+    computer") when the root already has `KEEP` of them younger than `MAX_AGE`. Every op that needs a copy goes through
+    `put` before it writes (`discard`, `resolve`, `resolve_region`, `restore_version`, a forced `restore`), so the disk
+    stays at 50 copies per root. The popup's trash is not held to it. Not done (in `minors.md`): a `resolve` repeated on a file that already holds that side.
+  - **One budget for the whole re-reads.** `working_diff` owns `asked_bytes` and `side_diff` takes it: a tracked file
+    named in `whole` is re-read only while the budget (32 MiB) has room for its working size, and every re-read adds the
+    bytes git wrote; the untracked files named count against the same budget. A file past it keeps its normal diff.
+  - **Size before read.** A conflicted file past `DIFF_LIMIT` is skipped by `working_diff` and refused by
+    `resolve_region` ("<path> is too large to resolve by region: take one side of it instead.") after `fs::metadata`,
+    not read. `stamp` hashes in 64 KiB chunks (the same value `Vec<u8>::hash` gave, so earlier seals stay valid).
+- **Review round 4:**
+  - **"Couldn't keep a copy" says which step failed.** Round 3 chose `Failure::Keep` by `ErrorKind::StorageFull`, so a
+    disk filling during a forced `restore`'s own writes read as "nothing was changed" (earlier files were back), and a
+    copy failing with another kind read as "Couldn't write the file". `Trash::restore` now wraps the error of its copy
+    (`put`, or the size refusal) in a marker, `trash::kept_nothing(&e)`, and `Op::Restore` answers `Keep` for that and
+    `Io` for the rest, whatever the kind.
+  - **A forced restore's copy is held to the trash's size too.** For the API's trash, `restore` measures what it would
+    write over (`measure`/`fits`: 100 MiB, 500 files, as every other copy) and refuses before writing ("too large to
+    keep a copy of what it would write over: restore it on that computer"), so the 50 copies per root can't hold 50 big
+    blobs. The popup's trash is not held to it.
+  - **A link to a device is never read.** A link to /dev/zero is a character device of size 0 through the link: it
+    passed the size check and `fs::read` never ended (memory). The whole-file reads of `templum-git` now look at the
+    file itself (`symlink_metadata`): `working_diff`'s conflicted files, `untracked_diff`, `count` and the commit
+    message's untracked files read through `repo::working_bytes`, a regular file's bytes or a link's own target text
+    (as git diffs a link), and nothing for a device or a pipe; sizes are a link's own (`working_size`), so a changed link
+    no longer shows its target's size and lines. `resolve_region` refuses anything but a regular file; `stamp` hashes
+    regular files only (a device is `?0`); the trash's copy already refuses a device (`fs::copy`), and `measure` reads
+    no content. Not changed: `.gitignore` is read whole by `Repo::ignore` (the API checks it is no link first).
+  - **Conflicted files have a total too.** `working_diff` keeps a running total (`CONFLICT_BYTES`, 16 MiB) of the
+    conflicted files it reads; a file past it is listed as a conflict with `unread` set, regions not read.
+- **Not done, in `minors.md`:** two calls sent back to back on one repository may run in either order (each finds its
+  repository first); a planted `.git` file naming a network share is read by git before the root can be checked.

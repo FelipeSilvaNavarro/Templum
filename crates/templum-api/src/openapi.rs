@@ -213,7 +213,7 @@ fn schemas() -> Value {
         )]),
         "ToolResult": json!({
             "type": "object",
-            "description": "The tool's text, and what it touched when Templum knows it; share_workspace adds its connection code.",
+            "description": "The tool's text, and what it touched when Templum knows it; share_workspace adds its connection code, git its result.",
             "properties": { "text": s(), "workspace": s(), "block": s(), "code": s() },
             "required": ["text"],
         }),
@@ -523,6 +523,13 @@ fn schemas_with_views() -> Value {
     }
     let (s, i, b) = (|| kind("string"), || kind("integer"), || kind("boolean"));
     let scope = json!({ "type": "string", "enum": ["read", "control", "full"] });
+    // The git tool's answer: its result beside the text, and git's stderr beside a refusal's message.
+    all["ToolResult"]["properties"]["git"] =
+        json!({ "description": "The git tool's result: its JSON depends on op." });
+    all["Error"]["properties"]["error"]["properties"]["details"] = json!({
+        "type": "string",
+        "description": "A 422 of the git tool: git's whole stderr, at most 64 KiB.",
+    });
     // A flag left out when false is optional, so it is added beside the always-present ones.
     all["BlockView"]["properties"]["read_only"] = json!({
         "type": "boolean",

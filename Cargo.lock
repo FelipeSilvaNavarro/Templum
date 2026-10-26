@@ -7184,6 +7184,7 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "tempfile",
+ "templum-git",
  "templum-mcp",
  "templum-terminal",
  "tokio",
@@ -7202,6 +7203,8 @@ version = "0.1.4"
 name = "templum-git"
 version = "0.1.4"
 dependencies = [
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

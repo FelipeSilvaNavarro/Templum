@@ -12,7 +12,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, SharedString, Window, div, px};
-use templum_git::message::{self, Failure, Request};
+use templum_git::message::{self, Failure, Request, Writer};
 
 use crate::config::{self, Edit};
 use crate::prompt;
@@ -83,27 +83,52 @@ impl Workspace {
         );
     }
 
+    /// The agent that writes this repository's messages, and how: Settings ▸ Git's rules, this
+    /// repository's own over them, and the agent chosen there. None when no agent is ready.
+    pub(crate) fn commit_writer(&self, root: &Path) -> Option<Writer> {
+        let agent = self.commit_agent.as_ref().filter(|a| a.ready)?;
+        let settings = self.config.git.commit_message.clone();
+        // This repository's own rules win over Settings ▸ Git's.
+        let instructions = self
+            .config
+            .git
+            .repositories
+            .get(&repository_key(root))
+            .and_then(|r| r.commit_instructions.clone())
+            .filter(|i| !i.trim().is_empty())
+            .unwrap_or(settings.instructions);
+        Some(Writer {
+            command: agent.command.clone(),
+            model: agent.model.clone(),
+            env: agent.env.iter().cloned().collect(),
+            instructions,
+            template: settings
+                .prompt
+                .unwrap_or_else(|| message::PROMPT.to_string()),
+            max_bytes: settings.max_diff_kb as usize * 1024,
+            timeout: Duration::from_secs(settings.timeout),
+        })
+    }
+
     /// Reads what the commit would take, builds the request and runs the agent, off the UI
     /// thread and beside the block's own commands (it only reads, so they don't wait for it).
     fn generate_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(agent) = self.commit_agent.clone() else {
+        let Some(title) = self.commit_agent.as_ref().map(|a| a.title.clone()) else {
             return;
         };
         let at = self.here();
-        let settings = self.config.git.commit_message.clone();
-        let repositories = &self.config.git.repositories;
-        let Some(git) = self.space.git_mut() else {
+        let Some(git) = self.space.git() else {
             return;
         };
         let Some(repo) = git.repo().cloned() else {
             return;
         };
-        // This repository's own rules win over Settings ▸ Git's.
-        let instructions = repositories
-            .get(&repository_key(&repo.root))
-            .and_then(|r| r.commit_instructions.clone())
-            .filter(|i| !i.trim().is_empty())
-            .unwrap_or(settings.instructions);
+        let Some(writer) = self.commit_writer(&repo.root) else {
+            return;
+        };
+        let Some(git) = self.space.git_mut() else {
+            return;
+        };
         let all = git.commit_all();
         let before = (
             git.summary.read(cx).value(),
@@ -112,44 +137,10 @@ impl Workspace {
         let cancel = Arc::new(AtomicBool::new(false));
         git.generating = Some(cancel.clone());
         cx.notify();
-        let template = settings
-            .prompt
-            .unwrap_or_else(|| message::PROMPT.to_string());
-        let max_bytes = settings.max_diff_kb as usize * 1024;
-        let timeout = Duration::from_secs(settings.timeout);
-        let title = agent.title.clone();
         cx.spawn_in(window, async move |ws, cx| {
             let (answer, committed) = cx
                 .background_executor()
-                .spawn(async move {
-                    let head = repo.head().ok();
-                    let answer = (|| {
-                        let changes =
-                            message::changes(&repo, all, max_bytes).map_err(Failure::Git)?;
-                        let request = message::request(
-                            &template,
-                            &Request {
-                                instructions: &instructions,
-                                files: &changes.files,
-                                diff: &changes.diff,
-                                recent: &changes.recent,
-                                max_bytes,
-                            },
-                        );
-                        message::run(
-                            &agent.command,
-                            &agent.model,
-                            &request,
-                            &repo.root,
-                            timeout,
-                            &cancel,
-                            agent.env.as_slice(),
-                        )
-                    })();
-                    // A commit made meanwhile, from the block or a terminal, took what the
-                    // answer describes.
-                    (answer, repo.head().ok() != head)
-                })
+                .spawn(async move { message::generate(&repo, &writer, all, &cancel) })
                 .await;
             ws.update_in(cx, |ws, window, cx| {
                 ws.generated(at, &title, before, answer, committed, window, cx)

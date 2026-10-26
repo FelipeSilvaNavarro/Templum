@@ -18,6 +18,11 @@ pub use server::{Client, Options, Server, start};
 pub use store::{Scope, Store, Token};
 pub use terminals::TerminalRef;
 
+/// This computer's name, as `GET /v1/me` gives it.
+pub fn computer() -> String {
+    sysinfo::System::host_name().unwrap_or_default()
+}
+
 /// The asker of the API's tasks: a terminal id is `<pid>-<n>`, never `api`.
 pub const ASKER: &str = "api";
 /// A bus `Hello.client` the API's messages carry. The bus refuses it on its socket.

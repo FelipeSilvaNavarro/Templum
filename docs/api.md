@@ -171,8 +171,8 @@ the only key a URL may carry, and only on those two routes. Revoking a token voi
 | Scope | May |
 |---|---|
 | **read** | Every GET, the event stream, and the tools that only read (`overview`, `list_agents`, `read_terminal`, `list_cards`, `read_note`, `read_checklist`, `wait_for`) |
-| **control** | Also every other tool that doesn't type for you: opening agents, handing and interrupting tasks, blocks, wires, cards, notes, checklists, showing; answering questions, plans and requests to connect; running, switching and saving automations that run no command |
-| **full** | Also `send_to_terminal`, `send_keys`, `terminal_input`, `share_workspace`, saving an automation that runs a command, deleting an automation, answering a request to delete or merge a worktree, and answering the Templum Agent's approvals |
+| **control** | Also every other tool that doesn't type for you: opening agents, handing and interrupting tasks, blocks, wires, cards, notes, checklists, showing; answering questions, plans and requests to connect; running, switching and saving automations that run no command; Git's acts (`git`: stage, commit, push, branches, stashes…) |
+| **full** | Also `send_to_terminal`, `send_keys`, `terminal_input`, `share_workspace`, saving an automation that runs a command, deleting an automation, answering a request to delete or merge a worktree, answering the Templum Agent's approvals, and Git's discards, Restore version, deleting a branch, dropping a stash and aborting (`git`) |
 
 Too low a scope: `403` `{"error":{"code":"scope","message":"send_to_terminal needs a Full token."}}`. A call through the
 API never shows the Templum Agent's approval: the token is your own hand, and its scope says how far it reaches.
@@ -214,7 +214,7 @@ are Unix seconds.
 `POST /v1/tools/{name}` runs any tool with its arguments as the JSON body; the answer is
 `{"text":"Created card 40.","workspace":"w3","block":"b7k2m"}` (the tool's words, and what it touched when known). The
 tool refusing is `422` `refused` with its sentence; a malformed argument is `400` `invalid`. `GET /v1/tools` lists them,
-with the eight only the API has:
+with the nine only the API has:
 
 | Tool | Arguments | Scope |
 |---|---|---|
@@ -226,6 +226,7 @@ with the eight only the API has:
 | `terminal_input` | `block`, then `text` (a paste), `keys` (1 to 256, [a key's name](#a-keys-name)) or `mouse` (1 to 64 events) | full |
 | `share_workspace` | `workspace`, `name`, `scope` (`control` or `full`), `expires` (Unix seconds, or null), `way`, `address` | full, a token for all workspaces |
 | `revoke_share` | `share` (left out: the calling token's own) | full, or the share itself |
+| `git` | `workspace`, `folder`, `op` and its arguments ([Git](#git)) | read, control or full, by `op` |
 
 REST aliases name the common calls; path parameters and the body become the tool's arguments, and the path wins:
 
@@ -249,6 +250,75 @@ names its block when it opened at once (not in a new worktree). `connect` takes 
 characters; blank takes it off): on two blocks already wired it renames their wire, else it wires them with that
 name; either is one Ctrl+Z step. `list_agents` ends the line of an agent the person hid in Templum's menus with `  hidden`
 (it still opens); a mirror's menus leave those out.
+
+### Git
+
+`git` runs one of the Git popup's operations in a repository of a workspace, as the popup does. It is never raw git
+arguments: `op` names the operation, its arguments go beside `workspace` (a local workspace; a mirror of another
+computer is refused with its usual sentence) and `folder` (a folder at home, whole or relative to the workspace's; its
+repository is used; left out, the workspace's own folder), and a path is relative to the repository's root.
+`{"workspace":"w3","op":"stage","paths":["src/a.rs"]}` answers
+`{"text":"Staged 1 file.","git":null,"workspace":"w3"}`: `text` is a sentence, `git` the operation's result (in the
+table; JSON `null` when there is none). Reads take any token; **control** acts; **full** is what can lose work:
+`discard`, `discard_hunk`, `restore_version`, `delete_branch`, `stash_drop` and `abort`. `GET /v1/tools` lists the
+scope by `op`.
+
+| `op` | Arguments (`?` optional) | `git` |
+|---|---|---|
+| `find`, `init` | – | `{root, main_tree}` (`root` null: no repository; `init` makes one in the folder) |
+| `look` | – | `{status, operation, author}` |
+| `diff` | `ignore_whitespace?`, `whole?` (`[{staged, path}]`) | `{unstaged, staged}`, the files' hunks and lines |
+| `history` | `all?`, `search?` (`{by, text}`), `path?`, `skip?` | `{commits, paths, unpushed}`, 200 each |
+| `show` | `hash`, `ignore_whitespace?` | `{commit, files, diffs}` |
+| `blame` | `path`, `hash?` | the lines, each with its commit |
+| `branches`, `stashes`, `remotes`, `trash` | – | the lists (`trash`: this repository's discards) |
+| `unmerged` | `branch` | the number of commits only it has |
+| `default_branch`, `last_message` | – | a name or message (or null) |
+| `compare` | `base`, `branch`, `hash?`, `ignore_whitespace?` | `{commits, files}` |
+| `stash_diff` | `stash` (`{index, hash}`), `ignore_whitespace?` | the stash's files |
+| `measure` | `paths` | `{files, bytes, keep}`: what a discard would keep a copy of |
+| `set_author` | `name`, `email` | a token for all workspaces writes the global config, a share only the repository's |
+| `stage`, `unstage` | `paths` | – |
+| `stage_hunk`, `unstage_hunk` | `patch` | – |
+| `commit` | `summary` (blank: the staged file's sentence), `description?`, `amend?`, `all?` | `{short, replaced}` |
+| `undo_commit` | `hash`, `replaced?` | `{done: message}`, `"pushed"` or `"moved"` |
+| `fetch`, `push`, `continue` | – | – |
+| `pull` | `how?` (`fast_forward`, `merge`, `rebase`) | – |
+| `push_branch`, `merge`, `checkout`, `revert` | `branch` or `hash` | – |
+| `publish` | `remote`, `branch` | – |
+| `sync` | `join?` (true rebases, false merges) | `{done: {got, sent}}`, `{diverged: …}`, `"gone"`, `"unpublished"` |
+| `switch` | `branch`, `remote?`, `leave?` | `"nothing"`, `"popped"` or `{kept: line}` |
+| `new_branch`, `tag`, `rename_branch` | `name` (and `hash?`, `hash`, `branch`) | – |
+| `stash`, `stash_apply`, `stash_pop` | `message`, `untracked?` or `stash` | – |
+| `resolve`, `resolve_region` | `path`, then `side` or `region`, `take`, `shown` | – |
+| `restore` | `entry` (an id of `trash`), `force?` | `"done"` or `{changed: [paths]}` |
+| `ignore` | `path` | – |
+| `message` | `all?` | `{summary, description, committed}`: home's agent writes it |
+| `discard` | `paths` | the copy kept for undoing it (`restore`), or null |
+| `discard_hunk` | `path`, `patch` | the same |
+| `restore_version` | `hash`, `then` (the path in that commit), `path` | the same |
+| `delete_branch` | `branch`, `force?` | – |
+| `stash_drop`, `abort` | `stash` · – | – |
+
+A `patch` is one hunk of one file exactly as the diff shows it (the lines `hunk_patch` draws): anything else, a mode, a
+rename, a binary or a symlink header included, is `400`. A call checks every string before git sees it: paths are
+relative, without `..`, `.git` (however a file system reads it) or a drive; hashes are hexadecimal; names don't start
+with `-` or `+`, hold none of `^ ~ : ? * [ \`, `..` or `@{`, and aren't a hash's digits; branches, remotes and
+discards must be ones the repository lists; `undo_commit`'s `replaced` must be the commit an amend replaced; a tag can't take a branch's name nor a branch a tag's; a written file isn't a symbolic link and its folder stays inside the
+repository. A token limited to some workspaces only reaches a repository whose root and main working tree are inside
+their folders (`403` `scope` otherwise), and never has the global author changed. One call runs at a time per
+repository, the others wait; a call is stopped after 10 minutes, with everything git started, and the text git writes
+is read up to 64 MiB (past it the call is killed and refused: "The output of git is too large to read"). ssh and
+credential helpers fail at once instead of asking, but a prompt can still appear on the computer it runs on: a graphical
+`GIT_ASKPASS` or `core.askPass` window, or a signing passphrase (`commit.gpgSign`: with the key cached, or `gpg.format=ssh`
+with an agent, a commit made through the API is signed as the person). A path names one file, never a pattern (`[ab].txt`
+is not `a.txt`). A copy a call keeps in the trash (`discard`, `resolve`, `restore_version`, a forced `restore`) is never pushed out
+by another call: it leaves only after 7 days. With 50 of them younger than that for a repository, a call that needs a
+copy is refused before it changes anything ("the trash already holds 50 copies made through the API"): restore or clear
+them on the computer. The person's own discards are counted apart (the newest 50 each). `message` needs a person to have used Generate at home
+once (it asks whether the diff may go to the agent's provider) and a ready agent there. An answer is at most 8 MiB:
+a diff that would weigh more comes with the hunks of its biggest files left out and `cut` true on each of them; any
+other answer past it is refused. A `422` of `git` adds `details`: git's whole stderr, at most 64 KiB.
 
 **Boards.** `create_card` takes `labels` (red, yellow, green, cyan, blue, magenta). `edit_card` also takes `title`,
 `description` (blank clears it), `labels` (`{"red": true, "blue": false}`: turned on, turned off; the rest keep) and
@@ -455,7 +525,7 @@ Every error is `{"error":{"code":"…","message":"…"}}`.
 | 404 | `not_found` | No such route, tool or resource (a target the token doesn't see is this too) |
 | 413 | `too_large` | A body over 1 MiB |
 | 415 | `json` | A POST, PUT or PATCH whose `Content-Type` isn't `application/json` |
-| 422 | `refused` | The tool refused; its sentence says what to do next |
+| 422 | `refused` | The tool refused; its sentence says what to do next (`git` adds `details`, git's stderr, at most 64 KiB) |
 | 429 | `slow_down` | Too many failed authentications from the address, calls from the token, or streams; `Retry-After` |
 | 503 | `busy` | Too many connections (64), or Templum is quitting |
 
@@ -478,7 +548,8 @@ authentications and handshakes) is in `<data>/api/noise.log`, one line per addre
 rest, so a flood of strangers can't fill a log or push the calls out of `audit.log`. A mirror's chatter is grouped the
 same way, in `audit.log`: `terminal_input` and `GET /v1/me` calls are one line per token, call, status and minute,
 with `more` counting the rest, so a morning of typing can't rotate the other calls out; every other call keeps its own
-line. A mirror that replaces another's session (see `Templum-Mirror`) writes one `mirror_replaced` line. Never a
+line. `git` is written `git:<op>`, and `git:look` and `git:diff` (an open popup reads them every 2 s) are grouped as
+`terminal_input` is. A mirror that replaces another's session (see `Templum-Mirror`) writes one `mirror_replaced` line. Never a
 token, a ticket, a body or typed text. At 1 MiB each becomes `audit.log.1` and `noise.log.1`. `<data>/api/api.json`
 holds the settings and the tokens' hashes (`0600`, in a `0700` folder on Unix); a copy of the data folder carries no
 token that works. Each token's last use (time and address) is in Settings.

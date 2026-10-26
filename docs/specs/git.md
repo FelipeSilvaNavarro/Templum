@@ -256,7 +256,7 @@ parent), **a stash**, and **a comparison** of two branches.
   done. Untracked files are covered too.
 - **Undo** on the notification restores at once. **Recently discarded…** (the top bar's ⋯) lists the entries,
   newest first, each with **Restore**; a file changed since asks before it is overwritten.
-- Entries older than 7 days, or beyond the newest 50, are deleted when Templum starts and after each discard.
+- Entries older than 7 days, or beyond the newest 50 of their repository, are deleted when Templum starts and after each discard. The copies a Templum API call makes (marked `api`) are deleted by age only, never by count: they may hold the person's work (a hand-merged file a call resolved over), and more calls must not push them out. With 50 of them younger than 7 days for a repository, a call that needs a copy is refused before it changes anything; the person restores or clears them.
 - **When a copy can't be kept:** without a data folder (`session::dir()` is None, as in `--bench`), or over 500
   files or 100 MB in one discard (`status -uall` lists every untracked file: a build folder is thousands), the
   question says so ("Too much to keep a copy: 1,240 files. This can't be undone.") and the notification has no

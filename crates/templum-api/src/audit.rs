@@ -45,10 +45,11 @@ const NOISE: [&str; 5] = [
     "slow_down",
 ];
 
-/// What a mirror does all day: one line per token, call and window like the noise, with `more`
-/// counting the rest, written to the calls' log. A morning of typing must not rotate the other
+/// What a mirror does all day (an open Git popup reads the status and the diff every 2 s): one
+/// line per token, call and window like the noise, with `more` counting the rest, written to the
+/// calls' log. A morning of typing must not rotate the other
 /// calls out of it; every other call keeps its own line.
-const CHATTER: [&str; 2] = ["terminal_input", "/v1/me"];
+const CHATTER: [&str; 4] = ["terminal_input", "/v1/me", "git:look", "git:diff"];
 
 #[derive(Clone)]
 struct Line {
@@ -568,6 +569,38 @@ mod tests {
             "every other call has its own line"
         );
         assert!(lines(dir.path(), "noise.log").is_empty());
+    }
+
+    #[test]
+    fn an_open_popup_s_git_reads_are_grouped_and_its_acts_are_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = Audit::with_caps(dir.path(), AUDIT_CAP, NOISE_CAP, Duration::from_millis(100));
+        for _ in 0..3 {
+            audit.write("1.2.3.4", Some("laptop"), "git:look", 200);
+        }
+        for _ in 0..2 {
+            audit.write("1.2.3.4", Some("laptop"), "git:diff", 200);
+        }
+        for _ in 0..2 {
+            audit.write("1.2.3.4", Some("laptop"), "git:push", 200);
+        }
+        let of = |what: &str| -> Vec<Value> {
+            lines(dir.path(), "audit.log")
+                .into_iter()
+                .filter(|l| l["what"] == what)
+                .collect()
+        };
+        // The window ends by itself: the counts come without anything more being sent.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while of("git:look").len() < 2 || of("git:diff").len() < 2 {
+            assert!(Instant::now() < deadline, "the counts never came");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(of("git:look")[1]["more"].as_u64(), Some(2));
+        assert_eq!(of("git:diff")[1]["more"].as_u64(), Some(1));
+        let pushes = of("git:push");
+        assert_eq!(pushes.len(), 2, "every act has its own line");
+        assert!(pushes.iter().all(|l| l.get("more").is_none()));
     }
 
     #[test]

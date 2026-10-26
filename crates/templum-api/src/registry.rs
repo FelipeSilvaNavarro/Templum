@@ -4,6 +4,7 @@
 
 use crate::store::{Scope, Way};
 use serde_json::{Map, Value, json};
+use templum_git::ops::{OPS, Op};
 use templum_mcp::control::{self, Rule};
 use templum_mcp::tools::MAX_TEXT;
 use templum_terminal::{Button, KEY_NAMES, MouseInput, MouseKind, named_key};
@@ -15,7 +16,7 @@ pub const INPUT_KEYS: usize = 256;
 pub const INPUT_MOUSE: usize = 64;
 
 /// The tools only the API serves: automations are the person's, not an agent's.
-const OWN: [&str; 8] = [
+const OWN: [&str; 9] = [
     "answer_request",
     "save_automation",
     "set_automation",
@@ -24,6 +25,7 @@ const OWN: [&str; 8] = [
     "terminal_input",
     "share_workspace",
     "revoke_share",
+    "git",
 ];
 
 /// The arguments that name something a workspace-limited token must see: a block, a workspace, a
@@ -48,9 +50,13 @@ pub const NOT_TARGETS: &[&str] = &[
     "add_items",
     "address",
     "agent",
+    "all",
     "allow",
+    "amend",
     "answers",
+    "base",
     "before",
+    "branch",
     "check",
     "checklist",
     "color",
@@ -62,40 +68,66 @@ pub const NOT_TARGETS: &[&str] = &[
     "dismiss",
     "done",
     "effort",
+    "email",
     "enter",
+    "entry",
     "event",
     "expires",
     "folder",
+    "force",
     "h",
+    "hash",
+    "how",
     "id",
+    "ignore_whitespace",
     "item",
+    "join",
     "keys",
     "kind",
     "label",
     "labels",
     "last_command",
+    "leave",
     "lines",
+    "message",
     "model",
     "mouse",
     "name",
     "new",
     "note",
     "on",
+    "op",
+    "patch",
+    "path",
+    "paths",
     "pattern",
     "priority",
     "prompt",
     "reason",
+    "region",
+    "remote",
     "remove_items",
+    "replaced",
     "scope",
+    "search",
     "share",
+    "shown",
+    "side",
+    "skip",
+    "stash",
+    "summary",
+    "take",
     "task",
     "text",
+    "then",
     "timeout",
     "title",
     "uncheck",
+    "untracked",
     "w",
     "wait",
     "way",
+    "whole",
     "worktree",
     "x",
     "y",
@@ -228,6 +260,50 @@ pub fn tools() -> Vec<Value> {
             }),
             &[],
         ),
+        tool(
+            "git",
+            "Runs one of the Git popup's operations in a repository of a workspace, as the popup \
+             does: op names it, its arguments go beside it, paths are relative to the repository's \
+             root. Reads take any token; acts take Control; discards, Restore version, deleting a \
+             branch, dropping a stash and aborting take Full. Never raw git arguments.",
+            json!({
+                "workspace": { "type": "string", "description": "The workspace's id or name." },
+                "folder": { "type": "string", "description": "A folder at home, whole or relative to the workspace's; its repository is used. Left out: the workspace's folder." },
+                "op": { "type": "string", "enum": OPS, "description": "The operation; GET /v1/openapi.json and docs/api.md list each one's arguments." },
+                "path": { "type": "string", "description": "A file, relative to the repository's root." },
+                "paths": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 10000, "description": "Files, relative to the repository's root." },
+                "hash": { "type": "string", "description": "A commit's hash, 4 to 64 hex digits." },
+                "base": { "type": "string", "description": "compare: the branch compared with." },
+                "branch": { "type": "string", "description": "A branch the repository lists." },
+                "name": { "type": "string", "description": "A new branch's or tag's name; set_author's name." },
+                "email": { "type": "string", "description": "set_author: the email." },
+                "message": { "type": "string", "description": "stash: the stash's name." },
+                "summary": { "type": "string", "description": "commit: the first line; left blank, the sentence for the one file staged." },
+                "description": { "type": "string", "description": "commit: the body." },
+                "amend": { "type": "boolean", "description": "commit: replace the last commit." },
+                "all": { "type": "boolean", "description": "commit, message: every change, not only what is staged; history: every branch." },
+                "replaced": { "type": "string", "description": "undo_commit: the commit an amend replaced." },
+                "how": { "type": "string", "enum": ["fast_forward", "merge", "rebase"], "description": "pull: how the upstream's commits join." },
+                "join": { "type": "boolean", "description": "sync: after both sides moved, true rebases and false merges." },
+                "remote": { "type": ["string", "boolean"], "description": "publish: the remote's name. switch: true for a remote branch (origin/x)." },
+                "leave": { "type": "string", "description": "switch: the name of the stash the changes left behind go to." },
+                "entry": { "type": "string", "description": "restore: a discard's id, as trash lists it." },
+                "force": { "type": "boolean", "description": "restore, delete_branch: write over files changed since; delete an unmerged branch." },
+                "patch": { "type": "string", "description": "A hunk, as the diff panel draws it (hunk_patch of the file shown)." },
+                "region": { "type": "integer", "minimum": 0, "description": "resolve_region: the conflict region's number in the file." },
+                "shown": { "type": "array", "description": "resolve_region: the region's two parts' lines as shown, [[…], […]]." },
+                "side": { "type": "string", "enum": ["ours", "theirs"], "description": "resolve: the version kept." },
+                "take": { "type": "string", "enum": ["first", "second", "both"], "description": "resolve_region: the part kept." },
+                "then": { "type": "string", "description": "restore_version: the file's path in that commit." },
+                "search": { "type": "object", "description": "history: {\"by\": \"message\"|\"author\"|\"code\", \"text\": …}." },
+                "skip": { "type": "integer", "minimum": 0, "description": "history: commits to skip (200 come at a time)." },
+                "stash": { "type": "object", "description": "A stash as stashes lists it: {\"index\": n, \"hash\": …}." },
+                "untracked": { "type": "boolean", "description": "stash: untracked files too." },
+                "whole": { "type": "array", "description": "diff: files shown whole, [{\"staged\": bool, \"path\": …}]." },
+                "ignore_whitespace": { "type": "boolean", "description": "diff, show, compare, stash_diff: leave whitespace changes out." },
+            }),
+            &["workspace", "op"],
+        ),
     ]);
     all
 }
@@ -272,6 +348,13 @@ pub fn own(name: &str) -> bool {
 /// parser's sentence): Read when it only reads, Full when its rule asks the person each time,
 /// else Control.
 pub fn scope(name: &str, args: &Value) -> Result<Scope, String> {
+    if name == "git" {
+        return match args["op"].as_str() {
+            None => Err("git needs \"op\": GET /v1/tools lists the operations.".into()),
+            Some(op) => git_scope(op)
+                .ok_or_else(|| format!("There's no git operation {op}: GET /v1/tools lists them.")),
+        };
+    }
     if own(name) {
         return Ok(match name {
             "save_automation" if args["automation"]["do"].get("command").is_some() => Scope::Full,
@@ -291,6 +374,59 @@ pub fn scope(name: &str, args: &Value) -> Result<Scope, String> {
     })
 }
 
+/// The git operations that only read.
+const GIT_READS: [&str; 16] = [
+    "find",
+    "look",
+    "diff",
+    "history",
+    "show",
+    "blame",
+    "branches",
+    "unmerged",
+    "default_branch",
+    "compare",
+    "stashes",
+    "stash_diff",
+    "remotes",
+    "last_message",
+    "measure",
+    "trash",
+];
+
+/// The git operations that can lose work: a discard, a version written over a file, a branch
+/// or a stash deleted, a merge given up.
+const GIT_FULL: [&str; 6] = [
+    "discard",
+    "discard_hunk",
+    "restore_version",
+    "delete_branch",
+    "stash_drop",
+    "abort",
+];
+
+/// The scope of a git operation; None for a name that isn't one.
+pub fn git_scope(op: &str) -> Option<Scope> {
+    if GIT_READS.contains(&op) {
+        Some(Scope::Read)
+    } else if GIT_FULL.contains(&op) {
+        Some(Scope::Full)
+    } else if OPS.contains(&op) {
+        Some(Scope::Control)
+    } else {
+        None
+    }
+}
+
+/// What a call needs and its token lacks: "send_keys needs a Full token.", and for git the
+/// operation's own: "git's discard needs a Full token."
+pub fn needs_words(name: &str, args: &Value, needs: Scope) -> String {
+    match (name, args["op"].as_str()) {
+        ("git", Some(op)) => format!("git's {op} needs a {} token.", needs.word()),
+        _ => format!("{name} needs a {} token.", needs.word()),
+    }
+}
+
 /// A tool's scope as the documents say it: "read", "control", "full", or "control or full" for the
 /// two whose scope depends on their arguments.
 pub fn nominal(name: &str) -> &'static str {
@@ -299,6 +435,9 @@ pub fn nominal(name: &str) -> &'static str {
     }
     if name == "revoke_share" {
         return "full, or the share itself";
+    }
+    if name == "git" {
+        return "read, control or full, by op";
     }
     let Some(tool) = tools().into_iter().find(|tool| tool["name"] == name) else {
         return "control";
@@ -626,6 +765,11 @@ pub enum Own {
     RevokeShare {
         share: Option<String>,
     },
+    Git {
+        workspace: String,
+        folder: Option<String>,
+        op: Op,
+    },
 }
 
 /// What `terminal_input` types.
@@ -900,6 +1044,27 @@ pub fn parse_own(name: &str, args: &Value) -> Result<Own, String> {
                 _ => return Err("\"share\" is a string".into()),
             },
         },
+        "git" => {
+            let text = |key: &str| match &args[key] {
+                Value::Null => Ok(None),
+                Value::String(text) => Ok(Some(text.clone())),
+                _ => Err(format!("\"{key}\" is a string")),
+            };
+            let workspace = text("workspace")?
+                .ok_or_else(|| format!("{name} needs \"workspace\", a string"))?;
+            let op: Op = serde_json::from_value(args.clone()).map_err(|e| {
+                format!(
+                    "git's {} is malformed: {e}",
+                    args["op"].as_str().unwrap_or("op")
+                )
+            })?;
+            op.check()?;
+            Own::Git {
+                workspace,
+                folder: text("folder")?,
+                op,
+            }
+        }
         _ => return Err(format!("Unknown tool: {name}")),
     })
 }
@@ -1026,6 +1191,91 @@ mod tests {
         let listed = listed();
         assert_eq!(listed.len(), tools().len());
         assert!(listed.iter().all(|t| t["scope"].is_string()));
+    }
+
+    #[test]
+    fn git_takes_the_scope_of_its_operation() {
+        assert_eq!(scope("git", &json!({"op": "look"})), Ok(Scope::Read));
+        assert_eq!(
+            scope("git", &json!({"op": "stage", "paths": ["a"]})),
+            Ok(Scope::Control)
+        );
+        let full = [
+            "discard",
+            "discard_hunk",
+            "restore_version",
+            "delete_branch",
+            "stash_drop",
+            "abort",
+        ];
+        for op in full {
+            assert_eq!(git_scope(op), Some(Scope::Full), "{op}");
+        }
+        // Every operation has a scope: exactly those six are Full, the 16 reads Read.
+        let scopes: Vec<_> = OPS.iter().map(|op| git_scope(op).unwrap()).collect();
+        assert_eq!(scopes.iter().filter(|s| **s == Scope::Full).count(), 6);
+        assert_eq!(scopes.iter().filter(|s| **s == Scope::Read).count(), 16);
+        assert_eq!(scopes.len(), 52);
+        assert_eq!(git_scope("rm"), None);
+        assert_eq!(nominal("git"), "read, control or full, by op");
+    }
+
+    #[test]
+    fn an_unknown_git_operation_is_invalid() {
+        let words = "There's no git operation rm: GET /v1/tools lists them.";
+        assert_eq!(scope("git", &json!({"op": "rm"})), Err(words.into()));
+        assert!(
+            scope("git", &json!({}))
+                .unwrap_err()
+                .starts_with("git needs \"op\"")
+        );
+    }
+
+    #[test]
+    fn git_parses_into_its_operation_and_refuses_bad_shapes() {
+        assert_eq!(
+            parse_own(
+                "git",
+                &json!({"workspace": "w3", "folder": "src", "op": "stage", "paths": ["a.rs"]})
+            ),
+            Ok(Own::Git {
+                workspace: "w3".into(),
+                folder: Some("src".into()),
+                op: Op::Stage {
+                    paths: vec!["a.rs".into()]
+                },
+            })
+        );
+        let bad = parse_own(
+            "git",
+            &json!({"workspace": "w3", "op": "stage", "paths": ["../x"]}),
+        );
+        assert!(
+            bad.unwrap_err()
+                .starts_with("\"../x\" isn't a path inside the repository")
+        );
+        assert!(
+            parse_own("git", &json!({"op": "look"}))
+                .unwrap_err()
+                .contains("workspace")
+        );
+        assert!(
+            parse_own("git", &json!({"workspace": "w3", "op": "stage"}))
+                .unwrap_err()
+                .contains("paths")
+        );
+    }
+
+    #[test]
+    fn needs_words_name_the_git_operation() {
+        assert_eq!(
+            needs_words("git", &json!({"op": "discard"}), Scope::Full),
+            "git's discard needs a Full token."
+        );
+        assert_eq!(
+            needs_words("send_keys", &json!({}), Scope::Full),
+            "send_keys needs a Full token."
+        );
     }
 
     #[test]

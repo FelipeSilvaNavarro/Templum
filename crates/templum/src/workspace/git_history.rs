@@ -1,6 +1,5 @@
 //! A Git block's History and Stashes tabs.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -8,17 +7,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
 use templum_git::graph::graph;
-use templum_git::trash::{self, Kept};
-use templum_git::{Commit, CommitFile, FileDiff, GitError, HistoryQuery, Search};
+use templum_git::ops::{self, Failure};
+use templum_git::{HistoryQuery, Search};
 
 use crate::git_block::{self, Git, Tab, diff_view::Source};
 use crate::prompt;
 
 use super::{Extra, GitAt, Workspace, notify_with, show_notification};
-
-/// A page of History: its commits, the file at each (in a file's history), and the commits
-/// not pushed (read with the first page).
-type Page = (Vec<Commit>, Vec<CommitFile>, Option<HashSet<String>>);
 
 /// What History lists now: its branches and its search.
 fn history_query(git: &Git) -> HistoryQuery {
@@ -223,21 +218,7 @@ impl Workspace {
         let asked = (q.clone(), file.clone());
         self.git_job(
             at,
-            move || -> Result<Page, GitError> {
-                let (page, paths) = match &file {
-                    Some(path) => repo
-                        .file_log(path, skip, git_block::PAGE)?
-                        .into_iter()
-                        .unzip(),
-                    None => (repo.history(&q, skip, git_block::PAGE)?, Vec::new()),
-                };
-                let unpushed = if skip == 0 {
-                    Some(repo.unpushed()?)
-                } else {
-                    None
-                };
-                Ok((page, paths, unpushed))
-            },
+            move || ops::history(&repo, &q, file.as_deref(), skip),
             move |ws, at, read, _, _| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
@@ -249,7 +230,11 @@ impl Workspace {
                     return;
                 }
                 match read {
-                    Ok((page, paths, unpushed)) => {
+                    Ok(ops::Page {
+                        commits: page,
+                        paths,
+                        unpushed,
+                    }) => {
                         git.more = page.len() == git_block::PAGE;
                         let (mut all, mut at_each) = if skip == 0 {
                             (Vec::new(), Vec::new())
@@ -392,40 +377,10 @@ impl Workspace {
         let trash = self.trash.clone();
         let done = format!("Restored {now} from {short}");
         let what = done.clone();
+        let job_now = now.clone();
         self.act_job(
             at,
-            move || -> Result<Option<Kept>, String> {
-                let bytes = repo.file_at(&hash, &then).map_err(|e| e.to_string())?;
-                let paths = [now.clone()];
-                let (files, size) = trash::measure(&repo.root, &paths);
-                let kept = match trash.as_ref().filter(|_| trash::fits(files, size)) {
-                    Some(t) => Some(
-                        t.put(&repo.root, &paths, &what, SystemTime::now())
-                            .map_err(|e| {
-                                format!("Couldn't keep a copy, so nothing was restored: {e}")
-                            })?,
-                    ),
-                    None => None,
-                };
-                let full = repo.root.join(&now);
-                let written = match full.parent() {
-                    Some(dir) => std::fs::create_dir_all(dir),
-                    None => Ok(()),
-                }
-                .and_then(|_| std::fs::write(&full, bytes));
-                if let Err(e) = written {
-                    // Nothing was restored: an entry left would list a change that never was.
-                    if let (Some(t), Some(k)) = (&trash, &kept) {
-                        let _ = t.remove(&k.id);
-                    }
-                    return Err(format!("Couldn't write {now}: {e}"));
-                }
-                if let (Some(t), Some(k)) = (&trash, &kept) {
-                    let _ = t.seal(k);
-                    let _ = t.prune(SystemTime::now());
-                }
-                Ok(kept)
-            },
+            move || ops::restore_version(&repo, trash.as_ref(), &hash, &then, &job_now, &what),
             move |ws, at, result, window, cx| {
                 let entity = cx.entity();
                 match result {
@@ -452,7 +407,15 @@ impl Workspace {
                         );
                     }
                     Ok(None) => show_notification(window, cx, Notification::success(done)),
-                    Err(message) => {
+                    Err(failure) => {
+                        let message = match failure {
+                            Failure::Keep(e) => {
+                                format!("Couldn't keep a copy, so nothing was restored: {e}")
+                            }
+                            Failure::Io(e) => format!("Couldn't write {now}: {e}"),
+                            Failure::Git(e) => e.to_string(),
+                            other => other.sentence(),
+                        };
                         eprintln!("templum: {message}");
                         show_notification(window, cx, Notification::error(message));
                     }
@@ -584,17 +547,7 @@ impl Workspace {
         }
         self.git_job(
             self.here(),
-            move || -> Result<(Commit, Vec<CommitFile>, Vec<FileDiff>), GitError> {
-                let commit = match loaded {
-                    Some(c) => c,
-                    None => repo.commit_info(&hash)?,
-                };
-                Ok((
-                    commit,
-                    repo.commit_files(&hash)?,
-                    repo.commit_changes(&hash, ignore_ws)?,
-                ))
-            },
+            move || ops::show(&repo, &hash, loaded, ignore_ws),
             move |ws, at, read, _, cx| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
@@ -604,7 +557,11 @@ impl Workspace {
                     return;
                 }
                 match read {
-                    Ok((commit, files, diffs)) => {
+                    Ok(ops::CommitShown {
+                        commit,
+                        files,
+                        diffs,
+                    }) => {
                         // In a file's history, that file's change alone, by its name then.
                         let then = git.file.as_ref().and_then(|_| {
                             git.commits

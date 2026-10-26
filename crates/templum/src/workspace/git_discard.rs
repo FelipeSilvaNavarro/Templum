@@ -2,13 +2,11 @@
 //! the notification, Recently discarded… to put one back later. See docs/specs/git.md,
 //! section 4, The trash.
 
-use std::rc::Rc;
-use std::time::SystemTime;
-
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
-use templum_git::GitError;
-use templum_git::trash::{self, Kept, Restored};
+use std::rc::Rc;
+use templum_git::ops::{self, Discarding, Failure};
+use templum_git::trash::{self, Restored};
 
 use crate::editor::human;
 use crate::git_block;
@@ -19,35 +17,8 @@ use super::{
 };
 
 /// What a hunk's patch git refuses says: the file changed since it was read.
-pub(crate) const REFUSED: &str = "The file changed; try again";
-
-/// What a discard throws away: whole files' unstaged changes, or one hunk (its patch, reversed
-/// on the working tree).
-#[derive(Clone)]
-pub(crate) enum Discarding {
-    Files(Vec<templum_git::Entry>),
-    Hunk(String),
-}
-
-/// Why a discard didn't happen.
-enum Failed {
-    /// The copy couldn't be kept, so nothing was discarded.
-    Keep(std::io::Error),
-    Git(GitError),
-}
-
-/// "1,240".
-pub(crate) fn thousands(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
+pub(crate) use templum_git::ops::CHANGED as REFUSED;
+pub(crate) use templum_git::ops::thousands;
 
 impl Workspace {
     /// Discard changes… and Discard all…: the unstaged changes of `paths`, after the question.
@@ -175,30 +146,7 @@ impl Workspace {
         let kept_as = done.clone();
         self.act_job(
             at,
-            move || -> Result<Option<Kept>, Failed> {
-                let kept = match &trash {
-                    Some(t) => Some(
-                        t.put(&repo.root, &paths, &kept_as, SystemTime::now())
-                            .map_err(Failed::Keep)?,
-                    ),
-                    None => None,
-                };
-                let discarded = match &what {
-                    Discarding::Files(entries) => repo.discard(&entries.iter().collect::<Vec<_>>()),
-                    Discarding::Hunk(patch) => repo.apply_patch(patch, false, true),
-                };
-                if let Err(e) = discarded {
-                    if let (Some(t), Some(k)) = (&trash, &kept) {
-                        let _ = t.remove(&k.id);
-                    }
-                    return Err(Failed::Git(e));
-                }
-                if let (Some(t), Some(k)) = (&trash, &kept) {
-                    let _ = t.seal(k);
-                    let _ = t.prune(SystemTime::now());
-                }
-                Ok(kept)
-            },
+            move || ops::discard(&repo, trash.as_ref(), &paths, &kept_as, &what),
             move |ws, at, result, window, cx| {
                 let entity = cx.entity();
                 match result {
@@ -225,13 +173,13 @@ impl Workspace {
                         );
                     }
                     Ok(None) => show_notification(window, cx, Notification::success(done)),
-                    Err(Failed::Keep(e)) => {
+                    Err(Failure::Keep(e)) => {
                         let message =
                             format!("Couldn't keep a copy, so nothing was discarded: {e}");
                         eprintln!("templum: {message}");
                         show_notification(window, cx, Notification::error(message));
                     }
-                    Err(Failed::Git(e)) if hunk => notify_git_failure(
+                    Err(Failure::Git(e)) if hunk => notify_git_failure(
                         &entity,
                         at.clone(),
                         &e,
@@ -240,8 +188,12 @@ impl Workspace {
                         window,
                         cx,
                     ),
-                    Err(Failed::Git(e)) => {
+                    Err(Failure::Git(e)) => {
                         notify_git_error(&entity, at.clone(), &e, Vec::new(), window, cx)
+                    }
+                    // A discard has no other way to fail.
+                    Err(other) => {
+                        show_notification(window, cx, Notification::error(other.sentence()))
                     }
                 }
                 ws.after_action(at, window, cx);
@@ -318,13 +270,7 @@ impl Workspace {
         };
         self.git_job(
             self.here(),
-            move || {
-                trash
-                    .list()
-                    .into_iter()
-                    .filter(|k| k.root == root)
-                    .collect::<Vec<Kept>>()
-            },
+            move || ops::discarded(&trash, &root),
             |ws, _, kept, window, cx| {
                 let (entity, dim) = (cx.entity(), ws.ui.title_dim);
                 git_block::discarded::open(entity, kept, dim, window, cx);

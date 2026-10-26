@@ -9,9 +9,10 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, Context, Entity, SharedString, Window, div, px};
+use templum_git::ops;
 use templum_git::{GitError, Repo};
 
-use crate::git_block::{self, Found, Git, Read};
+use crate::git_block::{self, Found, Git};
 use crate::launcher;
 use crate::prompt;
 
@@ -367,7 +368,7 @@ impl Workspace {
         }
         self.git_job(
             at,
-            move || Read::of(&repo),
+            move || ops::look(&repo),
             |ws, at, read, window, cx| {
                 let Some(git) = ws.git_at(&at) else {
                     return;

@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
-use templum_git::Synced;
+use templum_git::{Synced, ops};
 
 use crate::git_block::{self, words};
 use crate::menu::Target;
@@ -40,10 +40,7 @@ impl Workspace {
         let repo = repo.with_cancel(cancel);
         self.act_job(
             self.here(),
-            move || match join {
-                None => repo.sync(),
-                Some(rebase) => repo.sync_join(rebase),
-            },
+            move || ops::sync(&repo, join),
             move |ws, at, result, window, cx| {
                 if let Some(git) = ws.git_at(&at) {
                     git.sync = None;

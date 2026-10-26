@@ -63,6 +63,12 @@ pub(crate) struct Api {
     /// Calls to `delegate` with `wait` still waiting, by connection: if their client leaves, the
     /// task is no longer handed to it.
     delegated: Vec<u64>,
+    /// The `git` calls waiting their turn on each repository (by its root); the first of a root
+    /// that has an entry is running.
+    pub(super) git: std::collections::HashMap<
+        std::path::PathBuf,
+        std::collections::VecDeque<super::api_git::GitTurn>,
+    >,
     /// What `api_notice` sent, for the tests (no server listens in them).
     #[cfg(test)]
     pub notices: Vec<Notice>,
@@ -85,9 +91,9 @@ fn now_secs() -> u64 {
 }
 
 /// An error line for the server: its code and words.
-type Refusal = (i32, String);
+pub(super) type Refusal = (i32, String);
 
-fn not_found(word: &str, id: &str) -> Refusal {
+pub(super) fn not_found(word: &str, id: &str) -> Refusal {
     (codes::NOT_FOUND, registry::no(word, id))
 }
 
@@ -108,7 +114,7 @@ pub(crate) struct ShareDraft {
 }
 
 /// A `tools/call` answer for the API: the text, and what it touched.
-fn answer_line(id: &Value, reply: &Reply, target: Option<&Target>) -> String {
+pub(super) fn answer_line(id: &Value, reply: &Reply, target: Option<&Target>) -> String {
     let mut result = json!({ "content": [{ "type": "text", "text": reply.text }] });
     if reply.is_error {
         result["isError"] = json!(true);
@@ -260,10 +266,7 @@ impl Workspace {
     ) -> Result<Option<String>, Refusal> {
         let needs = registry::scope(name, args).map_err(params)?;
         if needs > caller.scope {
-            return Err((
-                codes::SCOPE,
-                format!("{name} needs a {} token.", needs.word()),
-            ));
+            return Err((codes::SCOPE, registry::needs_words(name, args, needs)));
         }
         let args = &self.api_allows(&caller, name, args, cx)?;
         if registry::own(name) {
@@ -327,6 +330,15 @@ impl Workspace {
                     Err(why) => answer_line(id, &Reply::err(why), None),
                 };
                 return Ok(Some(line));
+            }
+            // A repository's operations come one at a time, and answer later.
+            if let Own::Git {
+                workspace,
+                folder,
+                op,
+            } = own
+            {
+                return self.api_git(&caller, id, reply, workspace, folder, op, cx);
             }
             // The person's keyboard, not an agent's: no task check, no screen read back.
             if let Own::TerminalInput { block, input } = own {
@@ -596,9 +608,10 @@ impl Workspace {
             }
         }
         // What it opens starts inside the folders of its workspaces, symlinks and `..` followed.
-        if matches!(name, "add_block" | "open_agent") {
+        if matches!(name, "add_block" | "open_agent" | "git") {
             let kind = args["kind"].as_str().unwrap_or_default();
-            let opens = name == "open_agent" || matches!(kind, "terminal" | "editor");
+            let opens =
+                matches!(name, "open_agent" | "git") || matches!(kind, "terminal" | "editor");
             let target = args["workspace"].as_str().unwrap_or_default().to_string();
             let target = target.as_str();
             // What is checked is what is used: the real path replaces the one named.
@@ -609,7 +622,9 @@ impl Workspace {
                     let real = self.confined(&seen, target, folder)?;
                     args["folder"] = json!(real.to_string_lossy());
                 }
-                None if opens && name == "add_block" => self.confined_default(target)?,
+                None if opens && matches!(name, "add_block" | "git") => {
+                    self.confined_default(target)?
+                }
                 None => {}
             }
         }
@@ -849,6 +864,8 @@ impl Workspace {
             Own::TerminalInput { block, .. } => Reply::err(format!(
                 "terminal_input to {block} must go through api_input."
             )),
+            // Answered later by `api_git`, which `api_call` takes first.
+            Own::Git { .. } => Reply::err("git must go through api_git."),
             // Answered with its code by `api_call`, which takes it first.
             Own::ShareWorkspace { workspace, .. } => Reply::err(format!(
                 "share_workspace of {workspace} must go through api_call."
