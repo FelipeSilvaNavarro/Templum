@@ -291,7 +291,7 @@ scope by `op`.
 | `new_branch`, `tag`, `rename_branch` | `name` (and `hash?`, `hash`, `branch`) | – |
 | `stash`, `stash_apply`, `stash_pop` | `message`, `untracked?` or `stash` | – |
 | `resolve`, `resolve_region` | `path`, then `side` or `region`, `take`, `shown` | – |
-| `restore` | `entry` (an id of `trash`), `force?` | `"done"` or `{changed: [paths]}` |
+| `restore` | `entry` (an id of `trash`; a path or any other name is refused), `force?` | `"done"` or `{changed: [paths]}` |
 | `ignore` | `path` | – |
 | `message` | `all?` | `{summary, description, committed}`: home's agent writes it |
 | `discard` | `paths` | the copy kept for undoing it (`restore`), or null |
@@ -671,7 +671,11 @@ Not mirrored: an editor's content (a card names it). Scrolling back in a mirrore
 Find) reads home's last 2000 lines, without colors, and again after it changed; the mouse reaches a program that asked
 for it, with a Full share. Not on a mirrored workspace: editors, editing notes (a note is read-only and live there:
 select, copy and find in it, send it to a terminal), renaming a checklist and moving its items, drawing, grid mode, Move
-to workspace, Copy and Paste of blocks, Stop, the Git popup. The banner's ⓘ lists them. Adding, closing and wiring
+to workspace, Copy and Paste of blocks, Stop. The banner's ⓘ lists them. The Git popup works on a mirrored workspace:
+everything it reads and does is home's `git` (reads with any share, acts with Control, discards, Restore version,
+deleting a branch, dropping a stash and aborting with Full, dimmed on a Control share); Fetch, Pull, Push, Sync,
+Publish and Generate wait up to 10 minutes, and one a tunnel cuts says it may still be running on home; Generate uses
+home's agent; Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal stay on home. Adding, closing and wiring
 blocks, naming wires, opening home's agents and handing them tasks work from the mirror, each done at home through its
 API; a block you close or a wire you make shows at once and home's state wins after two seconds. Ctrl+Z there undoes
 moves only: it stops once at each of those acts and says to undo the rest on home. A selection of several blocks moved

@@ -10,15 +10,14 @@ use crate::{HistoryQuery, Side, Status, Synced, message};
 
 use super::check::{self, Which, staged_change, stash_of, unstaged_change};
 use super::{
-    Answer, Discarding, Done, Failure, Found, Home, Measured, Message, Op, Undone, thousands,
+    Answer, CHANGED_MEANWHILE, Discarding, Done, Failure, Found, Home, Measured, Message, Op,
+    Undone, thousands,
 };
 
 /// The most a `git` answer's JSON weighs: 8 MiB less 64 KiB for the text, the envelope and
 /// `details` around it (the client takes 8 MiB).
 pub const ANSWER_MOST: usize = 8_323_072;
 
-const CHANGED_MEANWHILE: &str =
-    "The files to commit changed since you last looked: write a message for them.";
 const NO_OPERATION: &str = "No merge, rebase, cherry-pick or revert is in progress.";
 
 fn count(n: usize, noun: &str) -> String {

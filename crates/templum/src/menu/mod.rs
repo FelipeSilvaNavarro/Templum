@@ -22,7 +22,7 @@ use templum_git::{Branch, Commit, Entry};
 use templum_terminal::ShellOption;
 
 use crate::git_block;
-use crate::workspace::remote::{Deed, HomeAgent};
+use crate::workspace::remote::{Deed, GIT_GATES, HomeAgent};
 use crate::workspace::{Body, Workspace};
 
 /// What was right-clicked.
@@ -267,20 +267,26 @@ impl Workspace {
         }
     }
 
+    /// The terminals Send to lists on the workspace shown: a mirror's are home's, never one of
+    /// this computer's.
+    pub(crate) fn send_to_targets(&self) -> Vec<(BlockId, String)> {
+        if self.on_remote() {
+            self.remote_terminals()
+        } else {
+            self.terminal_list(None)
+        }
+    }
+
     /// A menu's Send to: `text`, and the terminals it can go to.
     fn send_to_menu(&self, text: String) -> SendTo {
-        if self.on_remote() {
-            // A mirror's terminals are home's: Send to types into them as typing does.
-            return SendTo {
-                text,
-                to: self.remote_terminals(),
-                why: self.why_not(Deed::Type).map(Into::into),
-            };
-        }
         SendTo {
             text,
-            to: self.terminal_list(None),
-            why: None,
+            to: self.send_to_targets(),
+            // A mirror's terminals are home's: Send to types into them as typing does.
+            why: self
+                .on_remote()
+                .then(|| self.why_not(Deed::Type).map(Into::into))
+                .flatten(),
         }
     }
 
@@ -452,6 +458,8 @@ impl Workspace {
                     list,
                     labels: git.conflict_labels(&entry.path),
                     entry,
+                    gates: Gates::of(self, &GIT_GATES),
+                    remote: self.on_remote(),
                 }
             }
             Target::GitStash { index } => {
@@ -460,7 +468,10 @@ impl Workspace {
                     .stashes
                     .iter()
                     .find(|s| s.index == index)?;
-                Items::GitStash { index }
+                Items::GitStash {
+                    index,
+                    gates: Gates::of(self, &GIT_GATES),
+                }
             }
             Target::GitBranch { ref name } => {
                 let git = self.space.git()?;
@@ -468,6 +479,7 @@ impl Workspace {
                     branch: git.branches.iter().find(|b| b.name == *name)?.clone(),
                     current: git.status.branch.clone(),
                     base: git.default_branch.clone(),
+                    gates: Gates::of(self, &GIT_GATES),
                 }
             }
             Target::GitCommit { ref hash } => {
@@ -490,6 +502,7 @@ impl Workspace {
                     commit,
                     undo,
                     restore,
+                    gates: Gates::of(self, &GIT_GATES),
                 }
             }
             Target::GitCommitFile { ref hash, ref path } => Items::GitCommitFile {
@@ -535,6 +548,7 @@ impl Workspace {
                 let selection = p.selected_text();
                 Items::GitLine {
                     working: p.working(),
+                    remote: self.on_remote(),
                     path: s.diff.path().to_string(),
                     line: l.new_no.unwrap_or(h.new_start.max(1)),
                     send: self.send_to_menu(selection.clone().unwrap_or_else(|| hunk_text.clone())),
@@ -547,7 +561,9 @@ impl Workspace {
                 let git = self.space.git()?;
                 Items::GitMore {
                     busy: git.acting > 0,
-                    trash: self.trash.is_some(),
+                    // A mirror's trash is home's.
+                    trash: self.trash.is_some() || self.on_remote(),
+                    gates: Gates::of(self, &GIT_GATES),
                 }
             }
             Target::GitRemotes {
@@ -559,6 +575,15 @@ impl Workspace {
                 branch: branch.clone(),
                 remotes: remotes.clone(),
             },
+            Target::GitFolders if self.on_remote() => Items::HomeGitFolders {
+                space: self.space.id.clone(),
+                folders: self.home_git_folders(),
+                root: self.space.git().and_then(|g| match &g.found {
+                    git_block::Found::Home(root) => Some(root.clone()),
+                    _ => None,
+                }),
+                gates: Gates::of(self, &[Deed::GitLeftOut, Deed::AddTerminal]),
+            },
             Target::GitFolders => Items::GitFolders {
                 folders: self.git_folders(),
                 folder: self.space.git().map(|g| {
@@ -566,6 +591,14 @@ impl Workspace {
                         .map_or_else(|| g.folder.clone(), |r| r.root.clone())
                 }),
             },
+            Target::GitTerminals if self.on_remote() => {
+                let git_block::Found::Home(root) = &self.space.git()?.found else {
+                    return None;
+                };
+                Items::Reveal {
+                    terminals: self.home_terminals_in(root),
+                }
+            }
             Target::GitTerminals => Items::Reveal {
                 terminals: self.terminal_list(Some(&self.space.git()?.repo()?.root)),
             },
@@ -772,11 +805,21 @@ enum Items {
         folders: Vec<PathBuf>,
         folder: Option<PathBuf>,
     },
+    /// A mirror's folder menu: home's folders, as home writes them, and the shown repository's
+    /// root at home.
+    HomeGitFolders {
+        /// The mirrored workspace the menu was opened on: a folder is for its Git only.
+        space: String,
+        folders: Vec<String>,
+        root: Option<String>,
+        gates: Gates,
+    },
     GitMore {
         /// A command runs: Fetch, Pull and Push wait.
         busy: bool,
-        /// Discards are kept (a data folder): Recently discarded… is offered.
+        /// Discards are kept (a data folder, or home's on a mirror): Recently discarded… is offered.
         trash: bool,
+        gates: Gates,
     },
     GitRemotes {
         at: crate::workspace::GitAt,
@@ -801,6 +844,9 @@ enum Items {
         entry: Entry,
         /// A conflict's parts, named after its markers' labels (the whole-file choices).
         labels: (String, String),
+        gates: Gates,
+        /// On a mirror: Open (in an editor here) is left out.
+        remote: bool,
     },
     GitCommit {
         commit: Commit,
@@ -808,6 +854,7 @@ enum Items {
         undo: bool,
         /// In a file's history, the file's path in this commit: Restore this version….
         restore: Option<String>,
+        gates: Gates,
     },
     GitCommitFile {
         hash: String,
@@ -818,13 +865,17 @@ enum Items {
         current: Option<String>,
         /// The default branch: Compare with it.
         base: Option<String>,
+        gates: Gates,
     },
     GitStash {
         index: usize,
+        gates: Gates,
     },
     GitLine {
         /// The working changes' panel: its lines are the file's (a comparison's aren't).
         working: bool,
+        /// On a mirror: Open in editor is left out.
+        remote: bool,
         path: String,
         /// Where Open in editor goes: the line's new number, else its hunk's first.
         line: u32,

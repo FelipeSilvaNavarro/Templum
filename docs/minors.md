@@ -2490,3 +2490,24 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   copies it again (up to 50 per repository, the API's counted apart from the person's). What a person sees: the API's
   share of the trash filled with copies of one file. Fix: skip the copy when the file's bytes equal `:2`, `:3` or HEAD's
   version, which git keeps.
+- [ ] **The folder menu on a mirror lists folders, not repositories.** (`workspace/git_home.rs`, `home_git_folders`.)
+  Two terminals in different folders of one repository outside the shown one show as two rows. Fix: a `find` per
+  folder when the menu opens, deduplicated by root.
+- [ ] **A discard too large to keep says "Too much to keep a copy" even when home keeps no trash.**
+  (`workspace/git_discard.rs`, `ask_discard`.) `measure` answers no "has a trash". Fix: `Measured.trash` at home.
+- [ ] **A Sync, Push or Generate running at home can't be stopped from the mirror.** (`workspace/git_branches.rs`,
+  `cancel_git`.) The button says so and home's 10-minute deadline ends it. Fix: a `cancel` operation that kills the
+  call's process group at home.
+- [ ] **The panel's diff on a mirror can be 10 s old.** (`workspace/git_home.rs`, `panel_due`.) A file edited again at
+  home without its status changing shows its new lines within `HOME_DIFF_AGAIN`. Fix: a cheap `look` field that
+  changes with the working files' stamps.
+- [ ] **The mirror's Git popup was checked headlessly only.** (`git_block/view.rs`, `changes.rs`, `commit_form.rs`,
+  `diff_view/paint.rs`, `menu/build.rs`.) The dimmed Discard, Abort, ⚙ and menu items, and the spinning Sync's
+  tooltip were not looked at on a display. Fix: look at them with two `--dev` instances, on a Control share.
+- [ ] **A folder at home whose name cleaning would change can't be opened from a mirror.** (`workspace/git_home.rs`,
+  `found`.) A root with two blanks in a row, a line break, a control character, or over 300 characters is refused
+  with "The repository's folder at home has a name this computer can't show." (it is every later call's `folder`, so it
+  is never altered). Fix: send the folder home as an opaque token it chose, and draw a cleaned name.
+- [ ] **Generate's answer is read on the UI thread.** (`workspace/git_message.rs`, `generate_at_home`.) It is the
+  one call of the Git popup that doesn't go through `home_job`, so its up-to-8 MiB answer is parsed and cleaned
+  in the `Then`. Fix: the same background hop as `home_send`.

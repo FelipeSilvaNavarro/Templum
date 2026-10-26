@@ -806,7 +806,7 @@ impl Items {
                 }
                 menu
             }
-            Items::GitMore { busy, trash } => menu
+            Items::GitMore { busy, trash, gates } => menu
                 .item(
                     item(ws, "Fetch", None, move |ws, window, cx| {
                         ws.fetch(window, cx)
@@ -834,10 +834,11 @@ impl Items {
                         move |ws, window, cx| ws.show_discarded(window, cx),
                     ))
                 })
-                .item(item(
+                .item(gated_item(
                     ws,
                     "Clone a repository…",
                     None,
+                    gates.why(Deed::GitLeftOut),
                     move |ws, window, cx| ws.ask_clone(window, cx),
                 )),
             Items::GitRemotes {
@@ -905,6 +906,8 @@ impl Items {
                 list,
                 entry,
                 labels: (first, second),
+                gates,
+                remote,
             } => {
                 use git_block::List;
                 let path = entry.path.clone();
@@ -914,12 +917,14 @@ impl Items {
                         let (open, ours, theirs, resolved) =
                             (path.clone(), path.clone(), path.clone(), path.clone());
                         menu = menu
-                            .item(item(
-                                ws,
-                                "Open in editor",
-                                Some(IconName::FileCode),
-                                move |ws, window, cx| ws.open_from_git(&open, window, cx),
-                            ))
+                            .when(!remote, |menu| {
+                                menu.item(item(
+                                    ws,
+                                    "Open in editor",
+                                    Some(IconName::FileCode),
+                                    move |ws, window, cx| ws.open_from_git(&open, window, cx),
+                                ))
+                            })
                             .item(item(
                                 ws,
                                 format!("Use the version from {first}"),
@@ -978,20 +983,23 @@ impl Items {
                         }
                         if entry.unstaged.is_some() {
                             let discard = path.clone();
-                            menu = menu.item(item(
+                            menu = menu.item(gated_item(
                                 ws,
                                 "Discard changes…",
                                 Some(IconName::Undo2),
+                                gates.why(Deed::Git("discard")),
                                 move |ws, window, cx| ws.discard(vec![discard.clone()], window, cx),
                             ));
                         }
                         let open = path.clone();
-                        menu = menu.item(item(
-                            ws,
-                            "Open",
-                            Some(IconName::FileCode),
-                            move |ws, window, cx| ws.open_from_git(&open, window, cx),
-                        ));
+                        if !remote {
+                            menu = menu.item(item(
+                                ws,
+                                "Open",
+                                Some(IconName::FileCode),
+                                move |ws, window, cx| ws.open_from_git(&open, window, cx),
+                            ));
+                        }
                     }
                 }
                 // A new file has no history yet.
@@ -1019,6 +1027,7 @@ impl Items {
             }
             Items::GitLine {
                 working,
+                remote,
                 path,
                 line,
                 selection,
@@ -1042,7 +1051,7 @@ impl Items {
                         cx.write_to_clipboard(ClipboardItem::new_string(hunk_text.clone()))
                     }));
                 let menu = send_to(ws, menu, send, window, cx);
-                menu.when(working, |menu| {
+                menu.when(working && !remote, |menu| {
                     menu.separator().item(item(
                         ws,
                         "Open in editor at this line",
@@ -1055,6 +1064,7 @@ impl Items {
                 commit,
                 undo,
                 restore,
+                gates,
             } => {
                 let (checkout, branch, tag, revert, copy) = (
                     commit.hash.clone(),
@@ -1119,10 +1129,11 @@ impl Items {
                     },
                 ))
                 .when_some(restore, |menu, then| {
-                    menu.item(item(
+                    menu.item(gated_item(
                         ws,
                         "Restore this version…",
                         Some(IconName::Undo2),
+                        gates.why(Deed::Git("restore_version")),
                         move |ws, window, cx| {
                             ws.restore_version(restore_hash.clone(), then.clone(), window, cx)
                         },
@@ -1148,6 +1159,7 @@ impl Items {
                 branch,
                 current,
                 base,
+                gates,
             } => {
                 let name = branch.name.clone();
                 let into = current.unwrap_or_else(|| "HEAD".to_string());
@@ -1178,10 +1190,11 @@ impl Items {
                 }
                 if !branch.remote && !branch.current {
                     let delete = name.clone();
-                    menu = menu.item(item(
+                    menu = menu.item(gated_item(
                         ws,
                         "Delete…",
                         Some(IconName::Delete),
+                        gates.why(Deed::Git("delete_branch")),
                         move |ws, window, cx| ws.delete_branch(delete.clone(), false, window, cx),
                     ));
                 }
@@ -1202,17 +1215,18 @@ impl Items {
                     move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(name.clone())),
                 ))
             }
-            Items::GitStash { index } => menu
+            Items::GitStash { index, gates } => menu
                 .item(item(ws, "Apply", None, move |ws, window, cx| {
                     ws.stash_apply(index, false, window, cx)
                 }))
                 .item(item(ws, "Pop", None, move |ws, window, cx| {
                     ws.stash_apply(index, true, window, cx)
                 }))
-                .item(item(
+                .item(gated_item(
                     ws,
                     "Drop…",
                     Some(IconName::Delete),
+                    gates.why(Deed::Git("stash_drop")),
                     move |ws, window, cx| ws.stash_drop(index, window, cx),
                 ))
                 .item(item(
@@ -1221,6 +1235,50 @@ impl Items {
                     Some(IconName::FileDiff),
                     move |ws, window, cx| ws.show_stash(index, window, cx),
                 )),
+            Items::HomeGitFolders {
+                space,
+                folders,
+                root,
+                gates,
+            } => {
+                let listed = !folders.is_empty();
+                let menu = folders.into_iter().fold(menu, |menu, f| {
+                    let (label, space) = (git_block::home_name(&f), space.clone());
+                    menu.item(item(
+                        ws,
+                        label,
+                        Some(IconName::Folder),
+                        move |ws, window, cx| {
+                            if ws.still_shown(&space, window, cx) {
+                                ws.set_home_git_folder(f.clone(), window, cx)
+                            }
+                        },
+                    ))
+                });
+                let menu = if listed { menu.separator() } else { menu };
+                menu.item(gated_item(
+                    ws,
+                    "Choose another folder…",
+                    Some(IconName::FolderOpen),
+                    gates.why(Deed::GitLeftOut),
+                    move |ws, window, cx| ws.choose_git_folder(window, cx),
+                ))
+                .item(item(
+                    ws,
+                    "Refresh",
+                    Some(IconName::RefreshCw),
+                    move |ws, window, cx| ws.refresh_git_now(window, cx),
+                ))
+                .when_some(root, |menu, root| {
+                    menu.item(gated_item(
+                        ws,
+                        "Open a terminal here",
+                        Some(IconName::SquareTerminal),
+                        gates.why(Deed::AddTerminal),
+                        move |ws, window, cx| ws.open_terminal_at_home(root.clone(), window, cx),
+                    ))
+                })
+            }
             Items::GitFolders { folders, folder } => {
                 let listed = !folders.is_empty();
                 let menu = folders.into_iter().fold(menu, |menu, f| {

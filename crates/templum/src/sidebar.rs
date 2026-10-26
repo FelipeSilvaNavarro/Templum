@@ -14,6 +14,7 @@ use crate::grid::hsla;
 use crate::menu::Target;
 use crate::space_dialog::{Look, tint};
 use crate::theme::{Theme, Ui};
+use crate::workspace::remote::Deed;
 use crate::workspace::{Space, Workspace};
 
 /// The sidebar's width; the canvas gets the rest.
@@ -99,6 +100,8 @@ pub(crate) fn render(
         .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.connect_templum(window, cx)))
         .test_support();
     let open = ws.git_open && ws.space.git.is_some();
+    // On a mirror the button is dimmed, with the rule's words, while home can't be asked.
+    let (git_tip, git_dim) = crate::toolbar::gated(ws, Deed::Git("look"), "Git");
     let git = div()
         .id("git-button")
         .flex()
@@ -109,6 +112,7 @@ pub(crate) fn render(
         .rounded(px(10.0))
         .cursor_pointer()
         .when(open, move |el| el.bg(ui.pressed))
+        .when(git_dim, |el| el.opacity(0.4))
         .hover(move |s| s.bg(ui.hover))
         .active(move |s| s.bg(ui.pressed))
         .child(
@@ -116,7 +120,7 @@ pub(crate) fn render(
                 .size(px(16.0))
                 .text_color(ui.title),
         )
-        .tooltip(|window, cx| Tooltip::new("Git").build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(git_tip.clone()).build(window, cx))
         .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_git(window, cx)))
         .test_support();
     div()

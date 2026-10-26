@@ -25,6 +25,7 @@ use crate::grid::hsla;
 use crate::menu::Target;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
+use crate::workspace::remote::Deed;
 
 /// How to get `git` on this OS.
 pub(crate) fn install_hint() -> &'static str {
@@ -49,9 +50,8 @@ pub(crate) fn popup(
 ) -> AnyElement {
     let ui = ws.ui;
     let fg = hsla(ws.theme.palette.foreground, 1.0);
-    let folder = git.repo().map_or(&git.folder, |r| &r.root);
-    let (name, path) = (git.name(), SharedString::from(folder.display().to_string()));
-    let repo = matches!(git.found, Found::Repo(_)) && !git.gone;
+    let (name, path) = (git.name(), SharedString::from(git.place()));
+    let repo = git.has_repo() && !git.gone;
     let tile = div()
         .flex()
         .items_center()
@@ -203,12 +203,15 @@ fn branch_line(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> impl I
     };
     let (state, tip) = words::server_state(s);
     // The terminals working in the repository, as their last snapshot saw them: cheap.
-    let terminals = git.repo().map_or(0, |repo| {
-        ws.space
+    let terminals = match (&git.found, git.repo()) {
+        (Found::Home(root), _) => ws.home_terminals_in(root).len(),
+        (_, Some(repo)) => ws
+            .space
             .terminals()
             .filter(|(_, pane)| pane.works_in(&repo.root))
-            .count()
-    });
+            .count(),
+        _ => 0,
+    };
     let dot = || div().text_color(ui.title_dim).child("·");
     div()
         .flex()
@@ -282,14 +285,23 @@ fn actions(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> Vec<AnyEle
     let on_branch = s.branch.clone().filter(|_| s.oid.is_some());
     let publish = s.upstream.is_none() || s.gone;
     let running = git.sync.is_some();
+    // A command running at home runs on: the button says so and doesn't stop it.
+    let at_home = ws
+        .space
+        .remote
+        .as_deref()
+        .filter(|_| git.home.is_some())
+        .map(crate::mirror::computer_of);
     // The running command's button spins, and a click on it cancels it (Fetch and Pull from ⋯
     // spin here too). Tinted while there is something to send or get.
     let sync_button = (on_branch.is_some() || running).then(|| {
         let (label, word, icon) = match (running, publish) {
+            (true, _) if at_home.is_some() => ("Running", "Sync", None),
             (true, _) => ("Cancel", "Sync", None),
             (false, true) => ("Publish branch", "Push", Some(IconName::CloudUpload)),
             (false, false) => ("Sync", "Sync", Some(IconName::ArrowDownUp)),
         };
+        let stuck = at_home.clone();
         let pending = publish || s.ahead > 0 || s.behind > 0;
         let (bg, color) = if pending || running {
             (ui.accent.opacity(0.16), ui.accent)
@@ -322,8 +334,16 @@ fn actions(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> Vec<AnyEle
                 el.child(Spinner::new().with_size(UiSize::Size(px(12.0))))
             })
             .child(label)
-            .tooltip(move |window, cx| Tooltip::new(words::tip(word)).build(window, cx));
-        if running {
+            .tooltip(move |window, cx| match &stuck {
+                Some(computer) => Tooltip::new(format!(
+                    "Running on {computer}: it can't be stopped from here."
+                ))
+                .build(window, cx),
+                None => Tooltip::new(words::tip(word)).build(window, cx),
+            });
+        if running && at_home.is_some() {
+            el.test_support().into_any_element()
+        } else if running {
             el.on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.cancel_git(cx)))
                 .test_support()
                 .into_any_element()
@@ -360,7 +380,9 @@ fn actions(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> Vec<AnyEle
             icon_button("refresh", IconName::RefreshCw, ui, 1.0)
                 .tooltip(|window, cx| Tooltip::new("Refresh").build(window, cx))
                 .on_click(
-                    cx.listener(move |ws, _: &ClickEvent, window, cx| ws.refresh_git(window, cx)),
+                    cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.refresh_git_now(window, cx)
+                    }),
                 )
                 .test_support()
                 .into_any_element(),
@@ -410,7 +432,7 @@ pub(crate) fn body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace
                 )
                 .into_any_element(),
             Found::NotARepo => centered(ui, z)
-                .child(format!("{} is not a Git repository", git.folder.display()))
+                .child(format!("{} is not a Git repository", git.place()))
                 .child(
                     div()
                         .flex()
@@ -453,7 +475,17 @@ pub(crate) fn body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace
                         ),
                 )
                 .into_any_element(),
-            Found::Repo(_) => repo_body(ws, git, z, cx),
+            Found::Refused(why) => centered(ui, z)
+                .child(why.clone())
+                .child(
+                    button("retry", "Try again", ui, z)
+                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                            ws.look_up_git(window, cx)
+                        }))
+                        .test_support(),
+                )
+                .into_any_element(),
+            Found::Repo(_) | Found::Home(_) => repo_body(ws, git, z, cx),
         }
     };
     // The wheel scrolls the lists and stops there; with Ctrl it zooms the canvas.
@@ -503,13 +535,18 @@ fn repo_body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> 
                             el.tooltip(move |window, cx| Tooltip::new(word).build(window, cx))
                         }),
                 )
-                .child(
-                    button("git-abort", "Abort", ui, z)
+                .child(match ws.why_not(Deed::Git("abort")) {
+                    // A Control share can't abort at home: dimmed, the rule's words its tooltip.
+                    Some(why) => button("git-abort", "Abort", ui, z)
+                        .opacity(0.5)
+                        .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+                        .test_support(),
+                    None => button("git-abort", "Abort", ui, z)
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.abort_operation(window, cx)
                         }))
                         .test_support(),
-                )
+                })
                 .when(conflicts == 0, |el| {
                     el.child(
                         button("git-continue", "Continue", ui, z)

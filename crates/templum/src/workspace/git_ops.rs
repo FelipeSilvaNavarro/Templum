@@ -16,15 +16,16 @@ use crate::git_block::{self, Found, Git};
 use crate::launcher;
 use crate::prompt;
 
+use super::git_home::{failure_words, found, parsed};
 use super::remote::Deed;
-use super::{Body, GitAt, Workspace, git_error_message, remember, show_notification};
+use super::{Body, GitAt, Workspace, remember, show_notification};
 
 impl Workspace {
     /// Ctrl+Shift+G and the sidebar's Git button: the Git popup opens on the workspace's Git,
     /// or closes. A workspace without one yet gets one on the folder it works in; with no folder
     /// known, the folder dialog asks.
     pub(crate) fn toggle_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.why_not(Deed::Git).is_some() {
+        if self.why_not(Deed::Git("look")).is_some() {
             return;
         }
         // Open in a workspace that has no Git yet (another one opened it): it opens here.
@@ -32,7 +33,18 @@ impl Workspace {
             self.close_git(window, cx);
             return;
         }
-        if self.space.git.is_none() {
+        if self.space.git.is_none() && self.on_remote() {
+            let Some(folder) = self.home_git_folder() else {
+                let computer = self.space.remote.as_deref().map(crate::mirror::computer_of);
+                let words = format!(
+                    "No folder to open Git in on {}.",
+                    computer.unwrap_or_default()
+                );
+                self.warn(words, window, cx);
+                return;
+            };
+            self.set_home_git_folder(folder, window, cx);
+        } else if self.space.git.is_none() {
             let Some(folder) = self.git_folder_guess() else {
                 self.choose_git_folder(window, cx);
                 return;
@@ -46,12 +58,14 @@ impl Workspace {
 
     /// Shows the popup on the workspace's Git, with the keyboard, read afresh.
     pub(crate) fn open_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.why_not(Deed::Git).is_some() {
+        if self.why_not(Deed::Git("look")).is_some() {
             return;
         }
-        let Some(git) = self.space.git() else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
+        // On a mirror the panel's diff is read on opening.
+        git.home_diff = None;
         self.git_open = true;
         self.inbox_open = false;
         self.agents_open = false;
@@ -117,6 +131,10 @@ impl Workspace {
     /// The folder dialog, to point the workspace's Git at another folder: from its folder menu,
     /// or when its folder is gone or isn't a repository.
     pub(crate) fn choose_git_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // This computer's folder dialog names this computer's folders: not a mirror's.
+        if let Some(why) = self.why_not(Deed::GitLeftOut) {
+            return self.warn(why, window, cx);
+        }
         let entity = cx.entity();
         launcher::ask_folder_for(
             self,
@@ -144,6 +162,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // A mirror's Git is found at home: this computer's folders are not its to look at.
+        if self.on_remote() {
+            return false;
+        }
         if !folder.is_dir() {
             let message = format!("{} isn't a folder", folder.display());
             eprintln!("templum: {message}");
@@ -204,9 +226,46 @@ impl Workspace {
     /// `look_up_git` for the block `at` names, in whichever workspace.
     pub(super) fn look_up_at(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
         let program = self.config.git.program().to_string();
-        let Some(folder) = self.git_at(&at).map(|g| g.folder.clone()) else {
+        let Some(git) = self.git_at(&at) else {
             return;
         };
+        if let Some(folder) = git.home.clone() {
+            let Some(args) = self.home_args(&at.space, &folder) else {
+                return;
+            };
+            // A rule that says no is told here: the popup waits on nothing, and Try again asks.
+            if let Some(why) = self.why_not_in(&at.space, Deed::Git("find")) {
+                if let Some(git) = self.git_at(&at) {
+                    git.found = Found::Refused(why);
+                    cx.notify();
+                }
+                return;
+            }
+            self.home_job(
+                at,
+                args,
+                ops::Op::Find,
+                false,
+                found,
+                |ws, at, found, window, cx| {
+                    let Some(git) = ws.git_at(&at) else {
+                        return;
+                    };
+                    git.found = match found {
+                        Ok(ops::Found {
+                            root: Some(root), ..
+                        }) => Found::Home(root),
+                        Ok(_) => Found::NotARepo,
+                        Err(e) => Found::Refused(e.first_line().to_string()),
+                    };
+                    ws.after_action(at, window, cx);
+                },
+                window,
+                cx,
+            );
+            return;
+        }
+        let folder = git.folder.clone();
         if !folder.is_dir() {
             return;
         }
@@ -236,6 +295,36 @@ impl Workspace {
         };
         let (program, folder) = (self.config.git.program().to_string(), git.folder.clone());
         let at = self.here();
+        if let Some(home) = git.home.clone() {
+            let Some(args) = self.home_args(&at.space, &home) else {
+                return;
+            };
+            self.home_job(
+                at,
+                args,
+                ops::Op::Init,
+                true,
+                found,
+                |ws, at, made, window, cx| match made {
+                    Ok(ops::Found {
+                        root: Some(root), ..
+                    }) => {
+                        if let Some(git) = ws.git_at(&at) {
+                            git.found = Found::Home(root);
+                        }
+                        ws.after_action(at, window, cx);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        let ws_entity = cx.entity();
+                        notify_git_error(&ws_entity, at, &e, Vec::new(), window, cx);
+                    }
+                },
+                window,
+                cx,
+            );
+            return;
+        }
         self.act_job(
             at,
             move || Repo::init(&program, &folder),
@@ -276,6 +365,7 @@ impl Workspace {
         GitAt {
             space: self.space.id.clone(),
             generation: self.space.git().map_or(0, |g| g.generation),
+            home: self.space.remote.as_deref().map(crate::mirror::computer_of),
         }
     }
 
@@ -359,16 +449,18 @@ impl Workspace {
         let Some(git) = self.git_at(&at) else {
             return;
         };
-        let Some(repo) = git.repo().cloned() else {
+        if !git.has_repo() {
             return;
-        };
+        }
         if git.busy {
             git.pending = true;
             return;
         }
-        self.git_job(
+        self.git_op(
             at,
-            move || ops::look(&repo),
+            ops::Op::Look,
+            ops::look,
+            parsed::<ops::Look>,
             |ws, at, read, window, cx| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
@@ -384,8 +476,9 @@ impl Workspace {
                     }
                     Err(e) => git.error = Some(e.to_string()),
                 }
-                // The panel follows the status (a file staged in a terminal, a file gone).
-                if at.space == ws.space.id {
+                // The panel follows the status (a file staged in a terminal, a file gone); on a
+                // mirror only when the status changed or a while passed.
+                if at.space == ws.space.id && ws.panel_due(&at) {
                     ws.reload_git_panel(window, cx);
                 }
             },
@@ -399,16 +492,22 @@ impl Workspace {
         if !self.git_open {
             return;
         }
+        // A mirror polls only while it is live and the rule lets it look.
+        if self.on_remote() && self.why_not(Deed::Git("look")).is_some() {
+            return;
+        }
         let Some(git) = self.space.git_mut() else {
             return;
         };
-        let gone = !git.folder.is_dir();
-        if gone != git.gone {
-            git.gone = gone;
-            cx.notify();
+        if git.home.is_none() {
+            let gone = !git.folder.is_dir();
+            if gone != git.gone {
+                git.gone = gone;
+                cx.notify();
+            }
         }
         // Still reading: skipped, so a slow repository never piles reads up.
-        if git.repo().is_some() && !git.busy {
+        if git.has_repo() && !git.busy {
             self.refresh_git(window, cx);
         }
     }
@@ -475,40 +574,53 @@ impl Workspace {
         cx.spawn_in(window, async move |ws, cx| {
             let result = cx.background_executor().spawn(async move { job() }).await;
             ws.update_in(cx, |ws, window, cx| {
-                if let Some(git) = ws.git_at(&at) {
-                    git.busy = false;
-                }
-                done(ws, at.clone(), result, window, cx);
-                let (again, lists) = ws.git_at(&at).map_or((false, false), |g| {
-                    (
-                        std::mem::take(&mut g.pending),
-                        std::mem::take(&mut g.pending_lists),
-                    )
-                });
-                if again {
-                    if lists {
-                        // Taken back: the status read's completion runs the lists.
-                        if let Some(g) = ws.git_at(&at) {
-                            g.pending_lists = true;
-                        }
-                    }
-                    ws.refresh_at(at.clone(), window, cx);
-                } else if lists {
-                    ws.refresh_lists_at(at.clone(), window, cx);
-                }
-                // Then what waited, unless the refresh above took the turn.
-                let next = ws
-                    .git_at(&at)
-                    .filter(|g| !g.busy && !g.queued.is_empty())
-                    .map(|g| g.queued.remove(0));
-                if let Some(next) = next {
-                    next(ws, window, cx);
-                }
-                cx.notify();
+                ws.job_done(at, result, done, window, cx)
             })
             .ok();
         })
         .detach();
+    }
+
+    /// A job ended with `result`: the block is free, `done` takes the result, then the refresh
+    /// or lists asked meanwhile, and the next job that waited.
+    pub(super) fn job_done<T>(
+        &mut self,
+        at: GitAt,
+        result: T,
+        done: impl FnOnce(&mut Workspace, GitAt, T, &mut Window, &mut Context<Workspace>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(git) = self.git_at(&at) {
+            git.busy = false;
+        }
+        done(self, at.clone(), result, window, cx);
+        let (again, lists) = self.git_at(&at).map_or((false, false), |g| {
+            (
+                std::mem::take(&mut g.pending),
+                std::mem::take(&mut g.pending_lists),
+            )
+        });
+        if again {
+            if lists {
+                // Taken back: the status read's completion runs the lists.
+                if let Some(g) = self.git_at(&at) {
+                    g.pending_lists = true;
+                }
+            }
+            self.refresh_at(at.clone(), window, cx);
+        } else if lists {
+            self.refresh_lists_at(at.clone(), window, cx);
+        }
+        // Then what waited, unless the refresh above took the turn.
+        let next = self
+            .git_at(&at)
+            .filter(|g| !g.busy && !g.queued.is_empty())
+            .map(|g| g.queued.remove(0));
+        if let Some(next) = next {
+            next(self, window, cx);
+        }
+        cx.notify();
     }
 }
 
@@ -529,7 +641,8 @@ pub(crate) fn notify_git_error(
     window: &mut Window,
     cx: &mut App,
 ) {
-    notify_git_failure(ws, at, err, git_error_message(err), extra, window, cx);
+    let words = failure_words(err, at.home.as_deref());
+    notify_git_failure(ws, at, err, words, extra, window, cx);
 }
 
 /// A failed git command said in `message`'s words (git's own stay under Details).
@@ -552,6 +665,8 @@ pub(crate) fn notify_git_failure(
             let (details, run) = (err.clone(), err.clone());
             let (ws_run, ws_details) = (ws.clone(), ws.clone());
             let (run_at, run_note) = (at.clone(), note.clone());
+            // A mirror's command is home's: it can't be typed into a terminal here.
+            let mirrored = at.home.is_some();
             let extras: Vec<AnyElement> = extra
                 .iter()
                 .map(|(id, label, act)| {
@@ -594,29 +709,37 @@ pub(crate) fn notify_git_failure(
                             )
                         }),
                 )
-                .child(
-                    Button::new("git-run")
-                        .label("Run in a terminal")
-                        .small()
-                        .on_click(move |_, window, cx| {
-                            let command = run.command.clone();
-                            ws_run.update(cx, |ws, cx| {
-                                if !ws.show_git(&run_at, window, cx) {
-                                    return;
-                                }
-                                // The repository's root, else the block's folder (a failed
-                                // clone or init has no repository).
-                                let folder = ws.space.git().map(|g| {
-                                    g.repo()
-                                        .map_or_else(|| g.folder.clone(), |r| r.root.clone())
+                .when(!mirrored, |el| {
+                    el.child(
+                        Button::new("git-run")
+                            .label("Run in a terminal")
+                            .small()
+                            .on_click(move |_, window, cx| {
+                                let command = run.command.clone();
+                                ws_run.update(cx, |ws, cx| {
+                                    if !ws.show_git(&run_at, window, cx) {
+                                        return;
+                                    }
+                                    // The repository's root, else the block's folder (a failed
+                                    // clone or init has no repository).
+                                    let folder = ws.space.git().map(|g| {
+                                        g.repo()
+                                            .map_or_else(|| g.folder.clone(), |r| r.root.clone())
+                                    });
+                                    if let Some(folder) = folder {
+                                        ws.terminal_beside(
+                                            None,
+                                            &folder,
+                                            Some(&command),
+                                            window,
+                                            cx,
+                                        );
+                                    }
                                 });
-                                if let Some(folder) = folder {
-                                    ws.terminal_beside(None, &folder, Some(&command), window, cx);
-                                }
-                            });
-                            run_note.update(cx, |n, cx| n.dismiss(window, cx));
-                        }),
-                )
+                                run_note.update(cx, |n, cx| n.dismiss(window, cx));
+                            }),
+                    )
+                })
                 .children(extras)
                 .into_any_element()
         });

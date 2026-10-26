@@ -3,7 +3,7 @@
 //! followed: one is "didn't answer as a Templum".
 
 use super::dial::{Place, Proxy, dial};
-use super::{Failure, Why};
+use super::{DETAILS_MOST, Failure, Why};
 use crate::code::Key;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
@@ -316,9 +316,16 @@ pub(crate) fn stream_request(
 }
 
 /// The words of Templum's error body `{"error":{"code","message"}}`, if that is what it is.
-fn templum_error(body: &[u8]) -> Option<(String, String)> {
+fn templum_error(body: &[u8]) -> Option<(String, String, Option<String>)> {
     let error = serde_json::from_slice::<Value>(body).ok()?;
     let error = error.get("error")?;
+    let details = error.get("details").and_then(Value::as_str).map(|details| {
+        let mut end = details.len().min(DETAILS_MOST);
+        while !details.is_char_boundary(end) {
+            end -= 1;
+        }
+        details[..end].to_string()
+    });
     Some((
         error.get("code")?.as_str()?.to_string(),
         error
@@ -326,6 +333,7 @@ fn templum_error(body: &[u8]) -> Option<(String, String)> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        details,
     ))
 }
 
@@ -366,7 +374,7 @@ pub(crate) fn failure(status: u16, headers: &HeaderMap, body: &[u8], path: &str)
         401 => Failure::Auth,
         429 => Failure::Busy(retry_after(headers)),
         503 => match ours {
-            Some((code, _)) if code == "busy" => Failure::Busy(retry_after(headers)),
+            Some((code, ..)) if code == "busy" => Failure::Busy(retry_after(headers)),
             _ => down(),
         },
         // 524 is Cloudflare's: a tunnel cut a call that took more than 100 s.
@@ -387,9 +395,9 @@ pub(crate) fn failure(status: u16, headers: &HeaderMap, body: &[u8], path: &str)
         403 if access => Failure::Stop(Why::Access),
         _ => match ours {
             Some(_) if status == 404 && path == "/v1/me" => Failure::Stop(Why::TooOld),
-            Some((_, message)) if status == 404 => Failure::Missing(message),
-            Some((_, message)) if status >= 500 => Failure::Down(message),
-            Some((_, message)) if status >= 400 => Failure::Refused(message),
+            Some((_, message, _)) if status == 404 => Failure::Missing(message),
+            Some((_, message, _)) if status >= 500 => Failure::Down(message),
+            Some((_, message, details)) if status >= 400 => Failure::Refused(message, details),
             _ => not_templum(status, headers),
         },
     }
@@ -411,6 +419,31 @@ mod tests {
     fn templum(code: &str, message: &str) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({"error": {"code": code, "message": message}}))
             .unwrap()
+    }
+
+    #[test]
+    fn a_refusal_keeps_home_s_details_cut_to_64_kib() {
+        let none = HeaderMap::new();
+        let body = |details: &str| {
+            serde_json::to_vec(&serde_json::json!({"error": {
+                "code": "refused", "message": "fatal: x", "details": details
+            }}))
+            .unwrap()
+        };
+        assert_eq!(
+            failure(422, &none, &body("hint: y\nfatal: x"), "/v1/tools/git"),
+            Failure::Refused("fatal: x".into(), Some("hint: y\nfatal: x".into()))
+        );
+        let Failure::Refused(_, Some(cut)) =
+            failure(422, &none, &body(&"é".repeat(70_000)), "/v1/tools/git")
+        else {
+            panic!("details kept");
+        };
+        assert!(
+            cut.len() <= DETAILS_MOST && cut.chars().all(|c| c == 'é'),
+            "{}",
+            cut.len()
+        );
     }
 
     #[test]
@@ -510,7 +543,7 @@ mod tests {
                 &templum("refused", "No."),
                 "/v1/tools/move_block"
             ),
-            Failure::Refused("No.".into())
+            Failure::Refused("No.".into(), None)
         );
         assert_eq!(
             failure(
@@ -523,7 +556,7 @@ mod tests {
         );
         assert_eq!(
             failure(403, &none, &templum("scope", "Needs Full."), "/v1/tools/x"),
-            Failure::Refused("Needs Full.".into())
+            Failure::Refused("Needs Full.".into(), None)
         );
         assert_eq!(
             failure(200, &none, b"", "/v1/me"),

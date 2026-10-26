@@ -28,6 +28,17 @@ fn mirrored(
     cx: &mut TestAppContext,
     dir: &std::path::Path,
 ) -> (String, Arc<mock::Store>) {
+    mirrored_as(handle, ws, cx, dir, Scope::Full)
+}
+
+/// `mirrored` on a share of `scope`.
+fn mirrored_as(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    dir: &std::path::Path,
+    scope: Scope,
+) -> (String, Arc<mock::Store>) {
     turn_on(ws, cx);
     let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
     let address = format!("http://127.0.0.1:{}", port(ws, cx));
@@ -37,7 +48,7 @@ fn mirrored(
                 ShareDraft {
                     workspace: first.clone(),
                     name: "Itself".into(),
-                    scope: Scope::Full,
+                    scope,
                     expires: None,
                     way: Way::Public,
                     address,
@@ -1033,5 +1044,173 @@ fn a_stroke_drawn_at_home_shows_on_the_mirror(cx: &mut TestAppContext) {
     ws.read_with(cx, |ws, _| {
         assert_eq!(ws.space.id, "r1");
         assert_eq!(ws.ink_at(Point::new(40.0, 20.0)), None, "it is not picked");
+    });
+}
+
+// Batch 2g: the Git popup on the mirror.
+
+/// A repository (a.txt changed to "two\n" after its commit) that the first workspace works in,
+/// mirrored as `r1` on a share of `scope`, its Git popup open on the mirror and read: the
+/// repository, and its root as home writes it.
+fn git_mirrored(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    dir: &std::path::Path,
+    scope: Scope,
+) -> (tempfile::TempDir, String) {
+    three_blocks(handle, ws, cx);
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    ws.update(cx, |ws, _| {
+        ws.space.folder = Some(repo.path().to_path_buf());
+    });
+    mirrored_as(handle, ws, cx, dir, scope);
+    let root = dunce::canonicalize(repo.path())
+        .unwrap()
+        .display()
+        .to_string();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.set_home_git_folder(root.clone(), window, cx);
+            ws.open_git(window, cx);
+        })
+    })
+    .unwrap();
+    pump_home(ws, cx, "the mirror's Git status", |cx| {
+        ws.read_with(cx, |ws, _| {
+            ws.space.id == "r1"
+                && ws
+                    .space
+                    .git()
+                    .is_some_and(|g| g.status.entries.iter().any(|e| e.path == "a.txt"))
+        })
+    });
+    (repo, root)
+}
+
+fn mirror_git<T>(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    read: impl FnOnce(&crate::git_block::Git) -> T,
+) -> T {
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.id, "r1");
+        read(ws.space.git().expect("the mirror's Git"))
+    })
+}
+
+#[gpui_kit::test]
+fn the_mirror_s_git_popup_shows_home_s_change_and_commits_it_at_home(cx: &mut TestAppContext) {
+    let (handle, ws, dir) = with_data(cx);
+    let (repo, _root) = git_mirrored(handle, &ws, cx, dir.path(), Scope::Full);
+    mirror_git(&ws, cx, |g| {
+        let crate::git_block::Found::Home(found) = &g.found else {
+            panic!("home's repository");
+        };
+        assert_eq!(
+            dunce::canonicalize(found).unwrap(),
+            dunce::canonicalize(repo.path()).unwrap()
+        );
+        assert!(g.repo().is_none());
+        assert_eq!(g.status.entries[0].path, "a.txt");
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.stage(vec!["a.txt".into()], window, cx))
+    })
+    .unwrap();
+    pump_home(&ws, cx, "a.txt staged at home", |cx| {
+        git_run(repo.path(), &["diff", "--cached", "--name-only"]) == "a.txt\n"
+            && mirror_git(&ws, cx, |g| g.status.staged().len() == 1)
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let summary = ws.space.git().unwrap().summary.clone();
+            summary.update(cx, |s, cx| s.set_value("From the mirror", window, cx));
+            ws.git_commit(false, window, cx)
+        })
+    })
+    .unwrap();
+    pump_home(&ws, cx, "the commit at home", |cx| {
+        git_run(repo.path(), &["log", "-1", "--format=%s"]).trim() == "From the mirror"
+            && mirror_git(&ws, cx, |g| g.status.entries.is_empty())
+    });
+    let empty = ws.read_with(cx, |ws, cx| {
+        ws.space.git().unwrap().summary.read(cx).value().is_empty()
+    });
+    assert!(empty, "the summary cleared");
+}
+
+#[gpui_kit::test]
+fn a_branch_made_on_the_mirror_is_home_s(cx: &mut TestAppContext) {
+    let (handle, ws, dir) = with_data(cx);
+    let (repo, _root) = git_mirrored(handle, &ws, cx, dir.path(), Scope::Full);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.create_branch("from-mirror".into(), None, window, cx)
+        })
+    })
+    .unwrap();
+    pump_home(&ws, cx, "the branch at home", |cx| {
+        git_run(repo.path(), &["branch", "--show-current"]).trim() == "from-mirror"
+            && mirror_git(&ws, cx, |g| {
+                g.status.branch.as_deref() == Some("from-mirror")
+            })
+    });
+}
+
+#[gpui_kit::test]
+fn on_a_control_share_discard_is_dimmed_and_send_to_lists_no_local_terminal(
+    cx: &mut TestAppContext,
+) {
+    use crate::workspace::remote::Deed;
+    let (handle, ws, dir) = with_data(cx);
+    let (repo, _root) = git_mirrored(handle, &ws, cx, dir.path(), Scope::Control);
+    ws.read_with(cx, |ws, _| {
+        let why = ws.why_not(Deed::Git("discard")).expect("refused");
+        assert!(
+            why.starts_with("Needs a Full share: share again on "),
+            "{why}"
+        );
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.discard(vec!["a.txt".into()], window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            ws.said
+                .last()
+                .unwrap()
+                .starts_with("Needs a Full share: share again on ")
+        );
+    });
+    cx.update_window(handle, |_, window, cx| {
+        use gpui_kit::component::WindowExt as _;
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
+    for _ in 0..5 {
+        pump_home(&ws, cx, "a round", |_| true);
+    }
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+        "two\n"
+    );
+    // Stage still works for Control.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.stage(vec!["a.txt".into()], window, cx))
+    })
+    .unwrap();
+    pump_home(&ws, cx, "a.txt staged at home", |_| {
+        git_run(repo.path(), &["diff", "--cached", "--name-only"]) == "a.txt\n"
+    });
+    ws.read_with(cx, |ws, _| {
+        let targets = ws.send_to_targets();
+        assert_eq!(targets, ws.remote_terminals());
+        assert!(!targets.is_empty());
+        for (id, _) in &targets {
+            assert!(ws.space.terminal(*id).unwrap().remote.is_some());
+        }
     });
 }

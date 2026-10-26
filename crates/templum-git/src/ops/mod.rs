@@ -22,6 +22,10 @@ pub use run::{ANSWER_MOST, fit, run};
 /// What a hunk's patch git refuses says: the file changed since it was read.
 pub const CHANGED: &str = "The file changed; try again";
 
+/// What a commit refused because the files to commit changed since the message was written.
+pub const CHANGED_MEANWHILE: &str =
+    "The files to commit changed since you last looked: write a message for them.";
+
 /// How many commits History loads at a time.
 pub const PAGE: usize = 200;
 

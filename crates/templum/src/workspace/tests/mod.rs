@@ -788,6 +788,7 @@ mod git_hunks;
 mod git_keys;
 mod git_layout;
 mod git_message;
+mod git_mirror;
 mod git_panel;
 mod git_split;
 mod git_status;

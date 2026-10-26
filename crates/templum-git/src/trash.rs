@@ -7,7 +7,7 @@ use std::fmt;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -261,7 +261,7 @@ impl Trash {
     /// Puts discard `id` back. Unless `force`, a file changed since the discard stops it,
     /// nothing written, and is named. Done, the discard leaves the trash.
     pub fn restore(&self, id: &str, force: bool) -> io::Result<Restored> {
-        let entry = self.dir.join(id);
+        let entry = self.entry(id)?;
         let kept = read_manifest(&entry, id.to_string()).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -325,7 +325,20 @@ impl Trash {
     }
 
     pub fn remove(&self, id: &str) -> io::Result<()> {
-        fs::remove_dir_all(self.dir.join(id))
+        fs::remove_dir_all(self.entry(id)?)
+    }
+
+    /// The folder of discard `id`: an id is one name in the trash, as `list` gives them. One that
+    /// is a path (`../x`, `a/b`, an absolute one) names nothing here, wherever it came from.
+    fn entry(&self, id: &str) -> io::Result<PathBuf> {
+        let mut parts = Path::new(id).components();
+        match (parts.next(), parts.next()) {
+            (Some(Component::Normal(name)), None) if name == id => Ok(self.dir.join(id)),
+            _ => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "this discard is no longer in the trash",
+            )),
+        }
     }
 
     /// Deletes the discards older than MAX_AGE and those past the newest KEEP of their
@@ -580,6 +593,30 @@ mod tests {
         assert!(fits(MAX_FILES, MAX_BYTES));
         assert!(!fits(MAX_FILES + 1, 0));
         assert!(!fits(1, MAX_BYTES + 1));
+    }
+
+    #[test]
+    fn an_id_that_is_a_path_names_no_discard() {
+        let (root, data, trash) = setup();
+        let other = Trash::new(data.path().join("other"));
+        let kept = discarded(root.path(), &other);
+        std::fs::write(root.path().join("a.txt"), "changed\n").unwrap();
+        // Another trash beside this one holds a real entry: a path to it is not an id of this.
+        for id in [
+            format!("../other/{}", kept.id),
+            other.dir.join(&kept.id).display().to_string(),
+            ".".to_string(),
+            "..".to_string(),
+        ] {
+            assert!(trash.restore(&id, true).is_err(), "{id}");
+            assert!(trash.remove(&id).is_err(), "{id}");
+        }
+        assert_eq!(other.list().len(), 1, "nothing was removed");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("a.txt")).unwrap(),
+            "changed\n",
+            "nothing was written"
+        );
     }
 
     #[test]

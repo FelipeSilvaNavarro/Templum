@@ -186,8 +186,9 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   themes, settings panel), `files.rs` and `file_tree.rs` (editor blocks), `git_ops.rs`, `git_changes.rs`,
   `git_branches.rs`, `git_history.rs`, `git_discard.rs` (discards through the trash), `git_keys.rs` (the
   Git's keys), `git_switch.rs` (switching branches without losing work), `git_sync.rs` (Sync, Publish, Clone),
-  `git_compare.rs` (a branch against the default one), `git_conflicts.rs` (conflicts region by region) and
-  `git_message.rs` (commit messages from an agent) (the workspace's Git popup), `usage.rs` (the agents' usage read after each
+  `git_compare.rs` (a branch against the default one), `git_conflicts.rs` (conflicts region by region),
+  `git_message.rs` (commit messages from an agent) and `git_home.rs` (a mirrored workspace's Git through home's `git`
+  tool: `git_op`/`act_op` run a popup job here or at home) (the workspace's Git popup), `usage.rs` (the agents' usage read after each
   snapshot, the limits' notifications, what the Claude Code and Codex Templum opens are given), `bus.rs` (the bus's
   messages: the caller found by its `TEMPLUM_TERMINAL`, the tools, the agents' hook events), `waits.rs` (tool calls
   that wait: a question, a request to connect, an agent's turn; their deadlines, cancels and the inbox's answers),

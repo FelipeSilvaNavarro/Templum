@@ -370,9 +370,7 @@ fn settled(mirror: &Mirror) {
 }
 
 fn refusal(sentence: &str) -> Refusal {
-    Refusal {
-        sentence: sentence.into(),
-    }
+    Refusal::of(sentence)
 }
 
 /// A mirror live on a share of w3 on `fake`, as `r1`.

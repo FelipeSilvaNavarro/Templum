@@ -71,8 +71,8 @@ pub(crate) enum Failure {
     Auth,
     /// Templum's own `404`, with its words.
     Missing(String),
-    /// Templum's own `403` or `422`, with its words.
-    Refused(String),
+    /// Templum's own `403` or `422`, with its words and, when it has them, its details.
+    Refused(String, Option<String>),
     /// Stop for good.
     Stop(Why),
     /// More than the client keeps in memory.
@@ -188,15 +188,21 @@ pub struct Call {
 }
 
 /// Home's words for why it did not do a call, or the mirror's for why it could not ask.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Refusal {
     pub sentence: String,
+    /// What home says besides (git's whole stderr for a failed `git` operation).
+    pub details: Option<String>,
 }
 
+/// The most of a refusal's details the client keeps: home's own cap, again where it enters.
+pub const DETAILS_MOST: usize = 65_536;
+
 impl Refusal {
-    pub(crate) fn of(sentence: impl Into<String>) -> Refusal {
+    pub fn of(sentence: impl Into<String>) -> Refusal {
         Refusal {
             sentence: sentence.into(),
+            details: None,
         }
     }
 }
@@ -869,7 +875,7 @@ mod tests {
             Failure::Busy(Duration::from_secs(3)),
             Failure::Auth,
             Failure::Missing("No such block.".into()),
-            Failure::Refused("No.".into()),
+            Failure::Refused("No.".into(), None),
             Failure::Stop(Why::Access),
             Failure::TooLarge,
         ];

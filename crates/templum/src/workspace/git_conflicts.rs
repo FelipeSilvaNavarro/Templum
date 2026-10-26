@@ -5,11 +5,12 @@
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
 use templum_git::conflict::Take;
-use templum_git::ops::{self, Failure};
+use templum_git::ops::{self, Failure, Op};
 
 use crate::prompt;
 
 use super::git_discard::REFUSED;
+use super::git_home::parsed;
 use super::{Workspace, notify_git_error, show_notification};
 
 /// A refusal said: "The file changed; try again", why the copy failed, or git's error.
@@ -45,13 +46,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
-            return;
-        };
         let keep = self.trash.clone();
-        self.act_job(
+        let op = Op::ResolveRegion {
+            path: path.clone(),
+            region,
+            take,
+            shown: shown.clone(),
+        };
+        self.act_op(
             self.here(),
-            move || ops::resolve_region(&repo, keep.as_ref(), &path, region, take, &shown),
+            op,
+            move |repo| ops::resolve_region(repo, keep.as_ref(), &path, region, take, &shown),
+            |heard| parsed::<()>(heard).map_err(Failure::Git),
             |ws, at, done, window, cx| {
                 if let Err(refused) = done {
                     tell(at.clone(), refused, window, cx);
@@ -72,13 +78,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
-            return;
-        };
         let keep = self.trash.clone();
-        self.act_job(
+        let op = Op::Resolve {
+            path: path.clone(),
+            side,
+        };
+        self.act_op(
             self.here(),
-            move || ops::resolve_file(&repo, keep.as_ref(), &path, side),
+            op,
+            move |repo| ops::resolve_file(repo, keep.as_ref(), &path, side),
+            |heard| parsed::<()>(heard).map_err(Failure::Git),
             |ws, at, done, window, cx| {
                 if let Err(refused) = done {
                     tell(at.clone(), refused, window, cx);

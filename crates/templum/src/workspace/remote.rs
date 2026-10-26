@@ -56,8 +56,8 @@ const ASKS_CHARS: usize = 200;
 const MOST_REQUESTS: usize = 50;
 const MOST_QUESTIONS: usize = 10;
 const MOST_OPTIONS: usize = 30;
-const LINE_CHARS: usize = 300;
-const TEXT_CHARS: usize = 4000;
+pub(super) const LINE_CHARS: usize = 300;
+pub(super) const TEXT_CHARS: usize = 4000;
 const PLAN_CHARS: usize = 64 * 1024;
 
 /// The most notifications of one remote's requests in [`NOTICE_SPAN`]: the rest of a burst is one
@@ -84,6 +84,18 @@ pub(super) fn clean_text(text: &str, most: usize) -> String {
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
         .take(most)
         .collect()
+}
+
+/// Home's `refusal` as it is drawn: the sentence on one short line, the details (git's stderr)
+/// with their newlines and tabs, at most [`client::DETAILS_MOST`] characters; blank details are none.
+pub(super) fn clean_refusal(refusal: client::Refusal) -> client::Refusal {
+    client::Refusal {
+        sentence: super::bus::clean_to(&refusal.sentence, 200),
+        details: refusal
+            .details
+            .map(|d| clean_text(&d, client::DETAILS_MOST))
+            .filter(|d| !d.trim().is_empty()),
+    }
 }
 
 /// What the person is asked by home's `request`, cleaned and capped; None when it asks nothing.
@@ -519,7 +531,7 @@ impl RemoteSpace {
     }
 
     /// Home's workspace this one mirrors: as its state names it, else the entry's.
-    fn home_workspace(&self) -> Option<String> {
+    pub(crate) fn home_workspace(&self) -> Option<String> {
         (self.home.as_ref().map(|h| h.id.clone())).or_else(|| self.entry.home.clone())
     }
 
@@ -759,7 +771,10 @@ pub(crate) enum Deed {
     Grid,
     MoveToWorkspace,
     CopyBlocks,
-    Git,
+    /// An operation of home's `git` by its name (`templum_git::ops::Op::name`).
+    Git(&'static str),
+    /// What the Git popup leaves on home for now: Clone, Choose another folder, Generate's ⚙.
+    GitLeftOut,
     /// A card dragged to a column or another place in it.
     MoveCard,
     /// A new card made (Done on a card that doesn't exist yet).
@@ -835,6 +850,7 @@ impl Deed {
             Deed::EditColumn => ("edit_column", json!({ "board": "1" })),
             Deed::EditBoard => ("edit_board", json!({ "board": "1", "name": "n" })),
             Deed::ShowBoard => ("show_board", json!({ "block": "k", "board": "1" })),
+            Deed::Git(op) if templum_git::ops::OPS.contains(&op) => ("git", json!({ "op": op })),
             _ => return None,
         })
     }
@@ -894,7 +910,7 @@ pub(super) fn command_deed(command: crate::keys::Command) -> Option<Deed> {
         Command::NewKanban => Deed::AddKanban,
         Command::NewNote => Deed::AddNote,
         Command::NewEditor | Command::OpenFile => Deed::AddEditor,
-        Command::NewGit => Deed::Git,
+        Command::NewGit => Deed::Git("look"),
         Command::ToggleGrid => Deed::Grid,
         _ => return None,
     })
@@ -1185,8 +1201,21 @@ fn session_of(agent: &AgentView) -> Option<templum_usage::Session> {
 /// The banner's ⓘ: what a mirror doesn't have yet.
 pub(crate) const NOT_MIRRORED: &str = "Not mirrored yet: editors' content (a card shows each). \
      Not on a mirrored workspace yet: editors, editing notes, renaming a checklist and moving its \
-     items, drawing, grid mode, Move to workspace, Copy and Paste of blocks, Stop, the Git popup, \
-     a card's attachments.";
+     items, drawing, grid mode, Move to workspace, Copy and Paste of blocks, Stop, a card's \
+     attachments, and in the Git popup Clone, Choose another folder, Generate's ⚙, Open in editor \
+     and Run in a terminal.";
+
+/// What the Git popup's menus ask of the rule when they are built: what needs a Full share, and
+/// what the popup leaves on home for now.
+pub(crate) const GIT_GATES: [Deed; 7] = [
+    Deed::Git("discard"),
+    Deed::Git("discard_hunk"),
+    Deed::Git("restore_version"),
+    Deed::Git("delete_branch"),
+    Deed::Git("stash_drop"),
+    Deed::Git("abort"),
+    Deed::GitLeftOut,
+];
 
 /// The tooltip of a control a mirrored workspace doesn't have yet.
 pub(crate) const NOT_YET: &str = "Not on a mirrored workspace yet";
@@ -3025,9 +3054,7 @@ impl Workspace {
             return self.calls.push((space.into(), call, then));
             #[cfg(not(test))]
             return self.answered_later(
-                std::future::ready(Err(client::Refusal {
-                    sentence: "Not connected.".into(),
-                })),
+                std::future::ready(Err(client::Refusal::of("Not connected."))),
                 then,
                 cx,
             );
@@ -3045,9 +3072,7 @@ impl Workspace {
         let window = self.window_handle;
         cx.spawn(async move |ws, cx| {
             let mut answered = answer.await;
-            if let Err(refusal) = &mut answered {
-                refusal.sentence = super::bus::clean_to(&refusal.sentence, 200);
-            }
+            answered = answered.map_err(clean_refusal);
             cx.update_window(window, |_, window, cx| {
                 ws.update(cx, |ws, cx| then(ws, answered, window, cx)).ok();
             })
@@ -3060,6 +3085,17 @@ impl Workspace {
     /// home adds it (`add_block`), where it places it itself when its Templum can't place one. Nothing
     /// is added here; the block comes with home's state, and takes the keyboard (`awaiting`).
     pub(super) fn remote_add(&mut self, kind: Kind, at: Point, cx: &mut Context<Self>) {
+        self.remote_add_in(kind, at, None, cx);
+    }
+
+    /// `remote_add` in `folder` at home (a terminal's or an editor's), the workspace's when None.
+    pub(crate) fn remote_add_in(
+        &mut self,
+        kind: Kind,
+        at: Point,
+        folder: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let (deed, name) = match kind {
             Kind::Terminal => (Deed::AddTerminal, "terminal"),
             Kind::Kanban => (Deed::AddKanban, "kanban"),
@@ -3082,6 +3118,9 @@ impl Workspace {
         }
         if kind == Kind::Checklist {
             args["text"] = crate::checklists::NAME.into();
+        }
+        if let Some(folder) = folder {
+            args["folder"] = folder.into();
         }
         let (space, before) = (self.space.id.clone(), self.space.focused);
         self.mark_remote();
@@ -3772,6 +3811,21 @@ mod tests {
         for word in [yes, no] {
             assert!(word.chars().count() <= 24 && !word.chars().any(char::is_control));
         }
+    }
+
+    #[test]
+    fn a_refusal_is_cleaned_where_it_enters() {
+        let cleaned = clean_refusal(client::Refusal {
+            sentence: "a\u{1b}[31mb\nc".into(),
+            details: Some("x\u{1b}y\n\tz".into()),
+        });
+        assert!(!cleaned.sentence.contains(['\u{1b}', '\n']), "{cleaned:?}");
+        assert_eq!(cleaned.details.as_deref(), Some("xy\n\tz"));
+        let blank = clean_refusal(client::Refusal {
+            sentence: "x".into(),
+            details: Some("\u{1b}".into()),
+        });
+        assert_eq!(blank.details, None);
     }
 
     #[test]

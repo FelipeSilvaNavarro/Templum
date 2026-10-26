@@ -3,9 +3,10 @@
 - **Date:** 2026-10-25
 - **Status:** Batch 1 implemented (kanban card 171, part 2; plans 2026-10-25-t2t-batch-1a…1d: home's side; the
   mirror's client; the remote workspace on the canvas; acting from the mirror, Edit…, the end-to-end test and
-  `--bench-mirror`). Batch 2: parts 2a–2f built (plans 2026-10-25-t2t-batch-2a-footing,
+  `--bench-mirror`). Batch 2: parts 2a–2g built (plans 2026-10-25-t2t-batch-2a-footing,
   2026-10-25-t2t-batch-2b-canvas, 2026-10-25-t2t-batch-2c-terminals, 2026-10-25-t2t-batch-2d-boards,
-  2026-10-25-t2t-batch-2e-checklists-notes-ink and 2026-10-25-t2t-batch-2f-git-home); parts 2g–2h designed, not built
+  2026-10-25-t2t-batch-2e-checklists-notes-ink, 2026-10-25-t2t-batch-2f-git-home and
+  2026-10-25-t2t-batch-2g-git-mirror); part 2h designed, not built
   ([Batch 2](#batch-2-the-whole-workspace-live)). Later batches (see [Later batches](#later-batches)) are sketched.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
@@ -2077,3 +2078,86 @@ refusals are `400`, state refusals `422`, confinement `403`). What the builder c
     conflicted files it reads; a file past it is listed as a conflict with `unread` set, regions not read.
 - **Not done, in `minors.md`:** two calls sent back to back on one repository may run in either order (each finds its
   repository first); a planted `.git` file naming a network share is read by git before the root can be checked.
+
+### Batch 2g (the Git popup on the mirror)
+
+Plan: [2026-10-25-t2t-batch-2g-git-mirror.md](../plans/2026-10-25-t2t-batch-2g-git-mirror.md). Its "Open for the
+orchestrator" items were settled as it recommended (the seam passes the `Op` and today's closure; a mirror's Git holds
+no `Repo` and an empty `folder`; the panel's diff is read when the status changes, after 10 s or when asked; a running
+Fetch, Pull, Push, Sync or Generate can't be stopped from the mirror; home's `details` travel in the client's
+`Refusal`; a failed command keeps Details and drops Run in a terminal; Full-only acts are refused at their entry; the
+folder menu lists folders, not repositories; `measure` has no "has a trash"; Generate never needs this computer's
+agent and goes straight to `remote_call`; Recently discarded… is always offered; the popup opens on home's folder as
+`home_folders` cleans it; a read the rule refuses sets the error line, an act warns). What the builder chose or
+changed:
+
+- **The client:** `Refusal` gains `details: Option<String>` (`Default`, `Refusal::of` is `pub`, `DETAILS_MOST` =
+  64 KiB, cut at a character's boundary where `http::templum_error` reads it); `Failure::Refused` carries it;
+  `clean_refusal` (glue) cleans the sentence to one line and the details to newlines and tabs, blank ones to None.
+- **The seam** (`workspace/git_home.rs`): `git_op` / `act_op(at, op, here, home, done)` are `git_job` / `act_job` on
+  this computer, exactly; at home `home_job` keeps the popup's queue and busy rules, asks the rule
+  (`Deed::Git(op.name())`: an act warns, a read sets `git.error`; nothing is sent, `acting` untouched) and calls
+  `git` through `remote_call` (`slow` for fetch, pull, push, push_branch, publish, sync and message). `heard` turns
+  a refusal into a `GitError` whose stderr is home's details (else its sentence), `parsed::<X>` the answer into the
+  job's result; `job_done` is `git_job`'s completion, moved out unchanged.
+- **A mirror's Git** has `home: Option<String>` (the folder at home) and `Found::{Home(root), Refused(why)}`; its
+  `folder` is empty and it never holds a `Repo`, so `poll_git`, `look_up_at` and the rest never stat or run anything
+  here. Status every 2 s while shown and live; the diff after a status read only when the status differs from the one
+  it was read with or `HOME_DIFF_AGAIN` (10 s) passed, and on opening, Refresh, whitespace and whole-file toggles.
+  Nothing is written: `Space::git` of a remote is never saved (a test walks the data folder).
+- **The rule:** the Full-only acts (`discard`, `discard_hunk`, `restore_version`, `delete_branch`, `stash_drop`,
+  `abort`) are refused at their entry, before any question or measure; their buttons and menu items are dimmed with
+  the rule's words (`GIT_GATES`). Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal
+  are `Deed::GitLeftOut` (`Not on a mirrored workspace yet`) and left out or dimmed.
+- **Details** keeps git's whole stderr (a failed command's notification has Details, no Run in a terminal; a login
+  failure says "git on {computer} asks for a login: run it in a terminal there."). A `FileDiff` with `cut` draws
+  "Too large to show from {computer}.".
+- **Generate** runs at home with home's agent (`message`, slow lane, not through the Git's queue): the fields,
+  "Left out"/"Kept your message" words and the failure's title use the computer's name.
+- **Departures from the plan** (the code as built is the truth):
+  - `Workspace::runs` is `git_runs`: `runs` is taken (`content.rs`). `home_send` takes no `window`.
+  - The spinning Sync on a mirror reads "Running" (not "Cancel"): it has no click and its tooltip says it can't be
+    stopped from here; `git.cancel` is None there (no flag is made).
+  - `set_git_folder` returns false on a mirror (a guard), besides the Git never being reached by it.
+  - `open_git` sets `home_diff = None` for any Git (only a mirror reads it).
+  - Restore this version…'s question says the file goes to Recently discarded on a mirror (home keeps the copy).
+  - Tests that draw frames set the mirror live again (`go_live`): a frame lets the mirror's real connection to nowhere
+    fail and change its status.
+- **Review round 1 (what changed after it):**
+  - **Restore acts on the Git it was asked on.** `restore_discarded(at, entry, force)` takes the `GitAt`:
+    Recently discarded… carries it from `show_discarded` into its Restore buttons, the "changed since" question and the
+    Undo buttons carry it, and the function opens with `show_git(&at)` (as every notification button does), so a
+    click or an answer after another workspace was shown acts on the workspace the entry came from. On a mirror
+    (`at.home` set) the restore is home's or nothing: this computer's trash is never reached, whatever state the
+    mirror's Git is in. `Trash::restore` and `remove` (the root fix) take an id only if it is one name inside the
+    trash (`../x`, `a/b` and absolute paths name nothing).
+  - **Home's strings that are sent back are not cleaned (see Review round 2).** `Found.root` is every later call's
+    `folder`, so `git_home::found` refuses a root that `clean_to(_, LINE_CHARS)` would change ("The repository's
+    folder at home has a name this computer can't show.") instead of altering it. A restore's "changed" paths are one
+    line each and at most 1,000 (`MOST_CHANGED`); Generate's summary is one line (`LINE_CHARS`) and its description at
+    most `TEXT_CHARS`. A serde error (it quotes the value it met) is cut to 200 characters in "The answer couldn't be
+    read".
+  - **A measure home refuses asks nothing:** `ask_discard`'s job returns a `Result`; an `Err` is told as any failed
+    command (`notify_git_error`) and no question is asked.
+  - **A Find the rule refuses sets `Found::Refused(why)`** (Try again asks again), instead of leaving "Looking for the
+    repository…" for good. `set_home_git_folder` does nothing unless a mirror is shown, and its menu items are
+    `still_shown(space)` checked (`Items::HomeGitFolders::space`).
+  - **Home's answer is read in the background:** `home_send`'s `Then` hands `home(heard)` (the `serde_json` parse
+    and the cleaning, up to 8 MiB) to the background executor before `job_done`, as a local job's result is made
+    (`home_job`/`home_send` need `T: Send`). Tests that answer a call read it with `answer_with`/`reply`
+    (`run_until_parked`); a mirror's real connection is let to fail once in `on_mirror_with`, before the test starts.
+  - **Hooks go on the slow lane:** besides the network and Generate, `commit`, `switch`, `new_branch`, `checkout`,
+    `merge`, `revert`, `stash_apply`, `stash_pop` and `continue` (pre-commit, commit-msg, post-checkout, post-merge).
+- **Review round 2 (what changed after it):**
+  - **Home's answers are read as home gave them.** Round 1 cleaned every string of every answer (`clean_answer`: no
+    control characters, at most 10,000 characters). That was a regression: the strings the panel sends back to home
+    (a hunk's lines in `hunk_patch`, a file's path in Stage, Unstage, Discard, Resolve, Ignore and Restore this
+    version) were no longer home's, so Stage and Discard of a hunk wrote the cleaned lines at home (`git apply` finds
+    the cleaned text at another offset, and `patch_file` only checks the patch against its own re-parse), and a path
+    with a stripped character named a sibling file. `parsed` now only reads the JSON into the job's type; the local
+    panel already draws the same raw git text from a local repository, and the answer's size is bounded by the 8 MiB
+    cap. What is still cut or cleaned is what is not sent back: `found`'s root (refused if changed), `shown()`, `Kept.what`,
+    Generate's summary and description, and the error text of a serde failure.
+  - **Tests:** a hunk with an escape sequence and a 10,001-character line is staged from a mirror and the call's
+    `patch` is `hunk_patch` of the raw diff; a path with a control character is sent back as home gave it; a folder
+    picked from a menu left open on another workspace changes nothing and says so.

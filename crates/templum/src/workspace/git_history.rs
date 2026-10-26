@@ -6,13 +6,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
+use templum_git::blame::BlameLine;
 use templum_git::graph::graph;
-use templum_git::ops::{self, Failure};
-use templum_git::{HistoryQuery, Search};
+use templum_git::ops::{self, Failure, Op};
+use templum_git::trash::Kept;
+use templum_git::{FileDiff, HistoryQuery, Search, Stash};
 
 use crate::git_block::{self, Git, Tab, diff_view::Source};
 use crate::prompt;
 
+use super::git_home::parsed;
+use super::remote::Deed;
 use super::{Extra, GitAt, Workspace, notify_with, show_notification};
 
 /// What History lists now: its branches and its search.
@@ -25,12 +29,11 @@ fn history_query(git: &Git) -> HistoryQuery {
 
 impl Workspace {
     pub(crate) fn load_stashes(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(repo) = self.git_at(&at).and_then(|g| g.repo().cloned()) else {
-            return;
-        };
-        self.git_job(
+        self.git_op(
             at,
-            move || repo.stashes(),
+            Op::Stashes,
+            |repo| repo.stashes(),
+            parsed::<Vec<Stash>>,
             |ws, at, stashes, _, _| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
@@ -57,6 +60,7 @@ impl Workspace {
     /// Stash changes…: a message and whether untracked files go too.
     pub(crate) fn stash_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ws = cx.entity();
+        let asked = self.asked_on();
         prompt::ask_text_and_flag(
             "Stash changes",
             "Stash",
@@ -68,7 +72,19 @@ impl Workspace {
                     return false;
                 }
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(move |repo| repo.stash_push(&message, untracked), window, cx)
+                    if !ws.answered_on(&asked, window, cx) {
+                        return;
+                    }
+                    let op = Op::Stash {
+                        message: message.clone(),
+                        untracked,
+                    };
+                    ws.git_action(
+                        op,
+                        move |repo| repo.stash_push(&message, untracked),
+                        window,
+                        cx,
+                    )
                 });
                 true
             },
@@ -99,7 +115,17 @@ impl Workspace {
         let Some(stash) = self.shown_stash(index) else {
             return;
         };
+        let by = ops::StashRef {
+            index: stash.index,
+            hash: stash.hash.clone(),
+        };
+        let op = if pop {
+            Op::StashPop { stash: by }
+        } else {
+            Op::StashApply { stash: by }
+        };
         self.git_action(
+            op,
             move |repo| {
                 if pop {
                     repo.stash_pop(&stash)
@@ -113,10 +139,15 @@ impl Workspace {
     }
 
     pub(crate) fn stash_drop(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // Full on a mirror: refused here, before any question.
+        if let Some(why) = self.why_not(Deed::Git("stash_drop")) {
+            return self.warn(why, window, cx);
+        }
         let Some(stash) = self.shown_stash(index) else {
             return;
         };
         let ws = cx.entity();
+        let asked = self.asked_on();
         prompt::confirm(
             format!("Drop “{}”?", stash.message),
             "Its changes are lost. This can't be undone.",
@@ -124,7 +155,16 @@ impl Workspace {
             move |window, cx| {
                 let stash = stash.clone();
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(move |repo| repo.stash_drop(&stash), window, cx)
+                    if !ws.answered_on(&asked, window, cx) {
+                        return;
+                    }
+                    let op = Op::StashDrop {
+                        stash: ops::StashRef {
+                            index: stash.index,
+                            hash: stash.hash.clone(),
+                        },
+                    };
+                    ws.git_action(op, move |repo| repo.stash_drop(&stash), window, cx)
                 })
             },
             window,
@@ -142,13 +182,19 @@ impl Workspace {
         };
         git.stash_shown = Some(index);
         let ignore_ws = git.stash_panel.ignore_ws;
-        let Some(repo) = git.repo().cloned() else {
-            return;
-        };
         let title = format!("stash@{{{}}} · {}", stash.index, stash.message);
-        self.git_job(
+        let op = Op::StashDiff {
+            stash: ops::StashRef {
+                index: stash.index,
+                hash: stash.hash.clone(),
+            },
+            ignore_whitespace: ignore_ws,
+        };
+        self.git_op(
             self.here(),
-            move || repo.stash_diff(&stash, ignore_ws),
+            op,
+            move |repo| repo.stash_diff(&stash, ignore_ws),
+            parsed::<Vec<FileDiff>>,
             move |ws, at, diff, _, cx| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
@@ -210,15 +256,23 @@ impl Workspace {
         let Some(git) = self.git_at(&at) else {
             return;
         };
-        let Some(repo) = git.repo().cloned() else {
-            return;
-        };
         let q = history_query(git);
         let file = git.file.clone();
         let asked = (q.clone(), file.clone());
-        self.git_job(
+        let op = Op::History {
+            all: q.all,
+            search: q
+                .search
+                .clone()
+                .map(|(by, text)| ops::SearchArg { by, text }),
+            path: file.clone(),
+            skip,
+        };
+        self.git_op(
             at,
-            move || ops::history(&repo, &q, file.as_deref(), skip),
+            op,
+            move |repo| ops::history(repo, &q, file.as_deref(), skip),
+            parsed::<ops::Page>,
             move |ws, at, read, _, _| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
@@ -319,6 +373,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Full on a mirror: refused here, before any question.
+        if let Some(why) = self.why_not(Deed::Git("restore_version")) {
+            return self.warn(why, window, cx);
+        }
         let Some(git) = self.space.git() else {
             return;
         };
@@ -331,7 +389,8 @@ impl Workspace {
         ) else {
             return;
         };
-        let why = if self.trash.is_some() {
+        // A mirror's copy is kept by home, which has a trash unless it is told otherwise.
+        let why = if self.trash.is_some() || self.on_remote() {
             "The file as it is now goes to Recently discarded."
         } else {
             "The file as it is now is replaced. This can't be undone."
@@ -371,21 +430,25 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.git_at(&at).and_then(|g| g.repo().cloned()) else {
-            return;
-        };
         let trash = self.trash.clone();
         let done = format!("Restored {now} from {short}");
         let what = done.clone();
         let job_now = now.clone();
-        self.act_job(
+        let op = Op::RestoreVersion {
+            hash: hash.clone(),
+            then: then.clone(),
+            path: now.clone(),
+        };
+        self.act_op(
             at,
-            move || ops::restore_version(&repo, trash.as_ref(), &hash, &then, &job_now, &what),
+            op,
+            move |repo| ops::restore_version(repo, trash.as_ref(), &hash, &then, &job_now, &what),
+            |heard| parsed::<Option<Kept>>(heard).map_err(Failure::Git),
             move |ws, at, result, window, cx| {
                 let entity = cx.entity();
                 match result {
                     Ok(Some(kept)) => {
-                        let entry = kept.id;
+                        let (entry, undo_at) = (kept.id, at.clone());
                         let undo: Extra = (
                             "git-undo",
                             "Undo".into(),
@@ -393,7 +456,13 @@ impl Workspace {
                                 move |ws: &mut Workspace,
                                       window: &mut Window,
                                       cx: &mut Context<Workspace>| {
-                                    ws.restore_discarded(entry.clone(), false, window, cx)
+                                    ws.restore_discarded(
+                                        undo_at.clone(),
+                                        entry.clone(),
+                                        false,
+                                        window,
+                                        cx,
+                                    )
                                 },
                             ),
                         );
@@ -536,18 +605,25 @@ impl Workspace {
         let Some(git) = self.space.git() else {
             return;
         };
-        let Some(repo) = git.repo().cloned() else {
+        if !git.has_repo() {
             return;
-        };
+        }
         let loaded = git.commits.iter().find(|c| c.hash == hash).cloned();
         let ignore_ws = git.history_panel.ignore_ws;
         let asked = hash.clone();
         if let Some(git) = self.space.git_mut() {
             git.showing = Some(hash.clone());
         }
-        self.git_job(
+        // At home the commit is read there: `loaded` is for this computer's read only.
+        let op = Op::Show {
+            hash: hash.clone(),
+            ignore_whitespace: ignore_ws,
+        };
+        self.git_op(
             self.here(),
-            move || ops::show(&repo, &hash, loaded, ignore_ws),
+            op,
+            move |repo| ops::show(repo, &hash, loaded, ignore_ws),
+            parsed::<ops::CommitShown>,
             move |ws, at, read, _, cx| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
@@ -666,15 +742,20 @@ impl Workspace {
         let Some(git) = self.git_at(&at) else {
             return;
         };
-        let (Some(repo), Some(path), true) = (git.repo().cloned(), git.file.clone(), git.blame)
-        else {
+        let (true, Some(path), true) = (git.has_repo(), git.file.clone(), git.blame) else {
             return;
         };
         let rev = git.blame_at.clone();
         let asked = (path.clone(), rev.clone());
-        self.git_job(
+        let op = Op::Blame {
+            path: path.clone(),
+            hash: rev.clone(),
+        };
+        self.git_op(
             at,
-            move || repo.blame(&path, rev.as_deref()),
+            op,
+            move |repo| repo.blame(&path, rev.as_deref()),
+            parsed::<Vec<BlameLine>>,
             move |ws, at, lines, _, cx| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
@@ -736,6 +817,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let ws = cx.entity();
+        let asked = self.asked_on();
         prompt::confirm(
             format!("Check out {}?", &hash[..hash.len().min(7)]),
             "HEAD will be detached: commits made here belong to no branch until one is made from them.",
@@ -743,7 +825,11 @@ impl Workspace {
             move |window, cx| {
                 let hash = hash.clone();
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(move |repo| repo.checkout_commit(&hash), window, cx)
+                    if !ws.answered_on(&asked, window, cx) {
+                        return;
+                    }
+                    let op = Op::Checkout { hash: hash.clone() };
+                    ws.git_action(op, move |repo| repo.checkout_commit(&hash), window, cx)
                 })
             },
             window,
@@ -753,6 +839,7 @@ impl Workspace {
 
     pub(crate) fn tag_commit(&mut self, hash: String, window: &mut Window, cx: &mut Context<Self>) {
         let ws = cx.entity();
+        let asked = self.asked_on();
         prompt::ask_text(
             "New tag",
             "Create",
@@ -764,7 +851,14 @@ impl Workspace {
                 }
                 let hash = hash.clone();
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(move |repo| repo.tag(&name, &hash), window, cx)
+                    if !ws.answered_on(&asked, window, cx) {
+                        return;
+                    }
+                    let op = Op::Tag {
+                        name: name.clone(),
+                        hash: hash.clone(),
+                    };
+                    ws.git_action(op, move |repo| repo.tag(&name, &hash), window, cx)
                 });
                 true
             },
@@ -780,6 +874,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let ws = cx.entity();
+        let asked = self.asked_on();
         prompt::confirm(
             format!("Revert {}?", &hash[..hash.len().min(7)]),
             "A new commit undoes its changes.",
@@ -787,7 +882,11 @@ impl Workspace {
             move |window, cx| {
                 let hash = hash.clone();
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(move |repo| repo.revert(&hash), window, cx)
+                    if !ws.answered_on(&asked, window, cx) {
+                        return;
+                    }
+                    let op = Op::Revert { hash: hash.clone() };
+                    ws.git_action(op, move |repo| repo.revert(&hash), window, cx)
                 })
             },
             window,

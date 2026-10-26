@@ -25,6 +25,7 @@ mod git_compare;
 mod git_conflicts;
 mod git_discard;
 mod git_history;
+mod git_home;
 mod git_keys;
 mod git_message;
 mod git_ops;
@@ -525,6 +526,9 @@ pub(crate) struct GitAt {
     /// Its `Git::generation` when the command started: the result of one started before it
     /// changed folder is dropped.
     pub generation: u64,
+    /// The other computer's name when this is a mirrored workspace's Git: its failures are told
+    /// in that computer's words (a notification is built where the workspace can't be read).
+    pub home: Option<String>,
 }
 
 /// A closed block, still drawn while it fades out. A terminal's shell lives until then.

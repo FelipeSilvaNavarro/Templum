@@ -1158,8 +1158,6 @@ fn a_remote_workspace_refuses_what_it_cant_do_yet(cx: &mut TestAppContext) {
             ws.toggle_grid(window, cx);
             ws.set_tool(Tool::Pen, window, cx);
             ws.set_tool(Tool::Eraser, window, cx);
-            ws.toggle_git(window, cx);
-            ws.open_git(window, cx);
             // Copy and paste of blocks.
             ws.space.selected = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
             ws.copy_blocks(cx);
@@ -1198,7 +1196,7 @@ fn a_remote_workspace_refuses_what_it_cant_do_yet(cx: &mut TestAppContext) {
             uids,
             "no editor took a uid in the mirror"
         );
-        assert!(ws.space.grid.is_none() && ws.space.git.is_none() && !ws.git_open);
+        assert!(ws.space.grid.is_none());
         assert!(!ws.tool.draws(), "{:?}", ws.tool);
         assert!(!ws.space.stopped, "a remote can't be stopped");
         assert_eq!(ws.spaces().count(), spaces, "no workspace was made");
@@ -1587,14 +1585,7 @@ fn start_it_asks_home_to_show_its_workspace(cx: &mut TestAppContext) {
             assert_eq!(ws.calls.len(), 1);
             assert_eq!(ws.calls[0].1.tool, "show");
             assert_eq!(ws.calls[0].1.args, json!({"workspace": "w3"}));
-            ws.answer_call(
-                0,
-                Err(Refusal {
-                    sentence: "No.".into(),
-                }),
-                window,
-                cx,
-            );
+            ws.answer_call(0, Err(Refusal::of("No.")), window, cx);
             assert_eq!(ws.said.last().map(String::as_str), Some("No."));
         })
     })
@@ -3301,9 +3292,7 @@ fn an_answer_home_refuses_shows_its_request_again(cx: &mut TestAppContext) {
                 ("r1", "answer_request", false)
             );
             assert_eq!(call.args["request"], "r3");
-            let refused = Refusal {
-                sentence: "Already answered.".into(),
-            };
+            let refused = Refusal::of("Already answered.");
             ws.answer_call(0, Err(refused), window, cx);
             assert_eq!(ws.inbox().len(), 1, "it shows again");
             assert_eq!(
@@ -3328,9 +3317,7 @@ fn an_answer_after_its_request_left_changes_nothing(cx: &mut TestAppContext) {
     apply(handle, &ws, cx, state_asking(Vec::new()));
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            let late = Refusal {
-                sentence: "Couldn't reach the other computer.".into(),
-            };
+            let late = Refusal::of("Couldn't reach the other computer.");
             let before = ws.said.clone();
             ws.answer_call(0, Err(late), window, cx);
             assert!(ws.waits.is_empty());
@@ -3354,9 +3341,7 @@ fn a_refusal_after_its_remote_is_forgotten_is_not_said(cx: &mut TestAppContext) 
         ws.update(cx, |ws, cx| {
             ws.remote_act("r1", Act::StartIt, window, cx);
             ws.forget_remote("r1", false, window, cx);
-            let late = Refusal {
-                sentence: "Couldn't reach the other computer.".into(),
-            };
+            let late = Refusal::of("Couldn't reach the other computer.");
             ws.answer_call(0, Err(late), window, cx);
             assert!(ws.said.is_empty(), "{:?}", ws.said);
         })
@@ -3680,9 +3665,7 @@ fn an_answer_lost_with_the_connection_shows_its_request_again(cx: &mut TestAppCo
             ws.answer_allow(key, true, cx);
             assert!(ws.inbox().is_empty(), "sent");
             // The connection dropped during the round trip: the client refuses the answer it lost.
-            let lost = templum_api::client::Refusal {
-                sentence: "Couldn't reach the other computer.".into(),
-            };
+            let lost = templum_api::client::Refusal::of("Couldn't reach the other computer.");
             ws.answer_call(0, Err(lost), window, cx);
         })
     })
@@ -3921,9 +3904,7 @@ pub(super) fn answer(
 }
 
 pub(super) fn refusal(sentence: &str) -> templum_api::client::Answered {
-    Err(templum_api::client::Refusal {
-        sentence: sentence.into(),
-    })
+    Err(templum_api::client::Refusal::of(sentence))
 }
 
 #[gpui_kit::test]

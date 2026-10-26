@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
@@ -145,6 +145,11 @@ pub(crate) enum Found {
     NoGit(GitError),
     NotARepo,
     Repo(Repo),
+    /// A mirrored workspace's repository: its root, as home writes it. Nothing here is a path of
+    /// this computer, and no `Repo` is held: nothing runs or reads on its behalf.
+    Home(String),
+    /// Home couldn't look for it: its words.
+    Refused(String),
 }
 
 /// Which of fetch, pull, push and sync runs: the bar's Sync button spins, and a click on it
@@ -204,6 +209,11 @@ pub(crate) type Queued = Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Contex
 pub(crate) struct Git {
     /// What the user chose; the repository's root may be above it.
     pub folder: PathBuf,
+    /// A mirrored workspace's Git: the folder at home its repository is found from, as home
+    /// writes it. Nothing on this computer reads it.
+    pub home: Option<String>,
+    /// On a mirror: the status the panel's diff was last asked with, and when.
+    pub home_diff: Option<(Status, Instant)>,
     /// The folder wasn't there at the last look, on opening and every POLL: the body says so.
     /// Never looked up while drawing: a stat each frame stalls on a slow or network disk.
     pub gone: bool,
@@ -378,6 +388,8 @@ impl Git {
         Git {
             gone: !folder.is_dir(),
             folder,
+            home: None,
+            home_diff: None,
             generation: 0,
             found: Found::Looking,
             tab,
@@ -642,6 +654,20 @@ impl Git {
             .is_some_and(|d| !d.hunks.is_empty())
     }
 
+    /// The Git of a mirrored workspace, looked for from `folder` at home. It holds no `Repo` and
+    /// its `folder` is empty: no code path of this computer can stat or run git on it.
+    pub fn at_home(
+        folder: String,
+        tab: Tab,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Git {
+        let mut git = Git::new(PathBuf::new(), tab, window, cx);
+        git.gone = false;
+        git.home = Some(folder);
+        git
+    }
+
     pub fn repo(&self) -> Option<&Repo> {
         match &self.found {
             Found::Repo(repo) => Some(repo),
@@ -649,8 +675,30 @@ impl Git {
         }
     }
 
+    /// A repository was found, here or at home.
+    pub fn has_repo(&self) -> bool {
+        matches!(self.found, Found::Repo(_) | Found::Home(_))
+    }
+
+    /// The repository's root, else the folder: this computer's path as it displays, or home's as
+    /// it wrote it.
+    pub fn place(&self) -> String {
+        match (&self.found, &self.home) {
+            (Found::Home(root), _) => root.clone(),
+            (_, Some(home)) => home.clone(),
+            _ => self
+                .repo()
+                .map_or(&self.folder, |r| &r.root)
+                .display()
+                .to_string(),
+        }
+    }
+
     /// The repository's folder name, else the chosen folder's.
     pub fn name(&self) -> String {
+        if self.home.is_some() {
+            return home_name(&self.place());
+        }
         let dir = self.repo().map_or(&self.folder, |r| &r.root);
         dir.file_name().map_or_else(
             || dir.display().to_string(),
@@ -687,6 +735,14 @@ impl Git {
     }
 }
 
+/// The last part of one of home's paths, split on `/` and `\`; the whole path when it has none.
+pub(crate) fn home_name(path: &str) -> String {
+    path.rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
 pub(crate) fn row_id(list: &str, i: usize) -> ElementId {
     ElementId::Name(format!("git-row-{list}-{i}").into())
 }
@@ -695,6 +751,13 @@ pub(crate) fn row_id(list: &str, i: usize) -> ElementId {
 mod tests {
     use super::*;
     use templum_git::Change;
+
+    #[test]
+    fn home_s_folder_is_named_by_its_last_part() {
+        assert_eq!(home_name("/home/ada/app"), "app");
+        assert_eq!(home_name("C:\\Users\\ada\\app\\"), "app");
+        assert_eq!(home_name("/"), "/");
+    }
 
     #[test]
     fn a_files_box_is_what_of_it_is_staged() {

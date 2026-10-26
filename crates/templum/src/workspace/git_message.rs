@@ -12,12 +12,18 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, SharedString, Window, div, px};
+use serde_json::Value;
+use templum_api::client::Call;
 use templum_git::message::{self, Failure, Request, Writer};
+use templum_git::ops::{self, Op};
 
 use crate::config::{self, Edit};
 use crate::prompt;
 
+use super::git_home::{heard, parsed};
+use super::remote::{Deed, LINE_CHARS, TEXT_CHARS, Then};
 use super::{GitAt, Workspace, show_notification};
+use crate::git_block::Found;
 
 /// The table Generate's settings live in.
 const TABLE: &str = "git.commit_message";
@@ -44,6 +50,13 @@ impl Workspace {
         let Some(git) = self.space.git() else {
             return;
         };
+        // On a mirror home's agent writes it, and nothing here can stop it.
+        if git.home.is_some() {
+            if git.generating.is_none() {
+                self.generate_at_home(window, cx);
+            }
+            return;
+        }
         if let Some(cancel) = &git.generating {
             cancel.store(true, Ordering::Relaxed);
             return;
@@ -81,6 +94,85 @@ impl Workspace {
             window,
             cx,
         );
+    }
+
+    /// Generate ✨ on a mirror: home's agent writes the message from home's diff (`message`, on
+    /// the slow lane), whatever agent this computer has. Not through the Git's queue: as here, it
+    /// only reads and runs beside the Git's commands. Nothing stops it from here.
+    fn generate_at_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(why) = self.why_not(Deed::Git("message")) {
+            return self.warn(why, window, cx);
+        }
+        let at = self.here();
+        let Some(computer) = at.home.clone() else {
+            return;
+        };
+        let Some(git) = self.space.git() else {
+            return;
+        };
+        let Found::Home(root) = &git.found else {
+            return;
+        };
+        let Some(mut args) = self.home_args(&at.space, root) else {
+            return;
+        };
+        let all = git.commit_all();
+        let before = (
+            git.summary.read(cx).value(),
+            git.description.read(cx).value(),
+        );
+        if let (Some(args), Ok(Value::Object(op))) = (
+            args.as_object_mut(),
+            serde_json::to_value(Op::Message { all }),
+        ) {
+            args.extend(op);
+        }
+        if let Some(git) = self.space.git_mut() {
+            git.generating = Some(Arc::new(AtomicBool::new(false)));
+        }
+        cx.notify();
+        let call = Call {
+            tool: "git".into(),
+            args,
+            slow: true,
+        };
+        let space = at.space.clone();
+        let then: Then = Box::new(move |ws, answered, window, cx| {
+            let Some(git) = ws.git_at(&at) else {
+                return;
+            };
+            git.generating = None;
+            cx.notify();
+            let sent = match answered {
+                Ok(answer) => parsed::<ops::Message>(heard("message", Ok(answer))).map_err(|e| {
+                    let words = e.first_line().to_string();
+                    (words.clone(), words)
+                }),
+                Err(refusal) => {
+                    let details = refusal.details.unwrap_or_else(|| refusal.sentence.clone());
+                    Err((refusal.sentence, details))
+                }
+            };
+            match sent {
+                // Home's words, as the fields hold them: one line, and a description of text.
+                Ok(m) => ws.generated_parts(
+                    at,
+                    &computer,
+                    before,
+                    Ok((
+                        super::bus::clean_to(&m.summary, LINE_CHARS),
+                        super::remote::clean_text(&m.description, TEXT_CHARS),
+                    )),
+                    m.committed,
+                    window,
+                    cx,
+                ),
+                Err((sentence, details)) => {
+                    ws.notify_agent_failure(&computer, sentence, details, window, cx)
+                }
+            }
+        });
+        self.remote_call(&space, call, then, cx);
     }
 
     /// The agent that writes this repository's messages, and how: Settings ▸ Git's rules, this
@@ -168,20 +260,38 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let parts = answer.and_then(|a| {
+            message::split(&a).ok_or(Failure::Empty {
+                stderr: String::new(),
+            })
+        });
+        self.generated_parts(at, agent, before, parts, committed, window, cx);
+    }
+
+    /// `generated` once the answer is split into a summary and a description: here from the
+    /// agent's text, on a mirror from home's.
+    #[allow(clippy::too_many_arguments)]
+    fn generated_parts(
+        &mut self,
+        at: GitAt,
+        agent: &str,
+        before: (SharedString, SharedString),
+        parts: Result<(String, String), Failure>,
+        committed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(git) = self.git_at(&at) else {
             return;
         };
         git.generating = None;
         let (summary, description) = (git.summary.clone(), git.description.clone());
         cx.notify();
-        let parts = answer.and_then(|a| {
-            message::split(&a).ok_or(Failure::Empty {
-                stderr: String::new(),
-            })
-        });
         match parts {
             Err(Failure::Cancelled) => {}
-            Err(failure) => self.notify_generate_failure(agent, &failure, window, cx),
+            Err(failure) => {
+                self.notify_agent_failure(agent, failure.to_string(), failure.details(), window, cx)
+            }
             Ok((s, d)) => {
                 let left_out = if committed {
                     Some(format!(
@@ -206,17 +316,18 @@ impl Workspace {
 
     /// Generate failed: the sentence, and Details with the exit code and what the agent wrote
     /// to stderr. No Run in a terminal: the command's files are gone by now.
-    fn notify_generate_failure(
+    fn notify_agent_failure(
         &self,
         agent: &str,
-        failure: &Failure,
+        sentence: String,
+        details: String,
         window: &mut Window,
         cx: &mut App,
     ) {
-        eprintln!("templum: {agent}: {failure}");
+        eprintln!("templum: {agent}: {sentence}");
         let title = SharedString::from(format!("{agent}: commit message"));
-        let (text, mono) = (failure.details(), self.cell.font.family.clone());
-        let notification = Notification::error(failure.to_string())
+        let (text, mono) = (details, self.cell.font.family.clone());
+        let notification = Notification::error(sentence)
             .title(title.clone())
             .autohide(false)
             .content(move |_, _, _| {

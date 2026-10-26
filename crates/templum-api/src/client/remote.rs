@@ -644,7 +644,7 @@ impl Life {
             }
             Failure::Stop(why) => self.cut(why),
             Failure::Busy(wait) => self.retry(wait, false),
-            Failure::Down(_) | Failure::Missing(_) | Failure::Refused(_) | Failure::TooLarge => {
+            Failure::Down(_) | Failure::Missing(_) | Failure::Refused(..) | Failure::TooLarge => {
                 self.retry(Duration::ZERO, quiet)
             }
         }
@@ -741,7 +741,7 @@ impl Life {
                 Failure::Down(_)
                 | Failure::Busy(_)
                 | Failure::TooLarge
-                | Failure::Refused(_)
+                | Failure::Refused(..)
                 | Failure::Missing(_),
             ) if self.phase == Phase::Live => {
                 return;
@@ -1048,21 +1048,22 @@ impl Life {
                 }
                 Ok(json)
             }
-            Err(Failure::Refused(sentence) | Failure::Missing(sentence)) => Err(sentence),
-            Err(Failure::TooLarge) => Err(format!(
+            Err(Failure::Refused(sentence, details)) => Err(Refusal { sentence, details }),
+            Err(Failure::Missing(sentence)) => Err(Refusal::of(sentence)),
+            Err(Failure::TooLarge) => Err(Refusal::of(format!(
                 "{}'s answer was too large to show.",
                 self.computer()
-            )),
+            ))),
             // A slow call cut by a timeout or a tunnel may still be running there; the slow
             // connection is dropped, the remote is not.
             Err(_) if lane == Lane::Slow && sent => {
                 if let Some(attempt) = self.attempt.as_mut() {
                     attempt.slow = None;
                 }
-                Err(format!(
+                Err(Refusal::of(format!(
                     "{} didn't answer in time: it may still be running there.",
                     self.computer()
-                ))
+                )))
             }
             Err(_) => {
                 if lane == Lane::Slow
@@ -1070,15 +1071,15 @@ impl Life {
                 {
                     attempt.slow = None;
                 }
-                Err("Couldn't reach the other computer.".into())
+                Err(Refusal::of("Couldn't reach the other computer."))
             }
         };
         match (to, answer) {
             (To::Answer(sender), answer) => {
-                let _ = sender.send(answer.map_err(Refusal::of));
+                let _ = sender.send(answer);
             }
             (To::Move(_), Ok(_)) => {}
-            (to @ To::Move(_), Err(sentence)) => self.refuse(to, sentence),
+            (to @ To::Move(_), Err(refusal)) => self.refuse(to, refusal.sentence),
             (To::History(block, fed), Ok(json)) => self.fill_history(block, fed, &json),
             (To::History(..), Err(_)) => {}
         }
@@ -1356,7 +1357,7 @@ impl Life {
                 self.queues.remove(&block);
                 self.turns.retain(|b| *b != block);
                 match failure {
-                    Failure::Refused(sentence) | Failure::Missing(sentence) => {
+                    Failure::Refused(sentence, _) | Failure::Missing(sentence) => {
                         self.say(Update::Refused {
                             about: About::Keys(block),
                             sentence,
@@ -1709,7 +1710,7 @@ async fn terminal_task(
                     }
                 }
             }
-            Err(Failure::Missing(_) | Failure::Refused(_)) => {
+            Err(Failure::Missing(_) | Failure::Refused(..)) => {
                 let _ = tx.send(Msg::Stopped { epoch, block });
                 return;
             }
@@ -2222,6 +2223,32 @@ mod tests {
                 said.iter()
                     .all(|(_, u)| !matches!(u, Update::Refused { .. })),
                 "{said:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_refused_call_hands_its_details_to_the_ui() {
+        block_on(async {
+            let mut life = life_at("http://127.0.0.1:9");
+            life.out.inner().current.insert("r1".into(), 1);
+            life.prepare().await.unwrap();
+            life.begin();
+            life.phase = Phase::Live;
+            let (job, mut answer) = answered("git", false);
+            life.call(job);
+            life.called(
+                Lane::Quick,
+                Err(Failure::Refused("fatal: x".into(), Some("d".into()))),
+                Duration::ZERO,
+                true,
+            );
+            assert_eq!(
+                answer.try_recv().unwrap(),
+                Err(Refusal {
+                    sentence: "fatal: x".into(),
+                    details: Some("d".into())
+                })
             );
         });
     }
