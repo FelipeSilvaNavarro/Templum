@@ -73,10 +73,11 @@ pub struct Opening {
     pub at: Option<(f32, f32)>,
 }
 
-/// Where `edit_column` puts a column: before another one of its board, or at the end.
+/// Where `edit_column` puts a column, or `edit_checklist` an item: before another one of its
+/// board or checklist (its id), or at the end.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Before {
-    Column(u64),
+    Id(u64),
     End,
 }
 
@@ -130,6 +131,19 @@ pub enum ControlCall {
         title: Option<String>,
         before: Option<Before>,
         delete: bool,
+    },
+    /// Renames the checklist the checklist block `block` shows (`name`; blank reads "Checklist"),
+    /// moves its item `item` (`before`), or both.
+    EditChecklist {
+        block: String,
+        name: Option<String>,
+        moved: Option<(u64, Before)>,
+    },
+    /// The checklist block `block`, showing none, shows a new checklist named `name` (none:
+    /// "Checklist").
+    NewChecklist {
+        block: String,
+        name: Option<String>,
     },
     /// The kanban `block` shows `board`, or a new board named `new` (blank: "Board n") with
     /// `columns` (To do, Doing and Done without): exactly one of `board` and `new`.
@@ -281,6 +295,21 @@ fn within(places: &[(&str, Option<f32>)]) -> Result<(), String> {
     {
         Some((key, _)) => Err(format!("\"{key}\" is within ±10000000")),
         None => Ok(()),
+    }
+}
+
+/// `before` of `edit_column` and `edit_checklist`: an id, or `"end"`; Err when it is neither.
+fn before(args: &Value) -> Result<Option<Before>, ()> {
+    match &args["before"] {
+        Value::Null => Ok(None),
+        Value::String(s) if s.trim().eq_ignore_ascii_case("end") => Ok(Some(Before::End)),
+        Value::String(s) => s
+            .trim()
+            .parse()
+            .map(|id| Some(Before::Id(id)))
+            .map_err(|_| ()),
+        Value::Number(n) => n.as_u64().map(|id| Some(Before::Id(id))).ok_or(()),
+        _ => Err(()),
     }
 }
 
@@ -545,6 +574,36 @@ pub fn list() -> Value {
             },
         },
         {
+            "name": "edit_checklist",
+            "description": "Renames the checklist a checklist block shows (name; blank reads \"Checklist\"), \
+                            moves one of its items (item, before: an item of the checklist it goes just \
+                            before, or \"end\"), or both: one step of the checklist's Ctrl+Z.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "block": block,
+                    "name": { "type": "string" },
+                    "item": { "type": "integer", "description": "An item's id, as read_checklist shows it." },
+                    "before": {
+                        "type": "string",
+                        "description": "An item of the checklist (its id) to go before, or \"end\".",
+                    },
+                },
+                "required": ["block"],
+            },
+        },
+        {
+            "name": "new_checklist",
+            "description": "Shows a new checklist, named name (\"Checklist\" when left out), in a checklist \
+                            block that shows none. A block that shows one keeps it: add_block opens a block \
+                            with a new one.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "block": block, "name": { "type": "string" } },
+                "required": ["block"],
+            },
+        },
+        {
             "name": "close_block",
             "description": "Closes a block (the person brings it back with Ctrl+Z). Asks the person first when a \
                             program runs in a block you didn't open.",
@@ -749,16 +808,8 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
                 string("title")?,
                 flag("delete")?,
             );
-            let before = match &args["before"] {
-                Value::Null => None,
-                Value::String(s) if s.trim().eq_ignore_ascii_case("end") => Some(Before::End),
-                Value::String(s) => s.trim().parse().ok().map(Before::Column),
-                Value::Number(n) => n.as_u64().map(Before::Column),
-                _ => None,
-            };
-            if !args["before"].is_null() && before.is_none() {
-                return Err("\"before\" is a column of the board, or \"end\"".into());
-            }
+            let before = before(args)
+                .map_err(|()| "\"before\" is a column of the board, or \"end\"".to_string())?;
             if delete {
                 if title.is_some() || before.is_some() {
                     return Err("delete goes alone: it takes the column and its cards away".into());
@@ -780,6 +831,40 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
                 delete,
             }
         }
+        "edit_checklist" => {
+            let item = match &args["item"] {
+                Value::Null => None,
+                value => Some(
+                    value
+                        .as_u64()
+                        .or_else(|| value.as_str()?.trim().parse().ok())
+                        .ok_or("\"item\" is an item's id, as read_checklist shows it")?,
+                ),
+            };
+            let new_name = string("name")?;
+            let before = before(args)
+                .map_err(|()| "\"before\" is an item of the checklist, or \"end\"".to_string())?;
+            if new_name.is_none() && item.is_none() && before.is_none() {
+                return Err("edit_checklist takes name, or item with before".into());
+            }
+            let moved = match (item, before) {
+                (Some(item), Some(before)) if before == Before::Id(item) => {
+                    return Err("\"before\" is another item than \"item\"".into());
+                }
+                (Some(item), Some(before)) => Some((item, before)),
+                (None, None) => None,
+                _ => return Err("\"item\" and \"before\" go together".into()),
+            };
+            ControlCall::EditChecklist {
+                block: text("block")?,
+                name: new_name.map(|n| n.trim().to_string()),
+                moved,
+            }
+        }
+        "new_checklist" => ControlCall::NewChecklist {
+            block: text("block")?,
+            name: optional("name")?.map(|n| n.trim().to_string()),
+        },
         "show_board" => {
             let (board, new) = (
                 match &args["board"] {
@@ -883,6 +968,8 @@ pub fn title(name: &str) -> &'static str {
         "edit_board" => "Editing a board",
         "edit_column" => "Editing a column",
         "show_board" => "Showing a board",
+        "edit_checklist" => "Editing a checklist",
+        "new_checklist" => "Making a checklist",
         "move_block" => "Moving a block",
         "send_to_terminal" => "Typing into a terminal",
         "send_keys" => "Pressing keys",
@@ -1071,6 +1158,84 @@ mod tests {
     }
 
     #[test]
+    fn the_checklist_tools_parse_and_say_what_is_missing() {
+        let err = |name: &str, args: Value| parse(name, &args).unwrap_err();
+        assert_eq!(
+            err("edit_checklist", json!({"block": "c"})),
+            "edit_checklist takes name, or item with before"
+        );
+        assert_eq!(
+            err("edit_checklist", json!({"block": "c", "item": 13})),
+            "\"item\" and \"before\" go together"
+        );
+        assert_eq!(
+            err("edit_checklist", json!({"block": "c", "before": "end"})),
+            "\"item\" and \"before\" go together"
+        );
+        assert_eq!(
+            err(
+                "edit_checklist",
+                json!({"block": "c", "item": 13, "before": 13})
+            ),
+            "\"before\" is another item than \"item\""
+        );
+        assert_eq!(
+            err(
+                "edit_checklist",
+                json!({"block": "c", "item": 13, "before": "first"})
+            ),
+            "\"before\" is an item of the checklist, or \"end\""
+        );
+        assert_eq!(
+            err(
+                "edit_checklist",
+                json!({"block": "c", "item": "x", "before": 1})
+            ),
+            "\"item\" is an item's id, as read_checklist shows it"
+        );
+        assert!(err("new_checklist", json!({})).contains("needs \"block\""));
+        let call = |name: &str, args: Value| parse(name, &args).unwrap().call;
+        assert_eq!(
+            call(
+                "edit_checklist",
+                json!({"block": "c", "name": " Release ", "item": "13", "before": "End"})
+            ),
+            ControlCall::EditChecklist {
+                block: "c".into(),
+                name: Some("Release".into()),
+                moved: Some((13, Before::End)),
+            }
+        );
+        assert_eq!(
+            call("edit_checklist", json!({"block": "c", "name": ""})),
+            ControlCall::EditChecklist {
+                block: "c".into(),
+                name: Some(String::new()),
+                moved: None,
+            },
+            "a blank name reads \"Checklist\""
+        );
+        assert_eq!(
+            call(
+                "edit_checklist",
+                json!({"block": "c", "item": 13, "before": 14})
+            ),
+            ControlCall::EditChecklist {
+                block: "c".into(),
+                name: None,
+                moved: Some((13, Before::Id(14))),
+            }
+        );
+        assert_eq!(
+            call("new_checklist", json!({"block": "c", "name": " "})),
+            ControlCall::NewChecklist {
+                block: "c".into(),
+                name: None,
+            }
+        );
+    }
+
+    #[test]
     fn the_board_tools_parse_and_say_what_is_missing() {
         let err = |name: &str, args: Value| parse(name, &args).unwrap_err();
         assert_eq!(
@@ -1153,7 +1318,7 @@ mod tests {
                 board: "Sprint".into(),
                 column: Some(3),
                 title: Some("QA".into()),
-                before: Some(Before::Column(5)),
+                before: Some(Before::Id(5)),
                 delete: false
             }
         );
@@ -1268,6 +1433,11 @@ mod tests {
                 "show_board",
                 json!({"block": "k9x1d", "new": "Ops", "columns": ["A", "B"]}),
             ),
+            (
+                "edit_checklist",
+                json!({"block": "c1", "name": "Release", "item": 13, "before": "end"}),
+            ),
+            ("new_checklist", json!({"block": "c1", "name": "Plan"})),
             (
                 "send_to_terminal",
                 json!({"block": "b7k2m", "text": "ls", "enter": true, "reason": "look"}),
@@ -1499,6 +1669,14 @@ mod tests {
             rule_of("show_board", json!({"block": "k", "board": 1})),
             Rule::Free
         );
+        assert_eq!(
+            rule_of(
+                "edit_checklist",
+                json!({"block": "c", "item": 13, "before": "end"})
+            ),
+            Rule::Free
+        );
+        assert_eq!(rule_of("new_checklist", json!({"block": "c"})), Rule::Free);
         assert_eq!(
             rule_of("create_card", json!({"board": "S", "title": "x"})),
             Rule::Free

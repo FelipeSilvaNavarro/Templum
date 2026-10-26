@@ -28,6 +28,10 @@ pub(crate) enum ChecklistAct {
     Edit { item: u64, text: String },
     /// New items at the end, a line each (a mirror's + Add an item).
     Add { text: String },
+    /// An item dropped in the place of item `before` (None: at the end).
+    Move { item: u64, before: Option<u64> },
+    /// The checklist's whole name (a mirror's field sends it once, as an item's).
+    Rename { name: String },
 }
 
 impl Workspace {
@@ -43,8 +47,7 @@ impl Workspace {
             return;
         }
         if self.on_remote() {
-            let at = self.room_in_view(checklist::SIZE, window, cx).origin();
-            return self.remote_add(Kind::Checklist, at, cx);
+            return self.remote_new_checklist(into, window, cx);
         }
         let id = self.checklists.add(notes::now());
         let block = self.place_checklist(id, into, window, cx);
@@ -109,18 +112,71 @@ impl Workspace {
             self.focus_block(block, window, cx);
             return block;
         }
-        let size = checklist::SIZE;
-        let beside = into.and_then(|b| self.space.canvas.get(b).map(|b| self.space.home(b)));
-        let at = match beside {
-            Some(beside) => self.space.room_beside(&[beside], size).origin(),
-            None => self.room_in_view(size, window, cx).origin(),
-        };
+        let (at, beside) = self.checklist_spot(into, window, cx);
         let block = self.add_checklist_block(at, id, window, cx);
-        if beside.is_some() {
+        if beside {
             let space = self.space.id.clone();
             self.reveal(&space, block, window, cx);
         }
         block
+    }
+
+    /// Where a new checklist block goes: beside `into` (true), else in the view.
+    fn checklist_spot(
+        &mut self,
+        into: Option<BlockId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Point, bool) {
+        let size = checklist::SIZE;
+        let beside = into.and_then(|b| self.space.canvas.get(b).map(|b| self.space.home(b)));
+        match beside {
+            Some(beside) => (self.space.room_beside(&[beside], size).origin(), true),
+            None => (self.room_in_view(size, window, cx).origin(), false),
+        }
+    }
+
+    /// New checklist on the mirrored workspace shown: home shows one in `into` when that shows
+    /// none (`new_checklist`), else home adds a block with one beside `into`, or in the view.
+    fn remote_new_checklist(
+        &mut self,
+        into: Option<BlockId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let empty = into.filter(|block| {
+            self.space
+                .checklist_view(*block)
+                .filter(|c| c.remote)
+                .is_some_and(|c| {
+                    c.list
+                        .and_then(|id| self.checklists_of(c)?.get(id))
+                        .is_none()
+                })
+        });
+        let Some(block) = empty else {
+            let (at, _) = self.checklist_spot(into, window, cx);
+            return self.remote_add(Kind::Checklist, at, cx);
+        };
+        if let Some(words) = self.why_not(Deed::OpenChecklist) {
+            return self.warn(words, window, cx);
+        }
+        let Some(home) = self.space.remote.as_deref().and_then(|r| r.home_of(block)) else {
+            return;
+        };
+        self.focus_block(block, window, cx);
+        let call = templum_api::client::Call {
+            tool: "new_checklist".into(),
+            args: serde_json::json!({ "block": home }),
+            slow: false,
+        };
+        let then: super::remote::Then = Box::new(|ws, answered, window, cx| {
+            if let Err(refusal) = answered {
+                ws.warn(refusal.sentence, window, cx);
+            }
+        });
+        let space = self.space.id.clone();
+        self.remote_call(&space, call, then, cx);
     }
 
     /// The workspace and block where checklist `id` is open, if it is.
@@ -145,6 +201,20 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.why_not(Deed::OpenChecklist).is_some() {
+            return;
+        }
+        // Home's checklists are each open in a block of its: the one of the workspace shown is
+        // shown. Nothing of this computer's opens there.
+        if self.on_remote() {
+            let shows = self.space.blocks.iter().find_map(|(block, body)| {
+                body.checklist_view()
+                    .is_some_and(|c| c.remote && c.list == Some(id))
+                    .then_some(*block)
+            });
+            if let Some(block) = shows {
+                let space = self.space.id.clone();
+                self.reveal(&space, block, window, cx);
+            }
             return;
         }
         if let Some((space, block)) = self.checklist_open_at(id) {
@@ -260,9 +330,8 @@ impl Workspace {
             (None, _) => return,
         };
         if remote {
-            // Home's list is renamed at home; the rest is the rule's to say.
             let deed = match field {
-                Field::Name => return,
+                Field::Name => Deed::EditChecklist,
                 Field::Item(_) => Deed::EditItem,
                 Field::New => Deed::AddItems,
             };
@@ -357,7 +426,8 @@ impl Workspace {
         let act = match field {
             Field::Item(item) => ChecklistAct::Edit { item, text },
             Field::New if !text.trim().is_empty() => ChecklistAct::Add { text },
-            Field::New | Field::Name => return,
+            Field::Name => ChecklistAct::Rename { name: text },
+            Field::New => return,
         };
         let again = enter && field == Field::New;
         self.act_on_checklist(space, block, act, window, cx);
@@ -660,6 +730,14 @@ impl Workspace {
                     }
                 });
                 self.agent_changed(list);
+                cx.notify();
+            }
+            ChecklistAct::Move { item, before } => {
+                self.edit_checklist(list, |c| c.move_item(list, item, before, notes::now()));
+                cx.notify();
+            }
+            ChecklistAct::Rename { name } => {
+                self.edit_checklist(list, |c| c.rename(list, &name, notes::now()));
                 cx.notify();
             }
         }

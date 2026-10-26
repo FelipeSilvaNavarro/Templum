@@ -1972,7 +1972,7 @@ fn the_banner_tooltips_say_the_real_round_trip_and_what_isnt_mirrored() {
     for word in [
         "editors",
         "editing notes",
-        "renaming a checklist",
+        "deleting a checklist",
         "attachments",
         "drawing",
         "Git popup",

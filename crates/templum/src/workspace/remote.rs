@@ -277,6 +277,10 @@ pub(crate) struct RemoteSpace {
     pub items_checked: Holds<(u64, u64), bool>,
     pub items_edited: Holds<(u64, u64), String>,
     pub items_deleted: Holds<(u64, u64), bool>,
+    /// The items moved here, by the item they went before (None: the end), and the checklists
+    /// renamed here, held the same way.
+    pub items_moved: Holds<(u64, u64), Option<u64>>,
+    pub lists_renamed: Holds<u64, String>,
     /// The checklists the last copy laid an item hold over: cleaned again from home's state at
     /// the next copy, not moved over.
     pub(super) lists_laid: HashSet<u64>,
@@ -509,6 +513,8 @@ impl RemoteSpace {
             items_checked: Holds::default(),
             items_edited: Holds::default(),
             items_deleted: Holds::default(),
+            items_moved: Holds::default(),
+            lists_renamed: Holds::default(),
             lists_laid: HashSet::new(),
             awaited: None,
             shortcuts_told: HashSet::new(),
@@ -852,6 +858,7 @@ pub(crate) enum Deed {
     AddEditor,
     OpenAgent,
     OpenNote,
+    /// The Checklists dialog, and a new checklist in a checklist block that shows none.
     OpenChecklist,
     Close,
     Wire,
@@ -939,6 +946,8 @@ impl Deed {
                 "add_block",
                 json!({ "workspace": "w", "kind": "checklist" }),
             ),
+            Deed::OpenChecklist => ("new_checklist", json!({ "block": "c" })),
+            Deed::EditChecklist => ("edit_checklist", json!({ "block": "c", "name": "n" })),
             Deed::CheckItem => ("check_item", json!({ "block": "b", "item": 1 })),
             Deed::AddItems => ("add_items", json!({ "block": "b", "text": "t" })),
             Deed::EditItem => ("edit_item", json!({ "block": "b", "item": 1, "text": "t" })),
@@ -1318,10 +1327,9 @@ fn session_of(agent: &AgentView) -> Option<templum_usage::Session> {
 
 /// The banner's ⓘ: what a mirror doesn't have yet.
 pub(crate) const NOT_MIRRORED: &str = "Not mirrored yet: editors' content (a card shows each). \
-     Not on a mirrored workspace yet: editors, editing notes, renaming a checklist and moving its \
-     items, drawing, Move to workspace, Copy and Paste of blocks, Stop, a card's \
-     attachments, and in the Git popup Clone, Choose another folder, Generate's ⚙, Open in editor \
-     and Run in a terminal.";
+     Not on a mirrored workspace yet: editors, editing notes, deleting a checklist, drawing, Move \
+     to workspace, Copy and Paste of blocks, Stop, a card's attachments, and in the Git popup \
+     Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal.";
 
 /// What the Git popup's menus ask of the rule when they are built: what needs a Full share, and
 /// what the popup leaves on home for now.
@@ -2027,6 +2035,8 @@ impl Workspace {
         let (checked, checked_due) = remote.items_checked.expire(now, |_| false);
         let (typed, typed_due) = remote.items_edited.expire(now, |_| false);
         let (unlisted, unlisted_due) = remote.items_deleted.expire(now, |_| false);
+        let (reordered, reordered_due) = remote.items_moved.expire(now, |_| false);
+        let (renamed, renamed_due) = remote.lists_renamed.expire(now, |_| false);
         for (id, rect) in ended {
             if let Some(place) = self.space.home_mut(id) {
                 *place = rect;
@@ -2043,6 +2053,8 @@ impl Workspace {
             || !checked.is_empty()
             || !typed.is_empty()
             || !unlisted.is_empty()
+            || !reordered.is_empty()
+            || !renamed.is_empty()
         {
             let id = self.space.id.clone();
             self.remirror(&id, now);
@@ -2057,6 +2069,8 @@ impl Workspace {
             checked_due,
             typed_due,
             unlisted_due,
+            reordered_due,
+            renamed_due,
         ]
         .into_iter()
         .flatten()
@@ -4265,6 +4279,8 @@ mod tests {
             Deed::AddItems,
             Deed::EditItem,
             Deed::DeleteItem,
+            Deed::EditChecklist,
+            Deed::OpenChecklist,
             Deed::SetRule(false),
             Deed::RunRule(false),
             Deed::SaveRule(false),

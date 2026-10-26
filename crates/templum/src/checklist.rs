@@ -53,8 +53,9 @@ pub(crate) struct Editing {
     pub kept: bool,
 }
 
-/// An item being dragged, by its checklist and its id.
+/// An item being dragged, by its block, its checklist and its id.
 pub(crate) struct ItemDrag {
+    pub block: BlockId,
     pub list: u64,
     pub item: u64,
 }
@@ -113,8 +114,7 @@ pub(crate) fn body(
         .and_then(|id| ws.checklists_of(checklist)?.get(id))
     {
         Some(list) => list_view(ws, block, checklist, list, z, cx),
-        None if checklist.remote => remote_empty(ws, block.0 as usize, z),
-        None => empty(ws, block, z, cx),
+        None => empty(ws, block, checklist.remote, z, cx),
     };
     div()
         .size_full()
@@ -213,21 +213,16 @@ fn list_view(
                 .text_color(ui.title)
                 .map(|el| match checklist.field(Field::Name) {
                     Some(input) => el.child(field(ws, block, input, NAME_FONT, z, cx)),
-                    // A mirrored list's name is home's: it renames there.
-                    None if checklist.remote => {
-                        let words = why.name.clone().map(SharedString::from);
-                        el.line_height(relative(1.5))
-                            .child(list.name_shown().to_string())
-                            .when_some(words, |el, words| {
-                                el.tooltip(move |window, cx| {
-                                    Tooltip::new(words.clone()).build(window, cx)
-                                })
-                            })
-                    }
                     None => el
                         .line_height(relative(1.5))
                         .cursor_text()
                         .child(list.name_shown().to_string())
+                        // A mirrored list's name that can't be renamed now says why.
+                        .when_some(why.name.clone(), |el, words| {
+                            el.tooltip(move |window, cx| {
+                                Tooltip::new(words.clone()).build(window, cx)
+                            })
+                        })
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.edit_field(block, Field::Name, window, cx)
                         })),
@@ -238,7 +233,9 @@ fn list_view(
         .children(new)
         .child(add)
         // Dropped on the list's empty space or on + Add an item: at the end.
-        .on_drop(cx.listener(move |ws, drag: &ItemDrag, _, cx| move_item(ws, id, drag, None, cx)))
+        .on_drop(cx.listener(move |ws, drag: &ItemDrag, window, cx| {
+            move_item(ws, block, id, drag, None, window, cx)
+        }))
         .test_support();
     // The scrollbar goes over the list, not in it: in it, it would scroll away.
     div()
@@ -266,19 +263,25 @@ fn list_view(
         .into_any_element()
 }
 
-/// A dropped item goes in the place of item `before` (at the end: None); one of another
-/// checklist stays where it is.
+/// An item dropped on checklist `list` of `block` goes in the place of item `before` (at the
+/// end: None), through `act_on_checklist` (home's on a mirror); one of another block or checklist
+/// stays where it is.
 pub(crate) fn move_item(
     ws: &mut Workspace,
+    block: BlockId,
     list: u64,
     drag: &ItemDrag,
     before: Option<u64>,
+    window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    // Home's items are moved at home: nothing here is written for a mirrored workspace.
-    if drag.list == list && !ws.on_remote() {
-        ws.edit_checklist(list, |c| c.move_item(list, drag.item, before, notes::now()));
-        cx.notify();
+    if drag.block == block && drag.list == list {
+        let space = ws.space.id.clone();
+        let act = ChecklistAct::Move {
+            item: drag.item,
+            before,
+        };
+        ws.act_on_checklist(&space, block, act, window, cx);
     }
     cx.stop_propagation();
 }
@@ -297,7 +300,6 @@ fn row(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let (ui, n, id, done) = (ws.ui, block.0 as usize, item.id, item.done);
-    let remote = ws.on_remote();
     // Dragged, it follows the pointer as wide as the rows.
     let preview = SharedString::from(item.text.clone());
     let width = ws
@@ -397,17 +399,21 @@ fn row(
         .child(delete)
         // A tint, not a border: a border's screen pixels would narrow the text at every zoom.
         .drag_over::<ItemDrag>(move |s, _, _, _| s.bg(ui.accent.opacity(0.18)))
-        // Home's rows are moved at home.
-        .when(!remote, |el| {
-            el.on_drag(ItemDrag { list, item: id }, move |_, _, _, cx| {
+        .on_drag(
+            ItemDrag {
+                block,
+                list,
+                item: id,
+            },
+            move |_, _, _, cx| {
                 let text = preview.clone();
                 cx.new(|_| DragPreview { text, width, z, ui })
-            })
-        })
-        // Dropped on a row, an item takes its place; the list doesn't get the drop too.
-        .on_drop(
-            cx.listener(move |ws, drag: &ItemDrag, _, cx| move_item(ws, list, drag, Some(id), cx)),
+            },
         )
+        // Dropped on a row, an item takes its place; the list doesn't get the drop too.
+        .on_drop(cx.listener(move |ws, drag: &ItemDrag, window, cx| {
+            move_item(ws, block, list, drag, Some(id), window, cx)
+        }))
         .test_support()
         .into_any_element()
 }
@@ -472,31 +478,24 @@ impl Why {
     }
 }
 
-/// A mirrored checklist block that shows none: home shows none there, and opening one is home's.
-fn remote_empty(ws: &Workspace, n: usize, z: f32) -> AnyElement {
-    let computer = ws
-        .space
-        .remote
-        .as_deref()
-        .map_or("the other computer".to_string(), crate::mirror::computer_of);
-    div()
-        .id(("checklist-empty", n))
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .px(px(12.0 * z))
-        .text_size(px(13.0 * z))
-        .text_color(ws.ui.title_dim)
-        .text_center()
-        .child(format!("No checklist open here: open one on {computer}."))
-        .test_support()
-        .into_any_element()
-}
-
-/// A block with no checklist: a new one, or one from the dialog.
-fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
+/// A block with no checklist: a new one, or one from the dialog. A mirrored one's buttons are
+/// home's, dimmed with the rule's words when the mirror can't.
+fn empty(
+    ws: &Workspace,
+    block: BlockId,
+    remote: bool,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
     let n = block.0 as usize;
+    let why = remote.then(|| ws.why_not(Deed::OpenChecklist)).flatten();
+    let gated = |el: gpui_kit::Stateful<gpui_kit::Div>| {
+        let why = why.clone();
+        el.when(why.is_some(), |el| el.opacity(0.4))
+            .when_some(why, |el, words| {
+                el.tooltip(move |window, cx| Tooltip::new(words.clone()).build(window, cx))
+            })
+    };
     div()
         .id(("checklist-empty", n))
         .size_full()
@@ -512,28 +511,30 @@ fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) ->
                 .child("No checklist open here"),
         )
         .child(
-            note::button(
+            gated(note::button(
                 ("checklist-new-here", n),
                 IconName::Plus,
                 "New checklist",
                 ws,
                 z,
-            )
+            ))
             .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                 ws.new_checklist(Some(block), window, cx)
             }))
             .test_support(),
         )
         .child(
-            note::button(
+            gated(note::button(
                 ("checklist-open-here", n),
                 IconName::ListChecks,
                 "Open a checklist…",
                 ws,
                 z,
-            )
-            .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
-                open_checklists(Some(block), window, cx)
+            ))
+            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                if ws.why_not(Deed::OpenChecklist).is_none() {
+                    open_checklists(ws.space.id.clone(), Some(block), window, cx)
+                }
             }))
             .test_support(),
         )
@@ -541,11 +542,14 @@ fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) ->
         .into_any_element()
 }
 
-/// The Checklists dialog: every checklist, the most recently changed first, and a field that
-/// finds them by their name and their items. A click opens one where it is open already, else in
-/// the block `into` it was asked from when that shows none, else in a new block (beside `into`).
-/// So does New checklist. Its trash deletes it on a second click, from its block too.
+/// The Checklists dialog of workspace `space`: every checklist, the most recently changed first,
+/// and a field that finds them by their name and their items. A click opens one where it is open
+/// already, else in the block `into` it was asked from when that shows none, else in a new block
+/// (beside `into`). So does New checklist. Its trash deletes it on a second click, from its block
+/// too. On a mirror it lists home's checklists the blocks of the workspace show, and New checklist
+/// is home's.
 pub(crate) fn open_checklists(
+    space: String,
     into: Option<BlockId>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
@@ -558,44 +562,91 @@ pub(crate) fn open_checklists(
         no_match: "No checklist holds that.",
         new: "New checklist",
     };
+    let (listed, opens, deletes, makes) = (space.clone(), space.clone(), space.clone(), space);
     list_dialog::open(
         kind,
-        rows,
-        move |ws, id, window, cx| ws.open_checklist(id, into, window, cx),
-        |ws, id, window, cx| ws.delete_checklist(id, window, cx),
-        move |ws, window, cx| ws.new_checklist(into, window, cx),
+        move |ws, query| rows(ws, &listed, query),
+        move |ws, id, window, cx| {
+            if still_on(ws, &opens, window, cx) {
+                ws.open_checklist(id, into, window, cx)
+            }
+        },
+        move |ws, id, window, cx| match ws.space_named(&deletes) {
+            Some(s) if s.is_remote() => {
+                ws.warn(crate::workspace::remote::NOT_YET.into(), window, cx)
+            }
+            Some(_) => ws.delete_checklist(id, window, cx),
+            None => {}
+        },
+        move |ws, window, cx| {
+            if still_on(ws, &makes, window, cx) {
+                ws.new_checklist(into, window, cx)
+            }
+        },
         window,
         cx,
     );
 }
 
-/// The Checklists dialog's rows for `query`: each checklist's name, then its progress, when it
-/// changed and where it is open ("2/5 · 5 min ago · Open").
-fn rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
+/// Whether a Checklists dialog of workspace `space` may act: home's ids and this computer's are
+/// alike, so with a mirror in it (the dialog's, or the one shown) it acts on its own workspace
+/// only, shown.
+fn still_on(
+    ws: &mut Workspace,
+    space: &str,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> bool {
+    let mirrored = ws.on_remote() || ws.space_named(space).is_none_or(|s| s.is_remote());
+    !mirrored || ws.still_shown(space, window, cx)
+}
+
+/// The Checklists dialog's rows for `query`, of workspace `space`: each checklist's name, then its
+/// progress, when it changed and where it is open ("2/5 · 5 min ago · Open"). A mirror's are home's
+/// that its blocks show (when they changed is home's to know).
+fn rows(ws: &Workspace, space: &str, query: &str) -> Vec<list_dialog::Row> {
     let now = notes::now();
-    ws.checklists
+    let Some(shown_in) = ws.space_named(space) else {
+        return Vec::new();
+    };
+    let remote = shown_in.is_remote();
+    let Some(lists) = ws.checklists_in(space) else {
+        return Vec::new();
+    };
+    lists
         .find(query)
         .into_iter()
-        .map(|list| {
+        .filter_map(|list| {
+            let at = if remote {
+                let shows = shown_in.blocks.values().any(|b| {
+                    b.checklist_view()
+                        .is_some_and(|c| c.remote && c.list == Some(list.id))
+                });
+                shows.then_some(shown_in)
+            } else {
+                ws.checklist_open_at(list.id).map(|(space, _)| space)
+            };
+            if remote && at.is_none() {
+                return None;
+            }
             let progress = match list.progress() {
                 (_, 0) => None,
                 (done, all) => Some(format!("{done}/{all}")),
             };
-            let at = ws.checklist_open_at(list.id).map(|(space, _)| space);
             let detail: Vec<String> = [
                 progress,
-                Some(notes::ago(list.changed, now)),
+                (!remote).then(|| notes::ago(list.changed, now)),
                 list_dialog::open_at(ws, at),
             ]
             .into_iter()
             .flatten()
             .collect();
-            list_dialog::Row {
+            Some(list_dialog::Row {
                 id: list.id,
                 title: list.name_shown().to_string(),
                 detail: detail.join(" · "),
                 dot: None,
-            }
+            })
         })
         .collect()
 }

@@ -355,7 +355,11 @@ id the workspace's: its drawings in paint order, as the canvas file keeps them (
 `line`, `arrow`, `rect`, `ellipse` with `from` and `to`; `color` by name; `width`; `highlight`), at most 2,000
 drawings and 100,000 points (a shape counts 2), the oldest left out past either. `edit_item` (`block`, `item`, `text`)
 and `delete_item` (`block`, `item`; control) change or delete an item of the checklist a checklist block shows, any
-block your token sees; each is one step of the checklist's Ctrl+Z.
+block your token sees; each is one step of the checklist's Ctrl+Z. `edit_checklist` (`block`, then `name`, or `item`
+with `before`: an item of the checklist it goes just before, or `"end"`, or both; control) renames that checklist
+(blank reads "Checklist") or moves one of its items, one step of its Ctrl+Z. `new_checklist` (`block`, `name`;
+control) shows a new checklist, named `name` ("Checklist" left out), in a checklist block that shows none; a block
+that shows one keeps it and the call is refused (`add_block` opens a block with a new one).
 
 **Who acts.** A call acts as you: no approval, comments by `you`. Tasks it hands (`delegate`, `open_agent`'s prompt) are
 typed as `[from API · <token name>, task t7]`, and their end, a `wait_for` with `wait: false` and every other notice

@@ -530,7 +530,9 @@ pub(crate) fn render(
             "All checklists",
             gates.checklists.clone(),
             z,
-            move |_, window, cx| checklist::open_checklists(Some(id), window, cx),
+            move |ws, window, cx| {
+                checklist::open_checklists(ws.space.id.clone(), Some(id), window, cx)
+            },
             cx,
         )),
         _ => None,

@@ -555,19 +555,26 @@ fn new_note_from_a_local_notes_dialog_adds_nothing_once_a_mirror_is_shown(cx: &m
 }
 
 #[gpui_kit::test]
-fn an_item_dropped_on_a_remote_checklist_moves_nothing_of_the_mirror_s_own(
-    cx: &mut TestAppContext,
-) {
+fn an_item_of_another_block_dropped_on_a_remote_checklist_moves_nothing(cx: &mut TestAppContext) {
     let (_handle, ws, _dir) = live_content(cx);
     let own = ws.read_with(cx, |ws, _| ws.checklists.clone());
     let copy_before = copy(&ws, cx);
-    // A drag that began on a local list 12 (the rows of a mirror's don't drag) ends on home's.
-    let drag = crate::checklist::ItemDrag { list: 12, item: 14 };
-    ws.update(cx, |ws, cx| {
-        crate::checklist::move_item(ws, 12, &drag, Some(13), cx)
-    });
+    // A drag that began on a local list 12, in another block, ends on home's.
+    let c1 = viewer(&ws, cx, "c1");
+    let drag = crate::checklist::ItemDrag {
+        block: BlockId(c1.0 + 100),
+        list: 12,
+        item: 14,
+    };
+    cx.update_window(_handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            crate::checklist::move_item(ws, c1, 12, &drag, Some(13), window, cx)
+        })
+    })
+    .unwrap();
     untouched(&ws, cx, &own);
     assert_eq!(copy(&ws, cx), copy_before);
+    assert!(sent(&ws, cx).is_empty(), "nothing goes home");
 }
 
 #[gpui_kit::test]
@@ -585,20 +592,7 @@ fn a_remote_checklist_draws_home_s_items(cx: &mut TestAppContext) {
         assert!(drawn(handle, cx, "checklist-box", c1, item), "box {item}");
         assert!(drawn(handle, cx, "checklist-text", c1, item), "text {item}");
     }
-    // The header's All checklists button asks the rule: dimmed, and it opens no dialog.
-    ws.read_with(cx, |ws, _| {
-        assert_eq!(
-            ws.why_not(Deed::EditChecklist).as_deref(),
-            Some("Not on a mirrored workspace yet")
-        );
-    });
-    cx.update_window(handle, |_, window, cx| {
-        window.click(("checklists", c1.0 as usize), cx);
-        window.render_frame(cx);
-        assert!(!window.has_active_dialog(cx));
-    })
-    .unwrap();
-    // Home shows none there: the sentence, and no way to make one.
+    // Home shows none there: a new one, or one of the dialog, as locally.
     let state = changed(|s| {
         let at = s.blocks.iter().position(|b| b.id == "c1").unwrap();
         Arc::make_mut(&mut s.blocks[at]).checklist = None;
@@ -614,7 +608,7 @@ fn a_remote_checklist_draws_home_s_items(cx: &mut TestAppContext) {
         assert!(
             window
                 .try_find(("checklist-new-here", c1.0 as usize))
-                .is_none()
+                .is_some()
         );
         assert!(window.try_find(("checklist-list", c1.0 as usize)).is_none());
     })
@@ -1117,8 +1111,16 @@ fn a_remote_checklist_dims_what_it_can_t_do(cx: &mut TestAppContext) {
         gpui_kit::ElementId::from(("checklist-add", c1.0 as usize)),
     );
     assert!(sent(&ws, cx).is_empty());
-    // Live: the name opens no field, and a row can't be dragged.
-    ws.update(cx, |ws, _| live(ws, Scope::Control));
+    // The name opens no field, the dialog doesn't open, and a dropped row moves nothing.
+    ws.read_with(cx, |ws, _| {
+        for deed in [Deed::EditChecklist, Deed::OpenChecklist] {
+            assert_eq!(
+                ws.why_not(deed).as_deref(),
+                Some("Not connected."),
+                "{deed:?}"
+            );
+        }
+    });
     click_on(
         handle,
         cx,
@@ -1132,11 +1134,13 @@ fn a_remote_checklist_dims_what_it_can_t_do(cx: &mut TestAppContext) {
                 .editing
                 .is_none()
         );
-        assert_eq!(
-            ws.why_not(Deed::EditChecklist).as_deref(),
-            Some("Not on a mirrored workspace yet")
-        );
     });
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("checklists", c1.0 as usize), cx);
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
     let own = ws.read_with(cx, |ws, _| ws.checklists.clone());
     // A drop of 13 on 14 moves nothing, here or at home.
     cx.update_window(handle, |_, window, cx| {
@@ -1155,6 +1159,345 @@ fn a_remote_checklist_dims_what_it_can_t_do(cx: &mut TestAppContext) {
         [13, 14]
     );
     untouched(&ws, cx, &own);
+}
+
+/// Home's list 12 as the mirror's copy names it.
+fn copy_name(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> String {
+    ws.read_with(cx, |ws, _| {
+        remote_of(ws).checklists.get(12).unwrap().name.clone()
+    })
+}
+
+fn press_in(handle: AnyWindowHandle, cx: &mut TestAppContext, key: &str) {
+    cx.update_window(handle, |_, window, cx| {
+        window.press(key, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_name_renamed_on_the_mirror_goes_once_on_enter_and_shows_at_once(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_content(cx);
+    let c1 = viewer(&ws, cx, "c1");
+    let own = ws.read_with(cx, |ws, _| ws.checklists.clone());
+    let name = || gpui_kit::ElementId::from(("checklist-name", c1.0 as usize));
+    click_on(handle, cx, name());
+    cx.simulate_input(handle, "Release 2");
+    keep_live(&ws, cx);
+    assert!(sent(&ws, cx).is_empty(), "nothing goes per key");
+    assert_eq!(copy_name(&ws, cx), "Release", "the copy waits for Enter");
+    press_in(handle, cx, "enter");
+    assert_eq!(
+        sent(&ws, cx),
+        [(
+            "edit_checklist".to_string(),
+            json!({"block": "c1", "name": "Release 2"})
+        )]
+    );
+    assert_eq!(copy_name(&ws, cx), "Release 2", "held at once");
+    ws.read_with(cx, |ws, _| {
+        assert!(matches!(ws.space.undo.last(), Some((_, Change::Mark))));
+    });
+    untouched(&ws, cx, &own);
+    // Home's state shows it: the hold ends.
+    apply(handle, &ws, cx, list_state(|l| l.name = "Release 2".into()));
+    ws.read_with(cx, |ws, _| {
+        assert!(remote_of(ws).lists_renamed.get(&12).is_none())
+    });
+    // The same name, and Esc, send nothing.
+    click_on(handle, cx, name());
+    press_in(handle, cx, "enter");
+    click_on(handle, cx, name());
+    cx.simulate_input(handle, "x");
+    keep_live(&ws, cx);
+    press_in(handle, cx, "escape");
+    assert_eq!(sent(&ws, cx).len(), 1);
+    assert_eq!(copy_name(&ws, cx), "Release 2");
+    // A blank name is home's "Checklist".
+    click_on(handle, cx, name());
+    press_in(handle, cx, "delete");
+    press_in(handle, cx, "enter");
+    assert_eq!(
+        sent(&ws, cx).last().unwrap(),
+        &(
+            "edit_checklist".to_string(),
+            json!({"block": "c1", "name": "Checklist"})
+        )
+    );
+    // A refusal brings home's back at once, and is said.
+    answer(handle, &ws, cx, 1, refusal("c1 shows no checklist."));
+    assert_eq!(copy_name(&ws, cx), "Release 2");
+    assert_eq!(said(&ws, cx), ["c1 shows no checklist."]);
+    // No state comes: after HOLD home's name is drawn again.
+    click_on(handle, cx, name());
+    cx.simulate_input(handle, "Later");
+    keep_live(&ws, cx);
+    press_in(handle, cx, "enter");
+    assert_eq!(copy_name(&ws, cx), "Later");
+    ws.update(cx, |ws, _| ws.expire_holds(after_hold()));
+    assert_eq!(copy_name(&ws, cx), "Release 2", "home never renamed it");
+    untouched(&ws, cx, &own);
+}
+
+#[gpui_kit::test]
+fn a_row_dragged_on_the_mirror_moves_at_home_and_shows_at_once(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_content(cx);
+    let c1 = viewer(&ws, cx, "c1");
+    let own = ws.read_with(cx, |ws, _| ws.checklists.clone());
+    let order = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        copy(ws, cx).iter().map(|i| i.0).collect::<Vec<_>>()
+    };
+    let drag = |cx: &mut TestAppContext, from: u64, to: gpui_kit::ElementId| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.drag_to(el("checklist-row", c1, from), to, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    // 13 dropped on 14, the row after it: nothing changes, nothing goes.
+    drag(cx, 13, el("checklist-row", c1, 14));
+    assert!(sent(&ws, cx).is_empty());
+    drag(cx, 14, el("checklist-row", c1, 13));
+    assert_eq!(
+        sent(&ws, cx),
+        [(
+            "edit_checklist".to_string(),
+            json!({"block": "c1", "item": 14, "before": 13})
+        )]
+    );
+    assert_eq!(order(&ws, cx), [14, 13], "in 13's place at once");
+    ws.read_with(cx, |ws, _| {
+        assert!(matches!(ws.space.undo.last(), Some((_, Change::Mark))));
+    });
+    untouched(&ws, cx, &own);
+    // Home's state shows it: the hold ends.
+    apply(handle, &ws, cx, list_state(|l| l.items.reverse()));
+    ws.read_with(cx, |ws, _| {
+        assert!(remote_of(ws).items_moved.get(&(12, 14)).is_none())
+    });
+    assert_eq!(order(&ws, cx), [14, 13]);
+    // Dropped on + Add an item: at the end. No state comes: after HOLD home's order is back.
+    drag(cx, 14, ("checklist-add", c1.0 as usize).into());
+    assert_eq!(
+        sent(&ws, cx).last().unwrap(),
+        &(
+            "edit_checklist".to_string(),
+            json!({"block": "c1", "item": 14, "before": "end"})
+        )
+    );
+    assert_eq!(order(&ws, cx), [13, 14]);
+    ws.update(cx, |ws, _| ws.expire_holds(after_hold()));
+    assert_eq!(order(&ws, cx), [14, 13], "home never moved it");
+    // A refusal puts it back at once, and is said.
+    drag(cx, 14, ("checklist-add", c1.0 as usize).into());
+    assert_eq!(order(&ws, cx), [13, 14]);
+    answer(
+        handle,
+        &ws,
+        cx,
+        2,
+        refusal("There's no item 14 in \"Release\"."),
+    );
+    assert_eq!(order(&ws, cx), [14, 13]);
+    assert_eq!(said(&ws, cx), ["There's no item 14 in \"Release\"."]);
+    untouched(&ws, cx, &own);
+}
+
+#[gpui_kit::test]
+fn all_checklists_on_the_mirror_lists_home_s_and_makes_a_new_one_at_home(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws, _dir) = live_content(cx);
+    let c1 = viewer(&ws, cx, "c1");
+    // This computer's list 99 is never listed: the dialog lists home's.
+    let own = ws.update(cx, |ws, _| {
+        let mut list = ws.checklists.lists[0].clone();
+        list.id = 99;
+        ws.checklists.lists.push(list);
+        ws.checklists.clone()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("checklists", c1.0 as usize), cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+        assert!(window.try_find("checklist-row-99").is_none());
+        window.click("checklist-row-12", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(c1)));
+    // New checklist from a block that shows one: home adds a block beside it.
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("checklists", c1.0 as usize), cx);
+        window.render_frame(cx);
+        window.click("checklists-new", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let (tool, args) = sent(&ws, cx).pop().expect("a call");
+    assert_eq!(tool, "add_block");
+    assert_eq!(
+        (&args["kind"], &args["text"]),
+        (&json!("checklist"), &json!("Checklist"))
+    );
+    let c1_rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(c1).unwrap().rect);
+    let x = args["x"].as_f64().unwrap() as f32;
+    assert!(
+        x >= c1_rect.x + c1_rect.w || x + 320.0 <= c1_rect.x,
+        "beside c1: {args}"
+    );
+    // Home shows none in c1: New checklist there is home's new_checklist into it.
+    let state = changed(|s| {
+        let at = s.blocks.iter().position(|b| b.id == "c1").unwrap();
+        Arc::make_mut(&mut s.blocks[at]).checklist = None;
+    });
+    apply(handle, &ws, cx, state);
+    click_on(
+        handle,
+        cx,
+        gpui_kit::ElementId::from(("checklist-new-here", c1.0 as usize)),
+    );
+    assert_eq!(
+        sent(&ws, cx).last().unwrap(),
+        &("new_checklist".to_string(), json!({"block": "c1"}))
+    );
+    // Its Open a checklist… lists what the workspace's blocks show: none now.
+    click_on(
+        handle,
+        cx,
+        gpui_kit::ElementId::from(("checklist-open-here", c1.0 as usize)),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.has_active_dialog(cx));
+        assert!(window.try_find("checklist-row-12").is_none());
+        // Its trash says the mirror can't, and deletes nothing.
+        window.close_dialog(cx);
+    })
+    .unwrap();
+    untouched(&ws, cx, &own);
+    // The dialog outliving its workspace: a click does nothing and says so.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |_, cx| {
+            crate::checklist::open_checklists("r1".into(), Some(c1), window, cx)
+        });
+        window.render_frame(cx);
+        ws.update(cx, |ws, cx| ws.switch_to(0, window, cx));
+        window.render_frame(cx);
+        window.click("checklists-new", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(sent(&ws, cx).len(), 2, "nothing more was sent");
+    assert_eq!(
+        said(&ws, cx).last().map(String::as_str),
+        Some("Another workspace is shown now: nothing was done.")
+    );
+    untouched(&ws, cx, &own);
+}
+
+#[gpui_kit::test]
+fn a_mirror_s_checklists_dialog_deletes_nothing(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_content(cx);
+    let c1 = viewer(&ws, cx, "c1");
+    let own = ws.read_with(cx, |ws, _| ws.checklists.clone());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |_, cx| {
+            crate::checklist::open_checklists("r1".into(), Some(c1), window, cx)
+        });
+        window.render_frame(cx);
+        window.click("checklist-delete-12", cx);
+        window.render_frame(cx);
+        window.click("checklist-delete-12", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    untouched(&ws, cx, &own);
+    assert!(sent(&ws, cx).is_empty());
+    assert_eq!(said(&ws, cx), ["Not on a mirrored workspace yet"]);
+    assert!(copy(&ws, cx).len() == 2);
+}
+
+#[gpui_kit::test]
+fn a_local_checklists_dialog_does_nothing_once_a_mirror_is_shown(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_content(cx);
+    let here = ws.read_with(cx, |ws, _| ws.order().iter().position(|s| s.id == "r1"));
+    let here = here.expect("the mirror");
+    let blocks = ws.read_with(cx, |ws, _| ws.space.blocks.len());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.switch_to(0, window, cx));
+        let space = ws.read_with(cx, |ws, _| ws.space.id.clone());
+        ws.update(cx, |_, cx| {
+            crate::checklist::open_checklists(space, None, window, cx)
+        });
+        window.render_frame(cx);
+        // The mirror is shown by the time the person clicks: this computer's list 12 opens
+        // nothing there, and New checklist adds nothing there.
+        ws.update(cx, |ws, cx| ws.switch_to(here, window, cx));
+        window.render_frame(cx);
+        window.click("checklist-row-12", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.id, "r1");
+        assert_eq!(ws.space.blocks.len(), blocks);
+    });
+    assert!(sent(&ws, cx).is_empty());
+    assert_eq!(
+        said(&ws, cx).last().map(String::as_str),
+        Some("Another workspace is shown now: nothing was done.")
+    );
+}
+
+#[gpui_kit::test]
+fn an_older_home_dims_renaming_moving_and_new_checklists(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_content(cx);
+    let c1 = viewer(&ws, cx, "c1");
+    ws.update(cx, |ws, _| {
+        let tools = json!([
+            { "name": "edit_item", "inputSchema": { "properties": {} } },
+            { "name": "check_item", "inputSchema": { "properties": {} } },
+        ]);
+        ws.space.remote.as_mut().unwrap().tools = Some(Tools::read(&tools));
+    });
+    draw(handle, cx);
+    ws.read_with(cx, |ws, _| {
+        for deed in [Deed::EditChecklist, Deed::OpenChecklist] {
+            let said = ws.why_not(deed).unwrap_or_default();
+            assert!(
+                said.ends_with("'s Templum is older: update it to do this from here."),
+                "{deed:?}: {said}"
+            );
+        }
+    });
+    click_on(
+        handle,
+        cx,
+        gpui_kit::ElementId::from(("checklist-name", c1.0 as usize)),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.drag_to(el("checklist-row", c1, 14), el("checklist-row", c1, 13), cx);
+        window.click(("checklists", c1.0 as usize), cx);
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            ws.space.blocks[&c1]
+                .checklist_view()
+                .unwrap()
+                .editing
+                .is_none()
+        );
+    });
+    assert!(sent(&ws, cx).is_empty());
+    assert_eq!(
+        copy(&ws, cx).iter().map(|i| i.0).collect::<Vec<_>>(),
+        [13, 14]
+    );
 }
 
 #[gpui_kit::test]
@@ -1261,6 +1604,37 @@ fn acts_on_a_mirror_leave_its_notes_json_and_checklists_json_as_they_were(cx: &m
     pump_home(&home, cx, "edited", |cx| items(cx)[1].0 == "Ship it");
     act(cx, ChecklistAct::Delete { item: tag });
     pump_home(&home, cx, "deleted", |cx| items(cx).len() == 2);
+    // Renamed and moved from the mirror (kanban card 205), once its copy has the new item.
+    pump_home(&home, cx, "the mirror's copy", |cx| {
+        ws.read_with(cx, |ws, _| {
+            let copy = remote_of(ws).checklists.get(list).unwrap();
+            copy.items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>()
+                == ["Ship it", "Notes"]
+        })
+    });
+    let added = home.read_with(cx, |ws, _| ws.checklists.get(list).unwrap().items[1].id);
+    act(
+        cx,
+        ChecklistAct::Move {
+            item: added,
+            before: Some(ship),
+        },
+    );
+    pump_home(&home, cx, "moved", |cx| items(cx)[0].0 == "Notes");
+    act(
+        cx,
+        ChecklistAct::Rename {
+            name: "Release 2".into(),
+        },
+    );
+    pump_home(&home, cx, "renamed", |cx| {
+        home.read_with(cx, |ws, _| {
+            ws.checklists.get(list).unwrap().name == "Release 2"
+        })
+    });
     // Home types in its note and draws a stroke: the mirror shows each.
     let first = home.read_with(cx, |ws, _| ws.space.id.clone());
     cx.update_window(home_handle, |_, window, cx| {
@@ -1289,7 +1663,34 @@ fn acts_on_a_mirror_leave_its_notes_json_and_checklists_json_as_they_were(cx: &m
             let list = remote_of(ws).checklists.get(list).unwrap();
             text.as_deref() == Some("hello there")
                 && list.items.len() == 2
+                && list.name == "Release 2"
                 && ws.space.ink == [stroke.clone()]
+        })
+    });
+    // Home deletes the checklist: New checklist in the mirror's empty block is home's.
+    cx.update_window(home_handle, |_, window, cx| {
+        home.update(cx, |ws, cx| ws.delete_checklist(list, window, cx))
+    })
+    .unwrap();
+    pump_home(&home, cx, "the block to show none", |cx| {
+        ws.read_with(cx, |ws, _| {
+            remote_of(ws)
+                .homes
+                .get(&uid)
+                .is_some_and(|id| ws.space.blocks[id].checklist_view().unwrap().list.is_none())
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.new_checklist(Some(c1), window, cx))
+    })
+    .unwrap();
+    pump_home(&home, cx, "a new checklist at home", |cx| {
+        home.read_with(cx, |ws, _| {
+            ws.space.blocks[&block]
+                .checklist()
+                .unwrap()
+                .list
+                .is_some_and(|l| l != list && ws.checklists.get(l).is_some())
         })
     });
     ws.update(cx, |ws, cx| ws.save_canvas_now(cx));

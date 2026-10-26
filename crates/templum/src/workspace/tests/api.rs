@@ -4469,3 +4469,128 @@ fn edit_item_and_delete_item_act_as_you_on_any_checklist_block(cx: &mut TestAppC
     );
     assert_eq!(refused(&line).0, Some(i64::from(codes::SCOPE)), "{line}");
 }
+
+#[gpui_kit::test]
+fn edit_checklist_renames_and_moves_and_new_checklist_fills_an_empty_block(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (block, list) = checklist_block(handle, &ws, cx, "Release", &["Tag it", "Ship", "Tell"]);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&block].clone());
+    let ids = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let l = ws.checklists.get(list).unwrap();
+            (
+                l.name.clone(),
+                l.items.iter().map(|i| i.id).collect::<Vec<_>>(),
+            )
+        })
+    };
+    let (_, items) = ids(&ws, cx);
+    let (tag, ship, tell) = (items[0], items[1], items[2]);
+    let control = with_token(&ws, cx, Scope::Control, None);
+    let call = |cx: &mut TestAppContext, name: &str, args: Value| {
+        said(&tool(handle, &ws, cx, &control, name, args))
+    };
+    assert_eq!(
+        call(
+            cx,
+            "edit_checklist",
+            json!({"block": uid, "name": " Release 2 ", "item": tell, "before": tag})
+        ),
+        (
+            false,
+            format!("The checklist is \"Release 2\". Item {tell} is before item {tag}.")
+        )
+    );
+    assert_eq!(
+        ids(&ws, cx),
+        ("Release 2".to_string(), vec![tell, tag, ship])
+    );
+    assert_eq!(
+        call(
+            cx,
+            "edit_checklist",
+            json!({"block": uid, "item": tell, "before": "end"})
+        ),
+        (false, format!("Item {tell} is at the end."))
+    );
+    assert_eq!(ids(&ws, cx).1, [tag, ship, tell]);
+    assert_eq!(
+        call(
+            cx,
+            "edit_checklist",
+            json!({"block": uid, "item": tag, "before": 99})
+        ),
+        (
+            true,
+            "There's no item 99 in \"Release 2\". read_checklist shows its items.".to_string()
+        )
+    );
+    assert_eq!(ids(&ws, cx).1, [tag, ship, tell], "nothing moved");
+    assert!(ws.read_with(cx, |ws, _| ws.templum_agent.approvals.is_empty()));
+    // Each is one step of the checklist's Ctrl+Z.
+    ws.update(cx, |ws, cx| assert!(ws.undo_checklists(cx)));
+    assert_eq!(ids(&ws, cx).1, [tell, tag, ship]);
+    ws.update(cx, |ws, cx| assert!(ws.undo_checklists(cx)));
+    assert_eq!(ids(&ws, cx), ("Release".to_string(), vec![tag, ship, tell]));
+    // A block that shows one keeps it; one that shows none shows a new one.
+    let line = call(cx, "new_checklist", json!({"block": uid}));
+    assert_eq!(
+        line,
+        (
+            true,
+            format!("{uid} shows a checklist already: add_block opens a block with a new one.")
+        )
+    );
+    ws.update(cx, |ws, cx| {
+        ws.checklists.remove(list);
+        cx.notify()
+    });
+    let (made, text) = call(cx, "new_checklist", json!({"block": uid, "name": "Plan"}));
+    let shown = ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&block].checklist().unwrap().list
+    });
+    let new = shown.expect("a checklist");
+    assert_eq!(
+        (made, text),
+        (
+            false,
+            format!("Made checklist \"Plan\" ({new}) and showed it in {uid}.")
+        )
+    );
+    assert_ne!(new, list);
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.checklists.get(new).unwrap().name.clone()),
+        "Plan"
+    );
+    // A limited token reaches only the blocks of its workspaces; a read token, none of these.
+    let (second, _) = another_workspace(handle, &ws, cx);
+    let limited = with_token(&ws, cx, Scope::Control, Some(vec![second.as_str()]));
+    for (name, args) in [
+        ("edit_checklist", json!({"block": uid, "name": "x"})),
+        ("new_checklist", json!({"block": uid})),
+    ] {
+        let line = tool(handle, &ws, cx, &limited, name, args);
+        assert_eq!(
+            refused(&line).0,
+            Some(i64::from(codes::NOT_FOUND)),
+            "{line}"
+        );
+    }
+    let read = with_token(&ws, cx, Scope::Read, Some(vec![first.as_str()]));
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &read,
+        "edit_checklist",
+        json!({"block": uid, "name": "x"}),
+    );
+    assert_eq!(refused(&line).0, Some(i64::from(codes::SCOPE)), "{line}");
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.checklists.get(new).unwrap().name.clone()),
+        "Plan"
+    );
+}

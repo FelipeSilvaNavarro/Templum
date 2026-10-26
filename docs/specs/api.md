@@ -341,6 +341,12 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
   Ctrl+Z at home; the board and card arguments are targets, so a limited token reaches only the boards its kanbans
   show (`NOT_FOUND` for the rest). `delete_card`, and a delete of a board or column with cards, ask the Templum
   Agent's person first unless it made them (`AskOwn`, `AskOwnWhenLosing`); through the API they run as you.
+- **The checklist tools** (kanban card 205) join the control server, `Control` scope: `edit_checklist` (`block`, then
+  `name`, or `item` with `before` (an item id or `"end"`), or both) renames the checklist a checklist block shows or
+  moves one of its items, one step of its Ctrl+Z; `new_checklist` (`block`, `name`) shows a new checklist in a
+  checklist block that shows none (refused on one that shows one). `block` is their target, so a limited token
+  reaches only its workspaces' checklists (`NOT_FOUND` for the rest); `name`, `item` and `before` name nothing.
+  Danger `–`.
 - **`edit_comment` and `delete_comment`** join the control server (templum-agent.md's table). Through the API they act
   as you: `edit_comment` changes a comment by `you`, `delete_comment` deletes any; the Templum Agent changes only its
   own. `GET /v1/tools` describes them as the control server does.

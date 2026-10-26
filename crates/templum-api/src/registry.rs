@@ -1373,7 +1373,7 @@ mod tests {
     }
 
     #[test]
-    fn the_board_tools_take_a_control_token() {
+    fn the_board_and_checklist_tools_take_a_control_token() {
         for (name, args) in [
             ("delete_card", json!({"card": 4})),
             ("edit_board", json!({"board": 1, "name": "x"})),
@@ -1384,6 +1384,12 @@ mod tests {
                 json!({"board": 1, "column": 3, "delete": true}),
             ),
             ("show_board", json!({"block": "k", "board": 1})),
+            ("edit_checklist", json!({"block": "c", "name": "x"})),
+            (
+                "edit_checklist",
+                json!({"block": "c", "item": 13, "before": "end"}),
+            ),
+            ("new_checklist", json!({"block": "c"})),
         ] {
             assert_eq!(scope(name, &args), Ok(Scope::Control), "{name} {args}");
         }

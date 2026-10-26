@@ -573,7 +573,8 @@ impl Items {
                 shells,
                 gates,
             } => {
-                // They list this computer's own, which can't go into a mirrored workspace.
+                // Notes… lists this computer's own, which can't go into a mirrored workspace;
+                // Checklists… lists home's there.
                 let notes = gated_item(
                     ws,
                     "Notes…",
@@ -586,7 +587,9 @@ impl Items {
                     "Checklists…",
                     Some(IconName::ListChecks),
                     gates.why(Deed::OpenChecklist),
-                    |_, window, cx| crate::checklist::open_checklists(None, window, cx),
+                    |ws, window, cx| {
+                        crate::checklist::open_checklists(ws.space.id.clone(), None, window, cx)
+                    },
                 );
                 adding(ws, menu, agents, shells, at, gates, window, cx)
                     .item(notes)
@@ -598,7 +601,9 @@ impl Items {
                 "All checklists…",
                 Some(IconName::ListChecks),
                 gates.why(Deed::OpenChecklist),
-                move |_, window, cx| crate::checklist::open_checklists(Some(block), window, cx),
+                move |ws, window, cx| {
+                    crate::checklist::open_checklists(ws.space.id.clone(), Some(block), window, cx)
+                },
             )),
             Items::Terminal {
                 block,

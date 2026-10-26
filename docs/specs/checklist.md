@@ -107,11 +107,11 @@ Opened by the header's button, **All checklists…** in the block's menu, **Chec
 - the trash deletes a checklist on its **second** click ("Click again to delete" shows after the first); the block that
   showed it shows none.
 
-## On a mirrored workspace (Templum to Templum, part 2e)
+## On a mirrored workspace (Templum to Templum, part 2e; kanban card 205)
 
 A checklist block of a [mirrored workspace](templum-to-templum.md) is drawn from home's state by the same view, and
-what is done to it is done at home (`check_item`, `add_items`, `edit_item` and `delete_item`, each the rule's deed,
-asked of `why_not` first):
+what is done to it is done at home (`check_item`, `add_items`, `edit_item`, `delete_item`, `edit_checklist` and
+`new_checklist`, each the rule's deed, asked of `why_not` first):
 
 - the check box and the × send their tool, and show at once: a check, an edit and a delete stand over home's state
   until it shows them, a refusal, or two seconds;
@@ -120,10 +120,22 @@ asked of `why_not` first):
   leaving sends what Enter would, to the remote the field was opened on, whichever workspace is shown by then;
 - **+ Add an item** opens a field for a new item: Enter sends `add_items` and opens the next, a blank Enter closes it,
   and the keyboard leaving sends it too (the item appears with home's state);
-- the checklist's name is not editable and its rows can't be dragged (the tooltip says it isn't on a mirrored
-  workspace yet); All checklists… is dimmed, since the dialog lists this computer's;
-- a block that shows none says "No checklist open here: open one on winx-desktop."; the controls the share or home
-  can't do are dimmed with the rule's words as their tooltip; Ctrl+Z there stops at the mark and says to undo on home.
+- the checklist's name is a field as an item's is: Enter or the keyboard leaving sends `edit_checklist` with the
+  whole name once (nothing when unchanged; a blank one is "Checklist", as home shows it), Esc drops it; the new name
+  shows at once and stands over home's state as an edit does;
+- a row dragged onto another row, or onto the list's empty space or + Add an item, sends `edit_checklist` with the
+  item and `before` (the row it took the place of, or `"end"`), and shows there at once, held the same way; a drop that
+  changes nothing sends nothing, and an item of another block is not taken;
+- **All checklists…** (the header's button, the block's menu, the canvas menu's Checklists…, the empty block's Open a
+  checklist…) lists home's checklists that the blocks of the mirrored workspace show (what the share sees), with
+  their progress and "Open"; a click shows the block that has it, as locally. **New checklist** in a block that shows
+  none is home's `new_checklist` there; elsewhere home adds a checklist block beside the block (or in the view), as
+  Add ▸ Checklist does. The dialog's trash says "Not on a mirrored workspace yet" and deletes nothing. A dialog acts
+  only while its workspace is shown: one of this computer's, once a mirror is shown, does nothing and says so;
+- a block that shows none offers New checklist and Open a checklist…, as locally; the controls the share or home
+  can't do are dimmed with the rule's words as their tooltip (a home without `edit_checklist` or `new_checklist`:
+  "winx-desktop's Templum is older: update it to do this from here."); Ctrl+Z there stops at the mark and says to undo
+  on home.
 
 Nothing local is written: the mirror's `checklists.json` stays as it was.
 

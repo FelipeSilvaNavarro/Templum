@@ -2456,3 +2456,10 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **Cancel of a home schedule can go twice.** (`workspace/remote_rules.rs`, `cancel_home_schedule`.) Two clicks
   before home answers send two calls; the second answer is "There's no schedule s3", said as a warning. Fix: key
   `home_busy` by the schedule too.
+- [ ] **A mirror's Checklists dialog shows a trash that deletes nothing.** (`checklist.rs`, `open_checklists`.) Two
+  clicks on a row's trash say "Not on a mirrored workspace yet"; deleting home's checklists stays at home. Fix: a
+  `list_dialog::Row` that may not be deleted draws its trash dimmed with the rule's words, or none.
+- [ ] **A new checklist from a mirror doesn't open its name's field.** (`workspace/checklist_blocks.rs`,
+  `remote_new_checklist`.) Locally New checklist edits the name at once; on a mirror home names it "Checklist", and
+  the block beside comes without the camera going to it. Fix: once home's state brings the checklist (`awaiting`),
+  `edit_field(Name)` and `reveal` it.

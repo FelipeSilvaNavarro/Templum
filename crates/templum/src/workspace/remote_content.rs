@@ -170,9 +170,9 @@ impl RemoteSpace {
     }
 
     /// What was done to an item here and home's state doesn't show yet stands over the copy: an
-    /// item deleted is left out, an item checked or edited is as it was left. Each hold ends when
-    /// home's state shows it, or after `HOLD`; a checklist one was laid over is cleaned again
-    /// from home's state at the next copy, not moved over.
+    /// item deleted is left out, an item checked, edited or moved is as it was left, and so is a
+    /// checklist renamed. Each hold ends when home's state shows it, or after `HOLD`; a checklist
+    /// one was laid over is cleaned again from home's state at the next copy, not moved over.
     fn lay_item_holds(&mut self, state: &State, now: Instant) {
         let views: HashMap<u64, &Arc<ChecklistView>> =
             state.checklists.iter().map(|l| (l.id, l)).collect();
@@ -227,6 +227,40 @@ impl RemoteSpace {
                 && let Some(item) = self.item_mut(list, item)
             {
                 item.text = clean_to(&text, ITEM_CHARS);
+                laid.insert(list);
+            }
+        }
+        for key @ (list, item) in self.items_moved.keys() {
+            let Some(view) = views.get(&list) else {
+                self.items_moved.end(&key);
+                continue;
+            };
+            let Some(at) = view.items.iter().position(|i| i.id == item) else {
+                self.items_moved.end(&key);
+                continue;
+            };
+            // Where home has it, said as the item after it.
+            let home = view.items.get(at + 1).map(|i| i.id);
+            let before = self
+                .items_moved
+                .shown(key, home, now, |mine, home| mine == home);
+            if before != home {
+                self.checklists.move_item(list, item, before, 0);
+                laid.insert(list);
+            }
+        }
+        for list in self.lists_renamed.keys() {
+            let Some(home) = views.get(&list).map(|l| clean_title(&l.name)) else {
+                self.lists_renamed.end(&list);
+                continue;
+            };
+            let name = self
+                .lists_renamed
+                .shown(list, home.clone(), now, |mine, home| mine == home);
+            if name != home
+                && let Some(copy) = self.checklists.lists.iter_mut().find(|l| l.id == list)
+            {
+                copy.name = name;
                 laid.insert(list);
             }
         }
@@ -383,6 +417,7 @@ impl Workspace {
             ChecklistAct::Delete { .. } => Deed::DeleteItem,
             ChecklistAct::Edit { .. } => Deed::EditItem,
             ChecklistAct::Add { .. } => Deed::AddItems,
+            ChecklistAct::Move { .. } | ChecklistAct::Rename { .. } => Deed::EditChecklist,
         };
         let Some(sp) = self.space_named(space) else {
             return;
@@ -405,6 +440,8 @@ impl Workspace {
             Checked(u64, bool),
             Edited(u64, String),
             Deleted(u64),
+            Moved(u64, Option<u64>),
+            Renamed(String),
         }
         let (tool, args, hold) = match act {
             ChecklistAct::Toggle { item } => {
@@ -445,10 +482,49 @@ impl Workspace {
                 }
                 ("add_items", json!({ "block": home, "text": text }), None)
             }
+            ChecklistAct::Move { item, before } => {
+                let Some(items) = remote.checklists.get(list).map(|l| &l.items) else {
+                    return;
+                };
+                let Some(at) = items.iter().position(|i| i.id == item) else {
+                    return;
+                };
+                // A drop that changes nothing sends nothing.
+                let next = items.get(at + 1).map(|i| i.id);
+                if before == Some(item) || next == before {
+                    return;
+                }
+                let to = before.map_or(json!("end"), |b| json!(b));
+                (
+                    "edit_checklist",
+                    json!({ "block": home, "item": item, "before": to }),
+                    Some(Hold::Moved(item, before)),
+                )
+            }
+            ChecklistAct::Rename { name } => {
+                // A blank name reads "Checklist", as home shows it.
+                let name = match clean_title(&name).trim() {
+                    "" => checklists::NAME.to_string(),
+                    name => name.to_string(),
+                };
+                if remote.checklists.get(list).is_none_or(|l| l.name == name) {
+                    return;
+                }
+                (
+                    "edit_checklist",
+                    json!({ "block": home, "name": name }),
+                    Some(Hold::Renamed(name)),
+                )
+            }
         };
         let now = Instant::now();
+        // What a refusal ends: the item's holds, or the name's.
         let held = hold.as_ref().map(|hold| match hold {
-            Hold::Checked(item, _) | Hold::Edited(item, _) | Hold::Deleted(item) => *item,
+            Hold::Checked(item, _)
+            | Hold::Edited(item, _)
+            | Hold::Deleted(item)
+            | Hold::Moved(item, _) => Some(*item),
+            Hold::Renamed(_) => None,
         });
         if let Some(remote) = self.remote_mut(space) {
             match hold {
@@ -457,6 +533,10 @@ impl Workspace {
                 }
                 Some(Hold::Edited(item, text)) => remote.items_edited.hold((list, item), text, now),
                 Some(Hold::Deleted(item)) => remote.items_deleted.hold((list, item), true, now),
+                Some(Hold::Moved(item, before)) => {
+                    remote.items_moved.hold((list, item), before, now)
+                }
+                Some(Hold::Renamed(name)) => remote.lists_renamed.hold(list, name, now),
                 None => {}
             }
         }
@@ -474,10 +554,18 @@ impl Workspace {
                 return;
             };
             // Home's state is the truth: what stood over it goes, and its last state is drawn.
-            if let (Some(item), Some(remote)) = (held, ws.remote_mut(&space_id)) {
-                remote.items_checked.end(&(list, item));
-                remote.items_edited.end(&(list, item));
-                remote.items_deleted.end(&(list, item));
+            if let (Some(held), Some(remote)) = (held, ws.remote_mut(&space_id)) {
+                match held {
+                    Some(item) => {
+                        remote.items_checked.end(&(list, item));
+                        remote.items_edited.end(&(list, item));
+                        remote.items_deleted.end(&(list, item));
+                        remote.items_moved.end(&(list, item));
+                    }
+                    None => {
+                        remote.lists_renamed.end(&list);
+                    }
+                }
             }
             ws.remirror(&space_id, Instant::now());
             ws.warn(refusal.sentence, window, cx);

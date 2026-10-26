@@ -802,8 +802,8 @@ fn the_dialog_lists_checklists_newest_first_and_finds_by_item_text(cx: &mut Test
         (a, b)
     });
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |_, cx| {
-            crate::checklist::open_checklists(None, window, cx)
+        ws.update(cx, |ws, cx| {
+            crate::checklist::open_checklists(ws.space.id.clone(), None, window, cx)
         });
         window.render_frame(cx);
         let (ya, yb) = (
@@ -846,8 +846,8 @@ fn the_dialog_opens_one_where_it_is_open_and_deletes_one_from_its_blocks(cx: &mu
     });
     // Its trash deletes it on the second click, from the block too.
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |_, cx| {
-            crate::checklist::open_checklists(None, window, cx)
+        ws.update(cx, |ws, cx| {
+            crate::checklist::open_checklists(ws.space.id.clone(), None, window, cx)
         });
         window.render_frame(cx);
         window.click(trash(list), cx);
@@ -946,8 +946,8 @@ fn the_dialog_opens_a_checklist_beside_a_block_that_shows_one(cx: &mut TestAppCo
     ws.read_with(cx, |ws, _| assert_eq!(shown(ws, beside), other));
     // The camera went to the new block: the dialog is asked from the first one again.
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |_, cx| {
-            crate::checklist::open_checklists(Some(id), window, cx)
+        ws.update(cx, |ws, cx| {
+            crate::checklist::open_checklists(ws.space.id.clone(), Some(id), window, cx)
         });
     })
     .unwrap();

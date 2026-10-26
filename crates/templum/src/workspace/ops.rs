@@ -1084,7 +1084,7 @@ impl Workspace {
         {
             return self.no_column(board, &column.to_string());
         }
-        if let Some(Before::Column(other)) = before {
+        if let Some(Before::Id(other)) = before {
             if Some(other) == column {
                 return Reply::err("A column can't go before itself.");
             }
@@ -1093,7 +1093,7 @@ impl Workspace {
             }
         }
         let before_id = match before {
-            Some(Before::Column(other)) => Some(other),
+            Some(Before::Id(other)) => Some(other),
             _ => None,
         };
         let reply = match column {
@@ -1478,6 +1478,106 @@ impl Workspace {
             [one] => Reply::ok(format!("Added item {one}.")),
             many => Reply::ok(format!("Added items {}.", many.join(", "))),
         }
+    }
+
+    /// Renames the checklist a block shows (`name`, trimmed; blank reads "Checklist") and moves
+    /// its item `item` before another or to the end (`moved`), as its name's field and a dropped
+    /// row do: one Ctrl+Z step.
+    pub(super) fn checklist_edit(
+        &mut self,
+        at: (&str, BlockId),
+        block: &str,
+        name: Option<&str>,
+        moved: Option<(u64, Before)>,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let list = match self.list_of(at, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        let moved = moved.map(|(item, before)| match before {
+            Before::Id(other) => (item, Some(other)),
+            Before::End => (item, None),
+        });
+        let has = |item: u64| {
+            self.checklists
+                .get(list)
+                .and_then(|l| l.item(item))
+                .is_some()
+        };
+        if let Some((item, before)) = moved
+            && let Some(missing) = [Some(item), before]
+                .into_iter()
+                .flatten()
+                .find(|i| !has(*i))
+        {
+            return self.no_item(list, missing);
+        }
+        let now = notes::now();
+        self.edit_checklist(list, |c| {
+            if let Some(name) = name {
+                c.rename(list, name.trim(), now);
+            }
+            if let Some((item, before)) = moved {
+                c.move_item(list, item, before, now);
+            }
+        });
+        self.agent_changed(list);
+        cx.notify();
+        let mut said = Vec::new();
+        if name.is_some() {
+            let shown = self.checklists.get(list).map_or("", |l| l.name_shown());
+            said.push(format!("The checklist is \"{}\".", flat(shown)));
+        }
+        match moved {
+            Some((item, Some(before))) => {
+                said.push(format!("Item {item} is before item {before}."))
+            }
+            Some((item, None)) => said.push(format!("Item {item} is at the end.")),
+            None => {}
+        }
+        Reply::ok(said.join(" "))
+    }
+
+    /// A new checklist named `name` ("Checklist" without one), shown in the checklist block that
+    /// shows none, as its New checklist does. A block that shows one keeps it.
+    pub(super) fn checklist_new(
+        &mut self,
+        (space, id): (&str, BlockId),
+        block: &str,
+        name: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let Some(shown) = self
+            .space_named(space)
+            .and_then(|s| s.blocks.get(&id))
+            .and_then(Body::checklist)
+            .map(|c| c.list)
+        else {
+            return Reply::err(format!("{block} isn't a checklist."));
+        };
+        if shown.is_some_and(|list| self.checklists.get(list).is_some()) {
+            return Reply::err(format!(
+                "{block} shows a checklist already: add_block opens a block with a new one."
+            ));
+        }
+        let now = notes::now();
+        let list = self.checklists.add(now);
+        if let Some(name) = name {
+            self.checklists.rename(list, name.trim(), now);
+        }
+        if let Some(checklist) = self
+            .space_by_id_mut(space)
+            .and_then(|s| s.checklist_mut(id))
+        {
+            checklist.list = Some(list);
+        }
+        cx.notify();
+        let shown = self.checklists.get(list).map_or("", |l| l.name_shown());
+        Reply::ok(format!(
+            "Made checklist \"{}\" ({list}) and showed it in {block}.",
+            flat(shown)
+        ))
     }
 }
 

@@ -712,33 +712,34 @@ Each is its own kanban card (*the designer's call*):
 
 1. Editing notes from the mirror: their text, names, colors and tabs, opening and deleting notes. A note is read-only
    and live on a mirror, and Add ▸ Note is dimmed there.
-2. Renaming a checklist, reordering its items, and showing another checklist in a block.
-3. Drawing from the mirror: drawing, erasing, moving and deleting ink and shapes (they are drawn live).
-4. An editor's files through the API: an editor stays a card.
-5. Following home's camera.
-6. Sealed through tunnels: Templum's pinned TLS inside one WebSocket.
-7. Undo on a mirror beyond moves: an undo at home that undoes the mirror's own steps, not the person's at home.
-8. A card's attachments from the mirror: thumbnails, opening and attaching (their names and sizes show).
-9. Kanban drafts on a mirror: a remote card's dialog has no Save draft.
-10. Move to workspace, and Copy and Paste of blocks on a remote workspace. (Copy and Paste of a block between a
-    remote and a local workspace stays off for good: it would write home's content into the mirror's stores, batch 1's
-    anti-goal.) Grid mode, left out at first, works (kanban card 206): it is the mirror's own view.
-11. In the Git popup on a remote: Clone a repository…, Choose another folder… (a picker of home's folders), the ⚙
+2. Drawing from the mirror: drawing, erasing, moving and deleting ink and shapes (they are drawn live).
+3. An editor's files through the API: an editor stays a card.
+4. Following home's camera.
+5. Sealed through tunnels: Templum's pinned TLS inside one WebSocket.
+6. Undo on a mirror beyond moves: an undo at home that undoes the mirror's own steps, not the person's at home.
+7. A card's attachments from the mirror: thumbnails, opening and attaching (their names and sizes show).
+8. Kanban drafts on a mirror: a remote card's dialog has no Save draft.
+9. Move to workspace, and Copy and Paste of blocks on a remote workspace. (Copy and Paste of a block between a
+   remote and a local workspace stays off for good: it would write home's content into the mirror's stores, batch 1's
+   anti-goal.) Grid mode, left out at first, works (kanban card 206): it is the mirror's own view.
+10. In the Git popup on a remote: Clone a repository…, Choose another folder… (a picker of home's folders), the ⚙
     beside Generate (home's Settings), Open in editor, and Run in a terminal on a failed command.
-12. In the Agents popup on a remote agent, each subagent's line (their count shows); the dot that travels along a wire
+11. In the Agents popup on a remote agent, each subagent's line (their count shows); the dot that travels along a wire
     while a task is handed.
-13. A `move_block` for several blocks at once: the minor "a selection of several blocks moved on the mirror is one
+12. A `move_block` for several blocks at once: the minor "a selection of several blocks moved on the mirror is one
     Ctrl+Z step per block at home" stays.
-14. Stopping a remote workspace at home from the mirror (it would cut the mirror's own view; Start stays).
+13. Stopping a remote workspace at home from the mirror (it would cut the mirror's own view; Start stays).
 
 Home's shells in Add ▸ Terminal ▸, left out at first, are there (kanban card 201): [The canvas](#the-canvas).
+Renaming a checklist, reordering its items and showing another checklist in a block, left out at first, work
+(kanban card 205): [Checklists](#boards-checklists-notes-ink).
 
 Why these: the person named Git, the inbox, automations and agents, and "completely" is read as everything a person
 reads on a workspace, and every act they take on it that is one discrete change. Editing a note's text is not one: two
 computers typing into one text a round trip apart needs a design of its own for conflicts, and a half-done one loses
 text. Checklist items are discrete (an id and a value), so adding, editing, checking and deleting them are in batch 2.
-Items 2, 3 and 12 are cheap but rare from another computer; 4 and 6 widen what crosses the network (files, a second
-TLS); 5, 7–11, 13 and 14 are conveniences whose absence the mirror says in words.
+Items 2 and 11 are cheap but rare from another computer; 3 and 5 widen what crosses the network (files, a second
+TLS); 4, 6–10, 12 and 13 are conveniences whose absence the mirror says in words.
 
 Its anti-goals and threats are with batch 1's, marked *(batch 2)*: [Anti-goals](#anti-goals-a-failure-even-if-it-works)
 and the [threat model](#threat-model).
@@ -760,6 +761,7 @@ call; the mirror dims what its share can't do with the words of [One rule](#one-
 | Scrolls a terminal back | `read_terminal` | any |
 | Moves, makes, edits, comments on or deletes a card; edits columns and boards | `move_card`, `create_card`, `edit_card`, `comment_card`, `edit_comment`, `delete_comment`, `delete_card`, `edit_column`, `edit_board`, `show_board` | Control |
 | Checks, adds, edits or deletes a checklist item | `check_item`, `add_items`, `edit_item`, `delete_item` | Control |
+| Renames a checklist, moves its items; a new checklist in a block that shows none | `edit_checklist`, `new_checklist` | Control |
 | Reads a repository in the Git popup | `git` (its reads) | any |
 | Stages, commits, pushes, switches and makes branches, stashes, reverts… | `git` | Control |
 | Discards changes, restores a version, deletes a branch, drops a stash, aborts a merge | `git` | Full |
@@ -884,8 +886,23 @@ home as tools. Editors, and kinds the mirror doesn't know, stay batch 1's card.
   **Add an item** sends `add_items`; an item edited in place sends `edit_item` on Enter or when its field loses the
   keyboard (locally every key is written; on a mirror the whole value goes once; Esc drops it); its ✕ sends
   `delete_item`.
-- Renaming the checklist, dragging items and **All checklists…** are dimmed (left out). A remote block that shows no
-  checklist says "No checklist open here: open one on winx-desktop."
+- **The name** (kanban card 205) is a field as an item's is: Enter or the keyboard leaving sends `edit_checklist`
+  with `name` once (nothing when unchanged; blank sends "Checklist", which home shows for a blank name), Esc drops it.
+  The new name shows at once (held).
+- **Dragging a row** onto another sends `edit_checklist` with the item and `before`, the row whose place it took; onto
+  the list's empty space or + Add an item, `before: "end"`. It shows there at once (held, by the item that follows
+  it at home); a drop that changes nothing sends nothing. A drag carries its block, so an item of another block
+  (another workspace's, whose ids are this computer's) is never sent.
+- **All checklists…** (the header's button, the block's menu, the canvas menu's Checklists…) lists home's
+  checklists that the mirrored workspace's blocks show, which is what the share sees (a limited token sees a checklist
+  only when a block of its workspaces shows it, and a checklist is open in one block at most), with their progress and
+  "Open"; a click shows the block that has it, as locally. **New checklist**: in a block that shows none, home's
+  `new_checklist` there; else home adds a checklist block beside it (`add_block` at `x`, `y`), or in the view without
+  one. The trash deletes nothing: "Not on a mirrored workspace yet". A Checklists dialog acts only while its workspace
+  is shown, whenever a mirror is in it (home's ids and this computer's are alike): "Another workspace is shown now:
+  nothing was done."
+- A remote block that shows no checklist offers New checklist and Open a checklist…, as locally, dimmed with the
+  rule's words when the mirror can't (`Deed::OpenChecklist`).
 
 **Notes:**
 
@@ -1009,7 +1026,7 @@ button, item, shortcut and drag asks it, and a dimmed control shows its answer a
 4. "Not on a mirrored workspace yet" for what batch 2 leaves out.
 
 This replaces batch 1's blanket `on_remote` refusals. The banner's ⓘ lists what is left (editors, editing notes,
-drawing, attachments, Move to workspace, Copy and Paste of blocks). What only changes the mirror's own view (panning,
+deleting a checklist, drawing, attachments, Move to workspace, Copy and Paste of blocks). What only changes the mirror's own view (panning,
 zooming, grid mode) is no deed and is never dimmed.
 
 **The Share… dialog's words** follow what a share now does: **Control**: "Watch and work with blocks, cards,
@@ -1059,6 +1076,11 @@ rule is the control server's danger, which gives the API's scope):
 | `edit_board` | `board`, then `name` or `delete: true` | Renames it, or deletes it with its cards (Ctrl+Z brings them back) | Ask own for a delete with cards; – otherwise → control |
 | `edit_column` | `board`; `column` (left out: a new column), `title`, `before` (a column of the board, or `"end"`), `delete: true` | Adds, renames, moves or deletes (with its cards) a column | Ask own for a delete with cards; – otherwise → control |
 | `show_board` | `block` (a kanban), then `board` or `new` (a name, with `columns`) | Shows that board in the block, or a new board (always new, whatever names exist) | – → control |
+
+**New control tools of kanban card 205:** `edit_checklist` (`block`, then `name`, or `item` with `before`: an item
+id or `"end"`, or both; renames the checklist the block shows, blank reading "Checklist", or moves one of its items;
+one step of its Ctrl+Z) and `new_checklist` (`block`, `name`: a new checklist in a checklist block that shows none,
+refused on one that shows one). Danger –, so Control.
 
 **Into the control server** from the block server: `edit_item` and `delete_item` (on any checklist block, as the
 person's acts are), `edit_comment` and `delete_comment` (through the API, the person's: edits a comment `by: "you"`,
@@ -1269,10 +1291,10 @@ functions' names.
 ### Later batches
 
 Sketched so batches 1 and 2 close no door, each its own card: editing notes from the mirror; renaming a checklist,
-reordering its items and showing another checklist in a block; drawing; an editor's files through the API; following
-home's camera; **sealed through tunnels**: Templum's pinned TLS carried inside one WebSocket the tunnel passes, so not
-even the tunnel's provider sees the traffic (WebSocket is part 1's non-goal, so it would be its own card). Batch 2's
-[Left out](#left-out-of-batch-2) lists the rest.
+reordering its items and showing another checklist in a block (done: kanban card 205); drawing; an editor's files
+through the API; following home's camera; **sealed through tunnels**: Templum's pinned TLS carried inside one
+WebSocket the tunnel passes, so not even the tunnel's provider sees the traffic (WebSocket is part 1's non-goal, so it
+would be its own card). Batch 2's [Left out](#left-out-of-batch-2) lists the rest.
 
 ## Settled after the builder's read
 
@@ -2297,7 +2319,7 @@ Tests: the four at the end of `workspace/tests/grid.rs` ("On a mirror").
 
 ### Home's shells on a mirror (kanban card 201)
 
-Add ▸ Terminal ▸ on a mirror opened home's default shell only (item 12 of "Left out of batch 2"). Now:
+Add ▸ Terminal ▸ on a mirror opened home's default shell only (then item 12 of "Left out of batch 2"). Now:
 
 - **Home's API:** a control tool `list_shells` (read; the Templum Agent's too, its reads fold into one row), the
   default's name first with `  default`, then the others' names as Add ▸ Terminal ▸ lists them
@@ -2318,3 +2340,35 @@ Tests: `add_block_opens_only_a_shell_list_shells_names` (`templum_agent.rs`), th
 `remote.rs` (the list read back as home writes it, a hostile list, read at connect and after a minute, waiting for
 live, an older home, the toolbar's choice), `a_shell_chosen_on_the_mirror_runs_in_the_terminal_home_adds`
 (`mirror_end_to_end.rs`), and `control.rs`'s parse tests.
+
+### Checklists on a mirror (kanban card 205)
+
+The three acts item 2 of "Left out of batch 2" kept on home, renaming a checklist, reordering its items and showing
+another checklist in a block, work on a mirror as on a local block ([Checklists](#boards-checklists-notes-ink)):
+
+- **Home's API:** two control tools, Control scope, danger – (the Templum Agent's too): `edit_checklist` (`block`,
+  then `name`, or `item` with `before`, or both; `Workspace::checklist_edit`, one `edit_checklist` step) and
+  `new_checklist` (`block`, `name`; `Workspace::checklist_new`, refused on a block that shows a checklist). `block`
+  is their only target, so the registry's check of a limited token covers them; an item `before` names that is not in
+  the block's checklist is "There's no item 99 in …", as for any item. `control::Before` is shared with
+  `edit_column` (its `Column` is `Id` now, parsed by `before`).
+- **The mirror:** `Deed::EditChecklist` calls `edit_checklist`, `Deed::OpenChecklist` calls `new_checklist`, so an
+  older home dims them with "is older". `ChecklistAct` gains `Move` and `Rename`, through `act_on_checklist` (a local
+  drop is one now too); `remote_checklist_act` holds them in `RemoteSpace::items_moved` (by the item that follows)
+  and `lists_renamed`, laid in `lay_item_holds` and ended by `expire_holds` or a refusal. `ItemDrag` carries its
+  block. The name's field sends on Enter or blur (`remote_field`). `open_checklists` takes the workspace it is opened
+  on, as `kanban::open_boards` does: `rows` lists the copy's checklists its blocks show, `still_on` refuses a dialog
+  whose workspace isn't shown while a mirror is involved, and the trash says "Not on a mirrored workspace yet".
+  `remote_new_checklist` is New checklist on a mirror (`new_checklist` into an empty block, else `add_block` beside,
+  `checklist_spot`); `open_checklist` on a mirror only reveals the block of the shown workspace that has it. The
+  empty block's buttons replace "No checklist open here: open one on winx-desktop." The banner's ⓘ says "deleting a
+  checklist" instead of "renaming a checklist and moving its items".
+- **Choices** (*the designer's call*): no `checklist` argument to show an existing checklist in a block: home's state
+  lists only checklists a block shows, and one is open in one block at most, so the dialog only ever reveals; a new
+  checklist on a mirror doesn't open its name's field (home names it "Checklist", as the mirror's Add ▸ Checklist
+  does); deleting a checklist from the mirror stays at home.
+
+Tests: `edit_checklist_renames_and_moves_and_new_checklist_fills_an_empty_block` (tests/api.rs: the reply words,
+Ctrl+Z, a limited and a read token), `the_checklist_tools_parse_and_say_what_is_missing` (control.rs), the registry's
+scope test, and in tests/remote_content.rs the name, the drag, All checklists…, the dialog's trash, a local dialog
+once a mirror is shown, an older home, and the two-ends test, which renames, moves and makes a checklist at home.

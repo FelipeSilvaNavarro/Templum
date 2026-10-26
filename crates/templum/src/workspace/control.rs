@@ -303,6 +303,16 @@ impl Workspace {
                     });
                 return (Outcome::Now(done), target);
             }
+            ControlCall::EditChecklist { block, name, moved } => {
+                return self.on_block(&block, |ws, at| {
+                    ws.checklist_edit(at, &block, name.as_deref(), moved, cx)
+                });
+            }
+            ControlCall::NewChecklist { block, name } => {
+                return self.on_block(&block, |ws, at| {
+                    ws.checklist_new(at, &block, name.as_deref(), cx)
+                });
+            }
             ControlCall::MoveBlock { block, x, y, w, h } => {
                 return self.on_block(&block, |ws, at| {
                     ws.move_block_in(at, &block, (x, y, w, h), cx)
