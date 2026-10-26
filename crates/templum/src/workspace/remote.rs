@@ -302,6 +302,9 @@ pub(crate) struct RemoteSpace {
     pub shells: Option<HomeShells>,
     pub shells_at: Option<Instant>,
     shells_asking: bool,
+    /// Home's recent folders of the workspace, newest first (`home_recent`): read when the Git
+    /// popup or its folder menu opens; none from a home without `recent_folders`.
+    pub recent: Vec<String>,
     /// What typing already told, once: (home's block, which sentence). "Not connected" is told
     /// again after the remote was live in between.
     pub told: HashSet<(String, &'static str)>,
@@ -338,8 +341,9 @@ const TASK_ID_MOST: usize = 16;
 /// How old home's agent list may be when a menu opens before it is read again.
 const AGENTS_AGAIN: Duration = Duration::from_secs(60);
 
-/// The most folders the Open dialog lists besides the one of home's workspace.
-const MOST_FOLDERS: usize = 20;
+/// The most folders the Open dialog lists besides the one of home's workspace, and the most of
+/// home's recent folders a mirror keeps.
+pub(crate) const MOST_FOLDERS: usize = 20;
 
 /// An agent home can open, as its `list_agents` says.
 #[derive(Clone, Debug, PartialEq)]
@@ -443,6 +447,23 @@ pub(crate) fn home_shells(text: &str) -> HomeShells {
     HomeShells { default, others }
 }
 
+/// Home's recent folders out of its `recent_folders` answer, a folder a line, newest first.
+/// Home is not trusted: at most [`MOST_FOLDERS`], each once, and a line that isn't already one
+/// clean line of a folder's length is left out, not cleaned: it would name another folder.
+pub(crate) fn home_recent(text: &str) -> Vec<String> {
+    let mut recent: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if recent.len() == MOST_FOLDERS {
+            break;
+        }
+        let fit = !line.is_empty() && super::bus::clean_to(line, LINE_CHARS) == line;
+        if fit && !recent.iter().any(|f| f == line) {
+            recent.push(line.into());
+        }
+    }
+    recent
+}
+
 /// How many notifications of one kind a remote may make in a [`NOTICE_SPAN`], so a home that went
 /// wrong can't flood the person.
 #[derive(Default)]
@@ -525,6 +546,7 @@ impl RemoteSpace {
             shells: None,
             shells_at: None,
             shells_asking: false,
+            recent: Vec::new(),
             old_keys: Vec::new(),
             inherits: None,
             entry,
@@ -2326,6 +2348,7 @@ impl Workspace {
         remote.shells = None;
         remote.shells_at = None;
         remote.shells_asking = false;
+        remote.recent.clear();
         remote.requests_told.clear();
         remote.requests_budget = Budget::default();
         remote.notice_budget = Budget::default();
@@ -3516,6 +3539,34 @@ impl Workspace {
         let call = Call {
             tool: "list_shells".into(),
             args: serde_json::json!({}),
+            slow: false,
+        };
+        self.remote_call(space, call, then, cx);
+    }
+
+    /// Asks home for its recent folders of the workspace `space` mirrors (`recent_folders`),
+    /// unless home's Templum has no such tool: the Git popup's folder menu lists them. A refusal
+    /// says nothing.
+    pub(crate) fn read_home_recent(&mut self, space: &str, cx: &mut Context<Self>) {
+        let Some(remote) = self.remote_mut(space) else {
+            return;
+        };
+        let lists = remote
+            .tools
+            .as_ref()
+            .is_some_and(|t| t.has("recent_folders"));
+        let Some(home) = remote.home_workspace().filter(|_| lists) else {
+            return;
+        };
+        let id = space.to_string();
+        let then: Then = Box::new(move |ws, answered, _, _| {
+            if let (Some(remote), Ok(answer)) = (ws.remote_mut(&id), answered) {
+                remote.recent = home_recent(answer["text"].as_str().unwrap_or_default());
+            }
+        });
+        let call = Call {
+            tool: "recent_folders".into(),
+            args: serde_json::json!({ "workspace": home }),
             slow: false,
         };
         self.remote_call(space, call, then, cx);

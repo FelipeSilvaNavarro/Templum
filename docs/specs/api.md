@@ -183,7 +183,7 @@ one WebSocket for input only).
 
 | Scope | May |
 |---|---|
-| **read** | Every GET, the event stream, and the tools that only read (`overview`, `list_agents`, `list_shells`, `read_terminal`, `list_cards`, `read_note`, `read_checklist`, `wait_for`) |
+| **read** | Every GET, the event stream, and the tools that only read (`overview`, `list_agents`, `list_shells`, `recent_folders`, `read_terminal`, `list_cards`, `read_note`, `read_checklist`, `wait_for`) |
 | **control** | Also every other tool whose danger in the control server is **–**, **Ask own** or **Ask own when losing** ([templum-agent.md](templum-agent.md#tools)): opening agents, handing and interrupting tasks, blocks, wires, cards, notes, checklists, showing; answering questions, plans and requests to connect; running, switching and saving automations that run no command |
 | **full** | Also the tools whose danger is **Ask** or **Ask each** (`send_to_terminal`, `send_keys`, and those to come: `run`, `set_setting`, deletions that lose work), saving an automation that runs a command, deleting an automation, answering a request to delete or merge a worktree, and answering the Templum Agent's approvals |
 
@@ -316,6 +316,7 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
   | `run_automation` | `automation` | Run now | control |
   | `delete_automation` | `automation` | Deletes it | full |
   | `cancel_schedule` | `schedule` (`s3`) | Cancels a delivery an agent asked for later, as the Automations popup's Cancel does; `Cancelled s3.`; one the token doesn't see is "There's no schedule s3: GET /v1/state lists them." | control |
+  | `recent_folders` | `workspace` | The workspace's recent folders (`Space::recent`), newest first, a folder a line, as the Git popup's folder menu lists them; empty when there are none. A token limited to some workspaces gets only those inside their folders, links followed, each as its real path, once (kanban card 203); a mirror of another computer is refused with its sentence | read |
 
 - **`git`** (Templum to Templum, part 2f; docs/api.md's Git): one of the Git popup's operations in a repository of a
   workspace (`workspace`, `folder`, `op` and its arguments; never raw git arguments), the API's own because the popup

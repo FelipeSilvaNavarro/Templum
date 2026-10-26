@@ -170,7 +170,7 @@ the only key a URL may carry, and only on those two routes. Revoking a token voi
 
 | Scope | May |
 |---|---|
-| **read** | Every GET, the event stream, and the tools that only read (`overview`, `list_agents`, `list_shells`, `read_terminal`, `list_cards`, `read_note`, `read_checklist`, `wait_for`) |
+| **read** | Every GET, the event stream, and the tools that only read (`overview`, `list_agents`, `list_shells`, `recent_folders`, `read_terminal`, `list_cards`, `read_note`, `read_checklist`, `wait_for`) |
 | **control** | Also every other tool that doesn't type for you: opening agents, handing and interrupting tasks, blocks, wires, cards, notes, checklists, showing; answering questions, plans and requests to connect; running, switching and saving automations that run no command; Git's acts (`git`: stage, commit, push, branches, stashes…) |
 | **full** | Also `send_to_terminal`, `send_keys`, `terminal_input`, `share_workspace`, saving an automation that runs a command, deleting an automation, answering a request to delete or merge a worktree, answering the Templum Agent's approvals, and Git's discards, Restore version, deleting a branch, dropping a stash and aborting (`git`) |
 
@@ -181,7 +181,8 @@ API never shows the Templum Agent's approval: the token is your own hand, and it
 a kanban block of theirs shows (with those boards' cards), the notes and checklists a note or checklist block of
 theirs shows, the drawings of those workspaces and the automations for those workspaces; no usage, no
 approvals. A block, workspace, board, card, request or automation outside them is answered as one that doesn't exist.
-They can't make a workspace, and save automations only for their own workspaces.
+They can't make a workspace, save automations only for their own workspaces, and get only the recent folders that lie
+inside those workspaces' folders (`recent_folders`).
 
 ### Resources (read scope)
 
@@ -222,7 +223,7 @@ doesn't see that one.
 `POST /v1/tools/{name}` runs any tool with its arguments as the JSON body; the answer is
 `{"text":"Created card 40.","workspace":"w3","block":"b7k2m"}` (the tool's words, and what it touched when known). The
 tool refusing is `422` `refused` with its sentence; a malformed argument is `400` `invalid`. `GET /v1/tools` lists them,
-with the ten only the API has:
+with the eleven only the API has:
 
 | Tool | Arguments | Scope |
 |---|---|---|
@@ -236,6 +237,7 @@ with the ten only the API has:
 | `share_workspace` | `workspace`, `name`, `scope` (`control` or `full`), `expires` (Unix seconds, or null), `way`, `address` | full, a token for all workspaces |
 | `revoke_share` | `share` (left out: the calling token's own) | full, or the share itself |
 | `git` | `workspace`, `folder`, `op` and its arguments ([Git](#git)) | read, control or full, by `op` |
+| `recent_folders` | `workspace` | read |
 
 REST aliases name the common calls; path parameters and the body become the tool's arguments, and the path wins:
 
@@ -265,6 +267,11 @@ default first, its line ending with `  default` (`zsh  default`), then each othe
 Names only, never a program's path. `add_block`'s `shell` (a terminal's) opens one of them by that name, the default
 when left out; a name the list doesn't have is refused (`There's no shell "fish": list_shells lists them.`): it is never
 a program or a command of the caller's.
+
+**Recent folders.** `recent_folders` names a workspace's recent folders (the folders it opened lately: Git, agents,
+editors, terminals), newest first, a folder a line, as its Git popup's folder menu lists them; nothing when there are
+none. A mirror of another computer is refused with its usual sentence. A workspace-limited token gets only those that
+lie inside its workspaces' folders, links followed, each as its real path, once: never a folder it couldn't open.
 
 ### Git
 
@@ -657,7 +664,8 @@ own workspaces: it tiles home's blocks on this computer and moves nothing at hom
 everything it reads and does is home's `git` (reads with any share, acts with Control, discards, Restore version,
 deleting a branch, dropping a stash and aborting with Full, dimmed on a Control share); Fetch, Pull, Push, Sync,
 Publish and Generate wait up to 10 minutes, and one a tunnel cuts says it may still be running on home; Generate uses
-home's agent; Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal stay on home. Adding, closing and wiring
+home's agent; its folder ▾ lists home's folders of the workspace (its folder, its terminals' and its recent ones);
+Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal stay on home. Adding, closing and wiring
 blocks, naming wires, opening home's agents and handing them tasks work from the mirror, each done at home through its
 API. Add ▸ Terminal ▸ and the toolbar's Terminal list home's shells (Default, then the others home has), never this
 computer's; the one you pick opens at home (an older Templum at home opens its default only). A block you close or a wire you make shows at once and home's state wins after two seconds. Ctrl+Z there undoes

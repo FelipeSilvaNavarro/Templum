@@ -75,6 +75,11 @@ impl Workspace {
             git.focus.focus(window, cx);
         }
         self.refresh_git(window, cx);
+        // Home's recent folders, for the folder menu.
+        if self.on_remote() {
+            let id = self.space.id.clone();
+            self.read_home_recent(&id, cx);
+        }
         cx.notify();
     }
 

@@ -1188,6 +1188,45 @@ fn the_mirror_s_git_popup_shows_home_s_change_and_commits_it_at_home(cx: &mut Te
     assert!(empty, "the summary cleared");
 }
 
+/// Home's recent folders of the workspace reach the mirror's folder menu through
+/// `recent_folders` (kanban card 203): on a share, only those inside its workspace's folder.
+#[gpui_kit::test]
+fn the_mirror_s_folder_menu_lists_home_s_recent_folders_inside_the_share(cx: &mut TestAppContext) {
+    let (handle, ws, dir) = with_data(cx);
+    let (repo, _root) = git_mirrored(handle, &ws, cx, dir.path(), Scope::Control);
+    let (top, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let web = dunce::canonicalize(top.path()).unwrap().join("web");
+    std::fs::create_dir(&web).unwrap();
+    let first = ws.read_with(cx, |ws, _| remote_of(ws).home_workspace().unwrap());
+    ws.update(cx, |ws, _| {
+        let home = ws.space_by_id_mut(&first).unwrap();
+        home.folder = Some(top.path().to_path_buf());
+        home.recent = vec![
+            outside.path().to_path_buf(),
+            web.clone(),
+            repo.path().to_path_buf(),
+        ];
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let at = gpui_kit::point(gpui_kit::px(100.0), gpui_kit::px(100.0));
+            ws.open_menu(crate::menu::Target::GitFolders, at, window, cx)
+        })
+    })
+    .unwrap();
+    let web = web.display().to_string();
+    pump_home(&ws, cx, "home's recent folders on the mirror", |cx| {
+        ws.read_with(cx, |ws, _| remote_of(ws).recent == [web.clone()])
+    });
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            ws.home_git_folders().contains(&web),
+            "{:?}",
+            ws.home_git_folders()
+        );
+    });
+}
+
 #[gpui_kit::test]
 fn a_branch_made_on_the_mirror_is_home_s(cx: &mut TestAppContext) {
     let (handle, ws, dir) = with_data(cx);

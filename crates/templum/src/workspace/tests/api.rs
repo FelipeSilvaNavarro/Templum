@@ -637,6 +637,85 @@ fn cancel_schedule_cancels_a_schedule_the_token_sees(cx: &mut TestAppContext) {
     assert_eq!(ids(&ws, cx), [2]);
 }
 
+/// `recent_folders` (kanban card 203): the workspace's recent folders, newest first, for a Read
+/// token. A token limited to it gets only those inside its folder, links followed, as their real
+/// paths, each once: never a folder it couldn't open, nor a link's own path outside. A workspace
+/// it doesn't see is one that doesn't exist.
+#[gpui_kit::test]
+fn recent_folders_are_confined_to_a_limited_token_s_folders(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (project, elsewhere) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = dunce::canonicalize(project.path()).unwrap();
+    let away = dunce::canonicalize(elsewhere.path()).unwrap();
+    let sub = root.join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let mut recent = vec![away.clone(), sub.clone(), root.join("gone"), root.clone()];
+    // A link inside the folder that leads out of it, and one outside that leads into it.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&away, root.join("out")).unwrap();
+        std::os::unix::fs::symlink(&sub, away.join("in")).unwrap();
+        recent.extend([root.join("out"), away.join("in")]);
+    }
+    let id = ws.update(cx, |ws, _| {
+        ws.space.folder = Some(root.clone());
+        ws.space.recent = recent.clone();
+        ws.space.id.clone()
+    });
+    let (other, _) = another_workspace(handle, &ws, cx);
+    let lines = |folders: &[&std::path::Path]| {
+        let lines: Vec<String> = folders.iter().map(|f| f.display().to_string()).collect();
+        (false, lines.join("\n"))
+    };
+    let all = with_token(&ws, cx, Scope::Read, None);
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &all,
+        "recent_folders",
+        json!({ "workspace": id }),
+    );
+    let every: Vec<&std::path::Path> = recent.iter().map(|f| f.as_path()).collect();
+    assert_eq!(said(&line), lines(&every), "{line}");
+    let limited = with_token(&ws, cx, Scope::Read, Some(vec![id.as_str()]));
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &limited,
+        "recent_folders",
+        json!({ "workspace": id }),
+    );
+    assert_eq!(said(&line), lines(&[&sub, &root]), "{line}");
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &limited,
+        "recent_folders",
+        json!({ "workspace": other }),
+    );
+    assert_eq!(
+        refused(&line),
+        (
+            Some(i64::from(codes::NOT_FOUND)),
+            format!("There's no workspace {other}: GET /v1/workspaces lists them.")
+        )
+    );
+    // A workspace with no folder gives a limited token nothing.
+    ws.update(cx, |ws, _| ws.space.folder = None);
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &limited,
+        "recent_folders",
+        json!({ "workspace": id }),
+    );
+    assert_eq!(said(&line), (false, String::new()), "{line}");
+}
+
 #[gpui_kit::test]
 fn a_question_waits_in_the_state(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);

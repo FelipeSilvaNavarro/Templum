@@ -254,7 +254,7 @@ fn locate(
             folder.display()
         )));
     }
-    if roots.is_some_and(|roots| !inside(folder, roots)) {
+    if roots.is_some_and(|roots| inside(folder, roots).is_none()) {
         return Err(outside());
     }
     let repo = match Repo::discover(program, folder).map_err(git_failed)? {
@@ -294,16 +294,18 @@ fn git_failed(e: GitError) -> Stop {
     Stop::Failed(Failure::Git(e))
 }
 
-/// `path` lies inside one of `roots`, links followed. A share of another computer is never
-/// asked about: it would be offered the person's credentials.
-fn inside(path: &Path, roots: &[PathBuf]) -> bool {
+/// `path`'s real path, when it lies inside one of `roots`, links followed. A share of another
+/// computer is never asked about: it would be offered the person's credentials.
+pub(super) fn inside(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
     if refuses_share(
         prefix_of(path),
         &roots.iter().map(|r| prefix_of(r)).collect::<Vec<_>>(),
     ) {
-        return false;
+        return None;
     }
-    dunce::canonicalize(path).is_ok_and(|real| roots.iter().any(|root| real.starts_with(root)))
+    dunce::canonicalize(path)
+        .ok()
+        .filter(|real| roots.iter().any(|root| real.starts_with(root)))
 }
 
 /// Both the repository's working tree and its main working tree (a linked worktree's lies
@@ -313,7 +315,7 @@ fn repo_inside(repo: &Repo, roots: &[PathBuf]) -> bool {
     let Ok(Some(main)) = repo.main_tree() else {
         return false;
     };
-    inside(&repo.root, roots) && inside(&main, roots)
+    inside(&repo.root, roots).is_some() && inside(&main, roots).is_some()
 }
 
 /// A `tools/call` answer for a git operation: its sentence, its result and the workspace.

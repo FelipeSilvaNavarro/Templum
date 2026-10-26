@@ -394,8 +394,9 @@ impl Workspace {
     }
 
     /// The folders the folder menu offers on the mirrored workspace shown: home's workspace's and
-    /// its terminals' (`home_folders`), less the one the Git is at and those inside its root.
-    /// They are folders, not repositories: a `find` for each would run at home at every opening.
+    /// its terminals' (`home_folders`), then home's recent folders of it, each once, less the one
+    /// the Git is at and those inside its root. They are folders, not repositories: a `find` for
+    /// each would run at home at every opening.
     pub(crate) fn home_git_folders(&self) -> Vec<String> {
         let git = self.space.git();
         let home = git.and_then(|g| g.home.as_deref());
@@ -403,13 +404,18 @@ impl Workspace {
             Found::Home(root) => Some(root.as_str()),
             _ => None,
         });
-        self.home_folders()
-            .into_iter()
-            .map(|(path, _)| path)
-            .filter(|path| {
-                Some(path.as_str()) != home && !root.is_some_and(|root| lies_in(path, root))
-            })
-            .collect()
+        let recent = (self.space.remote.as_deref()).map_or(&[][..], |r| &r.recent[..]);
+        let mut folders: Vec<String> = Vec::new();
+        for path in
+            (self.home_folders().into_iter().map(|(path, _)| path)).chain(recent.iter().cloned())
+        {
+            let shown =
+                Some(path.as_str()) == home || root.is_some_and(|root| lies_in(&path, root));
+            if !shown && !folders.contains(&path) {
+                folders.push(path);
+            }
+        }
+        folders
     }
 
     /// Open a terminal here, from the folder menu of a mirror: home opens a terminal in `root`.

@@ -2410,6 +2410,18 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **The folder menu on a mirror lists folders, not repositories.** (`workspace/git_home.rs`, `home_git_folders`.)
   Two terminals in different folders of one repository outside the shown one show as two rows. Fix: a `find` per
   folder when the menu opens, deduplicated by root.
+- [ ] **A recent folder of home's whose name cleaning would change isn't listed on a mirror.**
+  (`workspace/remote.rs`, `home_recent`.) A path with two blanks in a row, a tab, a leading or trailing blank or over
+  300 characters is left out of the folder menu (cleaning it would name another folder). Fix: the same opaque token as
+  the minor below, for every folder of home's.
+- [ ] **A mirror's first Git doesn't fall back to home's newest recent folder.** (`workspace/git_home.rs`,
+  `home_git_folder`.) Locally the first Git opens on the newest recent folder when the workspace has no terminal and no
+  folder; on a mirror it says "No folder to open Git in on …" (the recent folders are read when the popup opens). Fix:
+  read `recent_folders` at connect and take its first line last in the guess.
+- [ ] **The mirror's recent folders show a round trip after a folder was opened at home.**
+  (`workspace/remote.rs`, `read_home_recent`.) The menu shows the answer read when the popup opened or when the menu
+  last opened, so a folder opened at home while the popup stays open shows at the menu's next opening. Fix: home's
+  state carries a counter of `Space::recent`'s changes, and the mirror reads again when it moves.
 - [ ] **A discard too large to keep says "Too much to keep a copy" even when home keeps no trash.**
   (`workspace/git_discard.rs`, `ask_discard`.) `measure` answers no "has a trash". Fix: `Measured.trash` at home.
 - [ ] **A Sync, Push or Generate running at home can't be stopped from the mirror.** (`workspace/git_branches.rs`,

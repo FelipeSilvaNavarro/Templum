@@ -16,7 +16,7 @@ pub const INPUT_KEYS: usize = 256;
 pub const INPUT_MOUSE: usize = 64;
 
 /// The tools only the API serves: automations are the person's, not an agent's.
-const OWN: [&str; 10] = [
+const OWN: [&str; 11] = [
     "answer_request",
     "save_automation",
     "set_automation",
@@ -27,6 +27,7 @@ const OWN: [&str; 10] = [
     "share_workspace",
     "revoke_share",
     "git",
+    "recent_folders",
 ];
 
 /// The arguments that name something a workspace-limited token must see: a block, a workspace, a
@@ -313,6 +314,14 @@ pub fn tools() -> Vec<Value> {
             }),
             &["workspace", "op"],
         ),
+        tool(
+            "recent_folders",
+            "The folders a workspace opened lately, newest first, a folder a line, as its Git \
+             popup's folder menu lists them. A token limited to some workspaces gets only those \
+             inside their folders, links followed, as their real paths.",
+            json!({ "workspace": { "type": "string", "description": "The workspace's id or name." } }),
+            &["workspace"],
+        ),
     ]);
     all
 }
@@ -370,6 +379,7 @@ pub fn scope(name: &str, args: &Value) -> Result<Scope, String> {
             "delete_automation" | "terminal_input" | "share_workspace" => Scope::Full,
             // Any share may revoke itself; the glue asks Full of one revoking another.
             "revoke_share" => Scope::Read,
+            "recent_folders" => Scope::Read,
             _ => Scope::Control,
         });
     }
@@ -782,6 +792,9 @@ pub enum Own {
         folder: Option<String>,
         op: Op,
     },
+    RecentFolders {
+        workspace: String,
+    },
 }
 
 /// What `terminal_input` types.
@@ -964,6 +977,12 @@ pub fn parse_own(name: &str, args: &Value) -> Result<Own, String> {
         },
         "delete_automation" => Own::DeleteAutomation {
             id: number("automation")?,
+        },
+        "recent_folders" => Own::RecentFolders {
+            workspace: args["workspace"]
+                .as_str()
+                .ok_or("recent_folders needs \"workspace\", a string")?
+                .to_string(),
         },
         "cancel_schedule" => Own::CancelSchedule {
             schedule: args["schedule"]
@@ -1187,6 +1206,7 @@ mod tests {
             ("run_automation", json!({"automation": 1}), Scope::Control),
             ("delete_automation", json!({"automation": 1}), Scope::Full),
             ("cancel_schedule", json!({"schedule": "s3"}), Scope::Control),
+            ("recent_folders", json!({"workspace": "w3"}), Scope::Read),
         ] {
             assert_eq!(scope(name, &args), Ok(want), "{name}");
         }
@@ -1883,6 +1903,17 @@ mod tests {
             Err("cancel_schedule needs \"schedule\", a string".into())
         );
         assert!(own("cancel_schedule") && known("cancel_schedule"));
+        assert_eq!(
+            parse_own("recent_folders", &json!({"workspace": "w3"})),
+            Ok(Own::RecentFolders {
+                workspace: "w3".into()
+            })
+        );
+        assert_eq!(
+            parse_own("recent_folders", &json!({})),
+            Err("recent_folders needs \"workspace\", a string".into())
+        );
+        assert_eq!(nominal("recent_folders"), "read");
         assert!(parse_own("overview", &json!({})).is_err());
     }
 }

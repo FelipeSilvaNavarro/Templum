@@ -8,7 +8,8 @@
   2026-10-25-t2t-batch-2e-checklists-notes-ink, 2026-10-25-t2t-batch-2f-git-home,
   2026-10-25-t2t-batch-2g-git-mirror and 2026-10-26-t2t-batch-2h-agents-automations-inbox)
   ([Batch 2](#batch-2-the-whole-workspace-live)). Since then: grid mode (kanban card 206), home's shells in
-  Add ▸ Terminal ▸ (kanban card 201). Later batches (see [Later batches](#later-batches)) are sketched.
+  Add ▸ Terminal ▸ (kanban card 201), home's recent folders in the Git popup's folder menu (kanban card 203). Later
+  batches (see [Later batches](#later-batches)) are sketched.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
   [cockpit.md](cockpit.md#6-the-workspaces-screen) (the sidebar, the Edit… dialog), [ask-inbox.md](ask-inbox.md)
@@ -731,6 +732,8 @@ Each is its own kanban card (*the designer's call*):
 13. Stopping a remote workspace at home from the mirror (it would cut the mirror's own view; Start stays).
 
 Home's shells in Add ▸ Terminal ▸, left out at first, are there (kanban card 201): [The canvas](#the-canvas).
+Home's recent folders in the Git popup's folder menu are there (kanban card 203); Choose another folder… (item 10)
+stays: [The Git popup on a remote workspace](#the-git-popup-on-a-remote-workspace).
 Renaming a checklist, reordering its items and showing another checklist in a block, left out at first, work
 (kanban card 205): [Checklists](#boards-checklists-notes-ink).
 
@@ -753,6 +756,7 @@ call; the mirror dims what its share can't do with the words of [One rule](#one-
 |---|---|---|
 | Adds a terminal, a kanban or a checklist | `add_block` (with `x`, `y`; a terminal's `shell`) | Control |
 | Lists home's agents and shells in the menus | `list_agents`, `list_shells` | any |
+| Lists home's recent folders in the Git popup's folder menu | `recent_folders` | any |
 | Opens an agent | `open_agent` (with `x`, `y`) | Control |
 | Closes a block | `close_block` | Control |
 | Wires or unwires two blocks, names a wire | `connect` (with `label`), `disconnect` | Control |
@@ -924,9 +928,13 @@ winx-desktop."), and a drawing can't be selected.
   reads and does runs at home, in home's repository, through the API's `git` tool
   ([below](#the-git-tool)).
 - **The folder:** the focused remote terminal's (its `folder` in home's state), else another remote terminal's, else
-  the workspace's; home finds the repository from it. The folder menu lists the repositories of the workspace's
-  terminals and the workspace's folder (each once), **Refresh** and **Open a terminal here** (`add_block` at home, in
-  that folder). The header's terminal count lists the remote terminals whose folder lies in the repository.
+  the workspace's; home finds the repository from it. The folder menu lists the workspace's folder and its terminals'
+  folders, then home's recent folders of the workspace (kanban card 203: `recent_folders`, read when the popup opens
+  and again when the menu opens, for its next opening), each once, less the one shown and those inside its
+  repository; **Refresh** and **Open a terminal here** (`add_block` at home, in that folder). A recent folder chosen
+  points the Git there at home, as the others do. *Security:* home answers a share only the recent folders inside its
+  workspace's folder, links followed, as their real paths: never one the share couldn't open. The header's terminal
+  count lists the remote terminals whose folder lies in the repository.
 - **Reads:** the status every 2 s while the popup is open (one call each, as the local poll), the tab's list and the
   diff panel as the tab asks. **Acts:** each an operation at home; the popup's rules stay (one command at a time per
   Git, the queue, the busy buttons).
@@ -2372,3 +2380,37 @@ Tests: `edit_checklist_renames_and_moves_and_new_checklist_fills_an_empty_block`
 Ctrl+Z, a limited and a read token), `the_checklist_tools_parse_and_say_what_is_missing` (control.rs), the registry's
 scope test, and in tests/remote_content.rs the name, the drag, All checklists…, the dialog's trash, a local dialog
 once a mirror is shown, an older home, and the two-ends test, which renames, moves and makes a checklist at home.
+
+### Home's recent folders on a mirror (kanban card 203)
+
+The Git popup's folder menu on a mirror listed home's workspace's folder and its terminals' folders only; locally it
+also lists the workspace's recent folders (`Space::recent`). Now the mirror's lists them too, from home:
+
+- **Home's API:** an own tool `recent_folders` (`workspace`; Read scope; `Own::RecentFolders`, `api_own`), a small read
+  tool rather than a field of the state (*the designer's call*): the state is built at every tick and narrowed per
+  token by `State::visible` in `templum-api`, which doesn't touch the disk, while confinement follows links. Its answer
+  is the workspace's `Space::recent`, newest first, a folder a line (`recent_lines`); empty when there are none; a
+  mirror of another computer is refused with its sentence, a workspace the token doesn't see is one that doesn't exist
+  (the registry's `workspace` target). For a limited token it keeps only those inside `confined_roots`, through
+  `api_git::inside` (which now returns the real path: a share of another computer is never asked, links are
+  followed), each as its real path (a link's own path may lie outside), once; a folder whose path has a control
+  character is left out (it isn't one line). It is the footing for kanban card 207 (an editor on a mirror that opens
+  home's recent folders).
+- **The mirror:** `RemoteSpace::recent` (`home_recent`: at most `MOST_FOLDERS`, each once, a line kept only when it
+  already is one clean line, never cleaned into another folder; cleared when the connection is), read by
+  `read_home_recent` when the popup opens (`open_git`) and when its folder menu opens (`open_menu`), not asked of a home
+  without the tool. `home_git_folders` chains them after `home_folders`, each once, less the one shown and those inside
+  its root (as for the others: they are folders, not repositories). The menu's item is the same as the others'
+  (`set_home_git_folder`).
+- **Choices** (*the designer's call*): the recent folders are read when the popup and the menu open, not at connect or
+  with the state: the menu shows the last answer, and the one read at the menu's opening serves its next opening. A
+  mirror's first Git, with no terminal and no folder at home, still says "No folder to open Git in" rather than taking
+  home's newest recent folder as the local guess does (a minor).
+
+Tests: `recent_folders_are_confined_to_a_limited_token_s_folders` (tests/api.rs: every folder in order for a Read
+token, only those inside for a limited one, links both ways, a workspace it doesn't see, a workspace with no folder),
+the registry's scope and parse tests, `the_folder_menu_on_a_mirror_lists_home_s_recent_folders` and
+`home_s_recent_folders_are_cut_and_nothing_is_cleaned_into_another_folder` (tests/git_mirror.rs: read at the popup's
+and the menu's opening, the order and dedup, the item's `find` at home, an older home not asked), and
+`the_mirror_s_folder_menu_lists_home_s_recent_folders_inside_the_share` (mirror_end_to_end.rs: over loopback, a
+Control share gets only the recent folder inside its workspace's folder).

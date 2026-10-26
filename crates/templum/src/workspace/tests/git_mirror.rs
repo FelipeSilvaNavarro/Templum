@@ -1044,6 +1044,100 @@ fn the_folder_menu_on_a_mirror_lists_home_s_folders_and_opens_a_terminal_there(
     ws.read_with(cx, |ws, _| assert!(!ws.git_open));
 }
 
+/// Kanban card 203: the folder menu on a mirror lists home's recent folders of the workspace
+/// (`recent_folders`, read when the popup and the menu open) after its folder and its terminals',
+/// each once, less the one shown and those inside its root; one chosen points the Git there, at
+/// home. An older home, without the tool, isn't asked.
+#[gpui_kit::test]
+fn the_folder_menu_on_a_mirror_lists_home_s_recent_folders(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = on_mirror_with(
+        cx,
+        Scope::Control,
+        ROOT,
+        &[
+            ("b1", Some("/home/ada/app/src")),
+            ("b2", Some("/home/ada/lib")),
+        ],
+    );
+    let tools_of_home = |ws: &Entity<Workspace>, cx: &mut TestAppContext, tools: Value| {
+        ws.update(cx, |ws, _| {
+            ws.space.remote.as_mut().unwrap().tools =
+                Some(templum_api::client::Tools::read(&tools));
+        })
+    };
+    tools_of_home(&ws, cx, json!(templum_api::registry::listed()));
+    let asked = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        sent(ws, cx)
+            .into_iter()
+            .position(|(tool, _)| tool == "recent_folders")
+    };
+    toggle(handle, &ws, cx);
+    let n = asked(&ws, cx).expect("read when the popup opens");
+    assert_eq!(sent(&ws, cx)[n].1, json!({"workspace": "w1"}));
+    let recent = "/home/ada/web\n/home/ada/lib\n/home/ada/app/src\n/home/ada/app\n/home/ada/docs";
+    answer(handle, &ws, cx, n, Ok(json!({ "text": recent })));
+    reply(handle, &ws, cx, json!({"root": ROOT, "main_tree": ROOT}));
+    reply(handle, &ws, cx, look(vec![modified("a.txt")]));
+    reply(handle, &ws, cx, diff_of(&["a.txt"]));
+    reply(handle, &ws, cx, json!("main"));
+    assert!(waiting(&ws, cx).is_empty(), "{:?}", waiting(&ws, cx));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.home_git_folders(),
+            ["/home/ada/lib", "/home/ada/web", "/home/ada/docs"]
+        );
+    });
+    // The menu reads them again, for its next opening.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("git-folder", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.menu.is_some());
+        assert!(ws.said.is_empty(), "{:?}", ws.said);
+    });
+    let n = asked(&ws, cx).expect("read when the menu opens");
+    answer(handle, &ws, cx, n, Ok(json!({ "text": "/home/ada/notes" })));
+    cx.run_until_parked();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.home_git_folders(), ["/home/ada/lib", "/home/ada/notes"]);
+    });
+    // Its item points the Git at that folder at home, as the others do.
+    with_ws(handle, &ws, cx, |ws, window, cx| {
+        ws.set_home_git_folder("/home/ada/notes".into(), window, cx)
+    });
+    let (op, args, _) = call_op(&ws, cx);
+    assert_eq!(
+        (op.as_str(), &args["folder"], &args["workspace"]),
+        ("find", &json!("/home/ada/notes"), &json!("w1"))
+    );
+    ws.update(cx, |ws, _| ws.calls.clear());
+    // A home whose Templum has no `recent_folders` isn't asked.
+    tools_of_home(&ws, cx, json!([{"name": "git"}]));
+    with_ws(handle, &ws, cx, |ws, window, cx| ws.open_git(window, cx));
+    assert_eq!(asked(&ws, cx), None, "{:?}", sent(&ws, cx));
+}
+
+#[test]
+fn home_s_recent_folders_are_cut_and_nothing_is_cleaned_into_another_folder() {
+    use crate::workspace::remote::{MOST_FOLDERS, home_recent};
+    let many: Vec<String> = (0..30).map(|n| format!("/f{n}")).collect();
+    let text = format!(
+        "/a\n/a\n\n /b\n/c\u{7}d\n/e\u{202e}\n/two  spaces\n/{}\n{}",
+        "x".repeat(400),
+        many.join("\n")
+    );
+    let recent = home_recent(&text);
+    assert_eq!(recent.len(), MOST_FOLDERS);
+    assert_eq!(
+        recent[..3],
+        ["/a", "/f0", "/f1"],
+        "once, and nothing cleaned"
+    );
+}
+
 #[gpui_kit::test]
 fn generate_on_a_mirror_asks_home_s_agent_on_the_slow_lane(cx: &mut TestAppContext) {
     let (handle, ws, _dir) = opened(cx, Scope::Control);

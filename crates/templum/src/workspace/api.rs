@@ -125,6 +125,27 @@ pub(super) fn answer_line(id: &Value, reply: &Reply, target: Option<&Target>) ->
     rpc::result(id, result)
 }
 
+/// `recent_folders`' answer: a workspace's recent folders, newest first, a folder a line. For a
+/// token limited to `roots`, only those inside them, as their real paths (a link's own path may
+/// lie outside), each once. A folder that isn't one line is left out.
+fn recent_lines(recent: &[std::path::PathBuf], roots: Option<&[std::path::PathBuf]>) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for folder in recent {
+        let folder = match roots {
+            Some(roots) => match super::api_git::inside(folder, roots) {
+                Some(real) => real,
+                None => continue,
+            },
+            None => folder.clone(),
+        };
+        let line = folder.display().to_string();
+        if !line.is_empty() && !line.chars().any(char::is_control) && !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    lines.join("\n")
+}
+
 impl Workspace {
     /// The token whose id is `terminal` (a hello's), if it is live: who is asking.
     fn api_caller(&self, terminal: &str) -> Option<Caller> {
@@ -883,6 +904,24 @@ impl Workspace {
             )),
             // Answered later by `api_git`, which `api_call` takes first.
             Own::Git { .. } => Reply::err("git must go through api_git."),
+            Own::RecentFolders { workspace } => {
+                // A mirror's folders are home's: it has none here.
+                let space = match self.space_of(&workspace, true) {
+                    Ok(space) => space,
+                    Err(refused) => {
+                        return match self.space_called(&workspace).and_then(Space::mirror_words) {
+                            Some(_) => Ok(refused),
+                            None => Err(not_found("workspace", &workspace)),
+                        };
+                    }
+                };
+                let recent = (self.space_named(&space)).map_or_else(Vec::new, |s| s.recent.clone());
+                let roots = caller.workspaces.is_some().then(|| {
+                    let seen = self.api_scope(cx).visible(caller);
+                    self.confined_roots(&seen)
+                });
+                Reply::ok(recent_lines(&recent, roots.as_deref()))
+            }
             // Answered with its code by `api_call`, which takes it first.
             Own::ShareWorkspace { workspace, .. } => Reply::err(format!(
                 "share_workspace of {workspace} must go through api_call."

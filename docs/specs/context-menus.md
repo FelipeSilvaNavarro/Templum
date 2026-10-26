@@ -34,7 +34,7 @@ would have opened together with the block's. The canvas and the blocks had no me
 | A folder in an editor's tree | New file…, New folder…, Open a terminal here, Rename…, Delete…, Reveal in file manager |
 | An editor tree's empty space | New file…, New folder…, Refresh |
 | The folder's ▾ in the Git popup's header (a click) | The repositories this workspace's terminals work in, then the workspace's recent folders (each once, the one shown left out), Choose another folder…, Refresh, Open a terminal here (at the view's center; the popup closes) |
-| The folder's ▾ in the Git popup's header on a mirrored workspace (a click) | Home's folders (the workspace's and its terminals', less the one shown and those inside its repository), Choose another folder… (dimmed: stays on home), Refresh, Open a terminal here (at home; the popup closes) |
+| The folder's ▾ in the Git popup's header on a mirrored workspace (a click) | Home's folders (the workspace's and its terminals', then home's recent folders of the workspace; each once, less the one shown and those inside its repository), Choose another folder… (dimmed: stays on home), Refresh, Open a terminal here (at home; the popup closes) |
 | The ⋯ of the Git popup's top bar (a click) | Fetch, Pull, Push, Recently discarded… (with a data folder), Clone a repository… |
 | The Git popup's Publish branch, with several remotes (a click) | Publish to *remote*, one per remote, as `git remote` lists them |
 | The ▾ beside the Git popup's Commit | Commit (or Commit all changes), and the same & Push |

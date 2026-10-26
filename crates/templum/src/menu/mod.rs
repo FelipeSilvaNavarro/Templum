@@ -146,6 +146,10 @@ impl Workspace {
             if shells && matches!(target, Target::Canvas(_) | Target::Shells) {
                 self.read_home_shells(&id, cx);
             }
+            // Read again for the next opening: home may have opened a folder since.
+            if matches!(target, Target::GitFolders) {
+                self.read_home_recent(&id, cx);
+            }
         }
         self.reload_early_shells();
         let ws = cx.entity();
