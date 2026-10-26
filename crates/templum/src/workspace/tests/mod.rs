@@ -812,6 +812,7 @@ mod persistence;
 mod remote;
 mod remote_boards;
 mod remote_content;
+mod remote_rules;
 mod requests;
 mod screen;
 mod selection;

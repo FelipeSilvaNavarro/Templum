@@ -221,7 +221,7 @@ Every GET reads a fresh state from the UI thread (one round trip), filtered for 
 
 | Method and path | Answers | Scope |
 |---|---|---|
-| `GET /v1/state` | The whole state: `{app, workspaces, blocks, wires, requests, boards, cards, notes, checklists, drawings, automations, usage}` | read |
+| `GET /v1/state` | The whole state: `{app, workspaces, blocks, wires, requests, boards, cards, notes, checklists, drawings, automations, schedules, usage}` | read |
 | `GET /v1/workspaces`, `/v1/workspaces/{workspace}` | Workspaces in the sidebar's order | read |
 | `GET /v1/blocks`, `/v1/blocks/{block}` | Blocks, back to front; `?workspace=w3` filters | read |
 | `GET /v1/agents` | The blocks running an agent, with its state | read |
@@ -246,7 +246,9 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
                "opened_by": null, "board": null,
                "agent": { "agent": "claude", "state": "needs_you", "asks": "Allow Bash?", "subagents": 0,
                           "since": 1761560000, "model": "opus", "effort": "high",
-                          "usage": { "context_percent": 41.0, "tokens": 120000, "cost_usd": 1.92 } } }],
+                          "usage": { "context_percent": 41.0, "tokens": 120000, "cost_usd": 1.92 },
+                          "task": { "id": "t7", "text": "Fix the login", "by": "k9x1d", "since": 1761559900 },
+                          "role": "reviewer" } }],
   "wires": [{ "a": "b7k2m", "b": "k9x1d", "label": null }],
   "requests": [{ "id": "r12", "kind": "question", "block": "b7k2m", "workspace": "w3", "since": 1761560100,
                  "summary": "Which database?", "why": { "card": { "id": 152, "title": "Attachments" }, "task": null,
@@ -266,6 +268,8 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
   "automations": [{ "id": 1, "name": "Morning review", "on": true, "workspace": "w3", "when": { "…": "…" },
                     "do": { "…": "…" }, "runs": 3, "last": { "at": 1761555600, "went": "ran", "about": "…" },
                     "next": 1761642000, "sentence": "Every weekday at 09:00, type into abc12" }],
+  "schedules": [{ "id": "s3", "by": "b7k2m", "to": "k9x1d", "text": "Check the deploy", "next": 1761562000,
+                  "every": 600, "until": 1762166800 }],
   "usage": { "limits": [{ "agent": "claude", "at": 1761559000,
                           "windows": [{ "minutes": 300, "used_percent": 62.0, "resets_at": 1761570000,
                                         "scope": null }] }] } }
@@ -277,6 +281,12 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
 - An agent's `state` is the Agents view's ([agents-view.md](agents-view.md#an-agents-state)): `needs_you`,
   `starting`, `waiting_subagents`, `working`, `done`, `idle`; `since` is when it last changed kind, in Unix seconds.
   Times are Unix seconds everywhere.
+- An agent's `task` is the task it works on (`id` `t7`, its `text` as Templum keeps it, at most 2,000 characters, `by`
+  the block that handed it, `"api"` for the API, null for a block the token doesn't see, an automation or the Templum
+  Agent) and its `role` the role it was opened with; both null when none. `schedules` are the deliveries agents asked
+  for (`schedule`): `by` the asking block, `to` the block it goes to, `every` in seconds (null: once), `next` and
+  `until` in Unix seconds. A workspace-limited token sees the schedules whose `to` block it sees, with `by` null when
+  it doesn't see that block, and a task's `by` the same way (`"api"` is always seen).
 - A request's `kind` is `question`, `plan`, `connect`, `remove_worktree`, `merge_worktree` or `approval`; `buttons`
   holds a yes/no request's two words (`["Allow","Deny"]`); `scope` is what answering it takes; an approval carries
   `tool`, `said`, `details` and `facts` (Templum's words) and `reason` (the model's).
@@ -301,10 +311,11 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
   | Tool | Arguments | Does | Scope |
   |---|---|---|---|
   | `answer_request` | `request`, then one of `answers` (a list per question of the labels picked, and at most one other text), `allow` (true or false), `dismiss` (true); `note` | Answers a request as the inbox's buttons do (an approval's `allow` is Allow once; `note` is a denial's words); `Answered.` | control; full for a worktree's and an approval |
-  | `save_automation` | `automation` (as `automations.json` keeps one: `name`, `on`, `workspace`, `when`, `do`, `max_runs`, `cooldown`), `id` (to replace one) | Saves it as the editor's Save does, with the editor's checks and words; its id | control; full when its Do runs a command |
+  | `save_automation` | `automation` (as `automations.json` keeps one: `name`, `on`, `workspace`, `when`, `do`, `max_runs`, `cooldown`), `id` (to replace one) | Saves it as the editor's Save does, with the editor's checks and words; a new one keeps its `on` (default on); its id | control; full when its Do runs a command |
   | `set_automation` | `automation`, `on` | Its switch | control |
   | `run_automation` | `automation` | Run now | control |
   | `delete_automation` | `automation` | Deletes it | full |
+  | `cancel_schedule` | `schedule` (`s3`) | Cancels a delivery an agent asked for later, as the Automations popup's Cancel does; `Cancelled s3.`; one the token doesn't see is "There's no schedule s3: GET /v1/state lists them." | control |
 
 - **`git`** (Templum to Templum, part 2f; docs/api.md's Git): one of the Git popup's operations in a repository of a
   workspace (`workspace`, `folder`, `op` and its arguments; never raw git arguments), the API's own because the popup
@@ -386,12 +397,14 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
   ```
 
 - **Event names** are the state's collections, singular: `workspace`, `block`, `wire` (id `a-b`, the two block ids
-  sorted), `request`, `board`, `card`, `note`, `checklist`, `drawing` (the workspace's id), `automation`, `usage`
+  sorted), `request`, `board`, `card`, `note`, `checklist`, `drawing` (the workspace's id), `automation`, `schedule` (`s3`), `usage`
   (id `usage`); `put` carries the whole object, `delete` its
   id. A block that moves to another workspace is one `put` with its new `workspace`. Agents' states ride on their
   blocks. A client mirrors the state by applying puts and deletes to the snapshot.
 - **`notice`** is the one happening that isn't state: a task the API handed ended or its agent needs its person, a
-  watch the API set matched. It goes to every stream whose token sees its block.
+  watch the API set matched, an automation's Notify me (`{"text":"Morning review: Look","workspace":"w3",
+  "automation":1}`, `automation` left out of the others). It goes to every stream whose token sees its block or
+  workspace; one of a rule for all workspaces goes to the tokens for all workspaces.
 - **Ids** are `<run>-<n>`: `run` is random at each start of the server, `n` counts up. **Resuming** with
   `Last-Event-ID` (EventSource sends it by itself) gets a fresh `snapshot`, then the notices after that id when it is of
   this run and the server still keeps them (the last 256, at most an hour old); from another run, the snapshot alone.

@@ -163,11 +163,13 @@ fn a_limited_token_hears_only_its_workspaces() {
         text: "in w4".into(),
         block: None,
         workspace: Some("w4".into()),
+        automation: None,
     });
     fake.server.notice(Notice {
         text: "in w3".into(),
         block: Some("b7k2m".into()),
         workspace: Some("w3".into()),
+        automation: None,
     });
     loop {
         let event = stream.event();
@@ -240,6 +242,7 @@ fn resuming_gets_a_snapshot_and_the_missed_notices() {
         text: "t1 ended".into(),
         block: Some("b7k2m".into()),
         workspace: Some("w3".into()),
+        automation: None,
     });
     let back = open(&fake, "/v1/events", Auth::Bearer(&text), Some(&x));
     assert_eq!(back.event().event, "snapshot");

@@ -241,6 +241,16 @@ fn list(
                 .overflow_y_scroll()
                 .track_scroll(&ws.inbox_list)
                 .children(rows)
+                .children(ws.inbox_more().map(|more| {
+                    div()
+                        .id("inbox-more")
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .text_size(px(SMALL))
+                        .text_color(ui.title_dim)
+                        .child(more)
+                        .test_support()
+                }))
                 .test_support(),
         )
 }
@@ -280,13 +290,13 @@ fn detail(ws: &Workspace, wait: &Wait, w: f32, h: f32, cx: &mut Context<Workspac
                 .when_some(folder, |el, folder| el.child(dim(ws, folder)))
                 .child(dim(ws, format!("in {}", ws.space.name))),
         )
-        .child(
+        .children(ws.asker(wait).is_some().then(|| {
             balloon::ghost("inbox-go", "Go to terminal", ui, 1.0)
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                     ws.go_to_request(key, window, cx)
                 }))
-                .test_support(),
-        );
+                .test_support()
+        }));
     let known = why.card.is_some() || why.task.is_some() || why.agent.is_some();
     let why = known.then(|| {
         div()

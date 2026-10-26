@@ -259,8 +259,8 @@ impl Workspace {
         );
         if matches!(wait.what, Waiting::Question { .. } | Waiting::Allow { .. }) {
             if self
-                .asker(&wait)
-                .is_some_and(|(space, _)| space == self.space.id)
+                .request_space(&wait)
+                .is_some_and(|space| space == self.space.id)
             {
                 self.inbox_arrived(cx);
             }
@@ -412,6 +412,14 @@ impl Workspace {
 
     /// Why `wait` can't be answered any more, if so.
     fn orphaned(&self, wait: &Wait) -> Option<Reply> {
+        // Another computer's request stays while its workspace is here and home lists it, with a
+        // viewer of its block or without.
+        if wait.remote.is_some() {
+            return self
+                .request_space(wait)
+                .is_none()
+                .then(|| Reply::err("Its workspace was forgotten; the request was withdrawn."));
+        }
         // The Templum Agent and the API ask from no block.
         if wait.from != templum_agent::ASKER
             && wait.from != templum_api::ASKER
@@ -644,6 +652,18 @@ impl Workspace {
         })
     }
 
+    /// The workspace a request is listed in: for another computer's, the viewer of its block's,
+    /// else the remote workspace it came from while it is here; else the terminal's that called.
+    pub(crate) fn request_space(&self, wait: &Wait) -> Option<String> {
+        match &wait.remote {
+            Some(ask) => self
+                .asker(wait)
+                .map(|(space, _)| space)
+                .or_else(|| self.space_named(&ask.space).map(|s| s.id.clone())),
+            None => self.asker(wait).map(|(space, _)| space),
+        }
+    }
+
     /// What the agent in terminal `terminal` asks the person, oldest first: the first, and how
     /// many. Its block shows a notice, and the inbox lists them.
     pub(crate) fn asking(&self, terminal: &str) -> Option<(&Wait, usize)> {
@@ -674,14 +694,21 @@ impl Workspace {
     /// from another workspace; a request here, the window in front, is told by the inbox's
     /// badge alone.
     fn tell_asking(&mut self, wait: &Wait, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((space_id, me)) = self.asker(wait) else {
+        let Some(space_id) = self.request_space(wait) else {
             return;
         };
+        let me = self.asker(wait).map(|(_, me)| me);
         let space = self.space_named(&space_id).expect("the caller's workspace");
         // Another computer's request is titled by where it is: "API on winx-desktop".
-        let title = match space.remote.as_deref().filter(|_| wait.remote.is_some()) {
-            Some(remote) => format!("{} on {}", space.name, crate::mirror::computer_of(remote)),
-            None => self.about(&space.blocks[&me], cx).1,
+        let title = match (
+            space.remote.as_deref().filter(|_| wait.remote.is_some()),
+            me,
+        ) {
+            (Some(remote), _) => {
+                format!("{} on {}", space.name, crate::mirror::computer_of(remote))
+            }
+            (None, Some(me)) => self.about(&space.blocks[&me], cx).1,
+            (None, None) => return,
         };
         let Some(text) = self.asking_text(wait, cx) else {
             return;
@@ -710,14 +737,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((space_id, me)) = self
-            .waits
-            .iter()
-            .find(|w| w.key == key)
-            .and_then(|w| self.asker(w))
-        else {
+        let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
             return;
         };
+        let Some(space_id) = self.request_space(wait) else {
+            return;
+        };
+        let me = self.asker(wait).map(|(_, me)| me);
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let Some(remote) = space.remote.as_deref() else {
             return;

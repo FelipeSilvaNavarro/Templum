@@ -16,12 +16,13 @@ pub const INPUT_KEYS: usize = 256;
 pub const INPUT_MOUSE: usize = 64;
 
 /// The tools only the API serves: automations are the person's, not an agent's.
-const OWN: [&str; 9] = [
+const OWN: [&str; 10] = [
     "answer_request",
     "save_automation",
     "set_automation",
     "run_automation",
     "delete_automation",
+    "cancel_schedule",
     "terminal_input",
     "share_workspace",
     "revoke_share",
@@ -29,9 +30,9 @@ const OWN: [&str; 9] = [
 ];
 
 /// The arguments that name something a workspace-limited token must see: a block, a workspace, a
-/// board, a card, a request or an automation. One list, so a new tool's argument can't slip past
+/// board, a card, a request, an automation or a schedule. One list, so a new tool's argument can't slip past
 /// the check (`every_argument_is_a_target_or_not`).
-pub const TARGETS: [&str; 11] = [
+pub const TARGETS: [&str; 12] = [
     "block",
     "a",
     "b",
@@ -43,6 +44,7 @@ pub const TARGETS: [&str; 11] = [
     "card",
     "request",
     "automation",
+    "schedule",
 ];
 
 /// Every other argument name the tools have today: they name nothing a token could be kept from.
@@ -199,6 +201,12 @@ pub fn tools() -> Vec<Value> {
             "Deletes an automation.",
             json!({ "automation": automation }),
             &["automation"],
+        ),
+        tool(
+            "cancel_schedule",
+            "Cancels a delivery an agent asked for later, as the Automations popup's Cancel does.",
+            json!({ "schedule": { "type": "string", "description": "A schedule's id, as the state shows it (s3)." } }),
+            &["schedule"],
         ),
         tool(
             "terminal_input",
@@ -750,6 +758,9 @@ pub enum Own {
     DeleteAutomation {
         id: u64,
     },
+    CancelSchedule {
+        schedule: String,
+    },
     TerminalInput {
         block: String,
         input: Input,
@@ -952,6 +963,12 @@ pub fn parse_own(name: &str, args: &Value) -> Result<Own, String> {
         },
         "delete_automation" => Own::DeleteAutomation {
             id: number("automation")?,
+        },
+        "cancel_schedule" => Own::CancelSchedule {
+            schedule: args["schedule"]
+                .as_str()
+                .ok_or("cancel_schedule needs \"schedule\", a string")?
+                .to_string(),
         },
         "terminal_input" => {
             let block = args["block"]
@@ -1168,6 +1185,7 @@ mod tests {
             ),
             ("run_automation", json!({"automation": 1}), Scope::Control),
             ("delete_automation", json!({"automation": 1}), Scope::Full),
+            ("cancel_schedule", json!({"schedule": "s3"}), Scope::Control),
         ] {
             assert_eq!(scope(name, &args), Ok(want), "{name}");
         }
@@ -1847,6 +1865,17 @@ mod tests {
             Ok(Own::DeleteAutomation { id: 3 })
         );
         assert!(parse_own("delete_automation", &json!({"automation": "x"})).is_err());
+        assert_eq!(
+            parse_own("cancel_schedule", &json!({"schedule": "s3"})),
+            Ok(Own::CancelSchedule {
+                schedule: "s3".into()
+            })
+        );
+        assert_eq!(
+            parse_own("cancel_schedule", &json!({})),
+            Err("cancel_schedule needs \"schedule\", a string".into())
+        );
+        assert!(own("cancel_schedule") && known("cancel_schedule"));
         assert!(parse_own("overview", &json!({})).is_err());
     }
 }

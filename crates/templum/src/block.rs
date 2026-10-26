@@ -283,7 +283,15 @@ pub(crate) fn render(
                 .usage
                 .as_ref()
                 .and_then(crate::usage::chip)
-                .map(|(text, tip)| chip("usage-chip", text, tip)),
+                .map(|(text, tip)| {
+                    // A mirrored agent's effort is home's: its block has no place for it but here.
+                    let effort = pane
+                        .remote
+                        .as_ref()
+                        .and_then(|r| r.agent.as_ref())
+                        .and_then(|a| a.effort.as_deref());
+                    chip("usage-chip", text, crate::usage::with_effort(tip, effort))
+                }),
         },
         _ => None,
     };

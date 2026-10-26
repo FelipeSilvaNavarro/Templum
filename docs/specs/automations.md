@@ -331,6 +331,8 @@ named by its title and uid as the blocks list names it; a folder as typed.
   A click opens the Automations popup on it (batch 2: shows the block that fired it). *The designer's call:* shown as
   Go to terminal shows a block (its workspace, the block focused, the camera on it); a block closed since, or a run
   from a time or Run now, opens the popup on the automation.
+- It also sends a `notice` through the API (`{"text": "<name or sentence>: <text>", "workspace": …, "automation":
+  <id>}`), to the tokens that see its workspace, so a computer that mirrors the workspace can say it too.
 - **Ran:** "Notified."
 
 ## Safety
@@ -503,6 +505,24 @@ person's automations; Esc in a field gives the keyboard back to the list, Esc on
 the canvas gives the keyboard to what was clicked and the popup stays. The workspace's shortcuts work while it has the
 keyboard, but those that act on the terminal in front, as in the Agents popup; the Automations shortcut closes it.
 Closing gives the keyboard back to the canvas only if the popup had it.
+
+## On a computer that mirrors another
+
+*(Templum to Templum, batch 2h; the person's hard rule.)* **Home's automations run only at home.** A mirror never
+copies a home rule into its own `automations.json`, never schedules, runs or fires one; it shows and edits them only
+through home's API ([templum-to-templum.md](templum-to-templum.md)). Its own rules never list or target a remote
+workspace:
+
+- **Where** lists this computer's workspaces only (never a mirror), and a new rule starts on the workspace shown when
+  it is local, else on the first local one. A rule's Who and terminal lists skip a remote workspace's blocks.
+- A rule saved before for a workspace that is now a mirror stays in the file and in the list, with its Where
+  labelled "API (mirror of winx-desktop)". Every way it could run (its time, Run now, a time missed at start that then
+  falls due) is **Skipped**: "Target missing: API is a mirror of winx-desktop: its automations run there.", and its Do
+  never runs. Save refuses a rule whose Where is a mirror with "API is a mirror of winx-desktop: its automations run
+  there." (in the editor and through this computer's own `save_automation`).
+- Its event rules never hear a remote agent, nor a notice of home's. Home's schedules (agents' deliveries) are never
+  delivered by the mirror.
+- Notify me also sends a notice through the API (`automation` names the rule), so a mirror can say it.
 
 ## Constraints
 

@@ -838,6 +838,7 @@ fn a_notice_reaches_the_ui_as_its_first_line() {
         text: format!("{}\nsecond", "é".repeat(400)),
         block: Some("b7k2m".into()),
         workspace: Some("w3".into()),
+        automation: None,
     });
     until(&mirror, "r1", "the notice", |u| {
         matches!(u, Update::Notice(n)

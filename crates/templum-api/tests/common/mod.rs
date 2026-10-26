@@ -110,6 +110,7 @@ pub fn sample() -> State {
             workspace: Some("w3".into()),
             ..Default::default()
         })],
+        schedules: vec![],
         shares: ["s1", "s2"]
             .map(|id| {
                 Arc::new(ShareView {

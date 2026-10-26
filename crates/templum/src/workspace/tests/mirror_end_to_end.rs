@@ -1214,3 +1214,283 @@ fn on_a_control_share_discard_is_dimmed_and_send_to_lists_no_local_terminal(
         }
     });
 }
+
+// Batch 2h: agents, automations and the inbox.
+
+use crate::automations::{Automation, COOLDOWN, Do, Went, When};
+use crate::workspace::remote_rules::{HOME_KEYS, home_key};
+
+/// A rule of home's: daily at 09:00, notifying "Look", for the workspace `space`.
+fn morning_review(space: &str) -> Automation {
+    Automation {
+        id: 0,
+        name: "Morning review".into(),
+        on: true,
+        workspace: Some(space.into()),
+        when: When::Daily {
+            at: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+        },
+        act: Do::Notify {
+            text: "Look".into(),
+        },
+        max_runs: None,
+        runs: 0,
+        since: crate::workspace::automations::unix(std::time::SystemTime::now()),
+        last: None,
+        opened: None,
+        cooldown: COOLDOWN,
+    }
+}
+
+#[gpui_kit::test]
+fn a_home_rule_switched_and_run_from_the_mirror_runs_at_home_once(cx: &mut TestAppContext) {
+    let (handle, ws, dir) = with_data(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let id = ws.update(cx, |ws, _| ws.automations.add(morning_review(&first)));
+    mirrored(handle, &ws, cx, dir.path());
+    let key = home_key("r1", id).unwrap();
+    pump_home(&ws, cx, "r1 to list home's rule", |cx| {
+        ws.read_with(cx, |ws, _| ws.home_rule(key).is_some())
+    });
+    // The switch goes to home, and home's state brings it back.
+    ws.update(cx, |ws, cx| ws.set_automation_on(key, false, cx));
+    pump_home(
+        &ws,
+        cx,
+        "the rule to be off at home and on the copy",
+        |cx| {
+            ws.read_with(cx, |ws, _| {
+                ws.automations.get(id).is_some_and(|a| !a.on)
+                    && ws.home_rule(key).is_some_and(|(_, r)| !r.rule.on)
+            })
+        },
+    );
+    // Run now runs it at home, once.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.run_automation_now(key, window, cx))
+    })
+    .unwrap();
+    let title = ws.read_with(cx, |ws, _| {
+        let r1 = ws.spaces().find(|s| s.id == "r1").unwrap();
+        format!(
+            "{} on {}: Morning review: Look",
+            r1.name,
+            crate::mirror::computer_of(r1.remote.as_deref().unwrap())
+        )
+    });
+    pump_home(&ws, cx, "the notice of its Notify me", |cx| {
+        ws.read_with(cx, |ws, _| ws.said.contains(&title))
+    });
+    for _ in 0..5 {
+        pump_home(&ws, cx, "a round", |_| true);
+    }
+    ws.read_with(cx, |ws, _| {
+        let notices = ws
+            .api
+            .notices
+            .iter()
+            .filter(|n| n.automation == Some(id))
+            .count();
+        assert_eq!(notices, 1, "home ran it once");
+        let last = ws.automations.get(id).unwrap().last.clone().unwrap();
+        assert_eq!((last.went, last.about.as_str()), (Went::Ran, "Notified."));
+        assert!(ws.automation_runs.keys().all(|k| *k < HOME_KEYS));
+        assert_eq!(ws.said.iter().filter(|s| **s == title).count(), 1);
+    });
+}
+
+#[gpui_kit::test]
+fn a_home_rule_edited_and_duplicated_on_the_mirror_is_saved_at_home(cx: &mut TestAppContext) {
+    let (handle, ws, dir) = with_data(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let id = ws.update(cx, |ws, _| ws.automations.add(morning_review(&first)));
+    mirrored(handle, &ws, cx, dir.path());
+    let key = home_key("r1", id).unwrap();
+    pump_home(&ws, cx, "r1 to list home's rule", |cx| {
+        ws.read_with(cx, |ws, _| ws.home_rule(key).is_some())
+    });
+    ws.update(cx, |ws, cx| {
+        ws.edit_automation(key, |a| a.name = "Evening review".into(), cx);
+        assert_eq!(ws.save_automation(key, cx), Ok(id));
+    });
+    pump_home(&ws, cx, "home's rule to be renamed", |cx| {
+        ws.read_with(cx, |ws, _| {
+            ws.automations
+                .get(id)
+                .is_some_and(|a| a.name == "Evening review")
+                && ws
+                    .home_rule(key)
+                    .is_some_and(|(_, r)| r.rule.name == "Evening review")
+        })
+    });
+    ws.update(cx, |ws, cx| {
+        ws.duplicate_automation(key, cx);
+    });
+    pump_home(&ws, cx, "home to hold the copy, off", |cx| {
+        ws.read_with(cx, |ws, _| {
+            ws.automations
+                .automations
+                .iter()
+                .any(|a| a.name == "Evening review (copy)" && !a.on)
+        })
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_home_schedule_is_listed_and_cancelled_from_the_mirror(cx: &mut TestAppContext) {
+    use super::delegate::agents_running_in;
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws, mine, theirs) = agents_running_in(cx, None, Some(dir.path().to_path_buf()));
+    let (terminal, _) = me(&ws, cx, mine);
+    let their_uid = ws.read_with(cx, |ws, _| ws.space.uids[&theirs].clone());
+    let at = std::time::SystemTime::now() + std::time::Duration::from_secs(30 * 60);
+    ws.update(cx, |ws, cx| {
+        ws.schedule_add(
+            crate::workspace::schedules::Schedule {
+                id: 0,
+                by: terminal,
+                to: their_uid,
+                text: "Check the deploy".into(),
+                next: at,
+                every: None,
+                until: at,
+            },
+            cx,
+        );
+    });
+    mirrored(handle, &ws, cx, dir.path());
+    let listed = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, cx| {
+            ws.rule_groups(cx)
+                .iter()
+                .flat_map(|g| g.schedules.iter().map(|s| s.0.clone()))
+                .collect::<Vec<_>>()
+        })
+    };
+    pump_home(&ws, cx, "r1 to list s1", |cx| listed(&ws, cx) == ["s1"]);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.cancel_home_schedule("r1", "s1", window, cx))
+    })
+    .unwrap();
+    pump_home(&ws, cx, "home to have none", |cx| {
+        ws.read_with(cx, |ws, _| ws.schedules.is_empty()) && listed(&ws, cx).is_empty()
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_task_handed_at_home_shows_in_the_mirror_s_agents_popup(cx: &mut TestAppContext) {
+    use super::delegate::{agents_running_in, hand_over};
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws, mine, theirs) = agents_running_in(cx, None, Some(dir.path().to_path_buf()));
+    let (terminal, my_uid) = me(&ws, cx, mine);
+    let (_, their_uid) = me(&ws, cx, theirs);
+    mirrored(handle, &ws, cx, dir.path());
+    // Home is shown to look at its terminal.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.switch_to(0, window, cx))
+    })
+    .unwrap();
+    let task = json!({ "block": their_uid, "task": "Ship it." });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
+    let row = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.agent_rows()
+                .into_iter()
+                .find(|r| r.space == "r1" && r.task.as_deref() == Some("Ship it."))
+        })
+    };
+    pump_home(&ws, cx, "the task on the mirror's row", |cx| {
+        super::bus::after(cx, 250);
+        row(&ws, cx).is_some()
+    });
+    ws.read_with(cx, |ws, _| {
+        let viewer = remote_of(ws).homes[&their_uid];
+        let by = ws
+            .spaces()
+            .find(|s| s.id == "r1")
+            .and_then(|s| s.terminal(viewer))
+            .and_then(|p| p.remote.as_ref()?.agent.as_ref()?.task.as_ref()?.by.clone());
+        assert_eq!(by.as_deref(), Some(my_uid.as_str()));
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_remote_agent_is_done_on_the_mirror_until_its_block_is_looked_at(cx: &mut TestAppContext) {
+    use super::delegate::agents_running_in;
+    use super::terminals::set_active;
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws, mine, theirs) = agents_running_in(cx, None, Some(dir.path().to_path_buf()));
+    let (worker, their_uid) = me(&ws, cx, theirs);
+    mirrored(handle, &ws, cx, dir.path());
+    set_active(handle, true, cx);
+    // Home is shown, one of its blocks focused: the mirror's agent is not the one looked at.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.switch_to(0, window, cx);
+            ws.space.focused = Some(mine);
+        })
+    })
+    .unwrap();
+    super::bus::event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let doing_of = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let viewer = remote_of(ws).homes.get(&their_uid).copied()?;
+            let pane = ws.spaces().find(|s| s.id == "r1")?.terminal(viewer)?;
+            ws.agent_rows()
+                .into_iter()
+                .find(|r| r.terminal == pane.term.id())
+                .map(|r| r.doing)
+        })
+    };
+    use crate::workspace::agents_view::Doing;
+    pump_home(&ws, cx, "r1 to see it work", |cx| {
+        super::bus::after(cx, 250);
+        frame(handle, cx);
+        matches!(doing_of(&ws, cx), Some(Doing::Working(_)))
+    });
+    super::bus::event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "stopped", "message": "Done." }),
+    );
+    pump_home(&ws, cx, "r1's row to be Done", |cx| {
+        super::bus::after(cx, 250);
+        frame(handle, cx);
+        doing_of(&ws, cx) == Some(Doing::Done)
+    });
+    ws.read_with(cx, |ws, _| assert!(ws.done_count() >= 1));
+    // Looked at on the mirror: the workspace shown, the viewer focused.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let to = ws.order().iter().position(|s| s.id == "r1").unwrap();
+            ws.switch_to(to, window, cx);
+            let viewer = remote_of(ws).homes[&their_uid];
+            ws.space.focused = Some(viewer);
+        })
+    })
+    .unwrap();
+    frame(handle, cx);
+    assert_eq!(doing_of(&ws, cx), Some(Doing::Idle));
+}
+
+#[gpui_kit::test]
+fn the_mirror_s_own_new_rule_offers_no_remote_workspace(cx: &mut TestAppContext) {
+    let (handle, ws, dir) = with_data(cx);
+    let (first, _store) = mirrored(handle, &ws, cx, dir.path());
+    ws.update(cx, |ws, cx| ws.new_automation(cx));
+    ws.read_with(cx, |ws, _| {
+        let draft = ws.automation_drafts[&crate::workspace::automations::NEW].clone();
+        assert_eq!(draft.workspace.as_deref(), Some(first.as_str()));
+        let choices = crate::automations_view::editor::where_choices(ws, &draft);
+        assert!(
+            choices.iter().all(|(id, _)| id.as_ref() != "r1"),
+            "{choices:?}"
+        );
+    });
+}

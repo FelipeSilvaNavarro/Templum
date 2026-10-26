@@ -600,6 +600,13 @@ impl Workspace {
                         .any(|a| a.id.to_string() == value)
                         .then_some(())
                         .ok_or("automation"),
+                    "schedule" => {
+                        let id = format!("s{}", value.trim().trim_start_matches('s'));
+                        if !seen.schedules.iter().any(|s| s.id == id) {
+                            return Err(not_found("schedule", &id));
+                        }
+                        Ok(())
+                    }
                     _ => Ok(()),
                 };
                 if let Err(word) = found {
@@ -859,6 +866,16 @@ impl Workspace {
                 known(self, id)?;
                 self.delete_automation(id, cx);
                 Reply::ok(format!("Deleted automation {id}."))
+            }
+            Own::CancelSchedule { schedule } => {
+                let n = schedule.trim().trim_start_matches('s');
+                match n.parse::<u64>() {
+                    Ok(id) if self.schedules.iter().any(|s| s.id == id) => {
+                        self.cancel_schedule_now(id, cx);
+                        Reply::ok(format!("Cancelled s{id}."))
+                    }
+                    _ => return Err(not_found("schedule", &format!("s{n}"))),
+                }
             }
             // Typed on the person's keyboard's path (`api_input`), which `api_call` takes first.
             Own::TerminalInput { block, .. } => Reply::err(format!(
@@ -1124,6 +1141,7 @@ impl Workspace {
             text,
             block,
             workspace,
+            automation: None,
         });
     }
 

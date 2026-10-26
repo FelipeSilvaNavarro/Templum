@@ -166,6 +166,69 @@ fn an_unreadable_automations_file_freezes_the_list(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn notify_me_sends_its_notice_to_the_api(cx: &mut TestAppContext) {
+    let (_, ws) = open(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let named = add(
+        &ws,
+        cx,
+        Automation {
+            name: "Morning review".into(),
+            workspace: Some(first.clone()),
+            ..notify("Look")
+        },
+    );
+    due(&ws, cx, named);
+    look(cx);
+    assert_eq!(last(&ws, cx, named), (Went::Ran, "Notified.".into()));
+    let unnamed = add(&ws, cx, rule(every(10), say("Again")));
+    due(&ws, cx, unnamed);
+    look(cx);
+    let notices = ws.read_with(cx, |ws, _| ws.api.notices.clone());
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert_eq!(
+        notices[0],
+        templum_api::model::Notice {
+            text: "Morning review: Look".into(),
+            workspace: Some(first),
+            block: None,
+            automation: Some(named),
+        }
+    );
+    assert!(notices[1].text.ends_with(": Again"), "{}", notices[1].text);
+    assert_eq!(notices[1].automation, Some(unnamed));
+}
+
+#[gpui_kit::test]
+fn a_new_rule_saved_off_through_the_api_stays_off(cx: &mut TestAppContext) {
+    use super::api::{said, tool, with_token};
+    let (handle, ws) = open(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let full = with_token(&ws, cx, templum_api::store::Scope::Full, None);
+    let rule = |on: Option<bool>| {
+        let mut rule = json!({ "name": "Copy", "workspace": first,
+            "when": { "daily": { "at": "09:00:00" } }, "do": { "notify": { "text": "x" } } });
+        if let Some(on) = on {
+            rule["on"] = json!(on);
+        }
+        json!({ "automation": rule })
+    };
+    let line = tool(handle, &ws, cx, &full, "save_automation", rule(Some(false)));
+    assert!(!said(&line).0, "{line}");
+    let line = tool(handle, &ws, cx, &full, "save_automation", rule(None));
+    assert!(!said(&line).0, "{line}");
+    ws.read_with(cx, |ws, _| {
+        let (off, on) = (
+            &ws.automations.automations[0],
+            &ws.automations.automations[1],
+        );
+        assert!(!off.on && on.on);
+        assert_eq!(ws.automation_runs[&off.id].next, None);
+        assert!(ws.automation_runs[&on.id].next.is_some());
+    });
+}
+
+#[gpui_kit::test]
 fn a_due_automation_notifies_and_says_it_ran(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let id = add(&ws, cx, rule(every(10), say("Stand-up")));

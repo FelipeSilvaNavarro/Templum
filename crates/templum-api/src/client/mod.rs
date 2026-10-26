@@ -309,6 +309,7 @@ pub(crate) fn notice_of(data: &str) -> Option<Notice> {
             .collect(),
         block: plain(notice.block),
         workspace: plain(notice.workspace),
+        automation: notice.automation,
     })
 }
 
@@ -698,6 +699,20 @@ mod tests {
         assert_eq!(notice.block.as_deref(), Some("b7k2m"));
         assert_eq!(notice.workspace, None);
         assert!(notice_of("[]").is_none());
+    }
+
+    #[test]
+    fn a_notice_keeps_its_automation() {
+        let notice = notice_of(r#"{"text":"a\nb","workspace":"w3","automation":4}"#).unwrap();
+        assert_eq!(
+            notice,
+            Notice {
+                text: "a".into(),
+                workspace: Some("w3".into()),
+                automation: Some(4),
+                block: None
+            }
+        );
     }
 
     #[test]

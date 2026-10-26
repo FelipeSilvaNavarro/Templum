@@ -22,7 +22,7 @@ use crate::git_block::widgets::icon_button;
 use crate::grid::hsla;
 use crate::inbox::{age, count_badge, dim, section};
 use crate::usage;
-use crate::workspace::agents_view::{AgentRow, Doing, Item, Show, items};
+use crate::workspace::agents_view::{AgentRow, Doing, Item, SCREEN_LINES, Show, items};
 use crate::workspace::{Pane, Workspace};
 
 /// The list's width, pixels.
@@ -32,9 +32,8 @@ const ROW: f32 = 48.0;
 /// The text's sizes: the names, and what is said about them.
 const TEXT: f32 = 13.0;
 const SMALL: f32 = 11.5;
-/// The lines of a handed task the details show, and of the screen.
+/// The lines of a handed task the details show.
 const TASK_LINES: usize = 3;
-const SCREEN_LINES: usize = 12;
 
 /// The popup, `w` by `h` pixels: the list of every agent at the left, the selected one at the
 /// right.
@@ -188,9 +187,10 @@ fn list(
             let now = cx.background_executor().now();
             range
                 .map(|ix| match &items[ix] {
-                    Item::Header { space, name } => {
+                    Item::Header { space, name, dim } => {
                         let text = header_text(name, needs.get(space).copied().unwrap_or(0));
                         div()
+                            .when(*dim, |el| el.opacity(0.5))
                             .h(px(ROW))
                             .px(px(12.0))
                             .pb(px(6.0))
@@ -207,6 +207,7 @@ fn list(
                         let terminal = row.terminal.clone();
                         let entity = entity.clone();
                         agent_row(ws, row, now)
+                            .when(row.dim, |el| el.opacity(0.5))
                             .when(lit, |el| el.bg(ui.hover))
                             .on_click(move |_: &ClickEvent, window, cx| {
                                 entity.update(cx, |ws, cx| ws.select_agent(&terminal, window, cx))
@@ -414,11 +415,19 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
     let Some(pane) = ws.pane(&row.terminal) else {
         return div().flex_1().into_any_element();
     };
-    let model = pane
-        .model
-        .clone()
+    // Another computer's agent is what home says of it.
+    let home = pane.remote.as_ref().and_then(|r| r.agent.as_ref());
+    let (model, effort, role) = match (&pane.remote, home) {
+        (Some(_), home) => (
+            home.and_then(|a| a.model.clone()),
+            home.and_then(|a| a.effort.clone()),
+            home.and_then(|a| a.role.clone()),
+        ),
+        (None, _) => (pane.model.clone(), pane.effort.clone(), pane.role.clone()),
+    };
+    let model = model
         .or_else(|| pane.usage.as_ref().and_then(|u| u.model.clone()))
-        .map(|model| match &pane.effort {
+        .map(|model| match &effort {
             Some(effort) => format!("{model} · {effort}"),
             None => model,
         });
@@ -437,11 +446,7 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
                 }),
         )
         .children(model.map(|model| dim(ws, model)))
-        .children(
-            pane.role
-                .clone()
-                .map(|role| dim(ws, format!("Role: {role}"))),
-        )
+        .children(role.map(|role| dim(ws, format!("Role: {role}"))))
         .child(dim(ws, row.title.clone()))
         .children(row.folder.clone().map(|folder| dim(ws, folder)))
         .child(dim(ws, format!("in {}", row.space_name)));
@@ -456,26 +461,54 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
             Doing::NeedsYou(asks) if !asks.is_empty() => Some(dim(ws, asks.clone())),
             _ => None,
         });
-    let task = pane
-        .handed
-        .as_ref()
-        .filter(|h| !h.text.is_empty())
-        .map(|handed| {
-            let lines: Vec<&str> = handed.text.lines().take(TASK_LINES).collect();
-            let from = named(ws, &handed.by).map(|by| format!("from {by}"));
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(section(ws, "Task"))
-                .children((handed.id > 0).then(|| dim(ws, format!("t{}", handed.id))))
-                .child(div().child(lines.join("\n")))
-                .children(from.map(|from| dim(ws, from)))
-                .child(dim(
-                    ws,
-                    format!("{} ago", age(now.saturating_duration_since(handed.since))),
-                ))
-        });
+    let task = match home {
+        Some(home) => home
+            .task
+            .as_ref()
+            .filter(|t| !t.text.is_empty())
+            .map(|task| {
+                let lines: Vec<&str> = task.text.lines().take(TASK_LINES).collect();
+                let from = task.by.as_ref().map(|by| match by.as_str() {
+                    templum_api::ASKER => "from the API".to_string(),
+                    by => match ws.uid_title_in(&row.space, by, cx) {
+                        Some(title) => format!("from {title}"),
+                        None => format!("from {by}"),
+                    },
+                });
+                let wall = crate::workspace::automations::unix(std::time::SystemTime::now());
+                let since =
+                    std::time::Duration::from_secs(wall.saturating_sub(task.since).max(0) as u64);
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(section(ws, "Task"))
+                    .child(dim(ws, task.id.clone()))
+                    .child(div().child(lines.join("\n")))
+                    .children(from.map(|from| dim(ws, from)))
+                    .child(dim(ws, format!("{} ago", age(since))))
+            }),
+        None => pane
+            .handed
+            .as_ref()
+            .filter(|h| !h.text.is_empty())
+            .map(|handed| {
+                let lines: Vec<&str> = handed.text.lines().take(TASK_LINES).collect();
+                let from = named(ws, &handed.by).map(|by| format!("from {by}"));
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(section(ws, "Task"))
+                    .children((handed.id > 0).then(|| dim(ws, format!("t{}", handed.id))))
+                    .child(div().child(lines.join("\n")))
+                    .children(from.map(|from| dim(ws, from)))
+                    .child(dim(
+                        ws,
+                        format!("{} ago", age(now.saturating_duration_since(handed.since))),
+                    ))
+            }),
+    };
     let card = row.card.as_ref().map(|(id, title)| {
         div()
             .flex()
@@ -483,6 +516,15 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
             .gap(px(2.0))
             .child(section(ws, "Card"))
             .child(div().child(format!("#{id} {title}")))
+    });
+    // Home's agent has its subagents' count, not their lines.
+    let remote_subagents = home.filter(|a| a.subagents > 0).map(|a| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .child(section(ws, "Subagents"))
+            .child(div().child(format!("{} subagents", a.subagents)))
     });
     let subagents = (!pane.subagents.is_empty()).then(|| {
         let working = pane.subagents_at_work();
@@ -515,7 +557,10 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
     });
     let spent = pane.usage.as_ref().and_then(|s| {
         let (_, tip) = usage::chip(s)?;
-        Some((s.context_percent, tip))
+        Some((
+            s.context_percent,
+            usage::with_effort(tip, effort.as_deref()),
+        ))
     });
     let spent = spent.map(|(percent, tip)| {
         div()
@@ -530,7 +575,18 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
                     .collect::<Vec<_>>(),
             )
     });
-    let lines = pane.term.shared().lines(SCREEN_LINES);
+    // The viewer's lines when home streams it, else the last read of its screen.
+    let mut lines = pane.term.shared().lines(SCREEN_LINES);
+    if lines.is_empty()
+        && let (Some(remote), Some(home)) = (
+            ws.space_named(&row.space).and_then(|s| s.remote.as_deref()),
+            &pane.remote,
+        )
+        && let Some((block, read)) = &remote.screen
+        && *block == home.block
+    {
+        lines = read.clone();
+    }
     let screen = (!lines.is_empty()).then(|| {
         div()
             .flex()
@@ -603,6 +659,7 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
                 .children(task)
                 .children(card)
                 .children(subagents)
+                .children(remote_subagents)
                 .children(spent)
                 .children(screen),
         );

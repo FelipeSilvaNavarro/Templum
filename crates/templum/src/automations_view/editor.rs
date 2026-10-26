@@ -7,6 +7,7 @@ use std::time::SystemTime;
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, FontWeight, SharedString,
@@ -21,6 +22,8 @@ use crate::grid::hsla;
 use crate::settings::row::menu_button;
 use crate::workspace::Workspace;
 use crate::workspace::automations::NEW;
+use crate::workspace::remote::Deed;
+use crate::workspace::remote_rules::key_home;
 
 /// The text boxes of the form: which one a change came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,6 +215,18 @@ impl Workspace {
             Field::Notify => say(&form.notify, window, cx),
             Field::Prompt => say_area(&form.prompt, window, cx),
             Field::AgentPrompt => say_area(&form.agent_prompt, window, cx),
+        }
+    }
+
+    /// Home refused a Save of the home rule `key`: its sentence is the editor's red line, if the
+    /// form still shows that rule.
+    pub(crate) fn home_save_refused(&mut self, key: u64, sentence: String) {
+        if let Some(form) = self
+            .automation_form
+            .as_mut()
+            .filter(|f| f.for_id == Some(key))
+        {
+            form.problem = Some(sentence);
         }
     }
 
@@ -532,13 +547,16 @@ impl Workspace {
         ) {
             return;
         }
+        let first = match key_home(id) {
+            Some((space, _)) => self
+                .home_kinds(&space)
+                .first()
+                .map(|(id, _)| id.to_string()),
+            None => self.agents.first().map(|e| e.id.clone()),
+        };
         let who = match kind {
             "kind" => Who::Kind {
-                kind: self
-                    .agents
-                    .first()
-                    .map(|e| e.id.clone())
-                    .unwrap_or_default(),
+                kind: first.unwrap_or_default(),
             },
             _ => Who::Blocks {
                 blocks: Vec::new(),
@@ -576,6 +594,12 @@ impl Workspace {
             return;
         }
         match self.save_automation(id, cx) {
+            // Home's rule is saved when home says so: its draft stays until then.
+            Ok(_) if key_home(id).is_some() => {
+                if let Some(form) = self.automation_form.as_mut() {
+                    form.problem = None;
+                }
+            }
             Ok(_) => {
                 if let Some(form) = self.automation_form.as_mut() {
                     form.problem = None;
@@ -891,6 +915,18 @@ fn do_kind(act: &Do) -> &'static str {
     }
 }
 
+/// The agents a rule may name: Settings ▸ Agents, or home's for a home rule (`home` its remote).
+fn agent_choices(ws: &Workspace, home: &Option<String>) -> Vec<(SharedString, SharedString)> {
+    match home {
+        Some(space) => ws.home_kinds(space),
+        None => ws
+            .agents
+            .iter()
+            .map(|e| (e.id.clone().into(), e.title.clone().into()))
+            .collect(),
+    }
+}
+
 /// The next three times of the cron `expr`, or what is wrong with it.
 fn cron_preview(expr: &str) -> Result<String, String> {
     Cron::parse(expr)?;
@@ -913,15 +949,19 @@ fn cron_preview(expr: &str) -> Result<String, String> {
 
 /// The agents' blocks a prompt can go to, and the terminals a command can run in: (uid, label),
 /// in the workspace of the rule (every workspace for none).
-fn blocks(
+pub(crate) fn blocks(
     ws: &Workspace,
     a: &Automation,
     agents: bool,
     cx: &App,
 ) -> Vec<(SharedString, SharedString)> {
+    // A home rule names home's blocks, not this computer's.
+    if let Some((space, _)) = key_home(a.id) {
+        return ws.home_blocks(&space, agents, cx);
+    }
     let mut found = Vec::new();
     for space in ws.order() {
-        if a.workspace.as_ref().is_some_and(|w| *w != space.id) {
+        if space.is_remote() || a.workspace.as_ref().is_some_and(|w| *w != space.id) {
             continue;
         }
         for (id, pane) in space.terminals() {
@@ -937,6 +977,48 @@ fn blocks(
         }
     }
     found
+}
+
+/// The workspaces a rule may be for: this computer's own (never a mirror: its automations run at
+/// home), and "All workspaces" unless the rule opens something. A rule saved for a mirror before
+/// keeps its value, labelled as the mirror it is, and one for a deleted workspace says so.
+pub(crate) fn where_choices(ws: &Workspace, a: &Automation) -> Vec<(SharedString, SharedString)> {
+    // A home rule is for home's workspace and no other: "API on winx-desktop".
+    if let (Some((space, _)), Some(home)) = (key_home(a.id), a.workspace.as_ref()) {
+        let words = ws.space_named(&space).and_then(|s| {
+            let remote = s.remote.as_deref()?;
+            Some(format!(
+                "{} on {}",
+                s.name,
+                crate::mirror::computer_of(remote)
+            ))
+        });
+        return vec![(home.clone().into(), words.unwrap_or_default().into())];
+    }
+    let opens = matches!(a.act, Do::Agent { .. } | Do::Command { terminal: None, .. });
+    let mut places: Vec<(SharedString, SharedString)> = ws
+        .order()
+        .iter()
+        .filter(|s| !s.is_remote())
+        .map(|s| (s.id.clone().into(), s.name.clone().into()))
+        .collect();
+    if !opens {
+        places.insert(0, ("".into(), "All workspaces".into()));
+    }
+    if let Some(current) = a
+        .workspace
+        .as_ref()
+        .filter(|w| !places.iter().any(|(v, _)| v == w.as_str()))
+    {
+        let label = ws
+            .order()
+            .iter()
+            .find(|s| s.id == *current)
+            .and_then(|s| s.mirror_title())
+            .unwrap_or_else(|| "A deleted workspace".into());
+        places.push((current.clone().into(), label.into()));
+    }
+    places
 }
 
 /// A dropdown of `choices` with the chosen `current` (one that is not among them stays, as
@@ -971,7 +1053,8 @@ fn block_menu(
 }
 
 /// "Next: Tomorrow 09:00": when the draft `a` of `id` would run next. A draft counts from now,
-/// as Save will; a saved rule from its own `since`.
+/// as Save will; a saved rule from its own `since`; a home rule with no draft over it from the
+/// next time home says.
 pub(crate) fn preview_next(
     ws: &Workspace,
     id: u64,
@@ -979,6 +1062,22 @@ pub(crate) fn preview_next(
     now: SystemTime,
     cx: &App,
 ) -> String {
+    if let Some((_, rule)) = ws
+        .home_rule(id)
+        .filter(|_| !ws.automation_drafts.contains_key(&id))
+        .filter(|_| !a.when.is_event())
+    {
+        return match rule.next {
+            Some(next) => format!(
+                "Next: {}",
+                time_words(
+                    crate::workspace::automations::local(next).naive_local(),
+                    DateTime::<Local>::from(now).naive_local()
+                )
+            ),
+            None => "Next: never".to_string(),
+        };
+    }
     // An event has no time to name: it says what it waits for.
     if a.when.is_event() {
         let said = ws.when_said(a, cx);
@@ -1014,7 +1113,13 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
     let now = SystemTime::now();
     let red = hsla(ws.theme.palette.ansi[1], 1.0);
     let yellow = hsla(ws.theme.palette.ansi[3], 1.0);
-    let saved = ws.automations.get(id);
+    let saved = ws.rule(id);
+    let home = key_home(id).map(|(space, _)| space);
+    // Home's blocks and agents have no title here but home's: a block it lacks is "not open".
+    let kept_label = |ws: &Workspace, uid: &str| match &home {
+        Some(_) => format!("{uid} (not open)"),
+        None => kept_label(ws, uid),
+    };
 
     // When.
     let kind = when_kind(&a.when);
@@ -1185,11 +1290,7 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                         .into_any_element()
                 }
                 Who::Kind { kind } => {
-                    let choices = ws
-                        .agents
-                        .iter()
-                        .map(|e| (e.id.clone().into(), e.title.clone().into()))
-                        .collect();
+                    let choices = agent_choices(ws, &home);
                     block_menu(
                         "automation-kind",
                         choices,
@@ -1500,11 +1601,7 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                 .into_any_element()
         }
         Do::Agent { agent, .. } => {
-            let choices = ws
-                .agents
-                .iter()
-                .map(|e| (e.id.clone().into(), e.title.clone().into()))
-                .collect();
+            let choices = agent_choices(ws, &home);
             div()
                 .flex()
                 .flex_col()
@@ -1567,22 +1664,7 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
     };
 
     // Where.
-    let opens = matches!(a.act, Do::Agent { .. } | Do::Command { terminal: None, .. });
-    let mut places: Vec<(SharedString, SharedString)> = ws
-        .order()
-        .iter()
-        .map(|s| (s.id.clone().into(), s.name.clone().into()))
-        .collect();
-    if !opens {
-        places.insert(0, ("".into(), "All workspaces".into()));
-    }
-    if let Some(gone) = a
-        .workspace
-        .as_ref()
-        .filter(|w| !places.iter().any(|(v, _)| v == w.as_str()))
-    {
-        places.push((gone.clone().into(), "A deleted workspace".into()));
-    }
+    let places = where_choices(ws, a);
     let where_menu = {
         let entity = entity.clone();
         menu_button(
@@ -1708,13 +1790,34 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                 .test_support()
         }));
 
+    // Home's rule is saved at home: from another computer it turns off when the share ends, and
+    // Save says why when this share can't.
+    let command = matches!(a.act, Do::Command { .. });
+    let save_refused = home
+        .as_deref()
+        .and_then(|space| ws.why_not_in(space, Deed::SaveRule(command)));
+    let from_elsewhere = home.as_deref().map(|space| {
+        format!(
+            "Saved from another computer, it turns off when this share ends. Save it on {} to keep it.",
+            ws.space_named(space)
+                .and_then(|s| s.remote.as_deref())
+                .map(crate::mirror::computer_of)
+                .unwrap_or_default()
+        )
+    });
+    let saving = ws.home_saving(id);
     let save = balloon::solid(
         ElementId::Name("automation-save".into()),
-        "Save",
+        if saving { "Saving at home…" } else { "Save" },
         None,
         ui,
         1.0,
     )
+    .when_some(save_refused, |el, why| {
+        el.opacity(0.4)
+            .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+    })
+    .when(saving, |el| el.opacity(0.4))
     .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.save_form(id, cx)))
     .test_support();
     let revert = balloon::ghost("automation-revert", "Revert", ui, 1.0)
@@ -1732,6 +1835,15 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
         .gap(px(6.0))
         .border_t_1()
         .border_color(ui.hairline)
+        .children(from_elsewhere.map(|words| {
+            div()
+                .id("automation-elsewhere")
+                .w_full()
+                .text_size(px(SMALL))
+                .text_color(ui.title_dim)
+                .child(words)
+                .test_support()
+        }))
         .children(problem.map(|why| {
             div()
                 .id("automation-problem")

@@ -43,6 +43,7 @@ mod questions;
 pub(crate) mod remote;
 mod remote_boards;
 mod remote_content;
+pub(crate) mod remote_rules;
 mod render;
 mod schedules;
 mod selection;
@@ -1261,6 +1262,14 @@ impl Space {
             .filter(|(_, pane)| pane.remote.is_none())
     }
 
+    /// Every terminal block, a remote workspace's viewers too: the Agents view and its watch list
+    /// the agents of another computer, and nothing else may (see `terminals`).
+    pub fn watched_terminals(&self) -> impl Iterator<Item = (BlockId, &Pane)> {
+        self.blocks
+            .iter()
+            .filter_map(|(id, body)| Some((*id, body.terminal()?)))
+    }
+
     pub fn terminal(&self, id: BlockId) -> Option<&Pane> {
         self.blocks.get(&id)?.terminal()
     }
@@ -1413,6 +1422,9 @@ pub struct Workspace {
     pub(crate) automations_focus: FocusHandle,
     /// What the person edited and didn't save, by id (`automations::NEW` for a new one).
     pub(crate) automation_drafts: HashMap<u64, crate::automations::Automation>,
+    /// The calls on home's rules (their popup keys and tools) whose answer is still to come: the
+    /// same one is not sent twice (`remote_rules::home_rule_call`).
+    pub(crate) home_busy: std::collections::HashSet<(u64, &'static str)>,
     /// The editor's fields, made at the first open.
     pub(crate) automation_form: Option<crate::automations_view::editor::Form>,
     /// The open card dialog's work, kept as a draft when the window closes (see `kanban::Work`).
@@ -1696,6 +1708,9 @@ pub struct Workspace {
     pub(crate) next_schedule: u64,
     /// The look at the schedules runs (`schedules.rs`).
     scheduling: bool,
+    /// A task reads the screen of the remote agent the Agents popup shows every
+    /// `AGENT_SCREEN_AGAIN`.
+    screen_looking: bool,
     /// `wait_for` watches whose match is typed back (`wait: false`), the last one's id, and
     /// whether their look runs (`schedules.rs`).
     pub(crate) watches: Vec<schedules::Watch>,
@@ -1961,6 +1976,7 @@ impl Workspace {
             automations_at: None,
             automations_focus: cx.focus_handle(),
             automation_drafts: Default::default(),
+            home_busy: Default::default(),
             automation_form: None,
             notes_frozen: false,
             index_frozen: false,
@@ -2105,6 +2121,7 @@ impl Workspace {
             schedules: Vec::new(),
             next_schedule: 0,
             scheduling: false,
+            screen_looking: false,
             watches: Vec::new(),
             next_watch: 0,
             watching: false,

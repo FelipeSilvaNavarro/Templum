@@ -27,8 +27,8 @@ use crate::workspace::api::ShareDraft;
 use crate::workspace::{Workspace, show_notification};
 
 /// What the Edit… dialog says under Sharing when nothing is shared.
-pub(crate) const INVITE: &str = "Let another Templum mirror this workspace: watch it live, move \
-    its blocks, answer its agents, type into its terminals.";
+pub(crate) const INVITE: &str = "Let another Templum mirror this workspace: watch it live and work \
+    with its blocks, cards, checklists, Git, automations and agents from there.";
 const FULL_SAYS: &str = "Also type and click into terminals, discard Git changes, delete branches, \
     stashes and automations. Anyone with the code can run commands on this computer.";
 const CONTROL_SAYS: &str = "Watch and work with blocks, cards, checklists, Git and automations, \

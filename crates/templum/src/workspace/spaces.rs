@@ -596,6 +596,11 @@ impl Workspace {
         }
         let tree = tree_of(&space);
         let deleted = space.id.clone();
+        // The drafts and the selection of a remote's rules go with it: another remote that takes
+        // its id inherits none.
+        if space.is_remote() {
+            self.forget_home_rules(&deleted);
+        }
         // Dropping its terminals hangs their shells up.
         drop(space);
         self.end_later(tree, cx);

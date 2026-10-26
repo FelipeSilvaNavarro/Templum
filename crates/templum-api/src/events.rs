@@ -681,6 +681,7 @@ mod tests {
                 text: "in w4".into(),
                 block: None,
                 workspace: Some("w4".into()),
+                automation: None,
             },
             now,
         );
@@ -690,6 +691,7 @@ mod tests {
                 text: "in w3".into(),
                 block: None,
                 workspace: Some("w3".into()),
+                automation: None,
             },
             now,
         );

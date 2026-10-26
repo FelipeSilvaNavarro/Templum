@@ -10,8 +10,9 @@ use templum_api::model::{
     AgentView, App as AppView, Assignee, AttachmentView, AutomationView, BlockView, BoardView,
     CardRef, CardView, ChecklistView, ColumnView, CommentView, DrawingView, DrawingsView, ItemView,
     LastView, LimitsView, NOTE_TEXT_MOST, NOTES_TEXT_MOST, NoteView, NotesShown, OptionView,
-    PlanView, QuestionView, Rect, RequestView, SessionView, ShareView, State, UsageView, ViewView,
-    Why, WindowView, WireView, WorkspaceView, json_len, newest_drawings,
+    PlanView, QuestionView, Rect, RequestView, ScheduleView, SessionView, ShareView, State,
+    TaskView, UsageView, ViewView, Why, WindowView, WireView, WorkspaceView, json_len,
+    newest_drawings,
 };
 use templum_api::store::Scope;
 
@@ -135,6 +136,7 @@ impl Workspace {
                 Vec::new()
             }),
             automations: arcs(self.automation_views(cx)),
+            schedules: arcs(self.schedule_views()),
             shares: arcs(self.share_views()),
             view: self.view_of_shown(),
             usage: (!self.limits.is_empty()).then(|| UsageView {
@@ -349,7 +351,44 @@ impl Workspace {
                 tokens: s.tokens,
                 cost_usd: s.cost_usd,
             }),
+            task: pane
+                .handed
+                .as_ref()
+                .filter(|handed| !handed.text.is_empty())
+                .map(|handed| TaskView {
+                    id: format!("t{}", handed.id),
+                    text: handed.text.clone(),
+                    by: if handed.by == templum_api::ASKER {
+                        Some(handed.by.clone())
+                    } else {
+                        self.uid_of_terminal(&handed.by)
+                    },
+                    since: unix_of(handed.since, now, wall),
+                }),
+            role: pane.role.clone(),
         })
+    }
+
+    /// The uid of the block a terminal id (`w1/abc12`-style, as `caller` takes it) is, if it still is one.
+    fn uid_of_terminal(&self, terminal: &str) -> Option<String> {
+        let (space, id) = self.caller(terminal)?;
+        self.space_named(&space)?.uids.get(&id).cloned()
+    }
+
+    /// The deliveries agents asked for later, in the order they were asked.
+    fn schedule_views(&self) -> Vec<ScheduleView> {
+        self.schedules
+            .iter()
+            .map(|s| ScheduleView {
+                id: format!("s{}", s.id),
+                by: self.uid_of_terminal(&s.by),
+                to: s.to.clone(),
+                text: s.text.clone(),
+                next: super::automations::unix(s.next),
+                every: s.every.map(|every| every.as_secs()),
+                until: super::automations::unix(s.until),
+            })
+            .collect()
     }
 
     /// What waits for the person: the inbox's requests and the Templum Agent's approvals.

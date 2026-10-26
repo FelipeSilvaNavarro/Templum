@@ -187,7 +187,7 @@ They can't make a workspace, and save automations only for their own workspaces.
 
 | Path | Answers |
 |---|---|
-| `GET /v1/state` | The whole state: `app`, `workspaces`, `blocks`, `wires`, `requests`, `boards`, `cards`, `notes`, `checklists`, `drawings`, `automations`, `shares`, `usage`, `view` |
+| `GET /v1/state` | The whole state: `app`, `workspaces`, `blocks`, `wires`, `requests`, `boards`, `cards`, `notes`, `checklists`, `drawings`, `automations`, `schedules`, `shares`, `usage`, `view` |
 | `GET /v1/workspaces`, `/{workspace}` | Workspaces in the sidebar's order |
 | `GET /v1/blocks`, `/{block}` | Blocks, back to front; `?workspace=w3` filters |
 | `GET /v1/agents` | The blocks running an agent, with its state |
@@ -209,20 +209,29 @@ automation numbers; a request is `r<n>` (the inbox's; `n` starts at the Unix tim
 a restarted Templum never reuses a request id a mirror may still hold) or `a<n>` (the Templum Agent's approvals). Times
 are Unix seconds.
 
+**Agents and schedules.** An agent's block has `agent.task`, the task it works on:
+`{"id":"t7","text":"…","by":"b7k2m","since":1761560000}` (`text` at most 2,000 characters; `by` the block that handed
+it, `"api"` for the API, null for one the token doesn't see), and `agent.role`, the role it was opened with, or null.
+`schedules` holds the deliveries agents asked for (`schedule`):
+`{"id":"s3","by":"b7k2m","to":"k9x1d","text":"Check the deploy","next":1761562000,"every":600,"until":1762166800}`
+(`every` in seconds, null for once); a workspace-limited token sees those whose `to` block it sees, `by` null when it
+doesn't see that one.
+
 ### Tools and aliases
 
 `POST /v1/tools/{name}` runs any tool with its arguments as the JSON body; the answer is
 `{"text":"Created card 40.","workspace":"w3","block":"b7k2m"}` (the tool's words, and what it touched when known). The
 tool refusing is `422` `refused` with its sentence; a malformed argument is `400` `invalid`. `GET /v1/tools` lists them,
-with the nine only the API has:
+with the ten only the API has:
 
 | Tool | Arguments | Scope |
 |---|---|---|
 | `answer_request` | `request`, then one of `answers` (a list per question: the labels picked, and at most one other text; a plan is `[["Approve"]]` or `[["Reject"]]`), `allow` (true/false), `dismiss`; `note` | control; full for a worktree's request and an approval |
-| `save_automation` | `automation` (as `automations.json` keeps one: `name`, `workspace`, `when`, `do`, `max_runs`), `id` to replace one | control; full when its `do` runs a command |
+| `save_automation` | `automation` (as `automations.json` keeps one: `name`, `workspace`, `when`, `do`, `max_runs`; `on`, default true, for a new one), `id` to replace one | control; full when its `do` runs a command |
 | `set_automation` | `automation` (its number), `on` | control |
 | `run_automation` | `automation` | control |
 | `delete_automation` | `automation` | full |
+| `cancel_schedule` | `schedule` (`s3`) | Cancels a delivery an agent asked for later, as the Automations popup's Cancel does | control |
 | `terminal_input` | `block`, then `text` (a paste), `keys` (1 to 256, [a key's name](#a-keys-name)) or `mouse` (1 to 64 events) | full |
 | `share_workspace` | `workspace`, `name`, `scope` (`control` or `full`), `expires` (Unix seconds, or null), `way`, `address` | full, a token for all workspaces |
 | `revoke_share` | `share` (left out: the calling token's own) | full, or the share itself |
@@ -353,7 +362,7 @@ response that sends nothing for 100 seconds:** through it, hand the task without
 `GET /v1/events` is Server-Sent Events (`text/event-stream`). It opens with `event: snapshot` (the state, as the token
 sees it), then one event per change, named for the collection, singular (`workspace`, `block`, `wire` with the id `a-b`
 (its two block ids sorted), `request`, `board`, `card`, `note`, `checklist`, `drawing` (the workspace's id),
-`automation`, `share` (`s4`), `usage` with the id `usage`):
+`automation`, `schedule` (`s3`), `share` (`s4`), `usage` with the id `usage`):
 
 ```
 id: 8f3a1c20-1042
@@ -368,7 +377,9 @@ data: {"op":"delete","id":"r12"}
 A client mirrors the state by applying puts and deletes to the snapshot. A block that moves to another workspace is one
 `put` with its new `workspace`; to a token that doesn't see the new one it is a `delete`. `event: notice` is the one
 happening that isn't state: `{"text":…,"block":…,"workspace":…}`. A watch set through the API (`wait_for` with
-`wait: false`) names the watched block and its workspace, so a token limited to that workspace hears it. Templum
+`wait: false`) names the watched block and its workspace, so a token limited to that workspace hears it, and an
+automation's Notify me sends `{"text":"Morning review: Look","workspace":"w3","automation":1}` to the tokens that see
+its workspace (one for all workspaces: tokens for all workspaces). Templum
 compares the state about four times a second (ten while a block is dragged or resized, or the canvas is panned, zoomed
 or flown), only while a stream is open.
 
@@ -549,7 +560,8 @@ rest, so a flood of strangers can't fill a log or push the calls out of `audit.l
 same way, in `audit.log`: `terminal_input` and `GET /v1/me` calls are one line per token, call, status and minute,
 with `more` counting the rest, so a morning of typing can't rotate the other calls out; every other call keeps its own
 line. `git` is written `git:<op>`, and `git:look` and `git:diff` (an open popup reads them every 2 s) are grouped as
-`terminal_input` is. A mirror that replaces another's session (see `Templum-Mirror`) writes one `mirror_replaced` line. Never a
+`terminal_input` is, and so is `read_terminal` (the Agents popup of a mirror reads a screen every 2 s). A mirror
+that replaces another's session (see `Templum-Mirror`) writes one `mirror_replaced` line. Never a
 token, a ticket, a body or typed text. At 1 MiB each becomes `audit.log.1` and `noise.log.1`. `<data>/api/api.json`
 holds the settings and the tokens' hashes (`0600`, in a `0700` folder on Unix); a copy of the data folder carries no
 token that works. Each token's last use (time and address) is in Settings.
@@ -626,6 +638,34 @@ proxy address this connection has; leave the Client Secret (or the proxy's login
 don't need to copy it again, for the same Client ID and address (a new code for another address needs the Client
 Secret typed again). The name is home's.
 
+**On a mirrored workspace.** Not mirrored: an editor's content (a card names it). Scrolling back in a mirrored shell (the wheel, Shift+PageUp,
+Find) reads home's last 2000 lines, without colors, and again after it changed; the mouse reaches a program that asked
+for it, with a Full share. Not on a mirrored workspace: editors, editing notes (a note is read-only and live there:
+select, copy and find in it, send it to a terminal), renaming a checklist and moving its items, drawing, grid mode, Move
+to workspace, Copy and Paste of blocks, Stop. The banner's ⓘ lists them. The Git popup works on a mirrored workspace:
+everything it reads and does is home's `git` (reads with any share, acts with Control, discards, Restore version,
+deleting a branch, dropping a stash and aborting with Full, dimmed on a Control share); Fetch, Pull, Push, Sync,
+Publish and Generate wait up to 10 minutes, and one a tunnel cuts says it may still be running on home; Generate uses
+home's agent; Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal stay on home. Adding, closing and wiring
+blocks, naming wires, opening home's agents and handing them tasks work from the mirror, each done at home through its
+API; a block you close or a wire you make shows at once and home's state wins after two seconds. Ctrl+Z there undoes
+moves only: it stops once at each of those acts and says to undo the rest on home. A selection of several blocks moved
+on the mirror is one Ctrl+Z step per block on home. A kanban is live: dragging cards and columns, adding, renaming and
+deleting columns and boards, the card dialog and Send to work from the mirror, each done at home; a card you move,
+edit or delete shows at once and home's state wins after two seconds; a card's attachments show by name (open them on
+home), and a card has no drafts on a mirror. A checklist is live: its items are checked, added, edited and deleted from
+the mirror, each done at home (an item's text goes when you press Enter or leave it); a check, an edit or a delete
+shows at once and home's state wins after two seconds. Renaming a checklist and moving its items stay on home. Home's
+ink and shapes are drawn, not picked: draw on home.
+
+The Agents popup lists home's agents under "API · winx-desktop" with their task, model, role, usage and screen. The
+Automations popup shows home's rules of the shared workspace in a group of their own, and switches, runs, edits,
+duplicates and deletes them there (a rule that runs a command, and a delete, need a Full share); this computer's
+rules never run against a mirrored workspace: home's automations run only on home, and the mirror never copies,
+schedules, runs or fires one. What its agents asked for later is listed there and cancelled at home. The Requests
+inbox lists home's requests, aged as home says, one whose block has no viewer here too, and says how many more home
+has past 50.
+
 ### 4. What each way in checks
 
 - **Pinned** (*Directly*): the certificate's SHA-256 must be the one in the code. After *New certificate* on home, share
@@ -667,25 +707,25 @@ What the banner says, what it means, and whether it tries again by itself:
 
 ### 7. What a mirror can't do yet
 
-Not mirrored: an editor's content (a card names it). Scrolling back in a mirrored shell (the wheel, Shift+PageUp,
-Find) reads home's last 2000 lines, without colors, and again after it changed; the mouse reaches a program that asked
-for it, with a Full share. Not on a mirrored workspace: editors, editing notes (a note is read-only and live there:
-select, copy and find in it, send it to a terminal), renaming a checklist and moving its items, drawing, grid mode, Move
-to workspace, Copy and Paste of blocks, Stop. The banner's ⓘ lists them. The Git popup works on a mirrored workspace:
-everything it reads and does is home's `git` (reads with any share, acts with Control, discards, Restore version,
-deleting a branch, dropping a stash and aborting with Full, dimmed on a Control share); Fetch, Pull, Push, Sync,
-Publish and Generate wait up to 10 minutes, and one a tunnel cuts says it may still be running on home; Generate uses
-home's agent; Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal stay on home. Adding, closing and wiring
-blocks, naming wires, opening home's agents and handing them tasks work from the mirror, each done at home through its
-API; a block you close or a wire you make shows at once and home's state wins after two seconds. Ctrl+Z there undoes
-moves only: it stops once at each of those acts and says to undo the rest on home. A selection of several blocks moved
-on the mirror is one Ctrl+Z step per block on home. A kanban is live: dragging cards and columns, adding, renaming and
-deleting columns and boards, the card dialog and Send to work from the mirror, each done at home; a card you move,
-edit or delete shows at once and home's state wins after two seconds; a card's attachments show by name (open them on
-home), and a card has no drafts on a mirror. A checklist is live: its items are checked, added, edited and deleted from
-the mirror, each done at home (an item's text goes when you press Enter or leave it); a check, an edit or a delete
-shows at once and home's state wins after two seconds. Renaming a checklist and moving its items stay on home. Home's
-ink and shapes are drawn, not picked: draw on home.
+What a workspace shows is mirrored live, and what you do on it that is one discrete change is done at home. These stay
+on home (each is its own card):
+
+1. Editing a note's text, names, colors and tabs, and opening or deleting notes: a note is read-only and live.
+2. Renaming a checklist, moving its items, and showing another checklist in a block.
+3. Drawing: drawing, erasing, moving and deleting ink and shapes (they are drawn live).
+4. An editor's files: an editor shows as a card.
+5. Following home's camera.
+6. Reaching home through a tunnel with Templum's own pinned certificate inside it.
+7. Undo beyond moves: Ctrl+Z there undoes moves only.
+8. A card's attachments: their names and sizes show, open them on home.
+9. Drafts of a kanban card.
+10. Grid mode, Move to workspace, and Copy and Paste of blocks (Copy and Paste between a mirror and a local workspace
+    stay off for good).
+11. In the Git popup: Clone, Choose another folder, Generate's ⚙, Open in editor and Run in a terminal.
+12. Home's other shells in Add ▸ Terminal: a terminal added from a mirror opens home's default shell.
+13. Each subagent's line in the Agents popup (their count shows).
+14. Moving several blocks at once as one step at home.
+15. Stopping the workspace on home (Start stays).
 
 ### 8. Safety
 

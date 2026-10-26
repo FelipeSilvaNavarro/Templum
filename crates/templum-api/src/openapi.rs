@@ -538,6 +538,26 @@ fn schemas_with_views() -> Value {
     // Set only on a note block, and on a checklist block that shows a checklist.
     all["BlockView"]["properties"]["notes"] = r("NotesShown");
     all["BlockView"]["properties"]["checklist"] = i();
+    // An agent's task and role, the deliveries agents asked for, and the rule a notice comes from.
+    all["TaskView"] = view(&[
+        ("id", s()),
+        ("text", s()),
+        ("by", maybe("string")),
+        ("since", i()),
+    ]);
+    all["ScheduleView"] = view(&[
+        ("id", s()),
+        ("by", maybe("string")),
+        ("to", s()),
+        ("text", s()),
+        ("next", i()),
+        ("every", maybe("integer")),
+        ("until", i()),
+    ]);
+    all["AgentView"]["properties"]["task"] = nullable(r("TaskView"));
+    all["AgentView"]["properties"]["role"] = maybe("string");
+    all["State"]["properties"]["schedules"] = array(r("ScheduleView"));
+    all["Notice"]["properties"]["automation"] = i();
     // A drawing is a stroke (`points`) or a shape (`from`, `to`); `highlight` is left out when false.
     let point = || json!({ "type": "array", "items": { "type": "number" } });
     all["Drawing"] = view(&[("kind", s()), ("color", s()), ("width", kind("number"))]);
@@ -853,6 +873,13 @@ mod tests {
                         tokens: Some(9),
                         cost_usd: Some(1.5),
                     }),
+                    task: Some(TaskView {
+                        id: "t7".into(),
+                        text: "Ship it.".into(),
+                        by: Some("api".into()),
+                        since: 6,
+                    }),
+                    role: Some("reviewer".into()),
                 }),
                 read_only: true,
             })],
@@ -990,6 +1017,15 @@ mod tests {
                 next: Some(10),
                 sentence: "Every day".into(),
             })],
+            schedules: vec![Arc::new(ScheduleView {
+                id: "s3".into(),
+                by: Some("b7k2m".into()),
+                to: "k9x1d".into(),
+                text: "Check the deploy".into(),
+                next: 8,
+                every: Some(600),
+                until: 9,
+            })],
             shares: vec![Arc::new(ShareView {
                 id: "s4".into(),
                 workspace: "w3".into(),
@@ -1110,6 +1146,12 @@ mod tests {
                 .remove(key);
         }
         check(&r("State"), &quiet, &doc, "state").unwrap();
+        // An agent without a task or a role has both null.
+        let mut bare = state.clone();
+        bare["blocks"][0]["agent"]["task"] = Value::Null;
+        bare["blocks"][0]["agent"]["role"] = Value::Null;
+        check(&r("State"), &bare, &doc, "state").unwrap();
+        assert_eq!(state["schedules"][0]["every"], 600);
         let mut store = crate::store::Store::default();
         store
             .mint("phone", crate::store::Scope::Read, None, None, 1)
@@ -1142,6 +1184,7 @@ mod tests {
             text: "t".into(),
             block: None,
             workspace: Some("w3".into()),
+            automation: None,
         })
         .unwrap();
         check(&r("Notice"), &notice, &doc, "notice").unwrap();

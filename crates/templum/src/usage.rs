@@ -301,6 +301,14 @@ pub(crate) fn context_text(s: &Session) -> Option<String> {
         .or_else(|| s.context_tokens.map(|t| format!("{} ctx", tokens(t))))
 }
 
+/// A chip's tooltip with the effort of the agent after it ("Effort: high"), when its model has one.
+pub(crate) fn with_effort(tip: String, effort: Option<&str>) -> String {
+    match effort {
+        Some(effort) => format!("{tip}\nEffort: {effort}"),
+        None => tip,
+    }
+}
+
 /// A terminal's chip: its text ("42% · $3.10") and its tooltip. None when nothing is known.
 pub(crate) fn chip(s: &Session) -> Option<(String, String)> {
     let context = context_text(s);
@@ -495,5 +503,11 @@ mod tests {
         assert_eq!(short(4 * 3600 + 20 * 60), "4h 20m");
         assert_eq!(short(3 * 86_400 + 4 * 3600), "3d 4h");
         assert_eq!(short(86_400), "1d");
+    }
+
+    #[test]
+    fn the_effort_ends_the_tooltip() {
+        assert_eq!(with_effort("a".into(), Some("high")), "a\nEffort: high");
+        assert_eq!(with_effort("a".into(), None), "a");
     }
 }

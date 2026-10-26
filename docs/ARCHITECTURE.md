@@ -127,6 +127,14 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   `Workspace::act_on_checklist`, the one door (on this computer an edit of `Workspace::checklists`, on a mirror a
   call of home's held over the copy by `items_checked`, `items_edited` and `items_deleted`). A remote note and
   checklist are `Body::Note`/`Body::Checklist` with `remote` set, which `Body::note()` and `checklist()` skip.
+  `workspace/remote_rules.rs` keeps a remote's copies of home's rules for its workspace and of its agents' schedules
+  (`RemoteSpace::rules`, `schedules`, cleaned and capped where they enter, never saved) and the Automations popup's
+  keys of them: a home rule is addressed by `HOME_KEYS | n << 32 | id`, a number no local id reaches, and every
+  function the popup calls with a key sends a home key to home's tool (`home_call`, the rule's `why_not_in` first) and
+  a local key to today's code. Home's automations run only at home: nothing of the copies is in
+  `Workspace::automations`, `automation_runs` or `schedules`, and `automation_target`, `automation_problem`,
+  `new_automation`, `watch_agents` and the editor's lists keep a remote workspace out of this computer's engine. The
+  Agents view reaches a remote's viewers through `Space::watched_terminals` alone.
   `--bench-mirror` measures all of it: the mixed cockpit mirrored by the same Templum over loopback.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.

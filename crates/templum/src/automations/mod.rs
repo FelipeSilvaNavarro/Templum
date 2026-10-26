@@ -168,6 +168,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::session::{self, Loaded};
+use crate::workspace::remote_rules::HOME_KEYS;
 
 /// The file format's version: raised only when an older Templum couldn't read the new files.
 pub(crate) const VERSION: u32 = 1;
@@ -272,6 +273,17 @@ pub(crate) enum Went {
     Missed,
 }
 
+/// The name of a copy of the rule named `name`: "<name> (copy)", cut first so it is no longer than a
+/// name may be; an empty name stays empty.
+pub(crate) fn copy_name(name: &str) -> String {
+    const COPY: &str = " (copy)";
+    if name.is_empty() {
+        return String::new();
+    }
+    let kept: String = name.chars().take(NAME_MAX - COPY.len()).collect();
+    format!("{kept}{COPY}")
+}
+
 impl Default for Automations {
     fn default() -> Self {
         Automations {
@@ -307,12 +319,7 @@ impl Automations {
     /// run nor kept terminal. Returns its id.
     pub fn duplicate(&mut self, id: u64) -> Option<u64> {
         let mut copy = self.get(id)?.clone();
-        if !copy.name.is_empty() {
-            // Cut first: the copy's name is no longer than a name may be.
-            const COPY: &str = " (copy)";
-            let kept: String = copy.name.chars().take(NAME_MAX - COPY.len()).collect();
-            copy.name = format!("{kept}{COPY}");
-        }
+        copy.name = copy_name(&copy.name);
         (copy.on, copy.runs, copy.last, copy.opened) = (false, 0, None, None);
         Some(self.add(copy))
     }
@@ -325,6 +332,16 @@ pub(crate) fn path(dir: &Path) -> PathBuf {
 pub(crate) fn load(dir: &Path) -> Loaded<Automations> {
     match session::read::<Automations>(&path(dir)) {
         Loaded::Saved(mut saved) => {
+            // Ids from HOME_KEYS up are the popup's keys of another computer's rules: an edited
+            // file's are renumbered like a repeated one.
+            for a in &mut saved.automations {
+                if a.id >= HOME_KEYS {
+                    a.id = 0;
+                }
+            }
+            if saved.next_id >= HOME_KEYS {
+                saved.next_id = saved.automations.iter().map(|a| a.id).max().unwrap_or(0);
+            }
             let ids = saved.automations.iter_mut().map(|a| &mut a.id);
             session::unique_ids(ids, &mut saved.next_id);
             Loaded::Saved(saved)
@@ -698,5 +715,22 @@ mod tests {
         };
         let ids: Vec<u64> = loaded.automations.iter().map(|a| a.id).collect();
         assert_eq!(ids, [1, 3]);
+    }
+
+    #[test]
+    fn an_id_in_the_range_of_home_s_keys_is_given_a_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut list = Automations::default();
+        list.add(notify("A"));
+        list.add(notify("B"));
+        list.automations[1].id = HOME_KEYS | 5;
+        list.next_id = HOME_KEYS | 5;
+        save(dir.path(), &list, 1).unwrap();
+        let Loaded::Saved(loaded) = load(dir.path()) else {
+            panic!("it loads");
+        };
+        let ids: Vec<u64> = loaded.automations.iter().map(|a| a.id).collect();
+        assert_eq!(ids, [1, 2]);
+        assert!(loaded.next_id < HOME_KEYS);
     }
 }

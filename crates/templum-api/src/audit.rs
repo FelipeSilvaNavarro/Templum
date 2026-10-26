@@ -49,7 +49,13 @@ const NOISE: [&str; 5] = [
 /// line per token, call and window like the noise, with `more` counting the rest, written to the
 /// calls' log. A morning of typing must not rotate the other
 /// calls out of it; every other call keeps its own line.
-const CHATTER: [&str; 4] = ["terminal_input", "/v1/me", "git:look", "git:diff"];
+const CHATTER: [&str; 5] = [
+    "terminal_input",
+    "/v1/me",
+    "git:look",
+    "git:diff",
+    "read_terminal",
+];
 
 #[derive(Clone)]
 struct Line {
@@ -569,6 +575,28 @@ mod tests {
             "every other call has its own line"
         );
         assert!(lines(dir.path(), "noise.log").is_empty());
+    }
+
+    #[test]
+    fn read_terminal_calls_are_grouped_per_token_and_minute() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = Audit::with_caps(dir.path(), AUDIT_CAP, NOISE_CAP, Duration::from_millis(100));
+        for _ in 0..3 {
+            audit.write("1.2.3.4", Some("laptop"), "read_terminal", 200);
+        }
+        let of = || -> Vec<Value> {
+            lines(dir.path(), "audit.log")
+                .into_iter()
+                .filter(|l| l["what"] == "read_terminal")
+                .collect()
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while of().len() < 2 {
+            assert!(Instant::now() < deadline, "the count never came");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let reads = of();
+        assert_eq!((reads.len(), reads[1]["more"].as_u64()), (2, Some(2)));
     }
 
     #[test]

@@ -2299,9 +2299,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **Notices folded past the cap are told only at the next wake.** (`workspace/remote.rs`, `fold_notices`.) It runs
   at a drain, so a quiet home's "N more notices from …" waits for its next update, which can be a while after the
   minute. Fix: a one-shot timer at `notice_budget.folded_at + NOTICE_SPAN`.
-- [ ] **The Edit… row "The share can" and the Share… invitation keep batch 1's words.**
-  (`space_dialog.rs`, line ~246; `share_dialog.rs`, `INVITE`.) They still say "type into terminals" while the Share…
-  dialog's two scopes now say what a share does. Fix: the same words, when 2h makes the mirror do all of it.
 - [ ] **A share whose `GET /v1/me` lists no workspace hears no notice.** (`workspace/remote.rs`, `remote_notice`.) A
   notice is shown only when its workspace is the remote's `entry.home`, which `Update::Me` sets from the first
   workspace the share lists; a Me with `workspaces: None` leaves it unset. Shares are always limited, so nothing
@@ -2334,9 +2331,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **A copied card of a remote workspace would paste as a blank note.** (`workspace/mod.rs`, `Body::item` for
   `Body::Mirrored`.) A card has no saved shape, so it answers an empty note item. Nothing reaches it: Copy and Paste
   of blocks do nothing on a remote workspace. Fix: `Body::item` answers an `Option`.
-- [ ] **A remote terminal's effort has no place on its block.** (`workspace/remote.rs`, `mirror_blocks`.) Home's
-  `agent.effort` is kept in the pane's `RemotePane::agent` but only the usage chip (context, cost, model) shows.
-  Fix: put it in the chip's tooltip.
 - [ ] **`Terminal::grid_size` of a viewer is still its first size.** (`crates/templum-terminal/src/terminal.rs`.) The
   mirror reads `Pane::grid_size` (the grid's own, after a `Feeder::resize`); any other caller of `Terminal::grid_size`
   on a viewer would still read the stale one. Fix: `Terminal::grid_size` reads the grid for a viewer.
@@ -2365,23 +2359,9 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   (`connect_dialog.rs`, `connect`.) After Connect the field holds `proxy_of`'s address, without the login; a test
   proves the `Connecting` draft never prints it, not the field. Fix: a dialog test that types a proxy with a login
   once its inputs can be read from a test.
-- [ ] **Automations default to, and offer, a remote workspace.** (`workspace/automations.rs`, `new_automation`:
-  `workspace: Some(self.space.id.clone())`; `automations_view/editor.rs`, the "Where" list, line ~923, is `ws.order()`.) With a
-  mirror shown, Automations > New makes a rule for it, and at its time the rule fails with a misleading error (the
-  guards hold: nothing runs on the mirror). Fix: default to the first local workspace and leave remote workspaces out
-  of "Where".
 - [ ] **A selection of several blocks moved on the mirror is one Ctrl+Z step per block at home.**
   (`workspace/remote.rs`, `remote_moved`; `workspace/history.rs`, `end_placing`.) One `move_block` is sent per block
   (the spec's known limit). Fix: a `move_block` taking several blocks.
-- [ ] **A request whose block has no viewer on the mirror isn't listed there.** (`workspace/remote.rs`, `remote_wait`.)
-  Agents' requests come from their terminal, so only a request from a block the mirror shows as a card (or one over
-  the 500-block cap) is skipped, and the mirror's Requests button doesn't count it. Fix: list it under the workspace
-  with no block to go to.
-- [ ] **Only the first 50 requests of a mirrored workspace are listed.** (`workspace/remote.rs`, `MOST_REQUESTS`.) A
-  home with more waiting shows the rest once those are answered. Fix: say "and N more" in the inbox.
-- [ ] **A mirrored request is aged from when the mirror heard of it.** (`workspace/remote.rs`, `remote_wait`;
-  `workspace/waits.rs`, `Wait::since`.) The inbox's "2m" counts from the first state that listed it, not from
-  `RequestView::since`. Fix: take the age from home's `since`.
 - [ ] **Shift+Enter in an agent without the kitty keyboard reaches home as Enter.** (`workspace/input.rs`,
   `on_key_down`; `workspace/delegate.rs`, `press_each`.) Home's newline rule is its local keyboard's, not
   `terminal_input`'s, so a mirror's Shift+Enter in Claude Code before it turned the kitty keyboard on sends Enter. Fix:
@@ -2511,3 +2491,31 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **Generate's answer is read on the UI thread.** (`workspace/git_message.rs`, `generate_at_home`.) It is the
   one call of the Git popup that doesn't go through `home_job`, so its up-to-8 MiB answer is parsed and cleaned
   in the `Then`. Fix: the same background hop as `home_send`.
+- [ ] **The Automations popup's groups of home's rules and its editor on a home rule were checked headlessly only.**
+  (`automations_view/mod.rs`, `home_group`; `automations_view/editor.rs`.) A test draws the group's + and rows, a home
+  rule's switch, its Where, the foot sentence and Save on a Full and a Control share, and the loopback test saves and
+  runs a rule from the mirror; no display looked at the group's spacing, the dim group at 50%, or Save dimmed on a
+  Control share with its tooltip. Fix: look at them on a display with a mirror shown, and adjust.
+- [ ] **The Agents popup's remote groups and details, and a remote chip's effort line, were checked headlessly
+  only.** (`agents_view.rs`, `detail`, `agent_row`; `block.rs`, the usage chip.) A test draws the remote row and its
+  screen; no display looked at the dim group, the Task and Subagents sections of a remote agent, or the tooltip's
+  "Effort: high" line. Fix: look at them with a mirror shown.
+- [ ] **A switched rule or a cancelled schedule of home's shows a round trip later.** (`workspace/remote_rules.rs`,
+  `set_home_rule`, `cancel_home_schedule`.) The switch and a cancelled schedule's row change when home's state arrives
+  (the spec's holds name blocks, cards, items and wires), so a click looks unanswered for a moment. Fix: a hold over
+  the copy, as `cards_moved` does for cards.
+- [ ] **A mirror can't tell which token saved a home rule.** (`automations_view/editor.rs`, the foot sentence.) Home's
+  state doesn't say it, so "Saved from another computer, it turns off when this share ends…" shows under every home
+  rule's editor, also a rule the person made at home. Fix: a `saved_by` field in `AutomationView`, shown only for the
+  share's own.
+- [ ] **A rule the mirror's copy cut can't be edited from the mirror at all.** (`workspace/remote_rules.rs`,
+  `save_home_rule`.) Save of a rule whose text is over 64 Ki characters (or holds a control character, or names more
+  than 100 blocks) says "This rule is longer than a mirror shows: edit it on {computer}." even if the person only
+  renamed it. Fix: send home only the fields the form changed, merged over `HomeRule::raw`.
+- [ ] **A failed run met first is already seen.** (`workspace/remote.rs`, `rules_seen`; `remote_rules.rs`,
+  `home_unseen`.) The badge counts a home rule's failed run that happened after the popup was opened or the rule was
+  first heard of; one that failed while this computer was not connected shows no badge. Fix: keep what was seen across
+  runs, per remote, in the index.
+- [ ] **Cancel of a home schedule can go twice.** (`workspace/remote_rules.rs`, `cancel_home_schedule`.) Two clicks
+  before home answers send two calls; the second answer is "There's no schedule s3", said as a warning. Fix: key
+  `home_busy` by the schedule too.

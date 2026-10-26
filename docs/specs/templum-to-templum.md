@@ -3,10 +3,10 @@
 - **Date:** 2026-10-25
 - **Status:** Batch 1 implemented (kanban card 171, part 2; plans 2026-10-25-t2t-batch-1a…1d: home's side; the
   mirror's client; the remote workspace on the canvas; acting from the mirror, Edit…, the end-to-end test and
-  `--bench-mirror`). Batch 2: parts 2a–2g built (plans 2026-10-25-t2t-batch-2a-footing,
+  `--bench-mirror`). Batch 2 implemented (parts 2a–2h; plans 2026-10-25-t2t-batch-2a-footing,
   2026-10-25-t2t-batch-2b-canvas, 2026-10-25-t2t-batch-2c-terminals, 2026-10-25-t2t-batch-2d-boards,
-  2026-10-25-t2t-batch-2e-checklists-notes-ink, 2026-10-25-t2t-batch-2f-git-home and
-  2026-10-25-t2t-batch-2g-git-mirror); part 2h designed, not built
+  2026-10-25-t2t-batch-2e-checklists-notes-ink, 2026-10-25-t2t-batch-2f-git-home,
+  2026-10-25-t2t-batch-2g-git-mirror and 2026-10-26-t2t-batch-2h-agents-automations-inbox)
   ([Batch 2](#batch-2-the-whole-workspace-live)). Later batches (see [Later batches](#later-batches)) are sketched.
 - **Builds on:** [api.md](api.md) (the API: tokens, scopes, workspace-limited tokens, TLS and the fingerprint, the
   state and its event stream, terminal frames, `terminal_input`), [workspaces.md](workspaces.md) and
@@ -1135,6 +1135,7 @@ Git popup is the person's, as automations are, and agents use git in their termi
   | Checklists | 1000 a remote; 2000 items each; 4000 characters an item |
   | Cards | a title of 300 characters, a description of 64 KiB, 500 items, the newest 200 comments of 16 KiB |
   | Drawings | home's caps, again; finite points within ±10⁷; widths 1–64; an unknown color is `foreground` |
+  | Automations | 500 a remote; the texts of a rule 64 KiB |
   | Schedules | 200 a remote; their text 300 characters |
   | An agent's task | 2000 characters |
   | Home's agents (`list_agents`) and tools | 100 agents; 500 tools |
@@ -2161,3 +2162,96 @@ changed:
   - **Tests:** a hunk with an escape sequence and a 10,001-character line is staged from a mirror and the call's
     `patch` is `hunk_patch` of the raw diff; a path with a control character is sent back as home gave it; a folder
     picked from a menu left open on another workspace changes nothing and says so.
+
+### Batch 2h (agents, automations and the inbox)
+
+Plan: [2026-10-26-t2t-batch-2h-agents-automations-inbox.md](../plans/2026-10-26-t2t-batch-2h-agents-automations-inbox.md).
+Its "Open for the orchestrator" items were settled as it recommended: a home rule's popup key is a number in a range of
+its own (`HOME_KEYS | n << 32 | id`); no hold for a switched rule or a cancelled schedule; Duplicate sends home's own
+`when` and `do` back; home's `save_automation` keeps a new rule's `on`; the foot sentence shows under every home rule's
+editor; a new local rule starts on the shown workspace when it is local, else on the first local one; this computer
+refuses to save a rule whose Where is a remote workspace; `read_terminal` is grouped in the audit log; a request's age
+is home's `since` (never ahead of now, at most 7 days); a request with no viewer is a wait with an empty `from`; the
+badge counts home's failed, skipped and missed runs after the popup was last opened; caps of 500 rules and 64 KiB
+texts; a notice of a home rule opens the popup at it on a click; "aged from home's since" and "nothing runs on the
+mirror" are headless cases, the latter on two workspaces over loopback. What the builder chose or changed:
+
+- **Home:** `AgentView` gains `task` (`TaskView { id, text, by, since }`, `by` the uid of the block that handed it,
+  `"api"` for the API) and `role`; `State` gains `schedules` (`ScheduleView`, event `schedule`) and `Notice` gains
+  `automation`; a limited token sees the schedules whose `to` block it sees and a `by` it doesn't see as null.
+  `cancel_schedule` is the API's tenth own tool (`Cancelled s3.`; "There's no schedule s3: GET /v1/state lists
+  them."). Notify me also sends `"{title}: {text}"` as a notice with its rule's number. A new rule saved through the
+  API keeps its `on`. `read_terminal` calls are grouped in the audit log.
+- **THE RULE, on the mirror's own engine:** `Space::automations_there` ("API is a mirror of winx-desktop: its
+  automations run there."); `automation_target` skips a stale rule for a remote workspace with "Target missing: …";
+  `automation_problem` refuses to save one; `new_automation` starts on a local workspace; the editor's Where
+  (`where_choices`) and its block lists (`blocks`) leave remote workspaces out; `watch_agents` pushes a `Heard` only
+  from a local space. Home's rules and schedules are copied into `RemoteSpace::{rules, schedules}`
+  (`workspace/remote_rules.rs`), never into `Workspace::automations`, `automation_runs` or `schedules`: a test for
+  every way a rule could fire on the mirror (a time, an event, a notice, a stale rule at start, at its time and by
+  Run now, a schedule's delivery), and one over loopback that counts home's notices of a rule switched and run from
+  the mirror (one).
+- **The popup:** a home rule is addressed by its popup key; every function the popup calls routes a home key to a call
+  of home's through `home_call` (the rule's `why_not_in` first: a refusal is said and nothing is sent; home's refusal
+  is said), and a local key keeps today's code. A group per remote workspace after "Asked by agents": the rules,
+  the schedules with Cancel, the foot; dim when the remote isn't live. The editor on a home rule lists home's blocks
+  and agents, has the one Where, and saves at home (the red line only while the form still shows that key); `Next`
+  and `Last` are home's.
+- **The Agents popup:** `Space::watched_terminals` (a remote workspace's viewers too, for the Agents view and its
+  watch alone) and `Workspace::watched_caller`; a remote agent's row under "API · winx-desktop" with home's title for
+  its agent, its task, card and context; its details (model · effort, role, task, subagents' count, usage with the
+  effort line, the screen read through `read_terminal` every 2 s while shown and not streamed); home's own `done`
+  reads as idle (this computer's watch makes its Done).
+- **The inbox:** a remote request is aged from home's `since`, listed when its block has no viewer here (a wait with
+  an empty `from`, no Go to terminal), and the list says "And 3 more on winx-desktop." past 50.
+- **The words:** the Edit… row's "The share can" and Share…'s invitation say what a share can do now.
+- **Departures from the plan** (the code as built is the truth):
+  - `Space::terminals()` leaves a remote workspace's viewers out on purpose, so `watch_agents`, `agent_rows` and
+    `done_count` did not see them (the plan said they already did). `watched_terminals` and `watched_caller` are the
+    two ways the Agents view reaches them; nothing else does. The existing test `a_remote_agent_s_dot_comes_from_home`
+    now expects home's `done` to read `Idle` (the plan's rule).
+  - `rule_groups` takes `cx: &App` (it names home's blocks through `uid_title_in`); `home_keys` gives the keys alone
+    for `automation_ids`.
+  - A Switch, Duplicate or Delete reaches `set_automation_on`, `duplicate_automation` and `delete_automation`, which
+    take no window: a refusal of the rule is said once the update under way is over (`say`).
+  - `open_automations` marks home's runs seen by remembering each rule's last run (see Review round 1), so no clock of
+    home's is compared with this one's.
+  - A Save's answer does not reload the form (it would show the old rule): the next state that changes home's rules
+    does, when the form shows a home rule with no draft over it (`reload_home_form`).
+  - The notice's click is `open_home_notice` (tested), as `open_fired` is for a local Notify me.
+  - A home rule's Duplicate leaves `max_runs` and `cooldown` out of its call when home has none: a null is not a
+    number to its parser (found by the loopback test).
+
+- **Review round 1:**
+  - **A second click sends nothing before home answers.** `Workspace::home_busy` holds the (popup key, tool) of every
+    call on a home rule whose answer is to come (`home_rule_call`, `home_rule_call_then`): Save (also of a new rule,
+    which would have made a second rule at home), Duplicate, Run now, Delete and the switch go once; the answer frees
+    the key (a forgotten remote frees its keys). Save is dimmed and says "Saving at home…" meanwhile
+    (`home_saving`). Cancel of a schedule is not guarded (home's second answer is "gone", said once; see
+    docs/minors.md).
+  - **Open request on a remote agent's row works.** `open_agent_request` takes the workspace from `request_space`,
+    not from `caller` (which leaves remote viewers out).
+  - **A rule the copy had to cut is not saved from the mirror.** `rule_of` also says whether cleaning changed the
+    rule (`HomeRule::cut`: a text over 64 Ki characters, a control character other than a newline or tab, a Who of
+    more than 100 blocks, more than 7 or 31 days, a line over its cap, a cooldown past the most); Save of it says
+    "This rule is longer than a mirror shows: edit it on {computer}." and sends nothing. Duplicate sends home's own
+    `when` and `do`, so it was not affected.
+  - **The badge compares no clocks.** `RemoteSpace::rules_seen` keeps, per rule, the `at` of its last run as the person
+    last saw it (taken when the rule is first met and when the popup opens); a rule counts when its last run is not
+    Ran and its `at` differs. `automations_seen` and `latest_home_run` are gone.
+  - **A request listed while its block had no viewer** gets its `from` once a viewer exists (`remote_requests`,
+    `viewer_terminal`), so Go to terminal and Open request work for it.
+  - **Hostile numbers and a long screen:** `aged` and the Task's "ago" line use `saturating_sub` (a `since` near
+    `i64::MIN` overflowed); `screen_of` takes the last lines from the end of home's text instead of collecting every
+    line.
+  - **A local rule's id is below `HOME_KEYS`.** `automations::load` renumbers an id from `HOME_KEYS` up like a repeated
+    one and keeps `next_id` below it, so an edited automations.json can't make a local rule look like home's.
+
+#### Batch 2 as built, in short
+
+What differs from the design across the eight plans: batch 2 is one registry of deeds and one rule (`why_not`) for
+everything the mirror can do; every collection of home's (boards, cards, checklists, notes, ink, rules, schedules,
+agents) is a cleaned, capped copy made where the state enters and never saved; every act is home's tool through
+`remote_call`; the Git popup is the same popup over a seam that calls `git` at home; and home's automations run only
+at home, with a test for every way one could fire on the mirror. Left out of batch 2, by design: the 15 items of
+"Left out of batch 2".

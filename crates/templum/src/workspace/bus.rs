@@ -690,7 +690,7 @@ impl Workspace {
             }
             Call::Notify { text } => {
                 let (_, title, _) = self.about(&space.blocks[&me], cx);
-                self.notify_from(space_id, me, title, text, None, window, cx);
+                self.notify_from(space_id, Some(me), title, text, None, window, cx);
                 Reply::ok("Shown.")
             }
             Call::Connect { block, timeout } => {
@@ -807,14 +807,14 @@ impl Workspace {
         })
     }
 
-    /// A notification from block `me` of workspace `space`, titled `title`; clicking it shows the
-    /// block, or for the request `key` that workspace with its inbox open at it. In the
-    /// background it is a system notification too.
+    /// A notification from block `me` of workspace `space` (none: a request with no block here),
+    /// titled `title`; clicking it shows the block, or for the request `key` that workspace with
+    /// its inbox open at it. In the background it is a system notification too.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn notify_from(
         &self,
         space: String,
-        me: BlockId,
+        me: Option<BlockId>,
         title: String,
         text: String,
         request: Option<u64>,
@@ -829,7 +829,11 @@ impl Workspace {
             .on_click(move |_, window, cx| {
                 ws.update(cx, |ws, cx| match request {
                     Some(key) => ws.show_request(&space, key, window, cx),
-                    None => ws.reveal(&space, me, window, cx),
+                    None => {
+                        if let Some(me) = me {
+                            ws.reveal(&space, me, window, cx)
+                        }
+                    }
                 })
                 .ok();
             });

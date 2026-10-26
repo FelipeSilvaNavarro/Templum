@@ -13,8 +13,8 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, FontWeight, KeyDownEvent,
-    MouseButton, ScrollWheelEvent, Stateful, TestSupportExt, div, point, px,
+    AnyElement, App, BoxShadow, ClickEvent, Context, Div, ElementId, FontWeight, KeyDownEvent,
+    MouseButton, ScrollWheelEvent, Stateful, TestSupportExt, Window, div, point, px,
 };
 
 use crate::automations::{Do, FIRED, Went};
@@ -23,6 +23,8 @@ use crate::grid::hsla;
 use crate::inbox::{count_badge, section};
 use crate::workspace::Workspace;
 use crate::workspace::automations::NEW;
+use crate::workspace::remote::Deed;
+use crate::workspace::remote_rules::{RuleGroup, key_home};
 
 /// A row of the list.
 const ROW: f32 = 48.0;
@@ -130,12 +132,18 @@ fn list(ws: &Workspace, selected: Option<u64>, cx: &mut Context<Workspace>) -> D
                 .test_support(),
         );
     let now = SystemTime::now();
-    let ids = ws.automation_ids();
+    // This computer's rules; home's are in the groups of their remotes.
+    let ids: Vec<u64> = ws
+        .automation_ids()
+        .into_iter()
+        .filter(|id| key_home(*id).is_none())
+        .collect();
     let rows: Vec<_> = ids
         .iter()
         .map(|id| automation_row(ws, *id, selected == Some(*id), now, cx).test_support())
         .collect();
-    let empty = ids.is_empty().then(|| {
+    let groups = ws.rule_groups(cx);
+    let empty = (ids.is_empty() && groups.is_empty()).then(|| {
         div()
             .id("automations-empty")
             .px(px(16.0))
@@ -155,51 +163,17 @@ fn list(ws: &Workspace, selected: Option<u64>, cx: &mut Context<Workspace>) -> D
     });
     let asked = ws.schedule_rows();
     let asked = (!asked.is_empty()).then(|| {
-        let rows =
-            asked.into_iter().map(|(id, from, about)| {
-                div()
-                    .id(ElementId::Name(format!("schedule-{id}").into()))
-                    .w_full()
-                    .h(px(ROW))
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .px(px(12.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .child(div().truncate().font_weight(FontWeight::MEDIUM).child(from))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(SMALL))
-                                    .text_color(ui.title_dim)
-                                    .child(about),
-                            ),
-                    )
-                    .child(
-                        crate::balloon::ghost(
-                            ElementId::Name(format!("schedule-cancel-{id}").into()),
-                            "Cancel",
-                            ui,
-                            1.0,
-                        )
-                        .flex_shrink_0()
-                        .tooltip(move |window, cx| {
-                            Tooltip::new(format!("Cancel s{id}")).build(window, cx)
-                        })
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
-                            ws.cancel_schedule_now(id, cx)
-                        }))
-                        .test_support(),
-                    )
-            });
+        let rows = asked.into_iter().map(|(id, from, about)| {
+            schedule_row(
+                ws,
+                format!("{id}"),
+                from,
+                about,
+                format!("Cancel s{id}"),
+                None,
+                cx.listener(move |ws, _: &ClickEvent, _, cx| ws.cancel_schedule_now(id, cx)),
+            )
+        });
         div()
             .flex()
             .flex_col()
@@ -231,7 +205,159 @@ fn list(ws: &Workspace, selected: Option<u64>, cx: &mut Context<Workspace>) -> D
                 .overflow_y_scroll()
                 .children(rows)
                 .children(empty)
-                .children(asked),
+                .children(asked)
+                .children(
+                    groups
+                        .into_iter()
+                        .map(|group| home_group(ws, group, selected, now, cx)),
+                ),
+        )
+}
+
+/// One remote workspace's group of the list: its title with a + for a new rule at home, home's
+/// rules as rows, what its agents asked for with a Cancel each, and under them what isn't shown.
+fn home_group(
+    ws: &Workspace,
+    group: RuleGroup,
+    selected: Option<u64>,
+    now: SystemTime,
+    cx: &mut Context<Workspace>,
+) -> Stateful<Div> {
+    let ui = ws.ui;
+    let space = group.space.clone();
+    let new_refused = ws.why_not_in(&space, Deed::SaveRule(false));
+    let new = {
+        let (space, dimmed) = (space.clone(), new_refused.is_some());
+        let tip = new_refused.unwrap_or_else(|| "New automation at home".to_string());
+        icon_button(
+            ElementId::Name(format!("automation-new-{space}").into()),
+            IconName::Plus,
+            ui,
+            1.0,
+        )
+        .when(dimmed, |el| el.opacity(0.4))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+            ws.new_home_automation(&space, cx);
+            if let Some(key) = ws.automation_selected() {
+                ws.select_automation(key, window, cx);
+            }
+        }))
+        .test_support()
+    };
+    let rows: Vec<_> = group
+        .keys
+        .iter()
+        .map(|key| automation_row(ws, *key, selected == Some(*key), now, cx).test_support())
+        .collect();
+    let schedules: Vec<_> = group
+        .schedules
+        .into_iter()
+        .map(|(id, from, about)| {
+            let (space, schedule) = (space.clone(), id.clone());
+            schedule_row(
+                ws,
+                format!("{space}-{id}"),
+                from,
+                about,
+                format!("Cancel {id}"),
+                ws.why_not_in(&space, Deed::CancelSchedule),
+                cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.cancel_home_schedule(&space, &schedule, window, cx)
+                }),
+            )
+        })
+        .collect();
+    div()
+        .id(ElementId::Name(format!("automation-group-{space}").into()))
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .when(group.dim, |el| el.opacity(0.5))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .px(px(12.0))
+                .pt(px(14.0))
+                .pb(px(6.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_size(px(SMALL))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ui.title_dim)
+                        .child(group.title),
+                )
+                .child(new),
+        )
+        .children(rows)
+        .children(schedules)
+        .child(
+            div()
+                .px(px(12.0))
+                .py(px(6.0))
+                .text_size(px(SMALL))
+                .text_color(ui.title_dim)
+                .child(group.foot),
+        )
+}
+
+/// A delivery an agent asked for: who asked, what and when, and a Cancel (dimmed with `refused`'s
+/// words when this computer can't do it). `key` makes the ids of the row and its button.
+fn schedule_row(
+    ws: &Workspace,
+    key: String,
+    from: String,
+    about: String,
+    tip: String,
+    refused: Option<String>,
+    cancel: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let ui = ws.ui;
+    let dimmed = refused.is_some();
+    let tip = refused.unwrap_or(tip);
+    div()
+        .id(ElementId::Name(format!("schedule-{key}").into()))
+        .w_full()
+        .h(px(ROW))
+        .flex_shrink_0()
+        .overflow_hidden()
+        .px(px(12.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(div().truncate().font_weight(FontWeight::MEDIUM).child(from))
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(SMALL))
+                        .text_color(ui.title_dim)
+                        .child(about),
+                ),
+        )
+        .child(
+            crate::balloon::ghost(
+                ElementId::Name(format!("schedule-cancel-{key}").into()),
+                "Cancel",
+                ui,
+                1.0,
+            )
+            .flex_shrink_0()
+            .when(dimmed, |el| el.opacity(0.4))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .on_click(cancel)
+            .test_support(),
         )
 }
 
@@ -249,11 +375,16 @@ fn automation_row(
     let Some(a) = ws.automation_draft(id) else {
         return div().id(ElementId::Name(format!("automation-row-{id}").into()));
     };
-    let saved = ws.automations.get(id);
+    let saved = ws.rule(id);
+    // Home's rule: its acts are home's, dimmed with the rule's words when this share can't.
+    let home = key_home(id).map(|(space, _)| space);
+    let command = matches!(a.act, Do::Command { .. });
+    let refused = |deed: Deed| home.as_deref().and_then(|space| ws.why_not_in(space, deed));
     let yellow = hsla(ws.theme.palette.ansi[3], 1.0);
     let red = hsla(ws.theme.palette.ansi[1], 1.0);
+    let is_new = id == NEW || key_home(id).is_some_and(|(_, home_id)| home_id == 0);
     let name = match a.name.as_str() {
-        "" if id == NEW => "New automation".to_string(),
+        "" if is_new => "New automation".to_string(),
         "" => ws.automation_sentence(a, cx),
         name => name.to_string(),
     };
@@ -272,31 +403,46 @@ fn automation_row(
         }
         None => (None, None),
     };
-    let next = if id == NEW {
+    let next = if is_new {
         "Not saved".to_string()
     } else {
         ws.next_words(id, now)
     };
-    let drafted = id != NEW && ws.automation_drafts.contains_key(&id);
+    let drafted = !is_new && ws.automation_drafts.contains_key(&id);
+    let switch_refused = refused(Deed::SetRule(command));
     let switch = saved.map(|s| {
         let entity = cx.entity();
-        Switch::new(ElementId::Name(format!("automation-switch-{id}").into()))
+        let switch = Switch::new(ElementId::Name(format!("automation-switch-{id}").into()))
             .checked(s.on)
             .on_click(move |on: &bool, _, cx| {
                 let on = *on;
                 entity.update(cx, |ws, cx| ws.set_automation_on(id, on, cx));
+            });
+        // Dimmed with the rule's words; a click still says them and sends nothing.
+        div()
+            .id(ElementId::Name(
+                format!("automation-switch-box-{id}").into(),
+            ))
+            .when_some(switch_refused, |el, why| {
+                el.opacity(0.4)
+                    .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
             })
+            .child(switch)
     });
     let fired = saved.is_some_and(|s| matches!(&s.act, Do::Prompt { block, .. } if block == FIRED));
     let buttons = saved.map(|_| {
-        let button = |what: &'static str, icon: IconName, tip: &'static str| {
+        let button = |what: &'static str, icon: IconName, tip: &'static str, deed: Deed| {
+            let refused = refused(deed);
+            let dimmed = refused.is_some();
+            let tip = refused.unwrap_or_else(|| tip.to_string());
             icon_button(
                 ElementId::Name(format!("automation-{what}-{id}").into()),
                 icon,
                 ui,
                 1.0,
             )
-            .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+            .when(dimmed, |el| el.opacity(0.4))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             // Pressing one never counts as a click on the row.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         };
@@ -317,25 +463,37 @@ fn automation_row(
             .child(
                 match fired {
                     // The agent that fired it is no one's here: Run now has no one to act on.
-                    true => button("run", IconName::Play, "It acts on the agent that fires it")
-                        .opacity(0.4),
-                    false => button("run", IconName::Play, "Run now").on_click(cx.listener(
-                        move |ws, _: &ClickEvent, window, cx| ws.run_automation_now(id, window, cx),
-                    )),
+                    true => button(
+                        "run",
+                        IconName::Play,
+                        "It acts on the agent that fires it",
+                        Deed::RunRule(command),
+                    )
+                    .opacity(0.4),
+                    false => button("run", IconName::Play, "Run now", Deed::RunRule(command))
+                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                            ws.run_automation_now(id, window, cx)
+                        })),
                 }
                 .test_support(),
             )
             .child(
-                button("duplicate", IconName::CopyPlus, "Duplicate").on_click(cx.listener(
-                    move |ws, _: &ClickEvent, _, cx| {
-                        ws.duplicate_automation(id, cx);
-                    },
-                )),
+                button(
+                    "duplicate",
+                    IconName::CopyPlus,
+                    "Duplicate",
+                    Deed::SaveRule(command),
+                )
+                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
+                    ws.duplicate_automation(id, cx);
+                })),
             )
             .child(
-                button("delete", IconName::Trash, "Delete").on_click(cx.listener(
-                    move |ws, _: &ClickEvent, window, cx| ws.ask_delete_automation(id, window, cx),
-                )),
+                button("delete", IconName::Trash, "Delete", Deed::DeleteRule).on_click(
+                    cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.ask_delete_automation(id, window, cx)
+                    }),
+                ),
             )
     });
     let dim = if off { ui.hint } else { ui.title_dim };
@@ -464,7 +622,7 @@ pub(crate) fn button(ws: &Workspace, size: f32, cx: &mut Context<Workspace>) -> 
         )
         .children(count_badge(
             ws,
-            ws.automations_unseen(),
+            ws.automations_unseen() + ws.home_unseen(),
             hsla(ws.theme.palette.ansi[1], 1.0),
             "automations-badge",
         ))

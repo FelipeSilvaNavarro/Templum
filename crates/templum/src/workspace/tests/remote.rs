@@ -635,7 +635,8 @@ fn a_remote_agent_s_dot_comes_from_home(cx: &mut TestAppContext) {
         ("working", 2, Doing::Working(2)),
         ("waiting_subagents", 3, Doing::AwaitsSubagents(3)),
         ("starting", 0, Doing::Starting),
-        ("done", 0, Doing::Done),
+        // Home's own Done is no business of this computer's watch: it reads as idle here.
+        ("done", 0, Doing::Idle),
         ("idle", 0, Doing::Idle),
     ] {
         apply(
@@ -1613,11 +1614,12 @@ fn the_toolbar_dims_a_remote_s_controls_with_the_rule_s_words(cx: &mut TestAppCo
 }
 
 /// A notice of home's about its workspace `w1` (the remote's own), and a block if given.
-fn notice(text: &str, block: Option<&str>) -> templum_api::model::Notice {
+pub(super) fn notice(text: &str, block: Option<&str>) -> templum_api::model::Notice {
     templum_api::model::Notice {
         text: text.into(),
         block: block.map(Into::into),
         workspace: Some("w1".into()),
+        automation: None,
     }
 }
 
@@ -1648,7 +1650,7 @@ fn offline_noticed(
     (handle, ws, title, dir)
 }
 
-fn hear(
+pub(super) fn hear(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
@@ -3549,6 +3551,113 @@ fn a_request_is_the_one_shown_by_its_id_and_a_new_id_is_a_new_one(cx: &mut TestA
             Waiting::Allow { then: Approved::Remote { line, .. } } if line == "delete the worktree X"
         ));
     });
+}
+
+#[gpui_kit::test]
+fn a_mirrored_request_ages_from_home_s_since(cx: &mut TestAppContext) {
+    let wall = crate::workspace::automations::unix(std::time::SystemTime::now());
+    let (_, ws, _dir) = offline_asked(
+        cx,
+        vec![home_allows(
+            "r3",
+            "connect",
+            wall - 300,
+            "connect to a note",
+        )],
+    );
+    let now = cx.executor().now();
+    let since = ws.read_with(cx, |ws, _| ws.waits[0].since);
+    let age = now.saturating_duration_since(since);
+    assert!(
+        age >= Duration::from_secs(299) && age <= Duration::from_secs(302),
+        "{age:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_request_whose_block_has_no_viewer_is_listed_without_go_to_terminal(cx: &mut TestAppContext) {
+    use super::inbox::{drawn, name};
+    let mut request = home_allows("r3", "connect", 100, "connect to a note");
+    request.block = Some("zzzzz".into());
+    let (handle, ws, _dir) = offline_asked(cx, vec![request.clone()]);
+    ws.read_with(cx, |ws, _| {
+        let listed = ws.inbox();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].from, "");
+        assert!(ws.asker(listed[0]).is_none());
+        assert_eq!(ws.request_space(listed[0]).as_deref(), Some("r1"));
+    });
+    // A frame drops the waits whose block is gone: this one has none to lose.
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.inbox().len(), 1));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_inbox(None, window, cx))
+    })
+    .unwrap();
+    assert!(!drawn(handle, cx, name("inbox-go".into())));
+    // Home's next state without it withdraws it.
+    apply(handle, &ws, cx, state_asking(vec![]));
+    ws.read_with(cx, |ws, _| assert!(ws.inbox().is_empty()));
+}
+
+#[gpui_kit::test]
+fn a_request_listed_before_its_block_had_a_viewer_is_from_the_viewer_once_it_has_one(
+    cx: &mut TestAppContext,
+) {
+    let mut request = home_allows("r3", "connect", 100, "connect to a note");
+    request.block = Some("zzzzz".into());
+    let (handle, ws, _dir) = offline_asked(cx, vec![request.clone()]);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.waits[0].from, ""));
+    let mut state = terminals_of_home(&["abcde", "zzzzz"]);
+    state.requests = vec![Arc::new(request)];
+    apply(handle, &ws, cx, state);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.waits.len(), 1);
+        assert_ne!(ws.waits[0].from, "");
+        assert!(ws.asker(&ws.waits[0]).is_some());
+    });
+}
+
+#[gpui_kit::test]
+fn open_request_on_a_remote_agent_opens_the_inbox_at_its_request(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = offline_asked(
+        cx,
+        vec![home_allows("r3", "connect", 100, "connect to a note")],
+    );
+    let (key, from) = ws.read_with(cx, |ws, _| (ws.waits[0].key, ws.waits[0].from.clone()));
+    assert_ne!(from, "");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_agent_request(&from, window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.inbox_open);
+        assert_eq!(ws.inbox_selected().map(|w| w.key), Some(key));
+    });
+}
+
+#[gpui_kit::test]
+fn past_fifty_requests_the_inbox_says_how_many_more(cx: &mut TestAppContext) {
+    let many = |n: usize| -> Vec<templum_api::model::RequestView> {
+        (0..n)
+            .map(|i| home_allows(&format!("r{i}"), "connect", 100, "connect to a note"))
+            .collect()
+    };
+    let (handle, ws, _dir) = offline_asked(cx, many(53));
+    let more = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| (ws.inbox().len(), ws.inbox_more()))
+    };
+    assert_eq!(
+        more(&ws, cx),
+        (50, Some("And 3 more on 127.0.0.1:9.".to_string()))
+    );
+    apply(handle, &ws, cx, state_asking(many(51)));
+    assert_eq!(
+        more(&ws, cx),
+        (50, Some("And 1 more on 127.0.0.1:9.".to_string()))
+    );
+    apply(handle, &ws, cx, state_asking(many(50)));
+    assert_eq!(more(&ws, cx), (50, None));
 }
 
 #[gpui_kit::test]

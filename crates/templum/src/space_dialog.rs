@@ -243,9 +243,13 @@ impl SpaceDialog {
                     "The share can",
                     match me.scope {
                         Scope::Full => {
-                            "Full: watch, move blocks, answer requests and type into terminals"
+                            "Full: also type and click into terminals, discard Git changes, \
+                             delete branches, stashes and automations"
                         }
-                        _ => "Control: watch, move blocks and answer requests",
+                        _ => {
+                            "Control: watch and work with blocks, cards, checklists, Git and \
+                             automations, open agents and hand them tasks, answer requests"
+                        }
                     }
                     .into(),
                 ));

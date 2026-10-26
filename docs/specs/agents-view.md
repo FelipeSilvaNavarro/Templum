@@ -233,6 +233,20 @@ call*); the keyboard is the search field's:
 
 Closing the popup gives the keyboard back to the canvas only if the popup had it.
 
+## Agents of another computer
+
+*(Templum to Templum, part 2h.)* A mirrored workspace's agents are listed too, in a group of their own headed "API ·
+winx-desktop" (with " · 1 needs you"), dim while the remote isn't live. A row says home's title for the block, its
+agent as home's Settings names it, the task it works on (a task handed through the API says "from the API"), its card
+and its context. Its state is home's, except that home's own Done reads as idle: Done on a mirror is this computer's
+watch, an agent whose turn ended while nobody here looked at its block, and looking at it here (the workspace shown, its
+viewer focused) clears it, as for a local one. The details give home's model and effort, role, task (its number, its
+first three lines, who handed it and how long ago), the count of its subagents (no lines), its usage with an "Effort:
+high" line, and its screen: the viewer's lines when home streams that block, else the last 12 lines read through
+`read_terminal` every 2 s while the popup shows it (and the share can read). Go to terminal shows the mirrored
+workspace with the viewer focused. A remote agent is never heard by this computer's event automations. The usage chip's
+tooltip of a remote terminal ends with the same "Effort: high" line.
+
 ## Constraints
 
 - CLAUDE.md: only crates/templum depends on the UI framework; every logic change ships a headless test (GPUI

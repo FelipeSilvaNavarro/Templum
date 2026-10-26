@@ -140,6 +140,12 @@ winx-desktop". Its buttons are dim, with the reason as a tooltip, while the remo
 the share can't answer it ("Needs a Full share: share again on winx-desktop.", for a worktree's request). The mirror's
 own API never lists or answers one.
 
+Three things (part 2h): a request is aged from home's `since` (never ahead of now, at most 7 days), not from when the
+mirror heard of it; a request whose block has no viewer here (a block past the front 500, or one the mirror leaves out)
+is listed all the same, from no terminal, so it has no Go to terminal and stays while home lists it and its workspace
+is here (its click opens the inbox at it); and past 50 requests the list ends with a dim line, "And 3 more on
+winx-desktop." (one: "And 1 more on winx-desktop.").
+
 ## Constraints
 
 - CLAUDE.md: only crates/templum depends on the UI framework; tests for every logic change (GPUI test-support tests in

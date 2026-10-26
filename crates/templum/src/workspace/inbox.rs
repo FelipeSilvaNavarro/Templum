@@ -27,6 +27,23 @@ pub(crate) struct Why {
     pub agent: Option<String>,
 }
 
+/// The card each block works on in `boards`, by the block's id: its newest card not yet in its
+/// board's last column.
+pub(crate) fn cards_of(boards: &crate::board::Boards) -> HashMap<String, (u64, String)> {
+    let mut cards: HashMap<String, (u64, String)> = HashMap::new();
+    for board in &boards.boards {
+        let open = board.columns.len().saturating_sub(1);
+        for card in board.columns[..open].iter().flat_map(|c| &c.cards) {
+            if let Some(Assignee::Block(uid)) = &card.assignee
+                && cards.get(uid).is_none_or(|(id, _)| card.id > *id)
+            {
+                cards.insert(uid.clone(), (card.id, card.title.clone()));
+            }
+        }
+    }
+    cards
+}
+
 impl Workspace {
     /// The requests waiting for the person in the workspace shown (questions, plans and yes/no
     /// requests whose terminal is here), oldest first.
@@ -37,10 +54,18 @@ impl Workspace {
             // An answer sent to another computer leaves the list until its state drops it.
             .filter(|w| !w.remote.as_ref().is_some_and(|r| r.sent))
             .filter(|w| {
-                self.asker(w)
-                    .is_some_and(|(space, _)| space == self.space.id)
+                self.request_space(w)
+                    .is_some_and(|space| space == self.space.id)
             })
             .collect()
+    }
+
+    /// What the inbox says of the requests of the mirrored workspace shown that it doesn't list:
+    /// "And 3 more on winx-desktop."
+    pub(crate) fn inbox_more(&self) -> Option<String> {
+        let remote = self.space.remote.as_deref()?;
+        let more = remote.requests_more;
+        (more > 0).then(|| format!("And {more} more on {}.", crate::mirror::computer_of(remote)))
     }
 
     /// The request the inbox has selected: the one `inbox_at` names if it is listed, else the
@@ -141,8 +166,8 @@ impl Workspace {
             .waits
             .iter()
             .find(|w| w.key == key)
-            .and_then(|w| self.asker(w))
-            .map_or_else(|| space.to_string(), |(space, _)| space);
+            .and_then(|w| self.request_space(w))
+            .unwrap_or_else(|| space.to_string());
         let Some(to) = self.order().iter().position(|s| s.id == now) else {
             return;
         };
@@ -270,18 +295,7 @@ impl Workspace {
     /// The card each block works on, by the block's id: its newest card not yet in its board's
     /// last column, of any board.
     pub(crate) fn cards_by_block(&self) -> HashMap<String, (u64, String)> {
-        let mut cards: HashMap<String, (u64, String)> = HashMap::new();
-        for board in &self.boards.boards {
-            let open = board.columns.len().saturating_sub(1);
-            for card in board.columns[..open].iter().flat_map(|c| &c.cards) {
-                if let Some(Assignee::Block(uid)) = &card.assignee
-                    && cards.get(uid).is_none_or(|(id, _)| card.id > *id)
-                {
-                    cards.insert(uid.clone(), (card.id, card.title.clone()));
-                }
-            }
-        }
-        cards
+        cards_of(&self.boards)
     }
 
     /// Why the agent that made `wait` asks, as far as Templum knows and the agent said.

@@ -54,6 +54,16 @@ const ASKS_CHARS: usize = 200;
 /// questions, options in a question, and characters in a line of text, a description and a
 /// preview or a plan: what home sends is drawn, so it is capped.
 const MOST_REQUESTS: usize = 50;
+/// The longest a mirrored request may read as aged: older than a week is a week.
+pub(super) const AGE_MOST: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// The instant a request home made at `since` (Unix seconds) is aged from, `now` being the clock
+/// of this computer and `wall` its Unix time: `now` less the age home's clock says, never ahead
+/// of `now` (home's clock may be ahead) and never more than [`AGE_MOST`] back.
+pub(super) fn aged(since: i64, now: Instant, wall: i64) -> Instant {
+    let age = Duration::from_secs(wall.saturating_sub(since).max(0) as u64).min(AGE_MOST);
+    now.checked_sub(age).unwrap_or(now)
+}
 const MOST_QUESTIONS: usize = 10;
 const MOST_OPTIONS: usize = 30;
 pub(super) const LINE_CHARS: usize = 300;
@@ -194,6 +204,20 @@ pub(crate) struct RemoteSpace {
     /// The copy of home's boards, kept from its state and never saved: a kanban of this workspace
     /// draws it (`remote_boards.rs`).
     pub boards: Boards,
+    /// The copies of home's rules for this workspace and of its agents' schedules, kept from its
+    /// state and never saved: the Automations popup lists them (`remote_rules.rs`). They are
+    /// never in `Workspace::automations`: home's automations run only at home.
+    pub rules: Vec<super::remote_rules::HomeRule>,
+    /// Each rule's last run (home's `at`) as the person last saw it, by home's id: a run that
+    /// differs from it is new, with no comparing of clocks (`remote_rules::home_unseen`).
+    pub rules_seen: HashMap<u64, Option<i64>>,
+    pub schedules: Vec<super::remote_rules::HomeSchedule>,
+    /// The last lines of the screen of the agent the Agents popup shows (home's block, its lines),
+    /// read through `read_terminal` while no viewer streams it; one read at a time.
+    pub screen: Option<(String, Vec<String>)>,
+    pub screen_asking: bool,
+    /// Home's requests past [`MOST_REQUESTS`], not listed: the inbox says how many.
+    pub requests_more: usize,
     /// Home's block ids, which never become the ids agents name blocks by (`Space::uids`).
     pub homes: HashMap<String, BlockId>,
     /// `homes` the other way round.
@@ -298,6 +322,9 @@ const KEYBOARD_WAIT: Duration = Duration::from_secs(5);
 /// The most agents of home's a mirror lists, and the longest an id of one is, in bytes.
 pub(crate) const MOST_AGENTS: usize = 100;
 const AGENT_ID_MOST: usize = 64;
+/// The longest a task's text of home's agent is, in characters, and its id, in bytes.
+pub(crate) const TASK_CHARS: usize = 2_000;
+const TASK_ID_MOST: usize = 16;
 
 /// How old home's agent list may be when a menu opens before it is read again.
 const AGENTS_AGAIN: Duration = Duration::from_secs(60);
@@ -419,6 +446,12 @@ impl RemoteSpace {
             notice_budget: Budget::default(),
             notices_folded: 0,
             boards: Boards::default(),
+            rules: Vec::new(),
+            rules_seen: HashMap::new(),
+            schedules: Vec::new(),
+            screen: None,
+            screen_asking: false,
+            requests_more: 0,
             rects: HashMap::new(),
             held: Holds::default(),
             closed: Holds::default(),
@@ -501,6 +534,9 @@ impl RemoteSpace {
         let takes = templum_api::registry::scope(tool, &args).unwrap_or(Scope::Full);
         let takes = match deed {
             Deed::Answer(asked) => takes.max(asked),
+            // Home's glue asks Full to switch or run a rule that runs a command; the registry's
+            // scope doesn't know the rule.
+            Deed::SetRule(true) | Deed::RunRule(true) => takes.max(Scope::Full),
             _ => takes,
         };
         self.me
@@ -801,6 +837,15 @@ pub(crate) enum Deed {
     EditBoard,
     /// A kanban shown another board, or a new one.
     ShowBoard,
+    /// A rule of home's switched; true when it runs a command (home's glue asks Full for that).
+    SetRule(bool),
+    /// A rule of home's run now; true when it runs a command.
+    RunRule(bool),
+    /// A rule of home's saved or duplicated; true when it runs a command.
+    SaveRule(bool),
+    DeleteRule,
+    /// A delivery of an agent of home's cancelled.
+    CancelSchedule,
 }
 
 impl Deed {
@@ -850,6 +895,18 @@ impl Deed {
             Deed::EditColumn => ("edit_column", json!({ "board": "1" })),
             Deed::EditBoard => ("edit_board", json!({ "board": "1", "name": "n" })),
             Deed::ShowBoard => ("show_board", json!({ "block": "k", "board": "1" })),
+            Deed::SetRule(_) => ("set_automation", json!({ "automation": 1, "on": true })),
+            Deed::RunRule(_) => ("run_automation", json!({ "automation": 1 })),
+            Deed::SaveRule(command) => (
+                "save_automation",
+                json!({ "automation": { "do": if command {
+                    json!({ "command": { "text": "t" } })
+                } else {
+                    json!({ "notify": { "text": "t" } })
+                } } }),
+            ),
+            Deed::DeleteRule => ("delete_automation", json!({ "automation": 1 })),
+            Deed::CancelSchedule => ("cancel_schedule", json!({ "schedule": "s1" })),
             Deed::Git(op) if templum_git::ops::OPS.contains(&op) => ("git", json!({ "op": op })),
             _ => return None,
         })
@@ -1239,8 +1296,19 @@ impl Space {
         )
     }
 
+    /// Why this computer's automations never run for a remote workspace: "API is a mirror of
+    /// winx-desktop: its automations run there." None for a local one (the person's hard rule:
+    /// home's automations run only at home).
+    pub(crate) fn automations_there(&self) -> Option<String> {
+        Some(format!(
+            "{} is a mirror of {}: its automations run there.",
+            super::bus::clean_title(&self.name),
+            self.mirror_of()?
+        ))
+    }
+
     /// How `overview` names a remote workspace: "API (mirror of winx-desktop)".
-    pub(super) fn mirror_title(&self) -> Option<String> {
+    pub(crate) fn mirror_title(&self) -> Option<String> {
         Some(format!(
             "{} (mirror of {})",
             super::bus::clean_title(&self.name),
@@ -1505,6 +1573,16 @@ fn tidy_block(b: &BlockView) -> BlockView {
         a.asks = a.asks.as_deref().map(|s| clean_to(s, ASKS_CHARS));
         a.model = a.model.as_deref().map(clean_title);
         a.effort = a.effort.as_deref().map(clean_title);
+        a.role = a.role.as_deref().map(clean_title);
+        // The task is drawn in the Agents popup: its id and `by` are short plain words, else none.
+        a.task = a.task.take().and_then(|t| {
+            let plain = |s: &str, most: usize| s.len() <= most && !s.chars().any(char::is_control);
+            plain(&t.id, TASK_ID_MOST).then(|| templum_api::model::TaskView {
+                text: clean_text(&t.text, TASK_CHARS),
+                by: t.by.filter(|by| plain(by, AGENT_ID_MOST)),
+                ..t
+            })
+        });
     }
     b
 }
@@ -2044,6 +2122,13 @@ impl Workspace {
             space.mirror_drawings(&state, home.as_ref().map(|h| h.id.as_str()));
         }
         let home_id = home.as_ref().map(|h| h.id.clone());
+        let rules_changed = changed || !same(&state.automations, &remote.state.automations);
+        if rules_changed {
+            remote.mirror_rules(id, &state, home_id.as_deref());
+        }
+        if !same(&state.schedules, &remote.state.schedules) {
+            remote.mirror_schedules(&state);
+        }
         remote.home = home;
         let requests = changed.then(|| state.requests.clone());
         remote.state = state;
@@ -2053,6 +2138,9 @@ impl Workspace {
         }
         if let Some(requests) = requests {
             self.remote_requests(id, home_id.as_deref(), &requests, window, cx);
+        }
+        if rules_changed {
+            self.reload_home_form(id);
         }
         self.focus_awaited(id, now, window, cx);
     }
@@ -2817,7 +2905,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let wanted: Vec<&Arc<RequestView>> = requests
+        let mut wanted: Vec<&Arc<RequestView>> = requests
             .iter()
             .filter(|r| r.workspace.as_deref() == home && home.is_some())
             .filter(|r| r.id.len() <= 32 && !r.id.chars().any(char::is_control))
@@ -2827,8 +2915,13 @@ impl Workspace {
                     "question" | "plan" | "connect" | "remove_worktree" | "merge_worktree"
                 )
             })
-            .take(MOST_REQUESTS)
             .collect();
+        // The inbox says how many more home has than it lists.
+        let more = wanted.len().saturating_sub(MOST_REQUESTS);
+        wanted.truncate(MOST_REQUESTS);
+        if let Some(remote) = self.remote_mut(id) {
+            remote.requests_more = more;
+        }
         let gone: Vec<u64> = self
             .waits
             .iter()
@@ -2843,13 +2936,18 @@ impl Workspace {
         }
         let mut folded = Vec::new();
         for request in wanted {
-            let known = self.waits.iter().any(|w| {
+            let known = self.waits.iter().position(|w| {
                 w.remote
                     .as_ref()
                     .is_some_and(|a| a.space == id && a.request == request.id)
             });
-            if !known {
-                self.remote_wait(id, request, &mut folded, window, cx);
+            match known {
+                None => self.remote_wait(id, request, &mut folded, window, cx),
+                // Listed while its block had no viewer: it has one now.
+                Some(at) if self.waits[at].from.is_empty() => {
+                    self.waits[at].from = self.viewer_terminal(id, request);
+                }
+                Some(_) => {}
             }
         }
         if let Some(last) = folded.last().filter(|_| self.fold_tells(id)) {
@@ -2883,8 +2981,23 @@ impl Workspace {
             .is_some_and(|remote| remote.requests_budget.fold(Instant::now()))
     }
 
-    /// A new request of home's, a wait here. Skipped when its block has no viewer here, or it
-    /// asks nothing.
+    /// The terminal of the viewer here of the block home's `request` is from; empty when it has
+    /// no viewer (yet).
+    fn viewer_terminal(&self, id: &str, request: &RequestView) -> String {
+        let Some(space) = self.space_named(id) else {
+            return String::new();
+        };
+        request
+            .block
+            .as_ref()
+            .and_then(|block| space.remote.as_deref()?.homes.get(block))
+            .and_then(|local| space.terminal(*local))
+            .map(|pane| pane.term.id().to_string())
+            .unwrap_or_default()
+    }
+
+    /// A new request of home's, a wait here. Listed from no terminal when its block has no viewer
+    /// here (`remote_requests` fills it in when one comes); skipped when it asks nothing.
     fn remote_wait(
         &mut self,
         id: &str,
@@ -2893,18 +3006,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(space) = self.space_named(id) else {
+        if self.space_named(id).is_none() {
             return;
-        };
-        let Some(from) = request
-            .block
-            .as_ref()
-            .and_then(|block| space.remote.as_deref()?.homes.get(block))
-            .and_then(|local| space.terminal(*local))
-            .map(|pane| pane.term.id().to_string())
-        else {
-            return;
-        };
+        }
+        let from = self.viewer_terminal(id, request);
         let Some(what) = waiting_of(request) else {
             return;
         };
@@ -2926,6 +3031,14 @@ impl Workspace {
             quiet,
         };
         self.wait_as(asked, what, None, Some(remote), window, cx);
+        // It has waited as long as home says.
+        let (now, wall) = (
+            cx.background_executor().now(),
+            super::automations::unix(SystemTime::now()),
+        );
+        if let Some(wait) = self.waits.iter_mut().find(|w| w.key == self.next_wait) {
+            wait.since = aged(request.since, now, wall);
+        }
         if notice == Notice::Fold {
             folded.push(self.next_wait);
         }
@@ -2965,32 +3078,49 @@ impl Workspace {
         #[cfg(test)]
         self.said.push(format!("{title}: {text}"));
         let (ws, space, block) = (cx.entity().downgrade(), id.to_string(), notice.block);
+        let automation = notice.automation;
         let notification = Notification::new()
             .title(title)
             .message(text)
             .delivery(self.delivery(window))
             .on_click(move |_, window, cx| {
                 ws.update(cx, |ws, cx| {
-                    let local = block.as_ref().and_then(|block| {
-                        ws.space_named(&space)?
-                            .remote
-                            .as_deref()?
-                            .homes
-                            .get(block)
-                            .copied()
-                    });
-                    match local {
-                        Some(local) => ws.reveal(&space, local, window, cx),
-                        None => {
-                            if let Some(to) = ws.order().iter().position(|s| s.id == space) {
-                                ws.switch_to(to, window, cx);
-                            }
-                        }
-                    }
+                    ws.open_home_notice(&space, block.as_deref(), automation, window, cx)
                 })
                 .ok();
             });
         show_notification(window, cx, notification);
+    }
+
+    /// The click on a notice of home's: the Automations popup at its rule, else the block it is
+    /// about, else the workspace.
+    pub(crate) fn open_home_notice(
+        &mut self,
+        space: &str,
+        block: Option<&str>,
+        automation: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(key) = automation.and_then(|id| super::remote_rules::home_key(space, id)) {
+            return self.show_automation(key, window, cx);
+        }
+        let local = block.and_then(|block| {
+            self.space_named(space)?
+                .remote
+                .as_deref()?
+                .homes
+                .get(block)
+                .copied()
+        });
+        match local {
+            Some(local) => self.reveal(space, local, window, cx),
+            None => {
+                if let Some(to) = self.order().iter().position(|s| s.id == space) {
+                    self.switch_to(to, window, cx);
+                }
+            }
+        }
     }
 
     /// The notices past the budget become one notification of how many more, at most one a
@@ -3829,6 +3959,15 @@ mod tests {
     }
 
     #[test]
+    fn a_request_older_than_the_clock_can_say_is_a_week_old() {
+        let now = Instant::now();
+        let week = now.checked_sub(AGE_MOST).unwrap();
+        assert_eq!(aged(i64::MIN, now, 1_000), week);
+        assert_eq!(aged(i64::MIN, now, i64::MAX), week);
+        assert_eq!(aged(i64::MAX, now, 1_000), now);
+    }
+
+    #[test]
     fn clean_text_keeps_newlines_and_tabs_and_nothing_else_control() {
         assert_eq!(clean_text("a\u{1b}[31mb\n\tc\u{7}", 100), "a[31mb\n\tc");
         assert_eq!(clean_text("héllo", 3), "hél");
@@ -3940,6 +4079,17 @@ mod tests {
     }
 
     #[test]
+    fn a_request_is_aged_from_home_s_since() {
+        let now = Instant::now();
+        // Home's clock says 120 s: two minutes old.
+        assert_eq!(aged(1000, now, 1120), now - Duration::from_secs(120));
+        // Home's clock ahead of this one's: as old as now.
+        assert_eq!(aged(2000, now, 1000), now);
+        // Older than a week is a week.
+        assert_eq!(aged(0, now, 10_000_000), now - AGE_MOST);
+    }
+
+    #[test]
     fn every_deed_home_runs_has_a_scope_in_the_registry() {
         let scope = |deed: Deed| {
             let (tool, args) = deed.call().expect("a call");
@@ -3975,9 +4125,45 @@ mod tests {
             Deed::AddItems,
             Deed::EditItem,
             Deed::DeleteItem,
+            Deed::SetRule(false),
+            Deed::RunRule(false),
+            Deed::SaveRule(false),
+            Deed::CancelSchedule,
         ] {
             assert_eq!(scope(control), Scope::Control, "{control:?}");
         }
+        assert_eq!(scope(Deed::SaveRule(true)), Scope::Full);
+        assert_eq!(scope(Deed::DeleteRule), Scope::Full);
+    }
+
+    #[test]
+    fn a_command_rule_takes_full_to_switch_run_save_or_delete() {
+        let mut remote = remote_at("https://winx-desktop.example.com", Status::Live);
+        remote.me = Some(MeView {
+            scope: Scope::Control,
+            ..MeView::default()
+        });
+        for full in [
+            Deed::SetRule(true),
+            Deed::RunRule(true),
+            Deed::SaveRule(true),
+            Deed::DeleteRule,
+        ] {
+            assert_eq!(remote.why_not(full), Some(Nay::NeedsFull), "{full:?}");
+        }
+        for control in [
+            Deed::SetRule(false),
+            Deed::RunRule(false),
+            Deed::SaveRule(false),
+            Deed::CancelSchedule,
+        ] {
+            assert_eq!(remote.why_not(control), None, "{control:?}");
+        }
+        remote.tools = Some(Tools::read(&serde_json::json!([
+            { "name": "set_automation", "inputSchema": { "properties": {} } },
+        ])));
+        assert_eq!(remote.why_not(Deed::CancelSchedule), Some(Nay::Older));
+        assert_eq!(remote.why_not(Deed::SetRule(false)), None);
     }
 
     #[test]

@@ -67,7 +67,7 @@ elsewhere; a green dot on a tile means Claude Code or Codex is running in it.
   Ctrl+Shift+O) shows a card per workspace with what it holds ("3 terminals · 1 Claude Code running"). Type to find
   one, Up/Down and Enter to open it, drag cards to reorder.
 - **Edit…** (right-click a tile or a card) names a workspace and gives it a color, a Lucide icon or an image, and a
-  folder: new terminals start there. Its **Share…** lets another computer's Templum mirror the workspace live.
+  folder: new terminals start there. Its **Share…** lets another computer's Templum mirror the workspace live and work in it.
 - **Connect to a Templum…** (the plug under **+**) pastes a share's code and opens another computer's workspace here:
   its blocks and terminals live, where you can type, move blocks and answer its agents. See
   [api.md](api.md#templum-to-templum).

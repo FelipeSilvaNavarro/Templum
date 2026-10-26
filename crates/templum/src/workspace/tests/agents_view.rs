@@ -424,6 +424,7 @@ fn made(space: &str, terminal: &str, title: &str, doing: Doing, since: Instant) 
         task: None,
         folder: None,
         context: None,
+        dim: false,
     }
 }
 
@@ -1198,4 +1199,331 @@ fn a_choice_the_search_hid_comes_back_with_the_search(cx: &mut TestAppContext) {
     ws.update(cx, |ws, _| ws.agents_query.clear());
     frame(handle, cx);
     assert_eq!(selected(&ws, cx), Some(b.1.clone()));
+}
+
+// On a mirror: the agents of another computer (Templum to Templum, part 2h).
+
+use super::remote::{answer, apply, offline, remote_of, sent, show_remote, terminal_of_home};
+use crate::workspace::agents_view::{AGENT_SCREEN_AGAIN, SCREEN_LINES};
+use crate::workspace::remote::HomeAgent;
+use templum_api::store::Scope;
+
+fn home_agent(state: &str) -> templum_api::model::AgentView {
+    templum_api::model::AgentView {
+        agent: "claude".into(),
+        state: state.into(),
+        model: Some("opus".into()),
+        effort: Some("high".into()),
+        role: Some("reviewer".into()),
+        task: Some(templum_api::model::TaskView {
+            id: "t3".into(),
+            text: "Ship it.".into(),
+            by: Some("api".into()),
+            since: 1,
+        }),
+        ..Default::default()
+    }
+}
+
+/// An offline mirror whose home runs Claude Code in `abcde`, in the state `state`, not shown.
+fn mirrored_agent(
+    cx: &mut TestAppContext,
+    state: &str,
+) -> (AnyWindowHandle, Entity<Workspace>, tempfile::TempDir) {
+    let (handle, ws, dir) = offline(cx);
+    apply(handle, &ws, cx, terminal_of_home(Some(home_agent(state))));
+    frame(handle, cx);
+    (handle, ws, dir)
+}
+
+#[gpui_kit::test]
+fn a_remote_agent_is_listed_under_its_computer_with_home_s_details(cx: &mut TestAppContext) {
+    let (handle, ws, dir) = offline(cx);
+    let _keep = dir;
+    ws.update(cx, |ws, _| {
+        let space = ws.others.iter_mut().find(|s| s.id == "r1").unwrap();
+        space.remote.as_mut().unwrap().agents = Some(vec![HomeAgent {
+            id: "claude".into(),
+            title: "Claude Code".into(),
+            installed: true,
+        }]);
+    });
+    apply(
+        handle,
+        &ws,
+        cx,
+        terminal_of_home(Some(home_agent("working"))),
+    );
+    frame(handle, cx);
+    let rows = ws.read_with(cx, |ws, _| ws.agent_rows());
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let row = &rows[0];
+    assert_eq!(
+        (
+            row.space.as_str(),
+            row.space_name.as_str(),
+            row.title.as_str(),
+            row.agent.as_str(),
+            row.task.as_deref(),
+            row.dim
+        ),
+        (
+            "r1",
+            "API · 127.0.0.1:9",
+            "claude",
+            "Claude Code",
+            Some("Ship it."),
+            false
+        )
+    );
+    // Go to terminal shows the remote workspace with the viewer focused.
+    let terminal = row.terminal.clone();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.go_to_agent(&terminal, window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.id, "r1");
+        assert_eq!(ws.space.focused, Some(remote_of(ws).homes["abcde"]));
+    });
+    // Not live any more: still listed, dim.
+    ws.update(cx, |ws, _| {
+        ws.space.remote.as_mut().unwrap().status = templum_api::client::Status::Reconnecting {
+            attempt: 1,
+            next: Duration::from_secs(1),
+            live_at: None,
+        }
+    });
+    let rows = ws.read_with(cx, |ws, _| ws.agent_rows());
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].dim);
+}
+
+#[gpui_kit::test]
+fn a_remote_agent_is_done_here_until_looked_at_here_and_home_s_done_reads_idle(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, _dir) = offline(cx);
+    set_active(handle, true, cx);
+    let state = |cx: &mut TestAppContext, word: &str| {
+        apply(handle, &ws, cx, terminal_of_home(Some(home_agent(word))));
+        frame(handle, cx);
+    };
+    let doing_now = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.agent_rows().first().map(|r| r.doing.clone()))
+    };
+    state(cx, "working");
+    state(cx, "idle");
+    assert_eq!(doing_now(&ws, cx), Some(Doing::Done));
+    ws.read_with(cx, |ws, _| assert_eq!(ws.done_count(), 1));
+    // Looked at here: the viewer focused in the workspace shown.
+    show_remote(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        let viewer = remote_of(ws).homes["abcde"];
+        ws.space.focused = Some(viewer);
+    });
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.done_count(), 0));
+    assert_eq!(doing_now(&ws, cx), Some(Doing::Idle));
+    // Home's own "done" is idle here; after working, it is this computer's watch that makes Done.
+    state(cx, "working");
+    state(cx, "done");
+    ws.update(cx, |ws, _| ws.space.focused = None);
+    state(cx, "working");
+    state(cx, "done");
+    assert_eq!(doing_now(&ws, cx), Some(Doing::Done));
+    // Looked at, a state that is still "done" reads Idle.
+    ws.update(cx, |ws, _| {
+        let viewer = remote_of(ws).homes["abcde"];
+        ws.space.focused = Some(viewer);
+    });
+    state(cx, "done");
+    assert_eq!(doing_now(&ws, cx), Some(Doing::Idle));
+}
+
+#[gpui_kit::test]
+fn a_screen_read_keeps_its_last_twelve_clean_lines(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = offline(cx);
+    // The start's connecting (nothing to connect to) settles first.
+    cx.run_until_parked();
+    apply(
+        handle,
+        &ws,
+        cx,
+        terminal_of_home(Some(home_agent("working"))),
+    );
+    ws.update(cx, |ws, _| {
+        if let Some(r) = ws
+            .others
+            .iter_mut()
+            .find(|s| s.id == "r1")
+            .and_then(|s| s.remote.as_mut())
+        {
+            r.status = templum_api::client::Status::Live;
+            r.me = Some(templum_api::model::MeView {
+                scope: Scope::Read,
+                ..Default::default()
+            });
+        }
+    });
+    frame(handle, cx);
+    open_agents(handle, &ws, cx);
+    let row = ws.read_with(cx, |ws, _| ws.agent_rows().remove(0));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.select_agent(&row.terminal, window, cx))
+    })
+    .unwrap();
+    let reads = |cx: &mut TestAppContext| {
+        sent(&ws, cx)
+            .into_iter()
+            .filter(|(tool, _)| tool == "read_terminal")
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        reads(cx),
+        [(
+            "read_terminal".to_string(),
+            json!({ "block": "abcde", "lines": SCREEN_LINES })
+        )]
+    );
+    let long: Vec<String> = (0..10_000)
+        .map(|n| match n {
+            9_995 => "red \u{1b}[31mtext".to_string(),
+            n => format!("line {n}"),
+        })
+        .collect();
+    answer(handle, &ws, cx, 0, Ok(json!({ "text": long.join("\n") })));
+    ws.read_with(cx, |ws, _| {
+        let (block, lines) = remote_of(ws).screen.clone().expect("a screen");
+        assert_eq!(block, "abcde");
+        assert_eq!(lines.len(), SCREEN_LINES);
+        assert_eq!(lines.last().map(String::as_str), Some("line 9999"));
+        assert!(
+            lines.iter().all(|l| !l.chars().any(char::is_control)),
+            "{lines:?}"
+        );
+    });
+    // Again after a while, while the popup shows it.
+    let again = |cx: &mut TestAppContext| {
+        ws.update(cx, |ws, _| {
+            if let Some(r) = ws
+                .others
+                .iter_mut()
+                .find(|s| s.id == "r1")
+                .and_then(|s| s.remote.as_mut())
+            {
+                r.status = templum_api::client::Status::Live;
+            }
+        });
+        cx.executor().advance_clock(AGENT_SCREEN_AGAIN);
+        cx.run_until_parked();
+    };
+    ws.update(cx, |ws, _| {
+        ws.others
+            .iter_mut()
+            .find(|s| s.id == "r1")
+            .unwrap()
+            .remote
+            .as_mut()
+            .unwrap()
+            .status = templum_api::client::Status::Live;
+    });
+    let before = reads(cx).len();
+    again(cx);
+    assert_eq!(reads(cx).len(), before + 1);
+    // Closed: no more.
+    let newest = reads_index(&ws, cx);
+    answer(handle, &ws, cx, newest, Ok(json!({ "text": "x" })));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close_agents(window, cx))
+    })
+    .unwrap();
+    let before = reads(cx).len();
+    again(cx);
+    assert_eq!(reads(cx).len(), before);
+}
+
+/// The index among the kept calls of the newest `read_terminal`.
+fn reads_index(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> usize {
+    ws.read_with(cx, |ws, _| {
+        ws.calls
+            .iter()
+            .rposition(|(_, call, _)| call.tool == "read_terminal")
+            .unwrap()
+    })
+}
+
+#[gpui_kit::test]
+fn a_streamed_remote_agent_s_screen_is_not_read(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = mirrored_agent(cx, "working");
+    ws.update(cx, |ws, _| {
+        let r = ws
+            .others
+            .iter_mut()
+            .find(|s| s.id == "r1")
+            .unwrap()
+            .remote
+            .as_mut()
+            .unwrap();
+        r.status = templum_api::client::Status::Live;
+        r.me = Some(templum_api::model::MeView {
+            scope: Scope::Read,
+            ..Default::default()
+        });
+        let viewer = r.homes["abcde"];
+        r.streaming = vec![("abcde".into(), viewer)];
+    });
+    open_agents(handle, &ws, cx);
+    let row = ws.read_with(cx, |ws, _| ws.agent_rows().remove(0));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.select_agent(&row.terminal, window, cx))
+    })
+    .unwrap();
+    assert!(sent(&ws, cx).is_empty());
+}
+
+#[gpui_kit::test]
+fn a_remote_agent_s_details_and_screen_draw(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = mirrored_agent(cx, "working");
+    cx.run_until_parked();
+    ws.update(cx, |ws, _| {
+        let r = ws
+            .others
+            .iter_mut()
+            .find(|s| s.id == "r1")
+            .unwrap()
+            .remote
+            .as_mut()
+            .unwrap();
+        r.status = templum_api::client::Status::Live;
+        r.me = Some(templum_api::model::MeView {
+            scope: Scope::Read,
+            ..Default::default()
+        });
+        r.screen = Some(("abcde".into(), vec!["$ cargo test".into(), "ok".into()]));
+    });
+    open_agents(handle, &ws, cx);
+    let row = ws.read_with(cx, |ws, _| ws.agent_rows().remove(0));
+    assert!(drawn(
+        handle,
+        cx,
+        name(format!("agents-row-{}", row.terminal))
+    ));
+    assert!(drawn(handle, cx, name("agents-screen".into())));
+}
+
+#[gpui_kit::test]
+fn a_task_time_of_home_far_before_the_epoch_draws_without_overflow(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = offline(cx);
+    let mut agent = home_agent("working");
+    agent.task.as_mut().unwrap().since = i64::MIN;
+    apply(handle, &ws, cx, terminal_of_home(Some(agent)));
+    frame(handle, cx);
+    open_agents(handle, &ws, cx);
+    let row = ws.read_with(cx, |ws, _| ws.agent_rows().remove(0));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.select_agent(&row.terminal, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
 }

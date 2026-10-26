@@ -28,6 +28,9 @@ pub struct State {
     #[serde(default)]
     pub drawings: Vec<Arc<DrawingsView>>,
     pub automations: Vec<Arc<AutomationView>>,
+    /// The deliveries agents asked for later (`schedule`), left out by homes older than batch 2h.
+    #[serde(default)]
+    pub schedules: Vec<Arc<ScheduleView>>,
     /// The shares of workspaces: a token for all workspaces sees every one, a limited token only
     /// the share it is. Left out by homes older than shares.
     #[serde(default)]
@@ -276,6 +279,36 @@ pub struct AgentView {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub usage: Option<SessionView>,
+    /// The task it works on; null when none, and for homes older than batch 2h.
+    #[serde(default)]
+    pub task: Option<TaskView>,
+    /// The role it was opened with.
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+/// The task an agent works on: its id (`t7`), its text as home keeps it (2,000 characters), the block
+/// that handed it (`api` for the API; None for a block the token doesn't see, an automation or the
+/// Templum Agent).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TaskView {
+    pub id: String,
+    pub text: String,
+    pub by: Option<String>,
+    pub since: i64,
+}
+
+/// A delivery an agent asked for later (`schedule`): `by` the asking block (None as above), `to` the
+/// block it goes to, `every` in seconds (None: once), `next` and `until` Unix seconds.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScheduleView {
+    pub id: String,
+    pub by: Option<String>,
+    pub to: String,
+    pub text: String,
+    pub next: i64,
+    pub every: Option<u64>,
+    pub until: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -550,6 +583,9 @@ pub struct Notice {
     pub text: String,
     pub block: Option<String>,
     pub workspace: Option<String>,
+    /// The automation whose Notify me this is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automation: Option<u64>,
 }
 
 /// Who is asking: a token, as far as seeing goes.
@@ -673,6 +709,18 @@ impl State {
                 .filter(|automation| caller.sees(automation.workspace.as_deref()))
                 .cloned()
                 .collect(),
+            schedules: self
+                .schedules
+                .iter()
+                .filter(|schedule| ids.contains(schedule.to.as_str()))
+                .map(|schedule| match &schedule.by {
+                    Some(by) if !ids.contains(by.as_str()) => Arc::new(ScheduleView {
+                        by: None,
+                        ..(**schedule).clone()
+                    }),
+                    _ => schedule.clone(),
+                })
+                .collect(),
             shares: self
                 .shares
                 .iter()
@@ -684,9 +732,31 @@ impl State {
                 .view
                 .clone()
                 .filter(|view| caller.sees(Some(&view.workspace))),
-            blocks,
+            blocks: blocks
+                .iter()
+                .map(|block| unseen_task_by(block.clone(), &ids))
+                .collect(),
         }
     }
+}
+
+/// A block whose agent's task was handed by a block the caller doesn't see: the same block with `by`
+/// None (`api` is always seen); any other block, the same `Arc`.
+fn unseen_task_by(block: Arc<BlockView>, seen: &HashSet<&str>) -> Arc<BlockView> {
+    let hidden = block
+        .agent
+        .as_ref()
+        .and_then(|agent| agent.task.as_ref())
+        .and_then(|task| task.by.as_deref())
+        .is_some_and(|by| by != crate::ASKER && !seen.contains(by));
+    if !hidden {
+        return block;
+    }
+    let mut block = BlockView::clone(&block);
+    if let Some(task) = block.agent.as_mut().and_then(|agent| agent.task.as_mut()) {
+        task.by = None;
+    }
+    Arc::new(block)
 }
 
 /// The most items a mirrored collection may hold: home sends more than a person uses, and a
@@ -728,6 +798,7 @@ impl State {
             new.checklists.len(),
             new.drawings.len(),
             new.automations.len(),
+            new.schedules.len(),
             new.shares.len(),
         ]
         .into_iter()
@@ -766,6 +837,7 @@ impl State {
                 | "checklist"
                 | "drawing"
                 | "automation"
+                | "schedule"
                 | "share"
                 | "usage"
         )
@@ -789,6 +861,7 @@ impl State {
             "checklist" => edit(event, data, |s| &mut s.checklists, |c| c.id.to_string()),
             "drawing" => edit(event, data, |s| &mut s.drawings, |d| d.id.clone()),
             "automation" => edit(event, data, |s| &mut s.automations, |a| a.id.to_string()),
+            "schedule" => edit(event, data, |s| &mut s.schedules, |s| s.id.clone()),
             "share" => edit(event, data, |s| &mut s.shares, |s| s.id.clone()),
             "usage" => {
                 // At most one, with the id `usage`.
@@ -907,7 +980,7 @@ pub struct Delta {
 }
 
 /// What differs between two states, per collection (workspace, block, wire, request, board, card,
-/// note, checklist, drawing, automation, share, usage): the deletes, then the puts.
+/// note, checklist, drawing, automation, schedule, share, usage): the deletes, then the puts.
 pub fn diff(old: &State, new: &State) -> Vec<Delta> {
     let mut out = Vec::new();
     compare(
@@ -972,6 +1045,13 @@ pub fn diff(old: &State, new: &State) -> Vec<Delta> {
         &old.automations,
         &new.automations,
         |a| a.id.to_string(),
+        &mut out,
+    );
+    compare(
+        "schedule",
+        &old.schedules,
+        &new.schedules,
+        |s| s.id.clone(),
         &mut out,
     );
     compare(
@@ -1812,5 +1892,101 @@ mod tests {
         );
         assert!(newest_drawings(&[150_000], |n| *n).is_empty());
         assert_eq!(newest_drawings(&[10, 150_000, 10], |n| *n), [10]);
+    }
+    fn schedule(id: &str, by: Option<&str>, to: &str) -> Arc<ScheduleView> {
+        Arc::new(ScheduleView {
+            id: id.into(),
+            by: by.map(Into::into),
+            to: to.into(),
+            ..Default::default()
+        })
+    }
+
+    fn with_task(block: &Arc<BlockView>, by: Option<&str>) -> Arc<BlockView> {
+        let mut block = BlockView::clone(block);
+        block.agent = Some(AgentView {
+            agent: "claude".into(),
+            task: Some(TaskView {
+                id: "t3".into(),
+                by: by.map(Into::into),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        Arc::new(block)
+    }
+
+    #[test]
+    fn a_limited_caller_sees_the_schedules_and_tasks_of_its_blocks_only() {
+        let state = State {
+            blocks: vec![
+                with_task(&block("b1", "w1", "terminal"), Some("c1")),
+                with_task(&block("b2", "w1", "terminal"), Some("api")),
+                block("c1", "w2", "terminal"),
+            ],
+            schedules: vec![
+                schedule("s1", Some("b1"), "b2"),
+                schedule("s2", Some("c1"), "b1"),
+                schedule("s3", Some("b1"), "c1"),
+            ],
+            ..Default::default()
+        };
+        let seen = state.visible(&caller(&["w1"]));
+        let ids: Vec<_> = seen.schedules.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["s1", "s2"]);
+        assert_eq!(seen.schedules[0].by.as_deref(), Some("b1"));
+        assert!(Arc::ptr_eq(&seen.schedules[0], &state.schedules[0]));
+        assert_eq!(seen.schedules[1].by, None);
+        let by = |i: usize| {
+            seen.blocks[i]
+                .agent
+                .as_ref()
+                .unwrap()
+                .task
+                .as_ref()
+                .unwrap()
+                .by
+                .clone()
+        };
+        assert_eq!((by(0), by(1)), (None, Some("api".to_string())));
+        let all = state.visible(&Caller {
+            workspaces: None,
+            ..caller(&[])
+        });
+        assert_eq!(all, state);
+    }
+
+    #[test]
+    fn schedule_events_put_and_delete_and_old_homes_have_no_task() {
+        let mut state = State::default();
+        let put = |id: &str| {
+            json!({"id": id, "op": "put", "value": {
+            "id": id, "by": null, "to": "b1", "text": "x", "next": 5, "every": null, "until": 9 }})
+        };
+        assert_eq!(state.apply("schedule", &put("s1")), Ok(true));
+        let kept = state.schedules[0].clone();
+        assert_eq!(state.apply("schedule", &put("s1")), Ok(false));
+        assert!(Arc::ptr_eq(&kept, &state.schedules[0]));
+        let old = state.clone();
+        state.schedules.clear();
+        let deltas = diff(&old, &state);
+        assert_eq!(said(&deltas), [("schedule", "s1", false)]);
+        assert_eq!(state.apply("schedule", &put("s1")), Ok(true));
+        let gone = json!({"id": "s1", "op": "delete"});
+        assert_eq!(state.apply("schedule", &gone), Ok(true));
+        assert!(state.schedules.is_empty());
+        let crowded = State {
+            schedules: (0..=COLLECTION_MOST)
+                .map(|n| schedule(&format!("s{n}"), None, "b1"))
+                .collect(),
+            ..Default::default()
+        };
+        let snapshot = serde_json::to_value(&crowded).unwrap();
+        assert_eq!(State::from_snapshot(&snapshot), Err(ApplyError::TooLarge));
+        let agent: AgentView = serde_json::from_value(json!({
+            "agent": "claude", "state": "idle", "asks": null, "subagents": 0, "since": null,
+            "model": null, "effort": null, "usage": null }))
+        .unwrap();
+        assert_eq!((agent.task, agent.role), (None, None));
     }
 }

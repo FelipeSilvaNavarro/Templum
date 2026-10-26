@@ -20,6 +20,7 @@ use super::agents_view::Doing;
 use super::bus::Outcome;
 use super::delegate::{NOTICE_GAP, TYPING};
 use super::ops::{NewBlock, Place};
+use super::remote_rules::key_home;
 use super::spawn::Opener;
 use super::{Pane, Workspace, show_notification};
 use crate::automations::clock::{next_after, time_words, when_problem, when_words};
@@ -608,6 +609,12 @@ impl Workspace {
                 };
                 let ws = cx.entity().downgrade();
                 let fired = by.map(str::to_string);
+                self.api_notice(templum_api::model::Notice {
+                    text: format!("{title}: {text}"),
+                    workspace: a.workspace.clone(),
+                    block: None,
+                    automation: Some(a_id),
+                });
                 let notification = Notification::new()
                     .with_type(NotificationType::Info)
                     .title(title)
@@ -746,6 +753,10 @@ impl Workspace {
 
     /// The folder a new block of `a` would open in, as the Folder box's placeholder says it.
     pub(crate) fn automation_folder_shown(&self, a: &Automation) -> String {
+        // A home rule opens in home's workspace folder: a path on another computer.
+        if let Some((space, _)) = key_home(a.id) {
+            return self.home_folder(&space);
+        }
         self.automation_folder(a, None).display().to_string()
     }
 
@@ -1007,6 +1018,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Home's rule runs at home, never here.
+        if key_home(id).is_some() {
+            return self.run_home_rule(id, window, cx);
+        }
         let trying = (self.automation_runs.get(&id))
             .and_then(|run| run.slots.get(&None))
             .is_some_and(|slot| slot.typing || slot.held.is_some());
@@ -1025,6 +1040,10 @@ impl Workspace {
     /// The switch of a row: turning it on counts from now; off drops its next time and its held
     /// run.
     pub(crate) fn set_automation_on(&mut self, id: u64, on: bool, cx: &mut Context<Self>) {
+        // Home's rule is switched at home, never here.
+        if key_home(id).is_some() {
+            return self.set_home_rule(id, on, cx);
+        }
         let now = SystemTime::now();
         let Some(a) = self.automations.get_mut(id) else {
             return;
@@ -1047,6 +1066,10 @@ impl Workspace {
     /// missing: abc12 isn't open".
     pub(crate) fn automation_target(&self, a: &Automation) -> Result<(), String> {
         let missing = |why: String| Err(format!("Target missing: {why}"));
+        // A home rule is home's to run: its target is checked there.
+        if key_home(a.id).is_some() {
+            return Ok(());
+        }
         // The sweep that turns off a revoked token's rules runs every few seconds: until then.
         if self.api_token_is_gone(a) {
             return missing("its token was revoked".into());
@@ -1054,6 +1077,10 @@ impl Workspace {
         if let Some(id) = &a.workspace {
             match self.spaces().find(|s| s.id == *id) {
                 None => return missing("a deleted workspace".into()),
+                // Home's automations run at home: a stale rule for a mirror never acts here.
+                Some(space) if space.is_remote() => {
+                    return missing(space.automations_there().unwrap_or_default());
+                }
                 Some(space) if space.stopped => {
                     return missing(format!("{} is stopped", space.name));
                 }
@@ -1125,15 +1152,23 @@ impl Workspace {
     /// The When's words, the blocks as "Title (uid)", a kind by its title, a kind of a
     /// one-workspace rule with its workspace: "When Claude Code (abc12) finishes its turn".
     pub(crate) fn when_said(&self, a: &Automation, cx: &App) -> String {
-        let block = |uid: &str| match self.uid_title(uid, cx) {
+        // A home rule names its blocks, agents and workspace as the remote does.
+        let home = key_home(a.id).and_then(|(remote, _)| self.space_named(&remote));
+        let block = |uid: &str| match self.uid_title_of(home, uid, cx) {
             Some(title) => format!("{title} ({uid})"),
             None => uid.to_string(),
         };
-        let space = a.workspace.as_deref().and_then(|id| self.space_named(id));
+        let space = match home {
+            Some(remote) => Some(remote),
+            None => a.workspace.as_deref().and_then(|id| self.space_named(id)),
+        };
         let said = event_words(
             &a.when,
             &block,
-            &|kind| self.agent_title(kind),
+            &|kind| match home {
+                Some(remote) => self.home_kind_title(&remote.id, kind),
+                None => self.agent_title(kind),
+            },
             space.map(|space| space.name.as_str()),
         );
         said.unwrap_or_else(|| when_words(&a.when, Local::now().date_naive()))
@@ -1142,9 +1177,21 @@ impl Workspace {
     /// The preview sentence: "Every weekday at 09:00, type "review open PRs" into Claude Code
     /// (abc12)."
     pub(crate) fn automation_sentence(&self, a: &Automation, cx: &App) -> String {
-        let block = |uid: &str| match self.uid_title(uid, cx) {
+        let home = key_home(a.id).and_then(|(remote, _)| self.space_named(&remote));
+        // A saved home rule that is not being edited says what home says of it.
+        if let Some((_, rule)) = self.home_rule(a.id)
+            && !self.automation_drafts.contains_key(&a.id)
+            && !rule.sentence.is_empty()
+        {
+            return rule.sentence.clone();
+        }
+        let block = |uid: &str| match self.uid_title_of(home, uid, cx) {
             Some(title) => format!("{title} ({uid})"),
             None => uid.to_string(),
+        };
+        let agent_title = |agent: &str| match home {
+            Some(remote) => self.home_kind_title(&remote.id, agent),
+            None => self.agent_title(agent),
         };
         let does = match &a.act {
             Do::Prompt { block: uid, text } if uid == FIRED => {
@@ -1171,7 +1218,7 @@ impl Workspace {
                 let folder = folder.map_or(String::new(), |f| format!(" in {f}"));
                 let prompt = prompt.as_deref().filter(|p| !p.trim().is_empty());
                 let prompt = prompt.map_or(String::new(), |p| format!(" with {}", quote(p)));
-                format!("start {}{folder}{prompt}", self.agent_title(agent))
+                format!("start {}{folder}{prompt}", agent_title(agent))
             }
             Do::Notify { text } => format!("notify you: {}", quote(text)),
         };
@@ -1182,6 +1229,8 @@ impl Workspace {
     /// does. An agent's prompt that ends a turn of an agent the event hears, a started agent the
     /// event hears, a command that ends in the terminal it runs in.
     pub(crate) fn automation_loop(&self, a: &Automation) -> Option<String> {
+        // A home rule's kinds and agents are home's: only what its words alone say.
+        let home = key_home(a.id).is_some();
         let cooldown = "The cooldown spaces the runs out.";
         match (&a.when, &a.act) {
             (
@@ -1210,6 +1259,7 @@ impl Workspace {
             ) => {
                 let hears = match who {
                     Who::Blocks { blocks, .. } => blocks.contains(block),
+                    Who::Kind { .. } if home => false,
                     Who::Kind { kind } => (self.find_block(block))
                         .and_then(|(space, id)| self.space_named(&space)?.terminal(id))
                         .is_some_and(|pane| self.runs(pane.seen.agent.as_deref(), kind)),
@@ -1226,7 +1276,7 @@ impl Workspace {
                     ..
                 },
                 Do::Agent { agent, .. },
-            ) if self.runs(Some(agent), kind) => Some(
+            ) if !home && self.runs(Some(agent), kind) => Some(
                 "This can loop: the agent it starts can fire it again, and each new agent has its own cooldown. Stop after bounds it."
                     .into(),
             ),
@@ -1245,6 +1295,9 @@ impl Workspace {
     /// A row's right side, line 1: "17:00", "Tomorrow 09:00", "Mon 09:00", "3 Nov 09:00", "Off",
     /// "Never".
     pub(crate) fn next_words(&self, id: u64, now: SystemTime) -> String {
+        if key_home(id).is_some() {
+            return self.home_next_words(id, now);
+        }
         let Some(a) = self.automations.get(id).filter(|a| a.on) else {
             return "Off".into();
         };
@@ -1284,7 +1337,7 @@ impl Workspace {
     pub(crate) fn automation_ids(&self) -> Vec<u64> {
         let saved = self.automations.automations.iter().map(|a| a.id);
         let new = self.automation_drafts.contains_key(&NEW).then_some(NEW);
-        saved.chain(new).collect()
+        saved.chain(new).chain(self.home_keys()).collect()
     }
 
     /// The automation the editor shows: the one chosen if it is listed, else the first.
@@ -1301,6 +1354,7 @@ impl Workspace {
         self.git_open = false;
         self.inbox_open = false;
         self.agents_open = false;
+        self.see_home_runs();
         for run in self.automation_runs.values_mut() {
             run.unseen = false;
         }
@@ -1433,7 +1487,7 @@ impl Workspace {
             return Some(why);
         }
         let words = self.last_words(id, now)?;
-        let about = self.automations.get(id)?.last.as_ref()?.about.clone();
+        let about = self.rule(id)?.last.as_ref()?.about.clone();
         Some(match about.is_empty() {
             true => words,
             false => format!("{words}: {about}"),
@@ -1443,7 +1497,7 @@ impl Workspace {
     /// Line 2's right side: "Ran 16:00", "Failed Yesterday 16:00", "Missed 24 Oct 17:00",
     /// "Waiting for abc12"; None before the first run.
     pub(crate) fn last_words(&self, id: u64, now: SystemTime) -> Option<String> {
-        let a = self.automations.get(id)?;
+        let a = self.rule(id)?;
         if let Some((by, _)) = self.automation_runs.get(&id).and_then(|run| run.held()) {
             let target = for_firer(a, by);
             return Some(match typed_into(&target) {
@@ -1509,6 +1563,11 @@ impl Workspace {
 
     /// Duplicate: an off copy after the last, selected.
     pub(crate) fn duplicate_automation(&mut self, id: u64, cx: &mut Context<Self>) -> Option<u64> {
+        // Home saves its copy, and its answer selects it.
+        if key_home(id).is_some() {
+            self.duplicate_home_rule(id, cx);
+            return None;
+        }
         let copy = self.automations.duplicate(id)?;
         self.automations_at = Some(copy);
         cx.notify();
@@ -1525,6 +1584,12 @@ impl Workspace {
         let Some(a) = self.automation_draft(id).cloned() else {
             return;
         };
+        // Home's rule is deleted at home, which may refuse: asked before the question.
+        if key_home(id).is_some()
+            && let Some(why) = self.home_delete_refusal(id)
+        {
+            return self.warn(why, window, cx);
+        }
         let name = match a.name.as_str() {
             "" => self.automation_sentence(&a, cx),
             name => name.to_string(),
@@ -1544,6 +1609,9 @@ impl Workspace {
 
     /// Removes the automation, its run and its draft.
     pub(crate) fn delete_automation(&mut self, id: u64, cx: &mut Context<Self>) {
+        if key_home(id).is_some() {
+            return self.delete_home_rule(id, cx);
+        }
         let ids = self.automation_ids();
         let at = ids.iter().position(|i| *i == id);
         self.automations.remove(id);
@@ -1561,13 +1629,21 @@ impl Workspace {
     /// New: a draft at the list's end, selected.
     pub(crate) fn new_automation(&mut self, cx: &mut Context<Self>) {
         let nine = NaiveTime::from_hms_opt(9, 0, 0).unwrap_or_default();
+        // Never a mirror: its automations run at home.
+        let workspace = self
+            .order()
+            .into_iter()
+            .filter(|s| !s.is_remote())
+            .find(|s| s.id == self.space.id)
+            .or_else(|| self.order().into_iter().find(|s| !s.is_remote()))
+            .map(|s| s.id.clone());
         self.automation_drafts
             .entry(NEW)
             .or_insert_with(|| Automation {
                 id: NEW,
                 name: String::new(),
                 on: true,
-                workspace: Some(self.space.id.clone()),
+                workspace,
                 when: When::Daily { at: nine },
                 act: Do::Notify {
                     text: String::new(),
@@ -1585,9 +1661,7 @@ impl Workspace {
 
     /// The draft of `id`, else the saved rule.
     pub(crate) fn automation_draft(&self, id: u64) -> Option<&Automation> {
-        self.automation_drafts
-            .get(&id)
-            .or_else(|| self.automations.get(id))
+        self.automation_drafts.get(&id).or_else(|| self.rule(id))
     }
 
     /// Changes the draft of `id` (made from the saved rule if there is none); one equal to the
@@ -1606,7 +1680,7 @@ impl Workspace {
         if edits(&next) == edits(&current) {
             return;
         }
-        match self.automations.get(id) {
+        match self.rule(id) {
             Some(saved) if edits(saved) == edits(&next) => {
                 self.automation_drafts.remove(&id);
             }
@@ -1619,6 +1693,37 @@ impl Workspace {
 
     /// What stops `a` from being saved, in the spec's words; None: nothing.
     pub(crate) fn automation_problem(&self, a: &Automation, now: NaiveDateTime) -> Option<String> {
+        if a.name.chars().count() > NAME_MAX {
+            return Some(format!("A name is at most {NAME_MAX} characters."));
+        }
+        if let Some(there) = a
+            .workspace
+            .as_ref()
+            .and_then(|id| self.spaces().find(|s| s.id == *id))
+            .and_then(|space| space.automations_there())
+        {
+            return Some(there);
+        }
+        if let Some(problem) = self.form_problem(a, now) {
+            return Some(problem);
+        }
+        if let Do::Agent {
+            agent,
+            model,
+            effort,
+            ..
+        } = &a.act
+            && let Some(entry) = self.agents.iter().find(|e| e.id == *agent)
+            && let Err(why) = entry.launch_args_with(model.as_deref(), effort.as_deref(), None)
+        {
+            return Some(why);
+        }
+        None
+    }
+
+    /// What stops `a` from being saved by the form's own rules (its name, times, dates, required
+    /// fields, the cooldown, a workspace for what opens something), whatever computer it is for.
+    pub(crate) fn form_problem(&self, a: &Automation, now: NaiveDateTime) -> Option<String> {
         if a.name.chars().count() > NAME_MAX {
             return Some(format!("A name is at most {NAME_MAX} characters."));
         }
@@ -1661,17 +1766,6 @@ impl Workspace {
         if let Some(problem) = own {
             return Some(problem.into());
         }
-        if let Do::Agent {
-            agent,
-            model,
-            effort,
-            ..
-        } = &a.act
-            && let Some(entry) = self.agents.iter().find(|e| e.id == *agent)
-            && let Err(why) = entry.launch_args_with(model.as_deref(), effort.as_deref(), None)
-        {
-            return Some(why);
-        }
         let opens = matches!(a.act, Do::Command { terminal: None, .. } | Do::Agent { .. });
         (opens && a.workspace.is_none()).then(|| "Choose the workspace it opens in.".into())
     }
@@ -1683,6 +1777,10 @@ impl Workspace {
         id: u64,
         cx: &mut Context<Self>,
     ) -> Result<u64, String> {
+        // Home's rule is saved at home: the answer comes later.
+        if key_home(id).is_some() {
+            return self.save_home_rule(id, cx);
+        }
         let draft = self.automation_draft(id).cloned().ok_or("It is gone.")?;
         let saved = self.save_rule(id, draft, cx)?;
         self.automation_drafts.remove(&id);
@@ -1708,7 +1806,6 @@ impl Workspace {
         let now = SystemTime::now();
         let saved = if id == NEW {
             let new = Automation {
-                on: true,
                 since: unix(now),
                 ..draft
             };
@@ -1737,7 +1834,8 @@ impl Workspace {
     /// Revert: the draft goes (a new one is removed).
     pub(crate) fn revert_automation(&mut self, id: u64, cx: &mut Context<Self>) {
         self.automation_drafts.remove(&id);
-        if id == NEW && self.automations_at == Some(NEW) {
+        let new = id == NEW || key_home(id).is_some_and(|(_, home)| home == 0);
+        if new && self.automations_at == Some(id) {
             self.automations_at = None;
         }
         cx.notify();

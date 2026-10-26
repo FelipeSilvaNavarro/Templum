@@ -466,6 +466,177 @@ fn an_agents_state_is_the_agents_views(cx: &mut TestAppContext) {
     );
 }
 
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_state_shows_an_agent_s_task_and_role_and_the_schedules(cx: &mut TestAppContext) {
+    use super::delegate::{agents_running_in, hand_over};
+    let (handle, ws, mine, theirs) = agents_running_in(cx, None, None);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(theirs).unwrap().role = Some("reviewer".into())
+    });
+    let task = json!({ "block": them, "task": "Ship it." });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
+    let at = std::time::SystemTime::now();
+    ws.update(cx, |ws, cx| {
+        ws.schedule_add(
+            crate::workspace::schedules::Schedule {
+                id: 0,
+                by: terminal.clone(),
+                to: them.clone(),
+                text: "Check the deploy".into(),
+                next: at,
+                every: Some(std::time::Duration::from_secs(600)),
+                until: at,
+            },
+            cx,
+        );
+    });
+    let token = with_token(&ws, cx, Scope::Read, None);
+    let seen = state(handle, &ws, cx, &token);
+    let agent = |uid: &str| {
+        seen.blocks
+            .iter()
+            .find(|b| b.id == uid)
+            .and_then(|b| b.agent.clone())
+            .unwrap()
+    };
+    let task = agent(&them).task.unwrap();
+    assert_eq!(
+        (task.id.as_str(), task.text.as_str(), task.by.as_deref()),
+        ("t1", "Ship it.", Some(uid.as_str()))
+    );
+    let now = crate::workspace::automations::unix(std::time::SystemTime::now());
+    assert!((now - task.since).abs() < 5, "{} vs {now}", task.since);
+    assert_eq!(agent(&them).role.as_deref(), Some("reviewer"));
+    assert_eq!(
+        seen.blocks
+            .iter()
+            .find(|b| b.id == uid)
+            .and_then(|b| b.agent.as_ref())
+            .and_then(|a| a.task.clone()),
+        None
+    );
+    let unix = crate::workspace::automations::unix;
+    assert_eq!(
+        seen.schedules
+            .iter()
+            .map(|s| (**s).clone())
+            .collect::<Vec<_>>(),
+        [templum_api::model::ScheduleView {
+            id: "s1".into(),
+            by: Some(uid),
+            to: them,
+            text: "Check the deploy".into(),
+            next: unix(at),
+            every: Some(600),
+            until: unix(at),
+        }]
+    );
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_task_handed_through_the_api_is_by_api(cx: &mut TestAppContext) {
+    let (handle, ws, _, theirs) = agents_running(cx, None);
+    let (worker, them) = me(&ws, cx, theirs);
+    let token = with_token(&ws, cx, Scope::Control, None);
+    let _ = api_later(
+        handle,
+        &ws,
+        cx,
+        &token,
+        7,
+        "tools/call",
+        json!({ "name": "delegate", "arguments": { "block": them, "task": "Green." } }),
+    );
+    screen_with(&ws, cx, theirs, "[from API · phone, task t");
+    entered(&ws, cx, theirs);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let seen = state(handle, &ws, cx, &token);
+    let task = seen
+        .blocks
+        .iter()
+        .find(|b| b.id == them)
+        .and_then(|b| b.agent.as_ref())
+        .and_then(|a| a.task.clone())
+        .unwrap();
+    assert_eq!(
+        (task.text.as_str(), task.by.as_deref()),
+        ("Green.", Some("api"))
+    );
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn cancel_schedule_cancels_a_schedule_the_token_sees(cx: &mut TestAppContext) {
+    use super::delegate::agents_running_in;
+    let (handle, ws, mine, theirs) = agents_running_in(cx, None, None);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (_, elsewhere) = another_workspace(handle, &ws, cx);
+    let at = std::time::SystemTime::now();
+    let schedule = |to: &str| crate::workspace::schedules::Schedule {
+        id: 0,
+        by: terminal.clone(),
+        to: to.into(),
+        text: "x".into(),
+        next: at,
+        every: None,
+        until: at,
+    };
+    ws.update(cx, |ws, cx| {
+        ws.schedule_add(schedule(&them), cx);
+        ws.schedule_add(schedule(&elsewhere), cx);
+    });
+    let token = with_token(&ws, cx, Scope::Control, Some(vec![first.as_str()]));
+    let ids = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.schedules.iter().map(|s| s.id).collect::<Vec<_>>()
+        })
+    };
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &token,
+        "cancel_schedule",
+        json!({ "schedule": "s1" }),
+    );
+    assert_eq!(said(&line), (false, "Cancelled s1.".to_string()), "{line}");
+    assert_eq!(ids(&ws, cx), [2]);
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &token,
+        "cancel_schedule",
+        json!({ "schedule": "2" }),
+    );
+    assert_eq!(
+        line["error"]["message"],
+        "There's no schedule s2: GET /v1/state lists them."
+    );
+    assert_eq!(ids(&ws, cx), [2]);
+    let read = with_token(&ws, cx, Scope::Read, None);
+    let line = tool(
+        handle,
+        &ws,
+        cx,
+        &read,
+        "cancel_schedule",
+        json!({ "schedule": "s2" }),
+    );
+    assert_eq!(
+        line["error"]["message"],
+        "cancel_schedule needs a Control token."
+    );
+    assert_eq!(ids(&ws, cx), [2]);
+}
+
 #[gpui_kit::test]
 fn a_question_waits_in_the_state(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
