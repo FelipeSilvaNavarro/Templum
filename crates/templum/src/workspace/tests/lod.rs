@@ -827,7 +827,10 @@ fn a_notes_bars_line_up_with_its_letters_at_every_zoom(cx: &mut TestAppContext) 
         "no bars for the folded lines"
     );
     // Under 25% the body is a card: no bars to line up.
-    for zoom in templum_canvas::ZOOM_STEPS.into_iter().filter(|&z| z >= 0.25) {
+    for zoom in templum_canvas::ZOOM_STEPS
+        .into_iter()
+        .filter(|&z| z >= 0.25)
+    {
         rest_at(handle, &ws, cx, corner, zoom);
         cx.update_window(handle, |_, window, cx| {
             let origin = window.find(("note-editor", n)).bounds().origin;
@@ -1157,7 +1160,10 @@ fn an_editor_tabs_bars_line_up_with_its_letters_at_every_zoom(cx: &mut TestAppCo
         map.scroll
     );
     // Under 25% the body is a card: no bars to line up.
-    for zoom in templum_canvas::ZOOM_STEPS.into_iter().filter(|&z| z >= 0.25) {
+    for zoom in templum_canvas::ZOOM_STEPS
+        .into_iter()
+        .filter(|&z| z >= 0.25)
+    {
         rest_at(handle, &ws, cx, corner, zoom);
         cx.update_window(handle, |_, window, cx| {
             let origin = window.find(("code", n)).bounds().origin;

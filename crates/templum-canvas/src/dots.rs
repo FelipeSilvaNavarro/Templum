@@ -124,6 +124,11 @@ mod tests {
             }
         }
         // Panning keeps the dots where they were in the world.
-        assert_eq!(dot_grid(&at_step(step_of(1.0), Point::new(-30.0, 0.0))).first.x, -48.0);
+        assert_eq!(
+            dot_grid(&at_step(step_of(1.0), Point::new(-30.0, 0.0)))
+                .first
+                .x,
+            -48.0
+        );
     }
 }

@@ -781,9 +781,11 @@ pub(crate) fn render(
             el.child(kanban::body(ws, id, *k, z, window, cx))
         }),
         // A fading checklist block is drawn empty too: its checklists are live elsewhere.
-        Body::Checklist(c) => frame.when(live && level != Level::Card, |el| match older.as_ref().filter(|_| c.remote) {
-            Some(older) => el.child(mirrored_card(ws, n, "checklist", &c.title(ws), older, z)),
-            None => el.child(checklist::body(ws, id, c, z, cx)),
+        Body::Checklist(c) => frame.when(live && level != Level::Card, |el| {
+            match older.as_ref().filter(|_| c.remote) {
+                Some(older) => el.child(mirrored_card(ws, n, "checklist", &c.title(ws), older, z)),
+                None => el.child(checklist::body(ws, id, c, z, cx)),
+            }
         }),
         // A fading note is drawn empty, like a kanban block.
         // Below Full a note shown rendered is its tinted card, empty: gpui-kit's Markdown view
