@@ -48,8 +48,15 @@ every zoom.
   output, and the status dot turns yellow, red or green on news; a glow would be one more state and one more
   animation keeping frames coming. Revisit if people miss output on a terminal drawn as a Card.
 - Syntax colors in the bars of editors and notes (see [The word map](#3-editors-and-notes-the-word-map)).
-- Zoom steps under 25%, and fewer frames from far terminals' output (each output still asks for a frame; the frame
-  costs less).
+- Fewer frames from far terminals' output (each output still asks for a frame; the frame costs less).
+
+> **Since 2026-10-27 the zoom goes out to 1%** (`camera.rs`'s `ZOOM_STEPS`: 0.01, 0.02, 0.03, 0.05, 0.075, 0.1,
+> 0.15, then 25% and up as before). Under 25% every default size, a title's included, is under 2.5 px: every block
+> is a Card, a kanban, checklist or mirrored block too (their 13 px, as a note's), unless it is the block worked in.
+> At the Card level the label isn't clipped by its card: a 900-unit terminal is 45 px wide at 5%, so the label sits
+> at the card's top-left corner as above but reads up to 240 px wide past the card's right edge, drawn over the card
+> in a frame that doesn't clip (as Figma's frame names). A glide's frames under 10% sit on 0.005 steps instead of
+> 0.02 (`flight.rs`), and never outside its two ends.
 
 ## 1. The level
 

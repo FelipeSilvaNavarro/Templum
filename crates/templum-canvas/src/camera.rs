@@ -2,11 +2,14 @@
 
 use crate::{Point, Rect, Size};
 
-/// Fixed zoom steps keep the glyph cache bounded: text is rasterized once per step.
-pub const ZOOM_STEPS: [f32; 14] = [
-    0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0,
+/// Fixed zoom steps keep the glyph cache bounded: text is rasterized once per step. Under 25%
+/// every block is a card with a fixed-size label (docs/specs/level-of-detail.md), so the steps
+/// there shape no new text and go on down to 1%, about a canvas a hundred screens wide.
+pub const ZOOM_STEPS: [f32; 21] = [
+    0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1.0, 1.1, 1.25,
+    1.5, 1.75, 2.0, 2.5, 3.0,
 ];
-const ZOOM_1: usize = 6;
+const ZOOM_1: usize = 13;
 /// Screen margin kept around the blocks by [`Camera::fit`].
 pub const FIT_MARGIN: f32 = 32.0;
 
@@ -205,7 +208,8 @@ mod tests {
         assert_eq!(Camera::at(origin, 1.04).zoom(), 1.0);
         assert_eq!(Camera::at(origin, 1.2).zoom(), 1.25);
         assert_eq!(Camera::at(origin, 10.0).zoom(), 3.0);
-        assert_eq!(Camera::at(origin, 0.0).zoom(), 0.25);
+        assert_eq!(Camera::at(origin, 0.0).zoom(), 0.01);
+        assert_eq!(Camera::at(origin, 0.04).zoom(), 0.03);
         assert_eq!(Camera::at(origin, f32::NAN).zoom(), 1.0);
         assert_eq!(Camera::at(origin, f32::INFINITY).zoom(), 1.0);
         assert_eq!(Camera::at(origin, 1.5).origin, origin);
@@ -215,7 +219,7 @@ mod tests {
     fn unsnapped_keeps_its_zoom_and_a_step_from_there_lands_on_a_step() {
         let mut cam = Camera::unsnapped(Point::new(7.0, 8.0), 1.18);
         assert_eq!(cam.zoom(), 1.18);
-        assert_eq!(cam.zoom_index(), 8, "1.25 is the nearest step");
+        assert_eq!(cam.zoom_index(), ZOOM_1 + 2, "1.25 is the nearest step");
         cam.zoom_step(1, Point::new(0.0, 0.0));
         assert_eq!(cam.zoom(), 1.5);
     }
@@ -275,10 +279,39 @@ mod tests {
     }
 
     #[test]
+    fn zoom_goes_out_past_25_percent_down_to_1_percent() {
+        let anchor = Point::new(400.0, 300.0);
+        let mut cam = Camera::default();
+        let before = cam.to_world(anchor);
+        cam.zoom_step(-(ZOOM_1 as i32) + 7, anchor);
+        assert_eq!(cam.zoom(), 0.25);
+        cam.zoom_step(-1, anchor);
+        assert_eq!(cam.zoom(), 0.15, "the next step out of 25%");
+        cam.zoom_step(-100, anchor);
+        assert_eq!(cam.zoom(), 0.01);
+        assert!(close(cam.to_world(anchor), before));
+        // Each step out shows at most about twice as far: no jump a glide can't follow.
+        for pair in ZOOM_STEPS.windows(2) {
+            assert!(pair[1] / pair[0] <= 2.0 + 1e-6, "{pair:?}");
+        }
+    }
+
+    #[test]
+    fn fit_frames_a_wide_canvas_under_25_percent() {
+        let mut cam = Camera::default();
+        // Twenty 900-unit blocks side by side: about 4% shows them all in 1280 px.
+        cam.fit(
+            Rect::new(0.0, 0.0, 20.0 * 950.0, 750.0),
+            Size::new(1280.0, 800.0),
+        );
+        assert_eq!(cam.zoom(), 0.05);
+    }
+
+    #[test]
     fn fit_uses_smallest_step_when_nothing_fits() {
         let mut cam = Camera::default();
         cam.fit(
-            Rect::new(0.0, 0.0, 100_000.0, 10.0),
+            Rect::new(0.0, 0.0, 10_000_000.0, 10.0),
             Size::new(800.0, 600.0),
         );
         assert_eq!(cam.zoom(), ZOOM_STEPS[0]);

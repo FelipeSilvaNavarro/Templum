@@ -5,6 +5,11 @@ use crate::{Camera, Point};
 /// Zooms drawn on the way sit on these steps (like block scales): text is rasterized at a few
 /// extra sizes only.
 pub const FLIGHT_ZOOM_STEP: f32 = 0.02;
+/// Under 10% the steps are 0.005 apart, finer than [`FLIGHT_ZOOM_STEP`]: rounded to 0.02 a
+/// glide between 1% and 2% would draw a zoom of 0. Every block there is a card with a label of
+/// fixed size, so these zooms shape no text.
+const FLIGHT_FAR_STEP: f32 = 0.005;
+const FLIGHT_FAR_BELOW: f32 = 0.1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraFlight {
@@ -27,7 +32,14 @@ impl CameraFlight {
         let (z0, z1) = (self.from.zoom(), self.to.zoom());
         // 1/zoom moves linearly: every world point then travels in a straight line on screen.
         let inv = 1.0 / z0 + (1.0 / z1 - 1.0 / z0) * t;
-        let zoom = ((1.0 / inv) / FLIGHT_ZOOM_STEP).round() * FLIGHT_ZOOM_STEP;
+        let raw = 1.0 / inv;
+        let step = if raw < FLIGHT_FAR_BELOW {
+            FLIGHT_FAR_STEP
+        } else {
+            FLIGHT_ZOOM_STEP
+        };
+        // Rounding never leaves the glide's ends: a zoom of 0 would put the origin at infinity.
+        let zoom = ((raw / step).round() * step).clamp(z0.min(z1), z0.max(z1));
         let (w0, w1) = (self.from.to_world(self.pivot), self.to.to_world(self.pivot));
         let w = Point::new(w0.x + (w1.x - w0.x) * t, w0.y + (w1.y - w0.y) * t);
         Camera::unsnapped(
@@ -100,6 +112,31 @@ mod tests {
                 "t {t}: {z} after {last}"
             );
             last = z;
+        }
+    }
+
+    #[test]
+    fn far_glides_never_draw_a_zoom_outside_their_ends() {
+        let pivot = Point::new(300.0, 200.0);
+        for pair in crate::ZOOM_STEPS.windows(2) {
+            for (a, delta) in [(pair[0], 1), (pair[1], -1)] {
+                let from = Camera::at(Point::new(10.0, -20.0), a);
+                let mut to = from;
+                to.zoom_step(delta, pivot);
+                let b = to.zoom();
+                let f = CameraFlight { from, to, pivot };
+                let world = f.from.to_world(pivot);
+                for t in samples() {
+                    let cam = f.at(t);
+                    let z = cam.zoom();
+                    assert!(z >= a.min(b) && z <= a.max(b), "{a} -> {b}, t {t}: {z}");
+                    assert!(cam.origin.x.is_finite() && cam.origin.y.is_finite());
+                    // The pivot's world point moves in a straight line: still here.
+                    let w = cam.to_world(pivot);
+                    let off = (w.x - world.x).abs().max((w.y - world.y).abs());
+                    assert!(off < 0.5, "{a} -> {b}, t {t}: pivot off by {off}");
+                }
+            }
         }
     }
 

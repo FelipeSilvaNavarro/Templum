@@ -51,6 +51,16 @@ mod tests {
         }
     }
 
+    /// Under 25% every default block, its title included, is a card: no step there shapes text.
+    #[test]
+    fn default_sizes_are_cards_under_25() {
+        for text in DEFAULTS {
+            for zoom in ZOOM_STEPS.into_iter().filter(|&z| z < 0.25) {
+                assert_eq!(level(text, zoom), Level::Card, "{text} at {zoom}");
+            }
+        }
+    }
+
     /// Float error can't flip a level: no step puts a default size within 0.25 px of a threshold.
     #[test]
     fn no_step_puts_a_default_size_near_a_threshold() {

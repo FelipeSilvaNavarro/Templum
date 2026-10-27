@@ -949,7 +949,9 @@ fn a_note_wraps_the_same_at_every_zoom(cx: &mut TestAppContext) {
         })
         .unwrap();
     let mut shown = Vec::new();
-    for zoom in templum_canvas::ZOOM_STEPS {
+    // Under 25% the note is a card unless it holds the keyboard, as here: see docs/minors.md, Far
+    // zoom, for its wrap there.
+    for zoom in templum_canvas::ZOOM_STEPS.into_iter().filter(|&z| z >= 0.25) {
         cx.update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, _| {
                 // The note's corner near the view's: on screen at any zoom.

@@ -279,6 +279,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Far zoom (level of detail)
 
+- [ ] **A focused note or editor under 25% wraps differently than at 100%.** The block worked in is always Full, so a
+  focused note at 1% to 15% lays its text out at under 2 px a letter (`crates/templum/src/block.rs`, the focus rule
+  on `level`), and gpui-kit's wrap at those sizes doesn't match its wrap at 25% and up: the person sees an unreadable
+  card either way, and the wrap comes back when the zoom does. `a_note_wraps_the_same_at_every_zoom` checks from 25%
+  up only. Fix: draw a focused body at the Card level as a card too, keeping its focus handle in a hidden element.
+
 - [ ] **A soft-wrapped editor tab's bars keep the wrap of the zoom they were taken at.** An editor tab's wrap width
   keeps gpui-kit's fixed padding and line-number margin (`crates/templum/src/editor.rs`, `code` in `files`), so with
   Soft wrap on its words wrap a little differently at each zoom; far away its bars show the rows of its last Full

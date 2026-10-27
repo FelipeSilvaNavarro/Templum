@@ -45,6 +45,9 @@ const LABEL_IN: f32 = 4.0;
 /// How far below a block's top its far-zoom label reaches, screen pixels: its inset, border,
 /// padding and a line of text, with room to spare.
 const LABEL_BAND: f32 = 32.0;
+/// At the Card level a label isn't clipped by its card, which can be a few pixels wide there: it
+/// reads up to this wide, screen pixels, past the card's right edge (as Figma's frame names).
+const LABEL_FAR_W: f32 = 240.0;
 const DOT: f32 = 8.0;
 /// The Templum Agent's mark before a title, world units.
 const MARK: f32 = 10.0;
@@ -132,8 +135,13 @@ pub(crate) fn render(
     // (docs/specs/level-of-detail.md, section 1); the block worked in (focused, or holding the
     // keyboard: GPUI drops the focus of what isn't drawn) is always Full, asked only below Full.
     let level = match body {
-        // Drawn in full down to the Card level, which its 13 px never reach (3.25 px at 25%).
-        Body::Kanban(_) | Body::Checklist(_) | Body::Mirrored(_) => Level::Full,
+        // Drawn in full down to the Card level (13 px under 2.5 px on screen, under 25%).
+        Body::Kanban(_) | Body::Checklist(_) | Body::Mirrored(_) => {
+            match templum_canvas::level(note::FONT, ws.space.rest) {
+                Level::Card => Level::Card,
+                _ => Level::Full,
+            }
+        }
         Body::Terminal(_) => templum_canvas::level(ws.cell.font_size, ws.space.rest),
         _ => templum_canvas::level(font, ws.space.rest),
     };
@@ -175,6 +183,9 @@ pub(crate) fn render(
     // Below Full the title is a label: never scaled, at the card's top-left corner, over the
     // header and the top of the body (docs/specs/level-of-detail.md, section 2).
     let labeled = templum_canvas::level(TITLE_FONT, ws.space.rest) != Level::Full;
+    // At the Card level the label floats: outside the card's clip, so a card a few pixels wide
+    // still shows whose it is.
+    let floating = templum_canvas::level(TITLE_FONT, ws.space.rest) == Level::Card;
     // The Templum Agent's blocks wear its mark before their title, at the Full level.
     let uid = ws.space.uids.get(&id).map_or("", String::as_str);
     let mark = match body {
@@ -327,7 +338,11 @@ pub(crate) fn render(
             .absolute()
             .top(px(LABEL_IN))
             .left(px(LABEL_IN))
-            .max_w(px((r.w - 2.0 * BORDER - 2.0 * LABEL_IN).max(0.0)))
+            .max_w(px(if floating {
+                LABEL_FAR_W
+            } else {
+                (r.w - 2.0 * BORDER - 2.0 * LABEL_IN).max(0.0)
+            }))
             .flex()
             .items_center()
             .gap(px(6.0))
@@ -601,11 +616,16 @@ pub(crate) fn render(
     } else {
         (Vec::new(), Vec::new())
     };
+    let (title, far_title) = if floating {
+        (None, Some(title))
+    } else {
+        (Some(title), None)
+    };
     let header = div()
         .relative()
         .w_full()
         .h(px(chrome::TITLE_H * z))
-        .child(title)
+        .children(title)
         .children(top_zones)
         .children(header_dot)
         .children(chip)
@@ -757,9 +777,11 @@ pub(crate) fn render(
                 })
         }
         // A fading kanban block is drawn empty: its board is still live elsewhere.
-        Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, window, cx))),
+        Body::Kanban(k) => frame.when(live && level != Level::Card, |el| {
+            el.child(kanban::body(ws, id, *k, z, window, cx))
+        }),
         // A fading checklist block is drawn empty too: its checklists are live elsewhere.
-        Body::Checklist(c) => frame.when(live, |el| match older.as_ref().filter(|_| c.remote) {
+        Body::Checklist(c) => frame.when(live && level != Level::Card, |el| match older.as_ref().filter(|_| c.remote) {
             Some(older) => el.child(mirrored_card(ws, n, "checklist", &c.title(ws), older, z)),
             None => el.child(checklist::body(ws, id, c, z, cx)),
         }),
@@ -776,7 +798,7 @@ pub(crate) fn render(
             )),
         }),
         // A block of home's the mirror doesn't draw yet: a card in its place.
-        Body::Mirrored(card) => frame.when(live, |el| {
+        Body::Mirrored(card) => frame.when(live && level != Level::Card, |el| {
             let computer = ws
                 .space
                 .remote
@@ -828,14 +850,25 @@ pub(crate) fn render(
     } else {
         ("ghost", n).into()
     };
-    div()
+    // A floating label sits beside the card in a frame that doesn't clip, drawn over it.
+    let (x, y) = if far_title.is_some() {
+        (0.0, 0.0)
+    } else {
+        (r.x, r.y)
+    };
+    let card = div()
         .id(root)
         .absolute()
-        .left(px(r.x))
-        .top(px(r.y))
+        .left(px(x))
+        .top(px(y))
         .w(px(r.w))
         .h(px(r.h))
-        .opacity(look.opacity)
+        // A floating label's frame fades both.
+        .opacity(if far_title.is_some() {
+            1.0
+        } else {
+            look.opacity
+        })
         .rounded(px(RADIUS * z))
         // Always 1 px, so focusing never moves the grid.
         .border_1()
@@ -907,8 +940,20 @@ pub(crate) fn render(
             .into_iter()
             .flatten(),
         )
-        .test_support()
-        .into_any_element()
+        .test_support();
+    match far_title {
+        Some(title) => div()
+            .absolute()
+            .left(px(r.x))
+            .top(px(r.y))
+            .w(px(r.w))
+            .h(px(r.h))
+            .opacity(look.opacity)
+            .child(card)
+            .child(title)
+            .into_any_element(),
+        None => card.into_any_element(),
+    }
 }
 
 /// The footer of a remote terminal that takes no input (a subagent's transcript).

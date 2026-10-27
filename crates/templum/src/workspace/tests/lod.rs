@@ -1,5 +1,5 @@
-//! Level of detail at far zoom: what each block draws at 33% and 25%, and what keeps working
-//! there. See docs/specs/level-of-detail.md.
+//! Level of detail at far zoom: what each block draws at 33%, 25% and under, and what keeps
+//! working there. See docs/specs/level-of-detail.md.
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -181,6 +181,60 @@ fn a_far_title_is_a_label_of_a_fixed_size(cx: &mut TestAppContext) {
             "the dot is in the label at {zoom}"
         );
     }
+}
+
+/// Under 25% the block is a card a few pixels wide, and its label isn't clipped by it: 12 px
+/// text, read past the card's right edge, where a press still moves the block.
+#[gpui_kit::test]
+fn a_tiny_cards_label_reads_past_its_edge(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    let corner = Point::new(rect.x - 100.0, rect.y - 100.0);
+    let bounds = |cx: &mut TestAppContext, el: (&'static str, usize)| {
+        cx.update_window(handle, |_, window, _| window.find(el).bounds())
+            .unwrap()
+    };
+    rest_at(handle, &ws, cx, corner, 1.0);
+    let text_at_100 = bounds(cx, ("title-text", n)).size;
+    for zoom in [0.05, 0.01] {
+        rest_at(handle, &ws, cx, corner, zoom);
+        let (block, title) = (bounds(cx, ("block", n)), bounds(cx, ("title", n)));
+        let text = bounds(cx, ("title-text", n));
+        assert!(
+            block.size.width < px(50.0),
+            "a tiny card at {zoom}: {block:?}"
+        );
+        assert_eq!(text.size, text_at_100, "the whole title, 12 px, at {zoom}");
+        assert!(
+            title.right() > block.right(),
+            "past the card's edge at {zoom}: {title:?} over {block:?}"
+        );
+    }
+    // A press on the label, right of the card, moves the block.
+    let title = bounds(cx, ("title", n));
+    let at = (f32::from(title.right()) - 4.0, f32::from(title.center().y));
+    cx.update_window(handle, |_, window, cx| {
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            Modifiers::default(),
+            at,
+            (at.0 + 10.0, at.1),
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let moved = ws.space.canvas.get(id).unwrap().rect;
+        assert!(
+            moved.x > rect.x + 500.0,
+            "10 px at 1%: {rect:?} -> {moved:?}"
+        );
+    });
 }
 
 /// A press on a far label moves the block and focuses it, and starts no selection in the terminal
@@ -772,7 +826,8 @@ fn a_notes_bars_line_up_with_its_letters_at_every_zoom(cx: &mut TestAppContext) 
             .all(|w| !(hidden..after).contains(&w.range.start)),
         "no bars for the folded lines"
     );
-    for zoom in templum_canvas::ZOOM_STEPS {
+    // Under 25% the body is a card: no bars to line up.
+    for zoom in templum_canvas::ZOOM_STEPS.into_iter().filter(|&z| z >= 0.25) {
         rest_at(handle, &ws, cx, corner, zoom);
         cx.update_window(handle, |_, window, cx| {
             let origin = window.find(("note-editor", n)).bounds().origin;
@@ -1101,7 +1156,8 @@ fn an_editor_tabs_bars_line_up_with_its_letters_at_every_zoom(cx: &mut TestAppCo
         "taken scrolled: {:?}",
         map.scroll
     );
-    for zoom in templum_canvas::ZOOM_STEPS {
+    // Under 25% the body is a card: no bars to line up.
+    for zoom in templum_canvas::ZOOM_STEPS.into_iter().filter(|&z| z >= 0.25) {
         rest_at(handle, &ws, cx, corner, zoom);
         cx.update_window(handle, |_, window, cx| {
             let origin = window.find(("code", n)).bounds().origin;
