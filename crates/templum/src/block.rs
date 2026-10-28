@@ -47,7 +47,9 @@ const LABEL_IN: f32 = 4.0;
 const LABEL_BAND: f32 = 32.0;
 /// At the Card level a label isn't clipped by its card, which can be a few pixels wide there: it
 /// reads up to this wide, screen pixels, past the card's right edge (as Figma's frame names).
-const LABEL_FAR_W: f32 = 240.0;
+pub(crate) const LABEL_FAR_W: f32 = 240.0;
+/// A floating label left narrower than this by its neighbours (a dot and a few letters) hides.
+const LABEL_FAR_LEAST: f32 = 48.0;
 const DOT: f32 = 8.0;
 /// The Templum Agent's mark before a title, world units.
 const MARK: f32 = 10.0;
@@ -82,6 +84,7 @@ pub(crate) fn render(
     body: &Body,
     look: Look,
     live: bool,
+    label_w: f32,
     gates: &Gates,
     window: &mut Window,
     cx: &mut Context<Workspace>,
@@ -339,7 +342,7 @@ pub(crate) fn render(
             .top(px(LABEL_IN))
             .left(px(LABEL_IN))
             .max_w(px(if floating {
-                LABEL_FAR_W
+                label_w
             } else {
                 (r.w - 2.0 * BORDER - 2.0 * LABEL_IN).max(0.0)
             }))
@@ -952,10 +955,23 @@ pub(crate) fn render(
             .h(px(r.h))
             .opacity(look.opacity)
             .child(card)
-            .child(title)
+            .children((label_w > 0.0).then_some(title))
             .into_any_element(),
         None => card.into_any_element(),
     }
+}
+
+/// How wide each of `blocks`' floating labels is drawn (0: hidden), in paint order, at the
+/// Card level; [`LABEL_FAR_W`] each above it, where labels sit inside their cards.
+pub(crate) fn label_widths(ws: &Workspace, blocks: &[Block]) -> Vec<f32> {
+    if templum_canvas::level(TITLE_FONT, ws.space.rest) != Level::Card {
+        return vec![LABEL_FAR_W; blocks.len()];
+    }
+    let cards: Vec<_> = blocks
+        .iter()
+        .map(|b| ws.space.view.rect_to_screen(b.rect))
+        .collect();
+    templum_canvas::label_widths(&cards, LABEL_FAR_W, LABEL_FAR_LEAST, LABEL_BAND)
 }
 
 /// The footer of a remote terminal that takes no input (a subagent's transcript).

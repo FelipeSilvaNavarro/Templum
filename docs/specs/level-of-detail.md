@@ -55,7 +55,9 @@ every zoom.
 > is a Card, a kanban, checklist or mirrored block too (their 13 px, as a note's), unless it is the block worked in.
 > At the Card level the label isn't clipped by its card: a 900-unit terminal is 45 px wide at 5%, so the label sits
 > at the card's top-left corner as above but reads up to 240 px wide past the card's right edge, drawn over the card
-> in a frame that doesn't clip (as Figma's frame names). A glide's frames under 10% sit on 0.005 steps instead of
+> in a frame that doesn't clip (as Figma's frame names). Crowded labels don't pile up (`lod.rs`'s `label_widths`):
+> placed from the top card down, each reads up to the next label on its right and hides when that leaves it under
+> 48 px or its corner is under a label already placed, so a dense row at 1% shows the names that fit. A glide's frames under 10% sit on 0.005 steps instead of
 > 0.02 (`flight.rs`), and never outside its two ends.
 
 ## 1. The level

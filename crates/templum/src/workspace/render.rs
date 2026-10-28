@@ -431,7 +431,7 @@ impl Render for Workspace {
             }
         }
         let gates = block::Gates::of(self);
-        let mut blocks: Vec<_> = visible
+        let shown: Vec<_> = visible
             .into_iter()
             .map(|mut b| {
                 let look = self
@@ -449,14 +449,33 @@ impl Render for Workspace {
                     let t = motion::slide(motion::progress(*since, now, motion::TILE));
                     b.rect = super::tiling::between(*was, b.rect, t);
                 }
+                (b, look)
+            })
+            .collect();
+        // Far out, crowded labels shorten or hide instead of piling up.
+        let widths = block::label_widths(self, &shown.iter().map(|(b, _)| *b).collect::<Vec<_>>());
+        let mut blocks: Vec<_> = shown
+            .into_iter()
+            .zip(widths)
+            .map(|((b, look), label_w)| {
                 let body = &self.space.blocks[&b.id];
-                block::render(self, b, body, look, true, &gates, window, cx)
+                block::render(self, b, body, look, true, label_w, &gates, window, cx)
             })
             .collect();
         // Ghosts fade above the blocks, where they were.
         blocks.extend(self.space.ghosts.iter().map(|g| {
             let look = motion::closing(motion::progress(g.since, now, motion::CLOSE));
-            block::render(self, g.block, &g.body, look, false, &gates, window, cx)
+            block::render(
+                self,
+                g.block,
+                &g.body,
+                look,
+                false,
+                block::LABEL_FAR_W,
+                &gates,
+                window,
+                cx,
+            )
         }));
 
         let entity = cx.entity();

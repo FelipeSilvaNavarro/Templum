@@ -2,6 +2,8 @@
 //! zoom 1 times the zoom), like InDesign's "Greek Type Below". Pure: unit-tested here.
 //! See docs/specs/level-of-detail.md, section 1.
 
+use crate::Rect;
+
 /// Text smaller than this on screen (pixels) is drawn as bars: about the largest default size at
 /// 33% (4.62 px) and the smallest at 50% (6.0 px) apart, so every default block changes level at
 /// the same step and none sits on the edge.
@@ -31,10 +33,79 @@ pub fn level(text: f32, zoom: f32) -> Level {
     }
 }
 
+/// How wide each card's label is drawn, screen pixels, given the cards' screen rectangles in
+/// paint order (docs/specs/level-of-detail.md, section 2): 0 hides it. Labels are placed from the
+/// top card down, at each card's top-left corner and `high` tall; one reads up to `most` wide, up
+/// to the next label placed on its right, and hides when that leaves under `least` or its corner
+/// is under a placed label. A dense row far out shows its names one by one instead of a pile.
+pub fn label_widths(cards: &[Rect], most: f32, least: f32, high: f32) -> Vec<f32> {
+    let mut placed: Vec<Rect> = Vec::new();
+    let mut widths = vec![0.0; cards.len()];
+    for (i, card) in cards.iter().enumerate().rev() {
+        let mut w = most;
+        for p in &placed {
+            if p.y >= card.y + high || card.y >= p.bottom() {
+                continue;
+            }
+            if p.x <= card.x && card.x < p.right() {
+                w = 0.0;
+                break;
+            }
+            if p.x > card.x {
+                w = w.min(p.x - card.x);
+            }
+        }
+        if w >= least {
+            placed.push(Rect::new(card.x, card.y, w, high));
+            widths[i] = w;
+        }
+    }
+    widths
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ZOOM_STEPS;
+
+    #[test]
+    fn labels_shorten_to_their_neighbour_and_hide_when_crowded() {
+        let card = |x: f32, y: f32| Rect::new(x, y, 9.0, 6.0);
+        // A row at 5%: each label reads up to the next one's corner.
+        assert_eq!(
+            label_widths(
+                &[card(0.0, 0.0), card(55.0, 0.0), card(110.0, 0.0)],
+                240.0,
+                40.0,
+                30.0
+            ),
+            [55.0, 55.0, 240.0]
+        );
+        // A row at 1%, 11 px apart: only the top card's label, the last painted, is left.
+        assert_eq!(
+            label_widths(
+                &[card(0.0, 0.0), card(11.0, 0.0), card(22.0, 0.0)],
+                240.0,
+                40.0,
+                30.0
+            ),
+            [0.0, 0.0, 240.0]
+        );
+        // The row below, 8 px down, is under the labels above; far enough down, it reads.
+        assert_eq!(
+            label_widths(&[card(0.0, 8.0), card(0.0, 0.0)], 240.0, 40.0, 30.0),
+            [0.0, 240.0]
+        );
+        assert_eq!(
+            label_widths(&[card(0.0, 40.0), card(0.0, 0.0)], 240.0, 40.0, 30.0),
+            [240.0, 240.0]
+        );
+        // A card whose corner is under the label of a card painted over it shows none.
+        assert_eq!(
+            label_widths(&[card(100.0, 0.0), card(0.0, 0.0)], 240.0, 40.0, 30.0),
+            [0.0, 240.0]
+        );
+    }
 
     /// A terminal (14), an editor, a note or a kanban block (13), a Git block or a title (12).
     const DEFAULTS: [f32; 3] = [12.0, 13.0, 14.0];

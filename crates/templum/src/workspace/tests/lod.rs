@@ -237,6 +237,36 @@ fn a_tiny_cards_label_reads_past_its_edge(cx: &mut TestAppContext) {
     });
 }
 
+/// Far out, a card's label shortens to its right neighbour's, and hides when that leaves it a few
+/// pixels: two blocks 2,000 units apart show both names at 5% (100 px) and the top one at 1%.
+#[gpui_kit::test]
+fn crowded_far_labels_hide_instead_of_piling_up(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_note_at(Point::new(rect.x + 2000.0, rect.y), window, cx)
+        })
+    })
+    .unwrap();
+    let note = ws.read_with(cx, |ws, _| ws.space.canvas.top().unwrap());
+    assert_ne!(note, id);
+    unfocus(handle, &ws, cx);
+    let corner = Point::new(rect.x - 100.0, rect.y - 100.0);
+    rest_at(handle, &ws, cx, corner, 0.05);
+    assert!(shown(handle, cx, ("title", n)), "room for both at 5%");
+    assert!(shown(handle, cx, ("title", note.0 as usize)));
+    rest_at(handle, &ws, cx, corner, 0.01);
+    assert!(!shown(handle, cx, ("title", n)), "20 px: no pile at 1%");
+    assert!(
+        shown(handle, cx, ("title", note.0 as usize)),
+        "the top one reads"
+    );
+}
+
 /// A press on a far label moves the block and focuses it, and starts no selection in the terminal
 /// under it; a right-click opens the block's menu; a double-click frames the block.
 #[gpui_kit::test]
